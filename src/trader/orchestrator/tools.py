@@ -358,7 +358,7 @@ def checkpoint_summarize(ctx: ToolContext, *, ticker: str, market: Market, date:
 
 # --- bundle: 서브에이전트 입력 묶음 (파이썬이 조립 → 오케스트레이터는 전문 전달만) ---------
 
-BUNDLE_LIMIT_CHARS = 26_000  # Claude Code Bash 출력 한도(≈30KB) 아래
+BUNDLE_LIMIT_BYTES = 24_000  # Claude Code Bash 출력 한도(30KB, UTF-8 바이트) 아래 (실기 4차)
 _TRADER_REPORT_KEYS = (
     "ticker",
     "asof",
@@ -385,29 +385,60 @@ def _reports(d: Path) -> list[dict]:
     return out
 
 
+def _size(obj: Any) -> int:
+    return len(json.dumps(obj, ensure_ascii=False).encode("utf-8"))
+
+
+def _cut(v: Any, n: int) -> Any:
+    if isinstance(v, str):
+        return v if len(v) <= n else v[: n - 1] + "…"
+    if isinstance(v, list):
+        return [_cut(x, n) for x in v]
+    if isinstance(v, dict):
+        return {k: _cut(x, n) for k, x in v.items()}
+    return v
+
+
 def _shrink(obj: dict, limit: int, *, drop_evidence: bool = False) -> dict:
-    """한도를 넘으면 리포트의 evidence 부터 빼고, 그래도 넘으면 긴 문자열을 자른다."""
+    """UTF-8 바이트 한도를 넘으면 리포트의 evidence → 긴 문자열 순으로 줄인다."""
     if drop_evidence and "reports" in obj:
         obj = {
             **obj,
             "reports": [{k: r[k] for k in _TRADER_REPORT_KEYS if k in r} for r in obj["reports"]],
         }
-    text = json.dumps(obj, ensure_ascii=False)
-    if len(text) <= limit:
+    if _size(obj) <= limit:
         return obj
     if "reports" in obj and any("evidence" in r for r in obj["reports"]):
         return _shrink(obj, limit, drop_evidence=True)
+    for n in (300, 200, 140, 100):
+        cut = {
+            **_cut(obj, n),
+            "note": f"묶음이 {limit}바이트를 넘어 긴 문자열을 {n}자에서 잘랐습니다",
+        }
+        if _size(cut) <= limit:
+            return cut
+    return cut
 
-    def cut(v: Any, n: int = 300) -> Any:
-        if isinstance(v, str):
-            return v[:n]
-        if isinstance(v, list):
-            return [cut(x, n) for x in v]
-        if isinstance(v, dict):
-            return {k: cut(x, n) for k, x in v.items()}
-        return v
 
-    return {**cut(obj), "note": f"묶음이 {limit}자를 넘어 긴 문자열을 300자에서 잘랐습니다"}
+def _brief_turn(t: dict) -> dict:
+    """우선순위가 아닌 쪽 라운드의 턴은 핵심만 남긴다 (트레이더 묶음 크기 절감)."""
+    return {
+        k: t.get(k) for k in ("side", "round", "stance", "valuation_view", "timing", "conviction")
+    }
+
+
+def _trader_summary(summ: dict) -> dict:
+    """preferred 쪽 턴은 전문, 반대쪽은 핵심만 (트레이더 md 가 preferred 를 우선한다)."""
+    out = dict(summ)
+    other = "final" if summ.get("preferred") == "round0" else "round0"
+    if isinstance(summ.get(other), dict):
+        out[other] = {
+            side: _brief_turn(t) for side, t in summ[other].items() if isinstance(t, dict)
+        }
+    # issues 는 final 양측 rebuttals 의 복제라 트레이더 묶음에선 뺀다 (실기 4.4KB)
+    out.pop("issues", None)
+    out["note"] = f"{other} 턴은 핵심만, issues 는 final.rebuttals 와 같아 생략"
+    return out
 
 
 @_guarded
@@ -448,7 +479,7 @@ def checkpoint_bundle(
             "own_previous": own.model_dump() if own else None,
             "opponent_previous": opp.model_dump() if opp else None,
         }
-        return {"ok": True, "data": _shrink(data, BUNDLE_LIMIT_CHARS)}
+        return {"ok": True, "data": _shrink(data, BUNDLE_LIMIT_BYTES)}
     if kind == "trader":
         summ = read_checkpoint(d, "25_research_summary")
         if summ is None:
@@ -457,10 +488,10 @@ def checkpoint_bundle(
         data = {
             "ticker": ticker,
             "reports": reports,
-            "research_summary": summ.get("data", summ),
+            "research_summary": _trader_summary(summ.get("data", summ)),
             "context": trader_context(ctx, inputs, market),
         }
-        return {"ok": True, "data": _shrink(data, BUNDLE_LIMIT_CHARS, drop_evidence=True)}
+        return {"ok": True, "data": _shrink(data, BUNDLE_LIMIT_BYTES, drop_evidence=True)}
     return {"ok": False, "error": f"알 수 없는 kind: {kind} (researcher|trader)"}
 
 

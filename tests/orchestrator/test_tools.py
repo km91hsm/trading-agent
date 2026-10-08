@@ -291,14 +291,14 @@ def _realistic_reports_and_turns(ctx, project):
     """실기 크기(리포트 ≈3.6KB, 턴 ≈2KB)로 체크포인트를 채운다."""
     _big_inputs(project)
     for role in ("technical", "fundamental", "news_macro", "sentiment"):
-        payload = ok_report(
+        payload = ok_report(  # 실기 리포트 ≈ 3.6KB
             role=role,
             summary="요약 " * 60,
-            bullets=["근거 " * 40] * 7,
-            key_risks=["위험 " * 30] * 4,
-            counter_evidence=["반대 " * 30] * 3,
-            data_gaps=["공백 " * 20] * 2,
-            evidence=[{"claim": "주장 " * 30, "source_id": f"{role}.x"}] * 6,
+            bullets=["근거 " * 20] * 6,
+            key_risks=["위험 " * 15] * 3,
+            counter_evidence=["반대 " * 15] * 2,
+            data_gaps=["공백 " * 10] * 2,
+            evidence=[{"claim": "주장 " * 15, "source_id": f"{role}.x"}] * 5,
         )
         tools.checkpoint_write(
             ctx,
@@ -311,12 +311,12 @@ def _realistic_reports_and_turns(ctx, project):
         )
     for rnd in (0, 1):
         for side in ("bull", "bear"):
-            payload = ok_turn(
+            payload = ok_turn(  # 실기 턴 ≈ 2KB
                 side,
                 round=rnd,
-                arguments=["논거 " * 60] * 5,
-                rebuttals=["반박 " * 60] * 5 if rnd else [],
-                what_would_change_my_mind=["조건 " * 20] * 3,
+                arguments=["논거 " * 30] * 5,
+                rebuttals=["반박 " * 30] * 5 if rnd else [],
+                what_would_change_my_mind=["조건 " * 10] * 3,
             )
             tools.checkpoint_write(
                 ctx,
@@ -341,7 +341,7 @@ def test_bundle_researcher_round0_has_reports_no_opponent(ctx, project):
     assert b["round"] == 0 and b["side"] == "bull" and len(b["reports"]) == 4
     assert b["own_previous"] is None and b["opponent_previous"] is None
     assert b["reports"][0]["role"] in ("technical", "fundamental", "news_macro", "sentiment")
-    assert len(json.dumps(b, ensure_ascii=False)) < 26_000
+    assert len(json.dumps(b, ensure_ascii=False).encode("utf-8")) < 24_000
 
 
 def test_bundle_researcher_round1_has_both_previous_turns(ctx, project):
@@ -352,7 +352,7 @@ def test_bundle_researcher_round1_has_both_previous_turns(ctx, project):
     assert b["own_previous"]["side"] == "bear" and b["own_previous"]["round"] == 0
     assert b["opponent_previous"]["side"] == "bull" and b["opponent_previous"]["round"] == 0
     assert len(b["reports"]) == 4
-    assert len(json.dumps(b, ensure_ascii=False)) < 26_000
+    assert len(json.dumps(b, ensure_ascii=False).encode("utf-8")) < 24_000
 
 
 def test_bundle_trader_has_reports_summary_context_within_limit(ctx, project):
@@ -363,7 +363,12 @@ def test_bundle_trader_has_reports_summary_context_within_limit(ctx, project):
     assert len(b["reports"]) == 4 and b["research_summary"]["preferred"] in ("round0", "final")
     assert "round0" in b["research_summary"] and "final" in b["research_summary"]
     assert b["context"]["costs_bp"] == 30 and b["context"]["portfolio"] is None
-    assert len(json.dumps(b, ensure_ascii=False)) < 26_000
+    assert len(json.dumps(b, ensure_ascii=False).encode("utf-8")) < 24_000
+    assert "note" not in b  # 실기 크기에서는 손실 축약 없이 들어가야 한다
+    assert "evidence" not in b["reports"][0]  # 트레이더 묶음은 evidence 를 뺀다
+    assert set(b["research_summary"]["round0"]["bull"]) < set(
+        b["research_summary"]["final"]["bull"]
+    )
 
 
 def test_bundle_requires_prerequisites(ctx, project):
