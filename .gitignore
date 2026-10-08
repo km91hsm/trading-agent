@@ -1,0 +1,26 @@
+# 런타임 상태 (STATUS.md 만 커밋)
+state/*
+!state/STATUS.md
+
+# 시크릿 (.env.example 만 커밋)
+secrets/*
+!secrets/.env.example
+
+# 플러그인 작업 상태
+.superpowers/
+
+# Python / uv
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+
+# OS / 편집기
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
