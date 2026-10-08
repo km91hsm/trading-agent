@@ -1,0 +1,12 @@
+{
+  "rt_cd": "0",
+  "msg_cd": "MCA00000",
+  "msg1": "정상처리 되었습니다.",
+  "ctx_area_fk": "",
+  "ctx_area_nk": "",
+  "output": [
+    {"bass_dt": "20261009", "wday_dvsn_cd": "06", "bzdy_yn": "Y", "tr_day_yn": "Y", "opnd_yn": "N", "sttl_day_yn": "Y"},
+    {"bass_dt": "20261010", "wday_dvsn_cd": "07", "bzdy_yn": "N", "tr_day_yn": "N", "opnd_yn": "N", "sttl_day_yn": "N"},
+    {"bass_dt": "20261012", "wday_dvsn_cd": "02", "bzdy_yn": "Y", "tr_day_yn": "Y", "opnd_yn": "Y", "sttl_day_yn": "Y"}
+  ]
+}
