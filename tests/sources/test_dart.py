@@ -114,6 +114,23 @@ def test_error_status_raises_without_key(dart, respx_mock, caplog):
     assert "DART-KEY-SECRET" not in caplog.text
 
 
+def test_corpcode_non_zip_error_is_dart_error(project, respx_mock):
+    """실기 확인: 키 오류·한도 초과 시 corpCode.xml 이 zip 이 아니라 오류 XML 로 온다."""
+    respx_mock.get(BASE + "/corpCode.xml").mock(
+        return_value=httpx.Response(
+            200,
+            content=(
+                '<?xml version="1.0"?><result><status>020</status>'
+                "<message>요청 한도 초과</message></result>"
+            ).encode(),
+        )
+    )
+    dart = DartClient("DART-KEY-SECRET", project / "state" / "cache", now=lambda: T0)
+    with pytest.raises(RuntimeError) as e:
+        dart.corp_code("005930")
+    assert "020" in str(e.value) and "DART-KEY-SECRET" not in str(e.value)
+
+
 def test_basic_ratios_shared():
     fin = {
         "매출액": Decimal(200),

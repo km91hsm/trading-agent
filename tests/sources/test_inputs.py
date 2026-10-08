@@ -174,6 +174,33 @@ def test_us_requires_exchange_and_skips_kr_only_sections(project):
     assert d["errors"] == ["fundamental.ratios: no edgar client"]
 
 
+def test_dart_corp_lookup_failure_is_section_error(project):
+    """DART 고유번호 조회 자체가 실패해도 00_inputs 는 만들어지고 절 오류로 남는다 (실기 확인)."""
+
+    class BrokenDart(FakeDart):
+        def corp_code(self, ticker):
+            raise RuntimeError("DART status 020")
+
+        def corp_name(self, ticker):
+            raise RuntimeError("DART status 020")
+
+    d = build_inputs(
+        ticker="005930",
+        market="KR",
+        exchange=None,
+        asof=T0,
+        cfg=cfg(),
+        secrets=Secrets(),
+        deps=deps(dart=BrokenDart()),
+    )
+    assert d["meta"]["name"] == "005930"
+    assert (
+        d["fundamental"]["ratios"]["data"] is None and "020" in d["fundamental"]["ratios"]["error"]
+    )
+    assert d["fundamental"]["disclosures"]["data"] is None
+    assert any(e.startswith("fundamental.ratios") for e in d["errors"])
+
+
 def test_no_market_client(project):
     d = build_inputs(
         ticker="005930",

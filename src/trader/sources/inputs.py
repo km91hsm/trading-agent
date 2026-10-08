@@ -160,12 +160,14 @@ def _fundamental(ticker, market, asof, cfg, deps, technical) -> dict[str, Sectio
                 "ratios": skipped_section("no dart client", now=now),
                 "disclosures": skipped_section("no dart client", now=now),
             }
-        code = deps.dart.corp_code(ticker)
+
+        def disclosures() -> list[dict]:
+            code = deps.dart.corp_code(ticker)
+            return deps.dart.disclosures(code, asof, days=30) if code else []
+
         return {
             "ratios": run_section(lambda: ratios_kr(deps.dart, ticker, day, price), now=now),
-            "disclosures": run_section(
-                lambda: deps.dart.disclosures(code, asof, days=30) if code else [], now=now
-            ),
+            "disclosures": run_section(disclosures, now=now),
         }
     if not cfg.edgar.enabled:
         return {

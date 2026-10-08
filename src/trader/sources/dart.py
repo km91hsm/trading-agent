@@ -111,6 +111,16 @@ class DartClient:
         resp = self._http.get(f"{BASE}/corpCode.xml", params={"crtfc_key": self._key})
         if resp.status_code != 200:
             raise DartError(f"DART corpCode HTTP {resp.status_code}")
+        if not zipfile.is_zipfile(io.BytesIO(resp.content)):
+            # 키 오류·한도 초과·점검(800) 이면 zip 이 아니라 오류 XML(<result><status>) 이 온다
+            try:
+                err = ET.fromstring(resp.content)
+                status = (err.findtext("status") or "?").strip()
+                msg = (err.findtext("message") or "").strip().replace(self._key, "***")
+            except ET.ParseError:
+                status, msg = "?", "zip 이 아닌 응답"
+            logger.warning("DART corpCode 오류 %s: %s", status, msg)
+            raise DartError(f"DART status {status} (corpCode): {msg}")
         with zipfile.ZipFile(io.BytesIO(resp.content)) as z:
             xml_bytes = z.read(z.namelist()[0])
         root = ET.fromstring(xml_bytes)
