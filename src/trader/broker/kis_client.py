@@ -90,21 +90,22 @@ class KisClient:
                 )
             except httpx.HTTPError as e:
                 raise KisApiError("NETWORK", f"요청 실패: {type(e).__name__}", tr) from None
-            if resp.status_code != 200:
-                raise KisApiError(f"HTTP{resp.status_code}", resp.text[:200], tr)
             try:
                 data = resp.json()
             except ValueError:
-                raise KisApiError("INVALID_JSON", "응답이 JSON 이 아닙니다", tr) from None
+                data = None
+            # 실기 확인: 초당 한도 초과(EGW00201)는 HTTP 500 + JSON 본문으로도 온다.
+            code = str(data.get("msg_cd", "")) if isinstance(data, dict) else ""
+            if code == RETRY_CODE and attempt == 1:
+                logger.warning("KIS 초당 한도 초과(%s), %.1f초 후 재시도", tr, RETRY_WAIT_S)
+                self._sleep(RETRY_WAIT_S)
+                continue
+            if resp.status_code != 200:
+                raise KisApiError(f"HTTP{resp.status_code}", resp.text[:200], tr)
             if not isinstance(data, dict):
-                raise KisApiError("INVALID_JSON", "응답이 객체가 아닙니다", tr)
+                raise KisApiError("INVALID_JSON", "응답이 JSON 객체가 아닙니다", tr)
             if str(data.get("rt_cd", "0")) != "0":
-                code = str(data.get("msg_cd", "UNKNOWN"))
-                if code == RETRY_CODE and attempt == 1:
-                    logger.warning("KIS 초당 한도 초과(%s), %.1f초 후 재시도", tr, RETRY_WAIT_S)
-                    self._sleep(RETRY_WAIT_S)
-                    continue
-                raise KisApiError(code, str(data.get("msg1", "")).strip(), tr)
+                raise KisApiError(code or "UNKNOWN", str(data.get("msg1", "")).strip(), tr)
             return data
         raise KisApiError(RETRY_CODE, "재시도 후에도 초당 한도 초과", tr)
 

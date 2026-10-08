@@ -52,7 +52,12 @@ def test_positions_and_cash_us_parsed(paper_client, respx_mock):
     r1 = _route(
         respx_mock, "/uapi/overseas-stock/v1/trading/inquire-balance", "balance_us.json", load
     )
-    _route(respx_mock, "/uapi/overseas-stock/v1/trading/inquire-psamount", "psamount_us.json", load)
+    r2 = _route(
+        respx_mock,
+        "/uapi/overseas-stock/v1/trading/inquire-present-balance",
+        "present_balance_us.json",
+        load,
+    )
     broker = KisBroker(make_account("paper-main", "paper", "auto", ["KR", "US"]), paper_client)
     pos = broker.get_positions("US")
     assert (
@@ -60,7 +65,24 @@ def test_positions_and_cash_us_parsed(paper_client, respx_mock):
     )
     assert r1.calls[0].request.url.params["OVRS_EXCG_CD"] == "NASD"
     cash = broker.get_cash("US")
-    assert cash.currency == "USD" and cash.available == Decimal("1250.50")
+    assert cash.currency == "USD"
+    assert cash.available == Decimal("1200.00") and cash.total == Decimal("1250.50")
+    p = r2.calls[0].request.url.params
+    assert p["WCRC_FRCR_DVSN_CD"] == "02" and p["NATN_CD"] == "840"
+    assert r2.calls[0].request.headers["tr_id"] == "VTRP6504R"
+
+
+def test_cash_us_without_usd_row_is_zero(paper_client, respx_mock):
+    from conftest_broker import load
+
+    data = load("present_balance_us.json")
+    data["output2"] = []
+    respx_mock.get(PAPER + "/uapi/overseas-stock/v1/trading/inquire-present-balance").mock(
+        return_value=httpx.Response(200, json=data)
+    )
+    broker = KisBroker(make_account("paper-main", "paper", "auto", ["KR", "US"]), paper_client)
+    cash = broker.get_cash("US")
+    assert cash.available == Decimal("0") and cash.total == Decimal("0")
 
 
 def test_market_not_in_account_rejected(paper_client):

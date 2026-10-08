@@ -12,17 +12,18 @@
 - [ ] 완료 기준: Windows 에서 `uv sync` 후 `uv run trader status` 동일 동작 (사용자 확인 대기)
 
 ## Phase 1 브로커
-- [ ] KisAuth (env 별 토큰 캐시, 1분 1회 발급 보호)
-- [ ] KisClient 레이트리밋(실전 20/s, 모의 2/s)·EGW00201 재시도·KisApiError
-- [ ] tr_ids 단일 파일, accounts.py
-- [ ] KisMarket (실전 env 만): 시세·일봉·분봉·호가·투자자동향·지수·휴장일
-- [ ] KisBroker (계좌 env): 잔고·예수금 (주문·취소·체결은 Phase 4)
-- [ ] FakeBroker
-- [ ] 텔레그램 발신 (NullNotifier 포함)
-- [ ] 완료 기준(실기): `uv run trader kis ping` 으로 모의·실전 잔고, 005930·AAPL 가격 확인
-- [ ] 완료 기준(실기): `uv run trader notify-test` 로 텔레그램 수신 확인
+- [x] KisAuth (env 별 토큰 캐시, 1분 1회 발급 보호)
+- [x] KisClient 레이트리밋(실전 20/s, 모의 2/s)·EGW00201 재시도·KisApiError
+- [x] tr_ids 단일 파일, accounts.py
+- [x] KisMarket (실전 env 만): 시세·일봉·휴장일 (분봉·호가·투자자동향·지수는 Phase 2 이연)
+- [x] KisBroker (계좌 env): 잔고·예수금 (주문·취소·체결은 Phase 4)
+- [x] FakeBroker·FakeMarket
+- [x] 텔레그램 발신 (NullNotifier 포함)
+- [x] 완료 기준(실기): `uv run trader kis ping` 으로 모의·실전 잔고, 005930·AAPL 가격 확인 (2026-10-09 확인, 실패 0건)
+- [x] 완료 기준(실기): `uv run trader notify-test` 로 텔레그램 수신 확인 (2026-10-09 확인)
 
 ## Phase 2 수집
+- [ ] KisMarket 분봉·호가·투자자동향·지수 조회 + tr_id 추가 (Phase 1 이연)
 - [ ] indicators (SMA·RSI·MACD·KDJ·볼린저·ATR·ROC·거래량 Z·52주 위치)
 - [ ] dart, edgar 수집기 (공통 비율 키)
 - [ ] news (구글 RSS·네이버 API), macro (FRED·ECOS·KIS 지수) 수집기

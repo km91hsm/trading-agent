@@ -48,6 +48,11 @@ _TR: dict[str, tuple[str, str, str | None]] = {
     ),
     # 해외 계좌
     "OVS_BALANCE": ("/uapi/overseas-stock/v1/trading/inquire-balance", "TTTS3012R", "VTTS3012R"),
+    "OVS_PRESENT_BALANCE": (
+        "/uapi/overseas-stock/v1/trading/inquire-present-balance",
+        "CTRP6504R",
+        "VTRP6504R",
+    ),
     "OVS_PSBL_ORDER": (
         "/uapi/overseas-stock/v1/trading/inquire-psamount",
         "TTTS3007R",

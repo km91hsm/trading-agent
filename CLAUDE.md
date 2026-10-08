@@ -22,6 +22,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `uv run pytest` : 전체 테스트 (네트워크 없이 전부 돈다)
 - `uv run ruff check src tests` : 린트, 경고 0건 유지
 - `uv run trader status` : `state/STATUS.md` 재생성 (`uv run python -m trader status` 와 동일)
+- `uv run trader kis ping [--account ID]` : KIS 시세·휴장일·계좌 현금 점검 (실패 > 0 이면 exit 1, 구독·앱키 필요)
+- `uv run trader notify-test` : 텔레그램 알림 테스트 (미설정이면 NullNotifier 로 성공)
 - `uv run trader --help` : 등록된 명령 확인
 - 브랜치는 Phase 단위 `feat/phase<N>-<이름>` 을 직전 Phase 브랜치 위에 쌓고, PR 도 직전 Phase 브랜치를 대상으로 연다 (Phase 0 은 `main`). `.gitattributes` 가 LF 를 강제한다.
 
@@ -30,7 +32,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **순서는 프롬프트가 아니라 도구 전제조건이 강제한다.** `submit-decision` 은 해당 종목의 `10_analyst_*` 체크포인트 2개 이상과 `25_research_summary` 가 파일로 있을 때만 받는다.
 - **체크포인트가 상태의 원본이다.** `state/runs/<날짜>/<시장>/<종목>/<단계>.json` 에 `{schema_version, data, call}` 로 저장하고, 존재하는 단계는 건너뛴다. 읽기·쓰기는 `orchestrator/run_store` 의 함수로만 한다.
 - **계좌 모드.** yaml 값이 기본, SQLite `control` 테이블 값이 우선. 모의는 `auto` 고정, 실전은 `off` 로 시작하며 `auto` 전환은 확인 문자열 없이는 거부된다. 결정은 종목당 1회, 리스크 판정·주문은 계좌마다.
-- **시세·수급은 실전 env 클라이언트만, 주문·잔고는 계좌의 env.** 모의 서버는 시세류를 주지 않는다. `tr_ids.py` 가 tr_id 의 유일한 출처.
+- **시세·수급은 실전 env 클라이언트만, 주문·잔고는 계좌의 env.** 모의 서버는 시세류를 주지 않는다. `broker/tr_ids.py` 가 tr_id·경로의 유일한 출처이고(공식 `open-trading-api` 예제에서 확인한 값), 모의 미지원 API 는 paper 값이 None 이다. 브로커 계층은 세 겹: `KisAuth(env)` → `KisClient(env, auth)` → `KisMarket(client)`(실전만) / `KisBroker(account, client)`(env 일치 요구). CLI 는 `_build_market/_build_brokers` 로 조립하고 테스트는 이를 monkeypatch 한다.
+- **KIS 실패는 전부 `KisApiError(msg_cd, msg1, tr_id)`.** KIS 응답이 아닌 실패는 합성 코드 `AUTH/NETWORK/HTTP<status>/INVALID_JSON/UNSUPPORTED`. 토큰은 `state/kis_token_<env>.json` 캐시(만료 1시간 전 갱신, 실패 후 60초 재발급 금지). `EGW00201`(초당 한도)은 HTTP 200 뿐 아니라 **HTTP 500 본문**으로도 오므로 상태코드와 무관하게 0.5초 뒤 1회 재시도. 모의 서버는 2/s 라 한 점검에서 같은 API 를 두 번 부르지 않는다. US 예수금은 `inquire-present-balance`(통화별 행) 로 읽는다. `inquire-psamount` 는 종목코드 필수라 현금 조회에 못 쓴다(실기 확인). 일봉·수급 목록은 **항상 날짜 오름차순**(마지막이 최신). 금액은 `Decimal`. `OrderRequest.exchange` 는 기본값이 없어 KR 도 `None` 을 명시한다.
+- 미확인: `KisBroker` 의 US 잔고·예수금은 `OVRS_EXCG_CD=NASD` 고정이라 NYS/AMS 보유분이 같이 조회되는지 실기에서 확인한다.
 - **룩어헤드 방지.** 모든 수집 항목에 `received_at`, `asof` 이후 발행분 제외. 과거 `asof` 재수집 금지(백테스트는 피처 스토어로만).
 - **`claude -p` 플래그는 설치된 `claude --help` 에 있는 것만 쓴다.** `--bare` 는 구독 인증을 끄므로 금지. cwd 는 `state/claude_cwd/`(빈 디렉터리), `--setting-sources ""` 로 훅·플러그인 유입을 막는다. `FAKE_CLAUDE=1` 이면 subprocess 없이 고정 응답.
 - **오류 타입.** 설정 오류는 `ConfigError`, KIS 오류는 `KisApiError`. 키는 URL·로그·예외 메시지에 남기지 않는다(`httpx` 로거는 WARNING).

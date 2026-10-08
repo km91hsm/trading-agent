@@ -126,17 +126,24 @@ class KisBroker:
                 available=_dec(summary.get("prvs_rcdl_excc_amt", summary.get("dnca_tot_amt"))),
                 total=_dec(summary.get("dnca_tot_amt")),
             )
+        # 주문가능금액 API(inquire-psamount)는 종목코드가 필수라 현금 조회엔 못 쓴다 (실기 확인).
         params = {
             **self._acct(),
-            "OVRS_EXCG_CD": US_EXCHANGE_CODE,
-            "OVRS_ORD_UNPR": "",
-            "ITEM_CD": "",
+            "WCRC_FRCR_DVSN_CD": "02",  # 외화
+            "NATN_CD": "840",  # 미국
+            "TR_MKET_CD": "00",
+            "INQR_DVSN_CD": "00",
         }
-        data = self._client.get(path("OVS_PSBL_ORDER"), "OVS_PSBL_ORDER", params)
-        rows = _rows(data.get("output"))
-        out = rows[0] if rows else {}
-        available = _dec(out.get("ord_psbl_frcr_amt", out.get("frcr_ord_psbl_amt1")))
-        return Cash(currency="USD", available=available, total=available)
+        data = self._client.get(path("OVS_PRESENT_BALANCE"), "OVS_PRESENT_BALANCE", params)
+        usd = next(
+            (r for r in _rows(data.get("output2")) if str(r.get("crcy_cd", "")).upper() == "USD"),
+            {},
+        )
+        return Cash(
+            currency="USD",
+            available=_dec(usd.get("frcr_drwg_psbl_amt_1")),
+            total=_dec(usd.get("frcr_dncl_amt_2")),
+        )
 
     def place_order(self, request: OrderRequest | None) -> OrderResult:
         raise NotImplementedError("주문은 Phase 4 에서 구현합니다")

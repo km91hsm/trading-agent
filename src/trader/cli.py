@@ -138,12 +138,14 @@ def kis_ping(
         check(f"휴장일 {today}", lambda: "휴장" if market.is_holiday(today) else "개장")
         check("005930 현재가", lambda: market.get_price_kr("005930").price)
         check("AAPL 현재가", lambda: market.get_price_us("AAPL", "NAS").price)
+
+    def cash_label(b: KisBroker, m: str) -> str:
+        c = b.get_cash(m)  # 모의 2/s 한도를 고려해 한 번만 호출한다
+        return f"{c.available} {c.currency}"
+
     for broker in _build_brokers(secrets, accounts):
         for m in broker.account.markets:
-            check(
-                f"{broker.account.id} {m} 현금",
-                lambda b=broker, m=m: f"{b.get_cash(m).available} {b.get_cash(m).currency}",
-            )
+            check(f"{broker.account.id} {m} 현금", lambda b=broker, m=m: cash_label(b, m))
     typer.echo(f"실패 {failures}건")
     if failures:
         raise typer.Exit(code=1)

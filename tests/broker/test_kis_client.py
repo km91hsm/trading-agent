@@ -78,6 +78,28 @@ def test_egw00201_retry_once(real_client, respx_mock, monkeypatch):
     assert route.call_count == 2 and slept == [0.5]
 
 
+def test_egw00201_as_http500_retries_once(paper_client, respx_mock, monkeypatch):
+    """실기 확인: KIS 는 초당 한도 초과를 HTTP 500 + JSON 본문으로도 돌려준다."""
+    slept = []
+    monkeypatch.setattr(paper_client, "_sleep", lambda s: slept.append(s))
+    url = PAPER + "/uapi/domestic-stock/v1/trading/inquire-balance"
+    route = respx_mock.get(url).mock(
+        side_effect=[
+            httpx.Response(
+                500,
+                json={
+                    "rt_cd": "1",
+                    "msg1": "초당 거래건수를 초과하였습니다.",
+                    "msg_cd": "EGW00201",
+                },
+            ),
+            ok({"x": "1"}),
+        ]
+    )
+    data = paper_client.get("/uapi/domestic-stock/v1/trading/inquire-balance", "DOM_BALANCE", {})
+    assert data["output"]["x"] == "1" and route.call_count == 2 and slept == [0.5]
+
+
 def test_post_sends_json_body(paper_client, respx_mock):
     route = respx_mock.post(PAPER + "/uapi/domestic-stock/v1/trading/order-cash").mock(
         return_value=ok({"ODNO": "1"})
