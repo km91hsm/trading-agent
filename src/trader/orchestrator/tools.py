@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import html
+import json
 import logging
 import re
 import sqlite3
@@ -353,6 +354,114 @@ def checkpoint_summarize(ctx: ToolContext, *, ticker: str, market: Market, date:
 
 
 # --- submit-decision --------------------------------------------------------
+
+
+# --- bundle: 서브에이전트 입력 묶음 (파이썬이 조립 → 오케스트레이터는 전문 전달만) ---------
+
+BUNDLE_LIMIT_CHARS = 26_000  # Claude Code Bash 출력 한도(≈30KB) 아래
+_TRADER_REPORT_KEYS = (
+    "ticker",
+    "asof",
+    "role",
+    "summary",
+    "bullets",
+    "signal",
+    "score",
+    "confidence",
+    "horizon",
+    "key_risks",
+    "counter_evidence",
+    "data_gaps",
+)
+
+
+def _reports(d: Path) -> list[dict]:
+    out = []
+    for stage in list_checkpoints(d):
+        if _ANALYST_RE.match(stage):
+            data = read_checkpoint(d, stage) or {}
+            if isinstance(data.get("data"), dict):
+                out.append(data["data"])
+    return out
+
+
+def _shrink(obj: dict, limit: int, *, drop_evidence: bool = False) -> dict:
+    """한도를 넘으면 리포트의 evidence 부터 빼고, 그래도 넘으면 긴 문자열을 자른다."""
+    if drop_evidence and "reports" in obj:
+        obj = {
+            **obj,
+            "reports": [{k: r[k] for k in _TRADER_REPORT_KEYS if k in r} for r in obj["reports"]],
+        }
+    text = json.dumps(obj, ensure_ascii=False)
+    if len(text) <= limit:
+        return obj
+    if "reports" in obj and any("evidence" in r for r in obj["reports"]):
+        return _shrink(obj, limit, drop_evidence=True)
+
+    def cut(v: Any, n: int = 300) -> Any:
+        if isinstance(v, str):
+            return v[:n]
+        if isinstance(v, list):
+            return [cut(x, n) for x in v]
+        if isinstance(v, dict):
+            return {k: cut(x, n) for k, x in v.items()}
+        return v
+
+    return {**cut(obj), "note": f"묶음이 {limit}자를 넘어 긴 문자열을 300자에서 잘랐습니다"}
+
+
+@_guarded
+def checkpoint_bundle(
+    ctx: ToolContext,
+    *,
+    ticker: str,
+    market: Market,
+    date: date,
+    kind: str,
+    round: int | None = None,
+    side: str | None = None,
+) -> dict:
+    """kind=researcher(round, side) | trader. 서브에이전트 프롬프트에 그대로 붙일 입력 묶음."""
+    d = _dir(ctx, ticker, market, date)
+    reports = _reports(d)
+    if len(reports) < MIN_REPORTS:
+        return {"ok": False, "error": f"10_analyst_* 가 {len(reports)}개 (최소 {MIN_REPORTS})"}
+    if kind == "researcher":
+        if round is None or side not in ("bull", "bear"):
+            return {
+                "ok": False,
+                "error": "researcher 묶음은 --round 와 --side(bull|bear) 가 필요합니다",
+            }
+        turns = _load_turns(d)
+        own = opp = None
+        if round > 0:
+            prev = turns.get(round - 1, {})
+            own = prev.get(side)
+            opp = prev.get("bear" if side == "bull" else "bull")
+            if own is None or opp is None:
+                return {"ok": False, "error": f"라운드 {round - 1} 의 양측 턴이 모두 필요합니다"}
+        data = {
+            "ticker": ticker,
+            "round": round,
+            "side": side,
+            "reports": reports,
+            "own_previous": own.model_dump() if own else None,
+            "opponent_previous": opp.model_dump() if opp else None,
+        }
+        return {"ok": True, "data": _shrink(data, BUNDLE_LIMIT_CHARS)}
+    if kind == "trader":
+        summ = read_checkpoint(d, "25_research_summary")
+        if summ is None:
+            return {"ok": False, "error": "25_research_summary 없음 (summarize 먼저)"}
+        inputs = read_checkpoint(d, "00_inputs") or {}
+        data = {
+            "ticker": ticker,
+            "reports": reports,
+            "research_summary": summ.get("data", summ),
+            "context": trader_context(ctx, inputs, market),
+        }
+        return {"ok": True, "data": _shrink(data, BUNDLE_LIMIT_CHARS, drop_evidence=True)}
+    return {"ok": False, "error": f"알 수 없는 kind: {kind} (researcher|trader)"}
 
 
 @_guarded

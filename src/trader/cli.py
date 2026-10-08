@@ -531,6 +531,29 @@ def tool_checkpoint_write(
     )
 
 
+@checkpoint_app.command("bundle")
+def tool_checkpoint_bundle(
+    ticker: str = typer.Option(..., "--ticker"),
+    market: str = typer.Option(..., "--market"),
+    date: str = typer.Option(..., "--date"),
+    kind: str = typer.Option(..., "--kind", help="researcher | trader"),
+    round: int | None = typer.Option(None, "--round"),
+    side: str | None = typer.Option(None, "--side"),
+) -> None:
+    """서브에이전트 입력 묶음(리포트+턴 또는 리포트+요약+컨텍스트)을 JSON 으로."""
+    from trader.orchestrator import tools
+
+    _tool_run(
+        tools.checkpoint_bundle,
+        ticker=ticker,
+        market=market,
+        date=date,
+        kind=kind,
+        round=round,
+        side=side,
+    )
+
+
 @checkpoint_app.command("summarize")
 def tool_checkpoint_summarize(
     ticker: str = typer.Option(..., "--ticker"),

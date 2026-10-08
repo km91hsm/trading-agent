@@ -287,6 +287,103 @@ def test_checkpoint_read_section_is_compact(ctx, project):
     assert len(full["technical"]["daily"]["data"]) == 260
 
 
+def _realistic_reports_and_turns(ctx, project):
+    """실기 크기(리포트 ≈3.6KB, 턴 ≈2KB)로 체크포인트를 채운다."""
+    _big_inputs(project)
+    for role in ("technical", "fundamental", "news_macro", "sentiment"):
+        payload = ok_report(
+            role=role,
+            summary="요약 " * 60,
+            bullets=["근거 " * 40] * 7,
+            key_risks=["위험 " * 30] * 4,
+            counter_evidence=["반대 " * 30] * 3,
+            data_gaps=["공백 " * 20] * 2,
+            evidence=[{"claim": "주장 " * 30, "source_id": f"{role}.x"}] * 6,
+        )
+        tools.checkpoint_write(
+            ctx,
+            ticker="005930",
+            market="KR",
+            date=D,
+            stage=f"10_analyst_{role}",
+            payload=payload,
+            agent="a",
+        )
+    for rnd in (0, 1):
+        for side in ("bull", "bear"):
+            payload = ok_turn(
+                side,
+                round=rnd,
+                arguments=["논거 " * 60] * 5,
+                rebuttals=["반박 " * 60] * 5 if rnd else [],
+                what_would_change_my_mind=["조건 " * 20] * 3,
+            )
+            tools.checkpoint_write(
+                ctx,
+                ticker="005930",
+                market="KR",
+                date=D,
+                stage=f"20_debate_r{rnd}_{side}",
+                payload=payload,
+                agent="r",
+            )
+    tools.checkpoint_summarize(ctx, ticker="005930", market="KR", date=D)
+
+
+def test_bundle_researcher_round0_has_reports_no_opponent(ctx, project):
+    """파이썬이 입력을 묶어 주면 오케스트레이터가 요약할 여지가 없다 (실기 3차 반영)."""
+    _realistic_reports_and_turns(ctx, project)
+    r = tools.checkpoint_bundle(
+        ctx, ticker="005930", market="KR", date=D, kind="researcher", round=0, side="bull"
+    )
+    assert r["ok"]
+    b = r["data"]
+    assert b["round"] == 0 and b["side"] == "bull" and len(b["reports"]) == 4
+    assert b["own_previous"] is None and b["opponent_previous"] is None
+    assert b["reports"][0]["role"] in ("technical", "fundamental", "news_macro", "sentiment")
+    assert len(json.dumps(b, ensure_ascii=False)) < 26_000
+
+
+def test_bundle_researcher_round1_has_both_previous_turns(ctx, project):
+    _realistic_reports_and_turns(ctx, project)
+    b = tools.checkpoint_bundle(
+        ctx, ticker="005930", market="KR", date=D, kind="researcher", round=1, side="bear"
+    )["data"]
+    assert b["own_previous"]["side"] == "bear" and b["own_previous"]["round"] == 0
+    assert b["opponent_previous"]["side"] == "bull" and b["opponent_previous"]["round"] == 0
+    assert len(b["reports"]) == 4
+    assert len(json.dumps(b, ensure_ascii=False)) < 26_000
+
+
+def test_bundle_trader_has_reports_summary_context_within_limit(ctx, project):
+    _realistic_reports_and_turns(ctx, project)
+    r = tools.checkpoint_bundle(ctx, ticker="005930", market="KR", date=D, kind="trader")
+    assert r["ok"]
+    b = r["data"]
+    assert len(b["reports"]) == 4 and b["research_summary"]["preferred"] in ("round0", "final")
+    assert "round0" in b["research_summary"] and "final" in b["research_summary"]
+    assert b["context"]["costs_bp"] == 30 and b["context"]["portfolio"] is None
+    assert len(json.dumps(b, ensure_ascii=False)) < 26_000
+
+
+def test_bundle_requires_prerequisites(ctx, project):
+    _inputs(project)
+    assert (
+        tools.checkpoint_bundle(
+            ctx, ticker="005930", market="KR", date=D, kind="researcher", round=0, side="bull"
+        )["ok"]
+        is False
+    )
+    assert (
+        tools.checkpoint_bundle(ctx, ticker="005930", market="KR", date=D, kind="trader")["ok"]
+        is False
+    )
+    assert (
+        tools.checkpoint_bundle(ctx, ticker="005930", market="KR", date=D, kind="nope")["ok"]
+        is False
+    )
+
+
 def test_submit_requires_reports_and_summary(ctx, project):
     _inputs(project)
     r = tools.submit_decision(ctx, ticker="005930", market="KR", date=D, payload=ok_decision())

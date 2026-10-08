@@ -63,6 +63,8 @@ def test_orchestrator_prompt_has_procedure():
         "요약하거나 생략하지",
         "요약·발췌하지 않는다",  # 리서처·트레이더 입력도 전문 (리뷰 I1)
         "--asof",
+        "tool checkpoint bundle --kind researcher",  # 파이썬이 조립한 묶음을 전문 전달 (실기 3차)
+        "tool checkpoint bundle --kind trader",
     ):
         assert token in p, token
     assert "anonymize=" not in p
