@@ -47,7 +47,7 @@ def main() -> int:
     else:
         parts.append(
             "# 시스템 상태\n\nstate/STATUS.md 가 아직 없습니다. "
-            "`python -m trader status` 로 생성하세요 (Phase 0 완료 전이면 정상)."
+            "`uv run trader status` 로 생성하세요 (Phase 0 완료 전이면 정상)."
         )
     todos = _open_todos(_read(root / "docs" / "TODO.md"), MAX_TODO_ITEMS)
     if todos:
