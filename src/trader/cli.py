@@ -39,9 +39,7 @@ def status() -> None:
         try:
             db.init_schema(conn)
             db.sync_accounts(conn, accounts)
-            text = status_mod.build_status(
-                conn, settings, accounts, paths.docs_dir() / "TODO.md"
-            )
+            text = status_mod.build_status(conn, settings, accounts, paths.docs_dir() / "TODO.md")
         finally:
             conn.close()
         out = status_mod.write_status(text)
