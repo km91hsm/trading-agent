@@ -79,6 +79,37 @@ def test_backoff_after_failed_issue(project):
 
 
 @respx.mock
+def test_refresh_failure_uses_still_valid_token(project):
+    """갱신 창(만료 1시간 전)에서 발급이 실패해도 아직 유효한 캐시 토큰을 쓴다 (리뷰 I2)."""
+    respx.post(TOKEN_URL).mock(
+        side_effect=[token_response("tok1"), httpx.Response(403, json={"msg": "1분 1회"})]
+    )
+    make_auth(project, lambda: T0).token()
+    auth = make_auth(project, lambda: T0 + timedelta(hours=23, minutes=30))
+    assert auth.token() == "tok1"
+
+
+@respx.mock
+def test_failed_at_persisted_across_instances(project):
+    """발급 실패 백오프는 인스턴스가 아니라 캐시 파일에 기록돼 다른 인스턴스에도 적용된다."""
+    route = respx.post(TOKEN_URL).mock(return_value=httpx.Response(403, json={"msg": "no"}))
+    with pytest.raises(KisApiError):
+        make_auth(project, lambda: T0).token()
+    with pytest.raises(KisApiError) as e:
+        make_auth(project, lambda: T0 + timedelta(seconds=10)).token()
+    assert e.value.msg_cd == "AUTH" and route.call_count == 1
+
+
+@respx.mock
+def test_invalidate_removes_cache(project):
+    respx.post(TOKEN_URL).mock(return_value=token_response("tok1"))
+    auth = make_auth(project, lambda: T0)
+    auth.token()
+    auth.invalidate()
+    assert not auth.cache_path.exists()
+
+
+@respx.mock
 def test_secret_not_in_error_message(project):
     respx.post(TOKEN_URL).mock(side_effect=httpx.ConnectError("boom"))
     with pytest.raises(KisApiError) as e:

@@ -98,6 +98,17 @@ def test_kis_ping_market_build_failure_counts(project, monkeypatch):
     assert r.exit_code == 1 and "시세 클라이언트" in r.stdout
 
 
+def test_kis_ping_counts_account_without_keys(project, monkeypatch):
+    """앱키가 없어 건너뛴 계좌는 침묵이 아니라 실패로 센다 (리뷰 Important 1)."""
+    _accounts(project)
+    market, brokers = _fakes()
+    monkeypatch.setattr(cli, "_build_market", lambda s: market)
+    monkeypatch.setattr(cli, "_build_brokers", lambda s, accs: brokers(s, accs)[:1])  # paper 만
+    r = CliRunner().invoke(app, ["kis", "ping"])
+    assert r.exit_code == 1
+    assert "[실패] real-main" in r.stdout and "앱키" in r.stdout and "실패 1건" in r.stdout
+
+
 def test_notify_test_null(project, monkeypatch):
     monkeypatch.setattr(cli, "make_notifier", lambda s: NullNotifier())
     r = CliRunner().invoke(app, ["notify-test"])

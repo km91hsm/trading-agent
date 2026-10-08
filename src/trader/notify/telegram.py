@@ -35,16 +35,27 @@ class NullNotifier:
         return True
 
 
-def _chunks(text: str, size: int) -> list[str]:
+def _chunks(text: str, size: int, *, escape: bool) -> list[str]:
+    """원문을 잘라 청크마다 이스케이프한다. 이스케이프 후 길이가 size 를 넘지 않게 하고,
+    엔티티(&lt; 등)는 원문 단위로 자르므로 중간에서 끊기지 않는다. 줄바꿈 경계를 우선한다."""
+    conv = html.escape if escape else (lambda s: s)
     out: list[str] = []
     while text:
-        if len(text) <= size:
-            out.append(text)
+        if len(conv(text)) <= size:
+            out.append(conv(text))
             break
-        cut = text.rfind("\n", 0, size)
+        # 이스케이프 후 길이가 size 이하인 최대 원문 접두사를 찾는다 (이진 탐색)
+        lo, hi = 1, len(text)
+        while lo < hi:
+            mid = (lo + hi + 1) // 2
+            if len(conv(text[:mid])) <= size:
+                lo = mid
+            else:
+                hi = mid - 1
+        cut = text.rfind("\n", 0, lo)
         if cut <= 0:
-            cut = size
-        out.append(text[:cut])
+            cut = lo
+        out.append(conv(text[:cut]))
         text = text[cut:].lstrip("\n")
     return out
 
@@ -60,8 +71,7 @@ class TelegramNotifier:
         """4,000자 단위로 나눠 보낸다. 기본은 HTML 이스케이프. 실패는 False + 경고 로그."""
         if not text or not text.strip():
             return True
-        body = html.escape(text) if escape else text
-        for chunk in _chunks(body, MAX_LEN):
+        for chunk in _chunks(text, MAX_LEN, escape=escape):
             try:
                 resp = self._http.post(
                     self._url,

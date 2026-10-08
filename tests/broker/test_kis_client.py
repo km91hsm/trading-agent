@@ -100,6 +100,43 @@ def test_egw00201_as_http500_retries_once(paper_client, respx_mock, monkeypatch)
     assert data["output"]["x"] == "1" and route.call_count == 2 and slept == [0.5]
 
 
+def test_http500_with_kis_code_keeps_code(real_client, respx_mock, monkeypatch):
+    """HTTP≠200 이라도 KIS 본문의 msg_cd 를 유지한다. EGW00201 2연속이면 그 코드로 끝난다."""
+    monkeypatch.setattr(real_client, "_sleep", lambda s: None)
+    respx_mock.get(REAL + PRICE).mock(
+        side_effect=[
+            httpx.Response(500, json={"rt_cd": "1", "msg_cd": "EGW00201", "msg1": "초과"}),
+            httpx.Response(500, json={"rt_cd": "1", "msg_cd": "EGW00201", "msg1": "초과"}),
+        ]
+    )
+    with pytest.raises(KisApiError) as e:
+        real_client.get(PRICE, "DOM_PRICE", {})
+    assert e.value.msg_cd == "EGW00201"
+
+
+def test_token_error_invalidates_and_retries(real_client, respx_mock, monkeypatch):
+    """만료 토큰(EGW00123)이면 캐시를 지우고 재발급 후 1회 재시도한다 (리뷰 Important 3)."""
+    invalidated = []
+    monkeypatch.setattr(real_client._auth, "invalidate", lambda: invalidated.append(1))
+    route = respx_mock.get(REAL + PRICE).mock(
+        side_effect=[
+            httpx.Response(500, json={"rt_cd": "1", "msg_cd": "EGW00123", "msg1": "만료"}),
+            ok({"stck_prpr": "1"}),
+        ]
+    )
+    assert real_client.get(PRICE, "DOM_PRICE", {})["output"]["stck_prpr"] == "1"
+    assert invalidated == [1] and route.call_count == 2
+
+
+def test_missing_rt_cd_is_invalid(real_client, respx_mock):
+    respx_mock.get(REAL + PRICE).mock(
+        return_value=httpx.Response(200, json={"error_code": "EGW00103", "error_description": "x"})
+    )
+    with pytest.raises(KisApiError) as e:
+        real_client.get(PRICE, "DOM_PRICE", {})
+    assert e.value.msg_cd == "EGW00103"
+
+
 def test_post_sends_json_body(paper_client, respx_mock):
     route = respx_mock.post(PAPER + "/uapi/domestic-stock/v1/trading/order-cash").mock(
         return_value=ok({"ODNO": "1"})

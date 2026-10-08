@@ -19,7 +19,8 @@ from trader.config import Env
 logger = logging.getLogger("trader.kis")
 
 RATE_PER_SEC: dict[Env, int] = {"real": 20, "paper": 2}
-RETRY_CODE = "EGW00201"
+RETRY_CODE = "EGW00201"  # 초당 거래건수 초과 (HTTP 200·500 양쪽으로 온다, 실기 확인)
+TOKEN_ERROR_CODES = frozenset({"EGW00123", "EGW00121"})  # 만료·유효하지 않은 토큰
 RETRY_WAIT_S = 0.5
 
 
@@ -80,34 +81,46 @@ class KisClient:
             "custtype": "P",
         }
 
+    def _once(self, method: str, path: str, tr: str, **kw: Any) -> dict:
+        """1회 요청. 성공이면 응답 dict, 실패면 KisApiError (KIS 본문의 msg_cd 를 우선 보존)."""
+        self._limiter.acquire()
+        try:
+            resp = self._http.request(method, self.base_url + path, headers=self._headers(tr), **kw)
+        except httpx.HTTPError as e:
+            raise KisApiError("NETWORK", f"요청 실패: {type(e).__name__}", tr) from None
+        try:
+            data = resp.json()
+        except ValueError:
+            data = None
+        if isinstance(data, dict):
+            # KIS 는 오류를 HTTP 200·500 양쪽으로 주며 msg_cd/error_code 가 진짜 원인이다.
+            code = str(data.get("msg_cd") or data.get("error_code") or "")
+            msg = str(data.get("msg1") or data.get("error_description") or "").strip()
+            if code and (resp.status_code != 200 or str(data.get("rt_cd", "1")) != "0"):
+                raise KisApiError(code, msg, tr)
+            if "rt_cd" not in data:
+                raise KisApiError("INVALID_JSON", "rt_cd 가 없는 응답입니다", tr)
+            if str(data["rt_cd"]) != "0":
+                raise KisApiError("UNKNOWN", msg, tr)
+            return data
+        if resp.status_code != 200:
+            raise KisApiError(f"HTTP{resp.status_code}", resp.text[:200], tr)
+        raise KisApiError("INVALID_JSON", "응답이 JSON 객체가 아닙니다", tr)
+
     def _request(self, method: str, path: str, tr_name: str, **kw: Any) -> dict:
         tr = tr_id(tr_name, self.env)
-        for attempt in (1, 2):
-            self._limiter.acquire()
-            try:
-                resp = self._http.request(
-                    method, self.base_url + path, headers=self._headers(tr), **kw
-                )
-            except httpx.HTTPError as e:
-                raise KisApiError("NETWORK", f"요청 실패: {type(e).__name__}", tr) from None
-            try:
-                data = resp.json()
-            except ValueError:
-                data = None
-            # 실기 확인: 초당 한도 초과(EGW00201)는 HTTP 500 + JSON 본문으로도 온다.
-            code = str(data.get("msg_cd", "")) if isinstance(data, dict) else ""
-            if code == RETRY_CODE and attempt == 1:
+        try:
+            return self._once(method, path, tr, **kw)
+        except KisApiError as e:
+            if e.msg_cd == RETRY_CODE:
                 logger.warning("KIS 초당 한도 초과(%s), %.1f초 후 재시도", tr, RETRY_WAIT_S)
                 self._sleep(RETRY_WAIT_S)
-                continue
-            if resp.status_code != 200:
-                raise KisApiError(f"HTTP{resp.status_code}", resp.text[:200], tr)
-            if not isinstance(data, dict):
-                raise KisApiError("INVALID_JSON", "응답이 JSON 객체가 아닙니다", tr)
-            if str(data.get("rt_cd", "0")) != "0":
-                raise KisApiError(code or "UNKNOWN", str(data.get("msg1", "")).strip(), tr)
-            return data
-        raise KisApiError(RETRY_CODE, "재시도 후에도 초당 한도 초과", tr)
+            elif e.msg_cd in TOKEN_ERROR_CODES:
+                logger.warning("KIS 토큰 오류 %s(%s), 캐시 무효화 후 재발급", e.msg_cd, tr)
+                self._auth.invalidate()
+            else:
+                raise
+        return self._once(method, path, tr, **kw)
 
     def get(self, path: str, tr_name: str, params: dict[str, Any]) -> dict:
         return self._request("GET", path, tr_name, params=params)

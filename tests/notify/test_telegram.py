@@ -23,6 +23,20 @@ def test_split_and_escape():
 
 
 @respx.mock
+def test_split_does_not_break_entities():
+    """분할점이 이스케이프 엔티티(&lt; 등) 중간에 오면 안 된다 (리뷰 Important 4)."""
+    import re
+
+    route = respx.post(API).mock(return_value=httpx.Response(200, json={"ok": True}))
+    assert TelegramNotifier("TOKEN-SECRET", "123").send("a" * 3998 + "<b>&<i>" + "b" * 10) is True
+    for c in route.calls:
+        text = httpx.QueryParams(c.request.read().decode("utf-8"))["text"]
+        assert len(text) <= 4000
+        assert not re.search(r"&[a-z]*$", text), text[-10:]
+        assert not re.search(r"^[a-z]*;", text), text[:10]
+
+
+@respx.mock
 def test_html_passthrough_when_not_escaped():
     route = respx.post(API).mock(return_value=httpx.Response(200, json={"ok": True}))
     TelegramNotifier("TOKEN-SECRET", "123").send("<b>굵게</b>", escape=False)

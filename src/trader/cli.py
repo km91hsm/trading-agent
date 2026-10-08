@@ -40,12 +40,19 @@ def main() -> None:
 # --- 조립 함수 (테스트에서 monkeypatch 로 교체) ------------------------------
 
 
+_clients: dict[tuple[config.Env, str], KisClient] = {}
+
+
 def _build_client(secrets: config.Secrets, env: config.Env) -> KisClient:
+    """env 별 KisClient. 같은 프로세스 안에서는 하나만 만들어 레이트리미터·토큰을 공유한다."""
     key = secrets.KIS_PAPER_APP_KEY if env == "paper" else secrets.KIS_REAL_APP_KEY
     secret = secrets.KIS_PAPER_APP_SECRET if env == "paper" else secrets.KIS_REAL_APP_SECRET
     if not key or not secret:
         raise config.ConfigError(f"{env} 앱키·시크릿이 secrets/.env 에 없습니다")
-    return KisClient(env, KisAuth(env, key, secret))
+    cache_key = (env, key)
+    if cache_key not in _clients:
+        _clients[cache_key] = KisClient(env, KisAuth(env, key, secret))
+    return _clients[cache_key]
 
 
 def _build_market(secrets: config.Secrets) -> KisMarket:
@@ -143,7 +150,13 @@ def kis_ping(
         c = b.get_cash(m)  # 모의 2/s 한도를 고려해 한 번만 호출한다
         return f"{c.available} {c.currency}"
 
-    for broker in _build_brokers(secrets, accounts):
+    brokers = _build_brokers(secrets, accounts)
+    built = {b.account.id for b in brokers}
+    for a in accounts:
+        if a.id not in built:
+            failures += 1
+            typer.echo(f"[실패] {a.id}: {a.env} 앱키·시크릿이 없어 점검하지 못했습니다")
+    for broker in brokers:
         for m in broker.account.markets:
             check(f"{broker.account.id} {m} 현금", lambda b=broker, m=m: cash_label(b, m))
     typer.echo(f"실패 {failures}건")
