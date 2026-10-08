@@ -1,0 +1,33 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/session_start.py\"",
+            "timeout": 15
+          }
+        ]
+      }
+    ]
+  },
+  "permissions": {
+    "allow": [
+      "Read",
+      "Grep",
+      "Glob",
+      "Bash(uv run pytest *)",
+      "Bash(uv run ruff check *)",
+      "Bash(python -m trader status)",
+      "Bash(uv run trader --help)"
+    ],
+    "deny": [
+      "Read(./secrets/**)",
+      "Bash(cat secrets/*)",
+      "Bash(python -m trader kis order *)",
+      "Bash(uv run trader kis order *)"
+    ]
+  }
+}
