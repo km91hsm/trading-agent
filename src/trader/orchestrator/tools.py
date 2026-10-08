@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import html
 import logging
 import re
 import sqlite3
@@ -28,14 +29,62 @@ from trader.orchestrator.run_store import (
     run_dir,
     write_checkpoint,
 )
+from trader.platform import paths
 
 logger = logging.getLogger("trader.orchestrator")
 
 _KST = ZoneInfo("Asia/Seoul")
 ROUND_TRIP_COST_BP: dict[Market, int] = {"KR": 30, "US": 50}
 MIN_REPORTS = 2
-_ANALYST_RE = re.compile(r"^10_analyst_")
+ANALYST_ROLES = ("technical", "fundamental", "news_macro", "sentiment")
+_ANALYST_RE = re.compile(r"^10_analyst_(technical|fundamental|news_macro|sentiment)$")
 _DEBATE_RE = re.compile(r"^20_debate_r(\d+)_(bull|bear)$")
+_TICKER_RE = re.compile(r"^[A-Za-z0-9.\-]{1,16}$")
+_STAGE_RE = re.compile(r"^\d{2}_[a-z0-9_\-]{1,40}$")
+# LLM 이 checkpoint write 로 쓸 수 있는 단계. 30_decision 은 submit-decision 전용(전제조건 검증).
+_LLM_WRITABLE = (_ANALYST_RE, _DEBATE_RE)
+
+
+class ToolInputError(ValueError):
+    """ticker·market·stage 형식 오류 (경로 탈출 방지)."""
+
+
+def _validate_ids(ticker: str, market: str, stage: str | None = None) -> None:
+    if not _TICKER_RE.match(ticker or ""):
+        raise ToolInputError(f"ticker 형식 오류: {ticker!r}")
+    if market not in ("KR", "US"):
+        raise ToolInputError(f"market 은 KR 또는 US: {market!r}")
+    if stage is not None and not _STAGE_RE.match(stage):
+        raise ToolInputError(f"stage 형식 오류: {stage!r}")
+
+
+def _unescape(obj: Any) -> Any:
+    """Claude Code 가 서브에이전트 출력의 <·>·& 를 이스케이프하므로 문자열 값을 되돌린다."""
+    if isinstance(obj, str):
+        return html.unescape(obj)
+    if isinstance(obj, dict):
+        return {k: _unescape(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_unescape(v) for v in obj]
+    return obj
+
+
+def _guarded(fn):
+    """ToolInputError 를 {"ok": false} 로 바꾸는 데코레이터."""
+    import functools
+
+    @functools.wraps(fn)
+    def wrapper(ctx, *, ticker=None, market=None, stage=None, **kw):
+        try:
+            _validate_ids(ticker, market, stage)
+        except ToolInputError as e:
+            return {"ok": False, "error": str(e)}
+        kwargs = {"ticker": ticker, "market": market, **kw}
+        if stage is not None:
+            kwargs["stage"] = stage
+        return fn(ctx, **kwargs)
+
+    return wrapper
 
 
 class ToolError(RuntimeError):
@@ -70,6 +119,7 @@ def _wrap(data: Any, call: dict | None) -> dict:
 # --- checkpoint -------------------------------------------------------------
 
 
+@_guarded
 def checkpoint_list(ctx: ToolContext, *, ticker: str, market: Market, date: date) -> dict:
     return {"ok": True, "stages": list_checkpoints(_dir(ctx, ticker, market, date))}
 
@@ -182,6 +232,7 @@ def _compact_section(section: str, body: dict) -> dict:
     return out
 
 
+@_guarded
 def checkpoint_read(
     ctx: ToolContext,
     *,
@@ -212,6 +263,7 @@ def checkpoint_read(
     return {"ok": True, "data": out}
 
 
+@_guarded
 def checkpoint_write(
     ctx: ToolContext,
     *,
@@ -223,22 +275,47 @@ def checkpoint_write(
     agent: str | None = None,
     call_meta: dict | None = None,
 ) -> dict:
+    if stage.startswith("30_decision"):
+        return {"ok": False, "error": "30_decision 은 submit-decision 도구로만 제출할 수 있습니다"}
+    if not any(p.match(stage) for p in _LLM_WRITABLE):
+        return {"ok": False, "error": f"알 수 없는 단계이거나 LLM 이 쓰는 단계가 아닙니다: {stage}"}
     model = schemas.schema_for(stage)
     if model is None:
         return {"ok": False, "error": f"알 수 없는 단계이거나 LLM 이 쓰는 단계가 아닙니다: {stage}"}
     try:
-        validated = model.model_validate(payload)
+        validated = model.model_validate(_unescape(payload))
     except ValidationError as e:
         msgs = "; ".join(
             f"{'.'.join(str(x) for x in err['loc'])}: {err['msg']}" for err in e.errors()
         )
         return {"ok": False, "error": f"스키마 검증 실패({stage}): {msgs}"}
+    mismatch = _name_payload_mismatch(ctx, stage, ticker, validated)
+    if mismatch:
+        return {"ok": False, "error": mismatch}
     path = write_checkpoint(
         _dir(ctx, ticker, market, date),
         stage,
         _wrap(validated.model_dump(), _call(agent, call_meta)),
     )
     return {"ok": True, "path": str(path)}
+
+
+def _name_payload_mismatch(ctx: ToolContext, stage: str, ticker: str, v: Any) -> str | None:
+    m = _ANALYST_RE.match(stage)
+    if m:
+        if v.role != m.group(1):
+            return f"파일명 role({m.group(1)}) 과 페이로드 role({v.role}) 불일치"
+        if v.ticker != ticker:
+            return f"ticker 불일치: {v.ticker} ≠ {ticker}"
+        return None
+    m = _DEBATE_RE.match(stage)
+    if m:
+        rnd, side = int(m.group(1)), m.group(2)
+        if v.side != side or v.round != rnd:
+            return f"파일명 r{rnd}_{side} 와 페이로드 round={v.round} side={v.side} 불일치"
+        if rnd > ctx.settings.debate_rounds:
+            return f"라운드 {rnd} 는 설정(debate_rounds={ctx.settings.debate_rounds})을 넘습니다"
+    return None
 
 
 def _load_turns(d: Path) -> dict[int, dict[str, schemas.DebateTurn]]:
@@ -254,6 +331,7 @@ def _load_turns(d: Path) -> dict[int, dict[str, schemas.DebateTurn]]:
     return turns
 
 
+@_guarded
 def checkpoint_summarize(ctx: ToolContext, *, ticker: str, market: Market, date: date) -> dict:
     """20_debate_* 를 모아 25_research_summary 를 만든다 (파이썬이 수렴 감시)."""
     d = _dir(ctx, ticker, market, date)
@@ -277,6 +355,7 @@ def checkpoint_summarize(ctx: ToolContext, *, ticker: str, market: Market, date:
 # --- submit-decision --------------------------------------------------------
 
 
+@_guarded
 def submit_decision(
     ctx: ToolContext,
     *,
@@ -298,7 +377,7 @@ def submit_decision(
     if missing:
         return {"ok": False, "error": "전제조건 미충족: " + ", ".join(missing)}
     try:
-        decision = schemas.Decision.model_validate(payload)
+        decision = schemas.Decision.model_validate(_unescape(payload))
     except ValidationError as e:
         msgs = "; ".join(
             f"{'.'.join(str(x) for x in err['loc'])}: {err['msg']}" for err in e.errors()
@@ -335,19 +414,22 @@ def sessions_today(conn: sqlite3.Connection | None, now: datetime) -> int:
         return 0
     start = now.astimezone(_KST).replace(hour=0, minute=0, second=0, microsecond=0)
     row = conn.execute(
-        "SELECT COUNT(*) AS n FROM agent_calls WHERE agent='orchestrator' AND created_at >= ?",
+        "SELECT COUNT(*) AS n FROM agent_calls WHERE agent='orchestrator' "
+        "AND COALESCE(model, '') != 'fake' AND created_at >= ?",
         (start.astimezone(UTC).isoformat(),),
     ).fetchone()
     return int(row["n"])
 
 
 def status(ctx: ToolContext, *, market: Market, date: date) -> dict:
-    base = ctx.state if ctx.state is not None else run_dir(date, market, "_", None).parents[0]
-    market_dir = (base / "runs" / date.isoformat() / market) if ctx.state else base
+    if market not in ("KR", "US"):
+        return {"ok": False, "error": f"market 은 KR 또는 US: {market!r}"}
+    base = ctx.state if ctx.state is not None else paths.state_dir()
+    market_dir = base / "runs" / date.isoformat() / market
     tickers: dict[str, list[str]] = {}
     if market_dir.exists():
         for p in sorted(market_dir.iterdir()):
-            if p.is_dir() and p.name != "_":
+            if p.is_dir():
                 tickers[p.name] = list_checkpoints(p)
     return {
         "ok": True,

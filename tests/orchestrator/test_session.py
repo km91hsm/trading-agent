@@ -206,6 +206,98 @@ def test_daily_cap_blocks(project, conn, accounts, monkeypatch):
         )
 
 
+def test_daily_cap_ignores_fake_sessions(project, conn, accounts, monkeypatch):
+    """개발 중 FAKE 를 아무리 돌려도 실제 세션 상한·비용 집계에 들어가지 않는다 (리뷰 I2)."""
+    _inputs()
+    s = Settings()
+    s.llm.daily_session_cap = 1
+    monkeypatch.setenv("FAKE_CLAUDE", "1")
+    run_session(spec(), s, conn, accounts, agents_dir=REPO_AGENTS, now=lambda: T0)
+    run_session(spec(), s, conn, accounts, agents_dir=REPO_AGENTS, now=lambda: T0)
+    monkeypatch.delenv("FAKE_CLAUDE")
+    res = run_session(
+        spec(),
+        s,
+        conn,
+        accounts,
+        runner=lambda cmd, **kw: _ok_result(),
+        claude_bin=Path("/x/claude"),
+        agents_dir=REPO_AGENTS,
+        now=lambda: T0,
+    )
+    assert res.ok
+    from trader import status as status_mod
+
+    text = status_mod.build_status(conn, s, accounts, project / "docs" / "TODO.md", now=T0)
+    assert "- 1건, $0.42" in text
+
+
+def test_running_row_recorded_before_session_and_duration_measured(
+    project, conn, accounts, monkeypatch
+):
+    """시작 시 running 행을 먼저 쓰고 종료 시 파이썬 측 소요시간으로 갱신한다 (리뷰 I4)."""
+    monkeypatch.delenv("FAKE_CLAUDE", raising=False)
+    _inputs()
+    from datetime import timedelta
+
+    clock = [T0]
+
+    def now():
+        return clock[0]
+
+    def runner(cmd, **kw):
+        row = conn.execute("SELECT status FROM agent_calls").fetchone()
+        assert row["status"] == "running"
+        clock[0] = T0 + timedelta(seconds=250)
+        return _ok_result(duration_ms=6838)
+
+    res = run_session(
+        spec(),
+        Settings(),
+        conn,
+        accounts,
+        runner=runner,
+        claude_bin=Path("/x/claude"),
+        agents_dir=REPO_AGENTS,
+        now=now,
+    )
+    row = conn.execute("SELECT status, duration_ms FROM agent_calls").fetchone()
+    assert row["status"] == "ok" and row["duration_ms"] == 250_000 and res.duration_ms == 250_000
+
+
+def test_stdin_carries_asof(project, conn, accounts, monkeypatch):
+    monkeypatch.delenv("FAKE_CLAUDE", raising=False)
+    _inputs()
+    seen = {}
+
+    def runner(cmd, **kw):
+        seen.update(kw)
+        return _ok_result()
+
+    run_session(
+        spec(asof=T0),
+        Settings(),
+        conn,
+        accounts,
+        runner=runner,
+        claude_bin=Path("/x/claude"),
+        agents_dir=REPO_AGENTS,
+        now=lambda: T0,
+    )
+    assert json.loads(seen["input"])["asof"] == T0.isoformat()
+
+
+def test_anonymize_true_is_rejected_until_wired(project, conn, accounts, monkeypatch):
+    monkeypatch.setenv("FAKE_CLAUDE", "1")
+    _inputs()
+    from trader.config import ConfigError
+
+    with pytest.raises(ConfigError, match="anonymize"):
+        run_session(
+            spec(), Settings(anonymize=True), conn, accounts, agents_dir=REPO_AGENTS, now=lambda: T0
+        )
+
+
 def test_fake_session_writes_all_stages(project, conn, accounts, monkeypatch):
     monkeypatch.setenv("FAKE_CLAUDE", "1")
     d = _inputs()

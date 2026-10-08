@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from trader.agents import fake, registry
-from trader.config import AccountConfig, Settings
+from trader.config import AccountConfig, ConfigError, Settings
 from trader.ledger import db
 from trader.orchestrator import tools
 from trader.platform import claude_bin as claude_bin_mod
@@ -45,6 +45,7 @@ class SessionSpec:
     date: date
     tickers: list[dict[str, Any]]  # [{"ticker": str, "exchange": str | None}]
     dry_run: bool = True
+    asof: datetime | None = None  # tool collect 에 넘길 기준 시각 (없으면 세션 시작 시각)
 
 
 @dataclass
@@ -102,13 +103,14 @@ def build_command(
     ]
 
 
-def _stdin_payload(spec: SessionSpec) -> str:
+def _stdin_payload(spec: SessionSpec, asof: datetime) -> str:
     return json.dumps(
         {
             "market": spec.market,
             "date": spec.date.isoformat(),
             "tickers": spec.tickers,
             "dry_run": spec.dry_run,
+            "asof": asof.isoformat(),
         },
         ensure_ascii=False,
     )
@@ -124,38 +126,53 @@ def _parse_result(stdout: str) -> dict:
     return data
 
 
-def _record(
+def _start_call(
     conn: sqlite3.Connection | None,
     run_id: int | None,
     spec: SessionSpec,
     *,
-    status: str,
-    session_id: str | None,
-    model: str | None,
-    cost: float | None,
-    duration: int | None,
-    error: str | None,
-) -> None:
+    session_id: str,
+    model: str,
+) -> int | None:
+    """세션 시작 시 running 행을 먼저 쓴다 (크래시·동시 실행 때도 상한 집계에 잡히도록)."""
     if conn is None:
-        return
-    conn.execute(
-        "INSERT INTO agent_calls(run_id, ticker, market, agent, model, session_id, cost_usd, "
-        "duration_ms, status, error, created_at) "
-        "VALUES (?, ?, ?, 'orchestrator', ?, ?, ?, ?, ?, ?, ?)",
+        return None
+    cur = conn.execute(
+        "INSERT INTO agent_calls(run_id, ticker, market, agent, model, session_id, status, "
+        "created_at) VALUES (?, ?, ?, 'orchestrator', ?, ?, 'running', ?)",
         (
             run_id,
             ",".join(t["ticker"] for t in spec.tickers),
             spec.market,
             model,
             session_id,
-            cost,
-            duration,
-            status,
-            error,
             db.now_iso(),
         ),
     )
     conn.commit()
+    return int(cur.lastrowid)
+
+
+def _finish_call(
+    conn: sqlite3.Connection | None,
+    call_id: int | None,
+    run_id: int | None,
+    *,
+    status: str,
+    session_id: str | None,
+    cost: float | None,
+    duration_ms: int | None,
+    error: str | None,
+) -> None:
+    if conn is None:
+        return
+    conn.execute(
+        "UPDATE agent_calls SET status=?, session_id=COALESCE(?, session_id), cost_usd=?, "
+        "duration_ms=?, error=? WHERE id=?",
+        (status, session_id, cost, duration_ms, error, call_id),
+    )
+    conn.commit()
+    db.finish_run(conn, run_id, status, error)
 
 
 def run_session(
@@ -172,6 +189,8 @@ def run_session(
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> SessionResult:
     """오케스트레이터 세션 1회. 실패해도 체크포인트는 그대로 남아 재실행 시 이어간다."""
+    if settings.anonymize:
+        raise ConfigError("settings.anonymize=true 는 Phase 6 전까지 지원하지 않습니다")
     bin_override = claude_bin if claude_bin is not None else claude_bin_path
     ctx = tools.ToolContext(settings=settings, accounts=accounts, conn=conn, state=state, now=now)
     if tools.sessions_today(conn, now()) >= settings.llm.daily_session_cap:
@@ -179,8 +198,13 @@ def run_session(
             f"오늘 세션 상한({settings.llm.daily_session_cap})에 도달해 세션을 띄우지 않습니다"
         )
     run_id = db.start_run(conn, "analyze", spec.market) if conn is not None else None
+    started = now()
+
+    def elapsed_ms() -> int:
+        return int((now() - started).total_seconds() * 1000)
 
     if is_fake():
+        call_id = _start_call(conn, run_id, spec, session_id="fake", model=fake.FAKE_MODEL)
         written: list[str] = []
         try:
             for t in spec.tickers:
@@ -191,39 +215,33 @@ def run_session(
                     date=spec.date,
                     debate_rounds=settings.debate_rounds,
                 )
-        except tools.ToolError as e:
-            _record(
+        except (tools.ToolError, ValueError) as e:
+            _finish_call(
                 conn,
+                call_id,
                 run_id,
-                spec,
                 status="error",
                 session_id="fake",
-                model=fake.FAKE_MODEL,
                 cost=0.0,
-                duration=0,
+                duration_ms=elapsed_ms(),
                 error=str(e),
             )
-            if conn is not None:
-                db.finish_run(conn, run_id, "error", str(e))
             return SessionResult(ok=False, session_id="fake", fake=True, error=str(e))
-        _record(
+        _finish_call(
             conn,
+            call_id,
             run_id,
-            spec,
             status="ok",
             session_id="fake",
-            model=fake.FAKE_MODEL,
             cost=0.0,
-            duration=0,
+            duration_ms=elapsed_ms(),
             error=None,
         )
-        if conn is not None:
-            db.finish_run(conn, run_id, "ok")
         return SessionResult(
             ok=True,
             session_id="fake",
             cost_usd=0.0,
-            duration_ms=0,
+            duration_ms=elapsed_ms(),
             fake=True,
             stages_written=written,
         )
@@ -250,11 +268,26 @@ def run_session(
         "PATH": venv_bin + os.pathsep + os.environ.get("PATH", ""),
     }
     model = settings.models.get("orchestrator", "sonnet")
-    started = now()
+    call_id = _start_call(conn, run_id, spec, session_id=session_id, model=model)
+    asof = spec.asof or started
+
+    def fail(err: str) -> SessionResult:
+        _finish_call(
+            conn,
+            call_id,
+            run_id,
+            status="error",
+            session_id=session_id,
+            cost=None,
+            duration_ms=elapsed_ms(),
+            error=err,
+        )
+        return SessionResult(ok=False, session_id=session_id, error=err, duration_ms=elapsed_ms())
+
     try:
         proc = runner(
             cmd,
-            input=_stdin_payload(spec),
+            input=_stdin_payload(spec, asof),
             capture_output=True,
             encoding="utf-8",
             errors="replace",
@@ -264,68 +297,35 @@ def run_session(
             timeout=settings.llm.timeout_s,
         )
     except subprocess.TimeoutExpired:
-        err = f"세션 타임아웃 ({settings.llm.timeout_s}s)"
-        _record(
-            conn,
-            run_id,
-            spec,
-            status="error",
-            session_id=session_id,
-            model=model,
-            cost=None,
-            duration=None,
-            error=err,
-        )
-        if conn is not None:
-            db.finish_run(conn, run_id, "error", err)
-        return SessionResult(ok=False, session_id=session_id, error=err)
-
+        return fail(f"세션 타임아웃 ({settings.llm.timeout_s}s)")
     try:
         data = _parse_result(proc.stdout)
     except PipelineError as e:
-        err = f"{e} (exit={proc.returncode}, stderr={proc.stderr[:200]!r})"
-        _record(
-            conn,
-            run_id,
-            spec,
-            status="error",
-            session_id=session_id,
-            model=model,
-            cost=None,
-            duration=None,
-            error=err,
-        )
-        if conn is not None:
-            db.finish_run(conn, run_id, "error", err)
-        return SessionResult(ok=False, session_id=session_id, error=err)
+        return fail(f"{e} (exit={proc.returncode}, stderr={proc.stderr[:200]!r})")
 
     cost = data.get("total_cost_usd")
-    duration = data.get("duration_ms")
+    duration = elapsed_ms()  # claude 의 duration_ms 는 마지막 턴 기준이라 파이썬 측 측정값을 쓴다
     sid = str(data.get("session_id") or session_id)
     is_error = bool(data.get("is_error")) or proc.returncode != 0
     result_text = str(data.get("result", ""))
     error = result_text[:500] if is_error else None
-    _record(
+    _finish_call(
         conn,
+        call_id,
         run_id,
-        spec,
         status="error" if is_error else "ok",
         session_id=sid,
-        model=model,
         cost=cost,
-        duration=duration,
+        duration_ms=duration,
         error=error,
     )
-    if conn is not None:
-        db.finish_run(conn, run_id, "error" if is_error else "ok", error)
     logger.info(
-        "세션 %s %s: %s cost=%s dur=%sms (started %s)",
+        "세션 %s %s: %s cost=%s dur=%sms",
         spec.market,
         [t["ticker"] for t in spec.tickers],
         "error" if is_error else "ok",
         cost,
         duration,
-        started.isoformat(),
     )
     return SessionResult(
         ok=not is_error,

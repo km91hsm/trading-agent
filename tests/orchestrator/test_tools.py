@@ -81,6 +81,88 @@ def test_checkpoint_write_rejects_invalid(ctx, project):
     assert r["ok"] is False and "알 수 없는" in r["error"]
 
 
+def test_checkpoint_write_rejects_decision_stage(ctx, project):
+    """LLM 이 30_decision 을 직접 써서 submit-decision 전제조건을 우회할 수 없다 (리뷰 C1)."""
+    _inputs(project)
+    r = tools.checkpoint_write(
+        ctx,
+        ticker="005930",
+        market="KR",
+        date=D,
+        stage="30_decision",
+        payload=ok_decision(),
+        agent="trader",
+    )
+    assert r["ok"] is False and "submit-decision" in r["error"]
+    assert read_checkpoint(run_dir(D, "KR", "005930"), "30_decision") is None
+    r = tools.checkpoint_write(
+        ctx,
+        ticker="005930",
+        market="KR",
+        date=D,
+        stage="25_research_summary",
+        payload={},
+        agent="x",
+    )
+    assert r["ok"] is False
+
+
+def test_checkpoint_write_rejects_name_payload_mismatch(ctx, project):
+    _inputs(project)
+    w = lambda stage, payload: tools.checkpoint_write(  # noqa: E731
+        ctx, ticker="005930", market="KR", date=D, stage=stage, payload=payload, agent="a"
+    )
+    assert w("10_analyst_technical", ok_report(role="sentiment"))["ok"] is False
+    assert w("10_analyst_technical", ok_report(ticker="000660"))["ok"] is False
+    assert w("10_analyst_bogus", ok_report(role="technical"))["ok"] is False
+    assert w("20_debate_r0_bull", ok_turn("bear"))["ok"] is False
+    assert w("20_debate_r1_bull", ok_turn("bull", round=0))["ok"] is False
+    assert w("20_debate_r2_bull", ok_turn("bull", round=2))["ok"] is False  # debate_rounds=1
+    assert w("20_debate_r1_bull", ok_turn("bull", round=1))["ok"] is True
+    assert list(run_dir(D, "KR", "005930").glob("10_analyst_*")) == []
+
+
+def test_tools_reject_path_traversal(ctx, project):
+    """ticker·market·stage 가 경로로 쓰이므로 state/ 밖·토큰 캐시를 가리킬 수 없다 (리뷰 C2)."""
+    _inputs(project)
+    (project / "state" / "kis_token_real.json").write_text(
+        '{"access_token": "SECRET"}', encoding="utf-8"
+    )
+    r = tools.checkpoint_read(
+        ctx, ticker="005930", market="KR", date=D, stage="../../../../kis_token_real"
+    )
+    assert r["ok"] is False and "SECRET" not in json.dumps(r)
+    assert tools.checkpoint_list(ctx, ticker="../../..", market="KR", date=D)["ok"] is False
+    assert tools.checkpoint_list(ctx, ticker="005930", market="../etc", date=D)["ok"] is False
+    assert tools.checkpoint_list(ctx, ticker="005930", market="XX", date=D)["ok"] is False
+    assert not (project / "state" / "etc").exists()
+    assert tools.checkpoint_list(ctx, ticker="BRK.B", market="US", date=D)["ok"] is True
+
+
+def test_checkpoint_write_unescapes_html_entities(ctx, project):
+    """Claude Code 가 서브에이전트 출력을 이스케이프하므로 &lt; 등을 되돌려 저장한다 (리뷰 I7)."""
+    _inputs(project)
+    tools.checkpoint_write(
+        ctx,
+        ticker="005930",
+        market="KR",
+        date=D,
+        stage="10_analyst_technical",
+        payload=ok_report(bullets=["종가 &lt; SMA20 &amp; MACD&gt;0"]),
+        agent="a",
+    )
+    saved = read_checkpoint(run_dir(D, "KR", "005930"), "10_analyst_technical")
+    assert saved["data"]["bullets"] == ["종가 < SMA20 & MACD>0"]
+
+
+def test_status_does_not_create_placeholder_dir(ctx, project):
+    _inputs(project)
+    tools.status(ctx, market="KR", date=D)
+    assert not (project / "state" / "runs" / "2026-10-09" / "KR" / "_").exists()
+    r = tools.status(ctx, market="US", date=D)
+    assert r["ok"] and r["tickers"] == {}
+
+
 def test_checkpoint_read_section(ctx, project):
     _inputs(project)
     r = tools.checkpoint_read(

@@ -55,7 +55,7 @@ def _today_calls(conn: sqlite3.Connection, now: datetime) -> tuple[int, float]:
     start = start_kst.astimezone(UTC).isoformat()
     row = conn.execute(
         "SELECT COUNT(*) AS n, COALESCE(SUM(cost_usd), 0) AS c FROM agent_calls "
-        "WHERE created_at >= ?",
+        "WHERE created_at >= ? AND COALESCE(model, '') != 'fake'",
         (start,),
     ).fetchone()
     return int(row["n"]), float(row["c"])

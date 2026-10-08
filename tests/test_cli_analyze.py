@@ -122,4 +122,4 @@ def test_status_shows_last_decisions(quiet_project, monkeypatch):
     assert r.exit_code == 0
     text = (quiet_project / "state" / "STATUS.md").read_text(encoding="utf-8")
     assert "## 최근 결정" in text and "005930" in text and "HOLD" in text
-    assert "오늘 LLM 호출" in text and "1건" in text
+    assert "오늘 LLM 호출" in text and "0건" in text  # FAKE 세션은 집계 제외

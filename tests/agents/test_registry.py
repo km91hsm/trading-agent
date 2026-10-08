@@ -61,8 +61,11 @@ def test_orchestrator_prompt_has_procedure():
         "debate_rounds=1",
         "그대로 붙여",  # 도구 JSON 출력을 서브에이전트 프롬프트에 전문 그대로 넣는다 (실기 반영)
         "요약하거나 생략하지",
+        "요약·발췌하지 않는다",  # 리서처·트레이더 입력도 전문 (리뷰 I1)
+        "--asof",
     ):
         assert token in p, token
+    assert "anonymize=" not in p
 
 
 def test_missing_agent_config_error(tmp_path):

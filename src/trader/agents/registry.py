@@ -96,7 +96,6 @@ def orchestrator_prompt(settings: Settings, base: Path | None = None) -> str:
     runtime = (
         "\n# 런타임 설정\n"
         f"- debate_rounds={settings.debate_rounds} (라운드 0 독립 의견 뒤 반박 라운드 수)\n"
-        f"- anonymize={str(settings.anonymize).lower()}\n"
         "- 체크포인트 이름: 10_analyst_<technical|fundamental|news_macro|sentiment>, "
         "20_debate_r<n>_<bull|bear>, 25_research_summary(파이썬 생성), 30_decision\n"
         "- AnalystReport 스키마: " + schemas.json_schema(schemas.AnalystReport) + "\n"

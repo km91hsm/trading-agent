@@ -18,6 +18,7 @@ from trader.logging_setup import configure
 from trader.notify.telegram import make_notifier
 from trader.orchestrator.session import run_session
 from trader.platform import paths
+from trader.platform.claude_bin import ClaudeNotFound
 from trader.sources.inputs import InputDeps, collect_and_save
 
 app = typer.Typer(help="LLM 멀티 에이전트 주식 자동매매", no_args_is_help=True)
@@ -347,6 +348,7 @@ def analyze(
                     date=day,
                     tickers=[{"ticker": ticker, "exchange": exchange}],
                     dry_run=True,
+                    asof=when,
                 ),
                 settings,
                 conn,
@@ -354,7 +356,13 @@ def analyze(
             )
         finally:
             conn.close()
-    except (config.ConfigError, paths.ProjectRootNotFound, PipelineError, ValueError) as e:
+    except (
+        config.ConfigError,
+        paths.ProjectRootNotFound,
+        PipelineError,
+        ValueError,
+        ClaudeNotFound,
+    ) as e:
         typer.echo(f"오류: {e}", err=True)
         raise typer.Exit(code=1) from e
     if not res.ok:
