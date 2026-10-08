@@ -29,6 +29,26 @@ _TR: dict[str, tuple[str, str, str | None]] = {
         "FHKST03010100",
         "FHKST03010100",
     ),
+    "DOM_MINUTE": (
+        "/uapi/domestic-stock/v1/quotations/inquire-time-itemchartprice",
+        "FHKST03010200",
+        "FHKST03010200",
+    ),
+    "DOM_ORDERBOOK": (
+        "/uapi/domestic-stock/v1/quotations/inquire-asking-price-exp-ccn",
+        "FHKST01010200",
+        "FHKST01010200",
+    ),
+    "DOM_INVESTOR": (
+        "/uapi/domestic-stock/v1/quotations/inquire-investor",
+        "FHKST01010900",
+        "FHKST01010900",
+    ),
+    "DOM_INDEX": (
+        "/uapi/domestic-stock/v1/quotations/inquire-index-price",
+        "FHPUP02100000",
+        "FHPUP02100000",
+    ),
     "HOLIDAY": ("/uapi/domestic-stock/v1/quotations/chk-holiday", "CTCA0903R", None),
     # 국내 계좌
     "DOM_BALANCE": ("/uapi/domestic-stock/v1/trading/inquire-balance", "TTTC8434R", "VTTC8434R"),
@@ -45,6 +65,16 @@ _TR: dict[str, tuple[str, str, str | None]] = {
         "/uapi/overseas-price/v1/quotations/dailyprice",
         "HHDFS76240000",
         "HHDFS76240000",
+    ),
+    "OVS_MINUTE": (
+        "/uapi/overseas-price/v1/quotations/inquire-time-itemchartprice",
+        "HHDFS76950200",
+        "HHDFS76950200",
+    ),
+    "OVS_ORDERBOOK": (
+        "/uapi/overseas-price/v1/quotations/inquire-asking-price",
+        "HHDFS76200100",
+        "HHDFS76200100",
     ),
     # 해외 계좌
     "OVS_BALANCE": ("/uapi/overseas-stock/v1/trading/inquire-balance", "TTTS3012R", "VTTS3012R"),
