@@ -1,0 +1,115 @@
+"""KIS HTTP 클라이언트: 공통 헤더, 레이트리밋(토큰 버킷), 오류 통일, EGW00201 재시도."""
+
+from __future__ import annotations
+
+import logging
+import threading
+import time
+from collections import deque
+from collections.abc import Callable
+from typing import Any
+
+import httpx
+
+from trader.broker.errors import KisApiError
+from trader.broker.kis_auth import KisAuth
+from trader.broker.tr_ids import BASE_URL, tr_id
+from trader.config import Env
+
+logger = logging.getLogger("trader.kis")
+
+RATE_PER_SEC: dict[Env, int] = {"real": 20, "paper": 2}
+RETRY_CODE = "EGW00201"
+RETRY_WAIT_S = 0.5
+
+
+class RateLimiter:
+    """1초 슬라이딩 윈도 안의 호출 수를 rate_per_s 이하로 제한한다."""
+
+    def __init__(
+        self,
+        rate_per_s: int,
+        *,
+        clock: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> None:
+        self._rate = rate_per_s
+        self._clock = clock
+        self._sleep = sleep
+        self._calls: deque[float] = deque()
+        self._lock = threading.Lock()
+
+    def acquire(self) -> None:
+        with self._lock:
+            while True:
+                now = self._clock()
+                while self._calls and now - self._calls[0] >= 1.0:
+                    self._calls.popleft()
+                if len(self._calls) < self._rate:
+                    self._calls.append(now)
+                    return
+                self._sleep(max(1.0 - (now - self._calls[0]), 0.001))
+
+
+class KisClient:
+    def __init__(
+        self,
+        env: Env,
+        auth: KisAuth,
+        *,
+        http: httpx.Client | None = None,
+        limiter: RateLimiter | None = None,
+    ) -> None:
+        if auth.env != env:
+            raise ValueError(f"인증 env({auth.env})와 클라이언트 env({env})가 다릅니다")
+        self.env = env
+        self._auth = auth
+        self._http = http or httpx.Client(timeout=10)
+        self._limiter = limiter or RateLimiter(RATE_PER_SEC[env])
+        self._sleep: Callable[[float], None] = time.sleep
+
+    @property
+    def base_url(self) -> str:
+        return BASE_URL[self.env]
+
+    def _headers(self, tr: str) -> dict[str, str]:
+        return {
+            "content-type": "application/json; charset=utf-8",
+            **self._auth.headers(),
+            "tr_id": tr,
+            "custtype": "P",
+        }
+
+    def _request(self, method: str, path: str, tr_name: str, **kw: Any) -> dict:
+        tr = tr_id(tr_name, self.env)
+        for attempt in (1, 2):
+            self._limiter.acquire()
+            try:
+                resp = self._http.request(
+                    method, self.base_url + path, headers=self._headers(tr), **kw
+                )
+            except httpx.HTTPError as e:
+                raise KisApiError("NETWORK", f"요청 실패: {type(e).__name__}", tr) from None
+            if resp.status_code != 200:
+                raise KisApiError(f"HTTP{resp.status_code}", resp.text[:200], tr)
+            try:
+                data = resp.json()
+            except ValueError:
+                raise KisApiError("INVALID_JSON", "응답이 JSON 이 아닙니다", tr) from None
+            if not isinstance(data, dict):
+                raise KisApiError("INVALID_JSON", "응답이 객체가 아닙니다", tr)
+            if str(data.get("rt_cd", "0")) != "0":
+                code = str(data.get("msg_cd", "UNKNOWN"))
+                if code == RETRY_CODE and attempt == 1:
+                    logger.warning("KIS 초당 한도 초과(%s), %.1f초 후 재시도", tr, RETRY_WAIT_S)
+                    self._sleep(RETRY_WAIT_S)
+                    continue
+                raise KisApiError(code, str(data.get("msg1", "")).strip(), tr)
+            return data
+        raise KisApiError(RETRY_CODE, "재시도 후에도 초당 한도 초과", tr)
+
+    def get(self, path: str, tr_name: str, params: dict[str, Any]) -> dict:
+        return self._request("GET", path, tr_name, params=params)
+
+    def post(self, path: str, tr_name: str, body: dict[str, Any]) -> dict:
+        return self._request("POST", path, tr_name, json=body)
