@@ -1,0 +1,22 @@
+{
+  "lastBuildDate": "Fri, 09 Oct 2026 15:00:00 +0900",
+  "total": 2,
+  "start": 1,
+  "display": 2,
+  "items": [
+    {
+      "title": "&lt;b&gt;삼성전자&lt;/b&gt; 반도체 투자 확대",
+      "originallink": "https://www.example.com/n1",
+      "link": "https://n.news.naver.com/mnews/article/001/0001",
+      "description": "<b>삼성전자</b>가 반도체 투자를 확대한다고 밝혔다.",
+      "pubDate": "Fri, 09 Oct 2026 10:00:00 +0900"
+    },
+    {
+      "title": "삼성전자 노조 협상",
+      "originallink": "https://www.example.com/n2",
+      "link": "https://n.news.naver.com/mnews/article/001/0002",
+      "description": "협상 진행",
+      "pubDate": "Thu, 08 Oct 2026 18:30:00 +0900"
+    }
+  ]
+}
