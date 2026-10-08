@@ -87,6 +87,101 @@ def trader_context(ctx: ToolContext, inputs: dict, market: Market) -> dict:
     }
 
 
+# 서브에이전트에 넘기는 절은 Claude Code 의 Bash 출력 한도(약 30KB, 초과 시 파일로 치환돼
+# LLM 이 못 본다)보다 훨씬 작아야 한다 (실기 확인).
+# 지표가 250봉을 요약하므로 원시 봉은 최근 것만 준다.
+COMPACT_LIMITS = {
+    "daily": 30,
+    "minute": 20,
+    "orderbook_levels": 5,
+    "news_stock": 15,
+    "news_macro": 8,
+    "news_summary_chars": 120,
+    "posts": 20,
+    "post_body_chars": 200,
+    "post_title_chars": 100,
+}
+
+
+def _section_data(sec: Any) -> Any:
+    return sec.get("data") if isinstance(sec, dict) else None
+
+
+def _with_note(sec: dict, data: Any, note: str) -> dict:
+    return {**sec, "data": data, "note": note}
+
+
+def _trim_news(items: list | None, n: int, chars: int) -> list:
+    out = []
+    for it in (items or [])[:n]:
+        if not isinstance(it, dict):
+            continue
+        row = {k: v for k, v in it.items() if k != "url"}
+        if isinstance(row.get("summary"), str):
+            row["summary"] = row["summary"][:chars]
+        out.append(row)
+    return out
+
+
+def _compact_section(section: str, body: dict) -> dict:
+    """역할별 절을 압축한다. 원본 체크포인트 파일은 바꾸지 않는다."""
+    lim = COMPACT_LIMITS
+    out = dict(body)
+    if section == "technical":
+        daily = _section_data(body.get("daily"))
+        if isinstance(daily, list) and len(daily) > lim["daily"]:
+            out["daily"] = _with_note(
+                body["daily"],
+                daily[-lim["daily"] :],
+                f"최근 {lim['daily']}봉만 (전체 {len(daily)}봉은 indicators 에 반영됨)",
+            )
+        minute = _section_data(body.get("minute"))
+        if isinstance(minute, list) and len(minute) > lim["minute"]:
+            out["minute"] = _with_note(
+                body["minute"], minute[-lim["minute"] :], f"최근 {lim['minute']}분봉만"
+            )
+        ob = _section_data(body.get("orderbook"))
+        if isinstance(ob, dict):
+            n = lim["orderbook_levels"]
+            out["orderbook"] = _with_note(
+                body["orderbook"],
+                {**ob, "asks": (ob.get("asks") or [])[:n], "bids": (ob.get("bids") or [])[:n]},
+                f"상위 {n}호가만",
+            )
+    elif section == "news_macro":
+        news = _section_data(body.get("news"))
+        if isinstance(news, dict):
+            out["news"] = _with_note(
+                body["news"],
+                {
+                    **news,
+                    "stock": _trim_news(
+                        news.get("stock"), lim["news_stock"], lim["news_summary_chars"]
+                    ),
+                    "macro": _trim_news(
+                        news.get("macro"), lim["news_macro"], lim["news_summary_chars"]
+                    ),
+                },
+                f"종목 {lim['news_stock']}건·거시 {lim['news_macro']}건, "
+                f"요약 {lim['news_summary_chars']}자",
+            )
+    elif section == "sentiment":
+        comm = _section_data(body.get("community"))
+        if isinstance(comm, dict):
+            posts = []
+            for p in (comm.get("posts") or [])[: lim["posts"]]:
+                if not isinstance(p, dict):
+                    continue
+                row = {k: v for k, v in p.items() if k != "url"}
+                row["title"] = str(row.get("title", ""))[: lim["post_title_chars"]]
+                row["body"] = str(row.get("body", ""))[: lim["post_body_chars"]]
+                posts.append(row)
+            out["community"] = _with_note(
+                body["community"], {**comm, "posts": posts}, f"최근 {lim['posts']}건만"
+            )
+    return out
+
+
 def checkpoint_read(
     ctx: ToolContext,
     *,
@@ -96,6 +191,7 @@ def checkpoint_read(
     stage: str,
     section: str | None = None,
 ) -> dict:
+    """절(section)을 지정하면 서브에이전트용으로 압축해 돌려준다. 전체 읽기는 파일 그대로."""
     data = read_checkpoint(_dir(ctx, ticker, market, date), stage)
     if data is None:
         return {"ok": False, "error": f"체크포인트 없음: {stage}"}
@@ -106,11 +202,13 @@ def checkpoint_read(
     body = data.get("data", data) if stage != "00_inputs" else data
     if section not in body:
         return {"ok": False, "error": f"절 없음: {section}"}
-    out = {section: body[section]} if stage != "00_inputs" else body[section]
-    if stage == "00_inputs":
+    if stage != "00_inputs":
+        return {"ok": True, "data": {section: body[section]}}
+    out = body[section]
+    if isinstance(out, dict):
+        out = _compact_section(section, out)
         errors = [e for e in data.get("errors", []) if e.startswith(section + ".")]
-        if isinstance(out, dict):
-            out = {**out, "input_errors": errors, "meta": data.get("meta")}
+        out = {**out, "input_errors": errors, "meta": data.get("meta")}
     return {"ok": True, "data": out}
 
 

@@ -59,6 +59,8 @@ def test_orchestrator_prompt_has_procedure():
         "10_analyst_",
         "20_debate_r0_bull",
         "debate_rounds=1",
+        "그대로 붙여",  # 도구 JSON 출력을 서브에이전트 프롬프트에 전문 그대로 넣는다 (실기 반영)
+        "요약하거나 생략하지",
     ):
         assert token in p, token
 

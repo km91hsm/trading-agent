@@ -96,6 +96,115 @@ def test_checkpoint_read_section(ctx, project):
     assert r["data"]["risk_limits"]["max_position_pct"] == 0.25
 
 
+def _big_inputs(project, ticker="005930", market="KR"):
+    """실기 크기의 00_inputs: 일봉 260·분봉 120·호가 10단·뉴스 20+10·커뮤니티 50."""
+    d = run_dir(D, market, ticker)
+    candle = {
+        "date": "2026-10-08",
+        "open": "1",
+        "high": "2",
+        "low": "1",
+        "close": "1.5",
+        "volume": 1000,
+        "time": None,
+    }
+    news = [
+        {
+            "title": "제목 " * 10,
+            "summary": "요약 " * 100,
+            "source": "s",
+            "published_at": "2026-10-08T00:00:00+00:00",
+            "url": f"https://x/{i}",
+            "received_at": "",
+        }
+        for i in range(20)
+    ]
+    posts = [
+        {
+            "title": "글 " * 20,
+            "body": "본문 " * 200,
+            "author": "a",
+            "posted_at": "2026-10-08T00:00:00+00:00",
+            "url": f"https://c/{i}",
+            "received_at": "",
+            "source": "clien",
+        }
+        for i in range(50)
+    ]
+    sec = lambda data: {"data": data, "received_at": "", "error": None}  # noqa: E731
+    run_store.write_checkpoint(
+        d,
+        "00_inputs",
+        {
+            "meta": {
+                "ticker": ticker,
+                "market": market,
+                "name": "삼성전자",
+                "asof": T0.isoformat(),
+            },
+            "technical": {
+                "quote": sec({"price": "71500"}),
+                "daily": sec([candle] * 260),
+                "minute": sec([{**candle, "time": "153000"}] * 120),
+                "orderbook": sec({"asks": [["1", 1]] * 10, "bids": [["1", 1]] * 10}),
+                "indicators": sec({"sma_5": 1.0}),
+            },
+            "fundamental": {"ratios": sec({"ROE": 0.1})},
+            "news_macro": {
+                "news": sec({"stock": news, "macro": news[:10], "sources": {"google_rss": "ok"}}),
+                "macro": {"vix": sec({"value": 15.0, "date": "2026-10-08"})},
+            },
+            "sentiment": {
+                "investor_flow": sec(
+                    [
+                        {
+                            "date": "2026-10-08",
+                            "foreign_net": 1,
+                            "institution_net": 1,
+                            "individual_net": 1,
+                        }
+                    ]
+                    * 20
+                ),
+                "community": sec({"posts": posts, "sources": {"clien": "ok"}}),
+            },
+            "errors": [],
+        },
+    )
+
+
+def test_checkpoint_read_section_is_compact(ctx, project):
+    """서브에이전트에 넘길 절은 Claude Code Bash 출력 한도(약 30KB)보다 훨씬 작아야 한다."""
+    _big_inputs(project)
+    for section in ("technical", "fundamental", "news_macro", "sentiment"):
+        r = tools.checkpoint_read(
+            ctx, ticker="005930", market="KR", date=D, stage="00_inputs", section=section
+        )
+        assert r["ok"], section
+        assert len(json.dumps(r["data"], ensure_ascii=False)) < 12_000, section
+    t = tools.checkpoint_read(
+        ctx, ticker="005930", market="KR", date=D, stage="00_inputs", section="technical"
+    )["data"]
+    assert len(t["daily"]["data"]) == 30 and len(t["minute"]["data"]) == 20
+    assert len(t["orderbook"]["data"]["asks"]) == 5 and t["indicators"]["data"]["sma_5"] == 1.0
+    assert t["daily"]["note"].startswith("최근 30")
+    n = tools.checkpoint_read(
+        ctx, ticker="005930", market="KR", date=D, stage="00_inputs", section="news_macro"
+    )["data"]
+    assert len(n["news"]["data"]["stock"]) == 15 and len(n["news"]["data"]["macro"]) == 8
+    assert all(len(i["summary"]) <= 120 and "url" not in i for i in n["news"]["data"]["stock"])
+    s = tools.checkpoint_read(
+        ctx, ticker="005930", market="KR", date=D, stage="00_inputs", section="sentiment"
+    )["data"]
+    assert len(s["community"]["data"]["posts"]) == 20
+    assert all(len(p["body"]) <= 200 for p in s["community"]["data"]["posts"])
+    # 절 없이 전체를 읽으면 압축하지 않는다 (파일 내용 그대로)
+    full = tools.checkpoint_read(ctx, ticker="005930", market="KR", date=D, stage="00_inputs")[
+        "data"
+    ]
+    assert len(full["technical"]["daily"]["data"]) == 260
+
+
 def test_submit_requires_reports_and_summary(ctx, project):
     _inputs(project)
     r = tools.submit_decision(ctx, ticker="005930", market="KR", date=D, payload=ok_decision())

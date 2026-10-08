@@ -5,7 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 # 프로젝트: LLM 멀티 에이전트 + ML 주식 자동매매 (KIS)
 
 ## 목적
-한국투자증권(KIS) Open API 로 모의·실전 계좌를 운용하는 주식 자동매매 시스템. Claude Code 오케스트레이터 세션(`claude -p`)이 서브에이전트(screener, 애널리스트 4, 리서처 2, 트레이더, reflector)를 소집해 분석하고, **파이썬 CLI 도구만 통해** 수집·체크포인트·결정 제출을 한다. 리스크 한도와 주문 실행은 LLM 이 아니라 파이썬이 강제한다. macOS 개발·운영, Windows 동일 실행 보장. 목표는 모의 4주 이상 무사고 + 벤치마크 우위 확인 후 사용자가 실전 전환.
+한국투자증권(KIS) Open API 로 모의·실전 계좌를 운용하는 주식 자동매매 시스템. Claude Code 오케스트레이터 세션(`claude -p`)이 서브에이전트(screener, 애널리스트 4, 리서처 2, 트레이더, reflector)를 소집해 분석하고, **파이썬 CLI 도구만 통해** 수집·체크포인트·결정 제출을 한다. 리스크 한도와 주문 실행은 LLM 이 아니라 파이썬이 강제한다. macOS 개발·운영, Windows 동일 실행 보장. 목표는 모의 4주 이상 무사고 + 벤치마크 우위 확인 후 사용자가 실전 전환. 현재 Phase 0~3(골격·브로커·수집·에이전트)까지 구현됐고 Phase 4(리스크·계좌별 실행)부터 미구현이다.
 
 ## 세션 시작 시 상태 확인
 - `state/STATUS.md` 는 SessionStart 훅(`.claude/hooks/session_start.py`)이 세션 시작·`/clear`·compact 때 자동 주입한다 (STATUS.md + `docs/TODO.md` 미완료 상위 항목).
@@ -26,13 +26,18 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `uv run trader notify-test` : 텔레그램 알림 테스트 (미설정이면 NullNotifier 로 성공)
 - `uv run trader collect --ticker 005930 [--market US --exchange NAS] [--asof ISO] [--force]` : `00_inputs.json` 생성. 절 일부 실패는 정상(exit 0, "오류 절 N건"), 설정·인자 오류만 exit 1
 - `uv run trader features backfill [--years 3] [--market KR|US]` / `features snapshot [--market] [--asof ISO]` : 피처 스토어 적재 (실전 20/s 로 20종목 수 분)
+- `uv run trader analyze --ticker 005930 [--market US --exchange NAS] [--asof ISO] [--dry-run] [--skip-collect]` : 오케스트레이터 세션 1회 → `30_decision.json`. `FAKE_CLAUDE=1` 이면 claude 없이 고정 응답. 실제 실행은 구독 호출을 쓰므로 `.claude/settings.json` 허용 목록에 넣지 않는다
+- `uv run trader tool …` : 오케스트레이터 세션 전용(사람이 직접 쓰지 않음)
 - `uv run trader --help` : 등록된 명령 확인
 - 브랜치는 Phase 단위 `feat/phase<N>-<이름>` 을 직전 Phase 브랜치 위에 쌓고, PR 도 직전 Phase 브랜치를 대상으로 연다 (Phase 0 은 `main`). `.gitattributes` 가 LF 를 강제한다.
 
 ## 아키텍처 핵심 규칙 (여러 파일에 걸친 계약)
-- **LLM 은 도구만 쓴다.** 오케스트레이터 세션은 `--tools "Bash,Agent"` + `--allowedTools "Bash(python -m trader tool *)"` 로 띄우고, 외부 세계와는 `python -m trader tool <collect|checkpoint|submit-decision|status>` 로만 접촉한다. 주문은 `submit-decision` 안의 리스크 게이트를 통과한 수량만 나간다.
-- **순서는 프롬프트가 아니라 도구 전제조건이 강제한다.** `submit-decision` 은 해당 종목의 `10_analyst_*` 체크포인트 2개 이상과 `25_research_summary` 가 파일로 있을 때만 받는다.
-- **체크포인트가 상태의 원본이다.** `state/runs/<날짜>/<시장>/<종목>/<단계>.json` 에 `{schema_version, data, call}` 로 저장하고, 존재하는 단계는 건너뛴다. 읽기·쓰기는 `orchestrator/run_store` 의 함수로만 한다.
+- **LLM 은 도구만 쓴다.** 오케스트레이터 세션(`orchestrator/session.py`)은 `claude -p --output-format json --tools "Bash,Agent" --allowedTools "Bash(python -m trader tool *)" --permission-mode dontAsk --setting-sources "" --disable-slash-commands --agents <json> --append-system-prompt <orchestrator.md> --session-id <uuid> --max-budget-usd` 로 띄운다. 외부 세계와는 `python -m trader tool <status|collect|checkpoint list/read/write/summarize|submit-decision>` 로만 접촉하고, `tool` 명령은 stdout 에 JSON 한 줄만 쓴다(오류도 `{"ok": false}` + exit 1). 주문은 `submit-decision` 안의 리스크 게이트(Phase 4)를 통과한 수량만 나간다.
+- **서브에이전트 정의는 `.claude/agents/*.md`** (프런트매터 `name, description, model, tools`) 이고 `agents/registry.py` 가 읽어 `--agents` JSON 으로 넘긴다(`--setting-sources ""` 가 프로젝트 설정을 끊기 때문). 모델은 `settings.models` 가 우선(`analyst-*` → `analyst`). 공통 규칙 6문장은 md 8개가 같은 문장으로 담고 테스트가 확인한다. md 안의 스키마는 설명용 사본이고 정본은 `agents/schemas.py` 에서 런타임에 생성해 프롬프트에 덧붙인다.
+- **순서는 프롬프트가 아니라 도구 전제조건이 강제한다.** `submit-decision` 은 해당 종목의 `10_analyst_*` 체크포인트 2개 이상과 `25_research_summary` 가 파일로 있을 때만 받고, `checkpoint write` 는 pydantic 스키마(`schemas.schema_for(stage)`)를 통과한 JSON 만 저장한다. 토론 턴을 새로 쓰면 `25_research_summary` 를 다시 만든다.
+- **체크포인트가 상태의 원본이다.** `state/runs/<날짜>/<시장>/<종목>/<단계>.json` 에 `{schema_version, data, call}` 로 저장하고, 존재하는 단계는 건너뛴다. 단계 이름: `00_inputs, 10_analyst_<role>, 20_debate_r<n>_<side>, 25_research_summary, 30_decision, 40_risk_check_<account>`(Phase 3 는 `approved: null, reason: phase4` 자리). 읽기·쓰기는 `orchestrator/run_store` 의 함수로만 한다.
+- **수렴 감시**(`orchestrator/summary.py`): 부호 있는 확신 `conviction × {BULLISH:+1, NEUTRAL:0, BEARISH:-1}` 의 양측 차이가 라운드 0 에서 0.2 초과였다가 최종에서 0.2 이하로 붕괴하면 `sycophantic: true, preferred: round0`. 트레이더 md 가 이를 읽어 라운드 0 을 우선한다.
+- **세션·비용**: 세션 1회 = `agent_calls` 1행(`agent='orchestrator'`) + `runs` 1행. `settings.llm.daily_session_cap` 초과 시 `PipelineError`. 세션 cwd 는 빈 `state/claude_cwd/`, env 에 `CLAUDE_CODE_RETRY_WATCHDOG=1`·`TRADER_HOME`·venv bin 을 앞세운 `PATH`. `FAKE_CLAUDE=1` 이면 `agents/fake.py` 가 같은 도구 함수를 파이썬으로 호출해 고정 JSON 체크포인트를 쓴다(claude 미설치 환경·테스트).
 - **계좌 모드.** yaml 값이 기본, SQLite `control` 테이블 값이 우선. 모의는 `auto` 고정, 실전은 `off` 로 시작하며 `auto` 전환은 확인 문자열 없이는 거부된다. 결정은 종목당 1회, 리스크 판정·주문은 계좌마다.
 - **시세·수급은 실전 env 클라이언트만, 주문·잔고는 계좌의 env.** 모의 서버는 시세류를 주지 않는다. `broker/tr_ids.py` 가 tr_id·경로의 유일한 출처이고(공식 `open-trading-api` 예제에서 확인한 값), 모의 미지원 API 는 paper 값이 None 이다. 브로커 계층은 세 겹: `KisAuth(env)` → `KisClient(env, auth)` → `KisMarket(client)`(실전만) / `KisBroker(account, client)`(env 일치 요구). CLI 는 `_build_market/_build_brokers` 로 조립하고 테스트는 이를 monkeypatch 한다.
 - **KIS 실패는 전부 `KisApiError(msg_cd, msg1, tr_id)`.** KIS 응답이 아닌 실패는 합성 코드 `AUTH/NETWORK/HTTP<status>/INVALID_JSON/UNSUPPORTED`. 토큰은 `state/kis_token_<env>.json` 캐시(만료 1시간 전 갱신, 실패 후 60초 재발급 금지). `EGW00201`(초당 한도)은 HTTP 200 뿐 아니라 **HTTP 500 본문**으로도 오므로 상태코드와 무관하게 0.5초 뒤 1회 재시도. 모의 서버는 2/s 라 한 점검에서 같은 API 를 두 번 부르지 않는다. US 예수금은 `inquire-present-balance`(통화별 행) 로 읽는다. `inquire-psamount` 는 종목코드 필수라 현금 조회에 못 쓴다(실기 확인). 일봉·수급 목록은 **항상 날짜 오름차순**(마지막이 최신). 금액은 `Decimal`. `OrderRequest.exchange` 는 기본값이 없어 KR 도 `None` 을 명시한다.
@@ -49,6 +54,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - 실전 주문을 수동으로 실행하지 않는다 (`.claude/settings.json` 이 `python -m trader kis order *` 를 거부한다).
 - `secrets/` 를 커밋하지 않는다. 읽지도 않는다 (settings.json 의 deny 규칙. Bash 로 읽는 명령도 거부되므로 다른 명령과 묶지 않는다). `config/accounts.yaml` 에는 실제 계좌번호가 있으므로 값을 출력·인용하지 않는다.
 - 계좌 모드(control 테이블)를 임의로 변경하지 않는다.
+- `uv run trader analyze` 를 `FAKE_CLAUDE=1` 없이 돌리면 구독 호출이 발생한다. 사용자 요청 없이 실제 세션을 띄우지 않는다.
 - 셸 스크립트(.sh/.bat/.ps1)를 추가하지 않는다. 훅·설치·유틸은 전부 파이썬.
 - `state/` 파일을 직접 편집하지 않는다 (STATUS.md 는 `uv run trader status` 로만 갱신).
 - 커뮤니티·뉴스 수집기의 기본 on/off 는 스펙 §0.3 정책을 따른다. 사용자 결정 없이 off 소스를 켜지 않는다.
