@@ -1,0 +1,11 @@
+# 루프 실행 시각 (KST). 로더는 Phase 6 daemon 에서 추가한다.
+kr:
+  scan: "07:30"
+  analyze: "07:40"
+  monitor: {start: "09:00", end: "15:30", interval_s: 60}
+us:
+  scan: "21:30"
+  analyze: "21:40"
+  monitor: {start: "23:30", end: "06:00", interval_s: 60}
+reflect: "16:30"
+ml_train: {weekday: "sat", time: "10:00"}

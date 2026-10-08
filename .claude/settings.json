@@ -24,8 +24,8 @@
       "Bash(uv run trader --help)"
     ],
     "deny": [
-      "Read(./secrets/**)",
-      "Bash(cat secrets/*)",
+      "Read(./secrets/.env)",
+      "Bash(cat secrets/.env)",
       "Bash(python -m trader kis order *)",
       "Bash(uv run trader kis order *)"
     ]
