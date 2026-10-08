@@ -137,7 +137,12 @@ def write_rows(df: pd.DataFrame, state: Path | None = None) -> list[Path]:
 
 
 def _ratios_by_year_kr(dart: Any, ticker: str, years: list[int]) -> dict[int, dict]:
-    code = dart.corp_code(ticker)
+    """연도별 비율. DART 조회 실패는 빈 dict (가격 지표 행은 그대로 저장한다)."""
+    try:
+        code = dart.corp_code(ticker)
+    except Exception as e:  # noqa: BLE001 - DART 점검·한도 초과 등
+        logger.warning("DART 고유번호 조회 실패 %s: %s", ticker, type(e).__name__)
+        return {}
     if not code:
         return {}
     out: dict[int, dict] = {}

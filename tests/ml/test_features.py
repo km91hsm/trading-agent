@@ -117,6 +117,26 @@ def test_backfill_continues_on_failure(project):
     assert got[got["ticker"] == "AAPL"]["roe"].isna().all()  # US 비율은 Phase 7
 
 
+def test_backfill_continues_when_dart_lookup_fails(project):
+    """실기 확인: DART 점검(status 800)으로 고유번호 조회가 실패해도 가격 지표 행은 저장한다."""
+
+    class BrokenDart(FakeDart):
+        def corp_code(self, ticker):
+            raise RuntimeError("DART status 800")
+
+    n = features.backfill(
+        market_client=FakeMarket(candles=5),
+        dart=BrokenDart(),
+        universe=Universe(kr=["005930"]),
+        markets=["KR"],
+        years=1,
+        progress=lambda s: None,
+    )
+    assert n == 5
+    got = pd.concat(pd.read_parquet(f) for f in (project / "state" / "features").glob("*.parquet"))
+    assert got["roe"].isna().all() and got["close"].notna().all()
+
+
 def test_backfill_caps_at_1000_days(project):
     m = FakeMarket(candles=10)
     features.backfill(
