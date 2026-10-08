@@ -38,6 +38,10 @@ _ANALYST_RE = re.compile(r"^10_analyst_")
 _DEBATE_RE = re.compile(r"^20_debate_r(\d+)_(bull|bear)$")
 
 
+class ToolError(RuntimeError):
+    """도구 거부 (FAKE 모드·파이썬 호출자가 예외로 받고 싶을 때)."""
+
+
 @dataclass
 class ToolContext:
     settings: Settings
