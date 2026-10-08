@@ -288,6 +288,179 @@ def features_backfill(
     _run_features("backfill", market, years=years)
 
 
+# --- tool: LLM 오케스트레이터 전용 (stdout 에 JSON 만) ---------------------
+
+tool_app = typer.Typer(help="오케스트레이터 세션용 도구 (출력은 JSON 한 줄)", no_args_is_help=True)
+app.add_typer(tool_app, name="tool")
+checkpoint_app = typer.Typer(help="체크포인트 도구", no_args_is_help=True)
+tool_app.add_typer(checkpoint_app, name="checkpoint")
+
+
+def _tool_ctx():
+    from trader.ledger import db
+    from trader.orchestrator.tools import ToolContext
+
+    configure(paths.state_dir())
+    logging.getLogger().handlers = [
+        h
+        for h in logging.getLogger().handlers
+        if not isinstance(h, logging.StreamHandler) or isinstance(h, logging.FileHandler)
+    ]  # stdout 은 JSON 전용이므로 콘솔 핸들러 제거
+    conn = db.connect()
+    db.init_schema(conn)
+    return ToolContext(settings=config.load_settings(), accounts=config.load_accounts(), conn=conn)
+
+
+def _emit(result: dict) -> None:
+    import json
+
+    typer.echo(json.dumps(result, ensure_ascii=False, default=str))
+    if not result.get("ok", False):
+        raise typer.Exit(code=1)
+
+
+def _tool_run(fn, **kwargs) -> None:
+    import json
+    from datetime import date as _date
+
+    try:
+        ctx = _tool_ctx()
+        if "date" in kwargs and isinstance(kwargs["date"], str):
+            kwargs["date"] = _date.fromisoformat(kwargs["date"])
+        if "payload" in kwargs and isinstance(kwargs["payload"], str):
+            kwargs["payload"] = json.loads(kwargs["payload"])
+        result = fn(ctx, **kwargs)
+    except Exception as e:  # noqa: BLE001 - 도구는 항상 JSON 으로 끝난다
+        result = {"ok": False, "error": f"{type(e).__name__}: {e}"}
+    _emit(result)
+
+
+def _payload_arg(json_text: str | None) -> str:
+    if json_text is not None:
+        return json_text
+    return sys.stdin.read()
+
+
+@tool_app.command("status")
+def tool_status(
+    market: str = typer.Option(..., "--market"), date: str = typer.Option(..., "--date")
+) -> None:
+    """오늘 종목별 체크포인트 목록과 세션 수."""
+    from trader.orchestrator import tools
+
+    _tool_run(tools.status, market=market, date=date)
+
+
+@tool_app.command("collect")
+def tool_collect(
+    ticker: str = typer.Option(..., "--ticker"),
+    market: str = typer.Option("KR", "--market"),
+    exchange: str | None = typer.Option(None, "--exchange"),
+    asof: str | None = typer.Option(None, "--asof"),
+) -> None:
+    """00_inputs 수집 (있으면 건너뜀). JSON {ok, path, errors}."""
+    import json
+
+    try:
+        ctx = _tool_ctx()
+        cfg = config.load_sources()
+        secrets = config.load_secrets()
+        when = datetime.fromisoformat(asof) if asof else ctx.now()
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=UTC)
+        path = collect_and_save(
+            ticker=ticker,
+            market=market,
+            exchange=exchange,
+            asof=when,
+            cfg=cfg,  # type: ignore[arg-type]
+            secrets=secrets,
+            deps=_build_input_deps(secrets, cfg),
+        )
+        errors = json.loads(path.read_text(encoding="utf-8")).get("errors", [])
+        result = {"ok": True, "path": str(path), "errors": errors}
+    except Exception as e:  # noqa: BLE001
+        result = {"ok": False, "error": f"{type(e).__name__}: {e}"}
+    _emit(result)
+
+
+@checkpoint_app.command("list")
+def tool_checkpoint_list(
+    ticker: str = typer.Option(..., "--ticker"),
+    market: str = typer.Option(..., "--market"),
+    date: str = typer.Option(..., "--date"),
+) -> None:
+    from trader.orchestrator import tools
+
+    _tool_run(tools.checkpoint_list, ticker=ticker, market=market, date=date)
+
+
+@checkpoint_app.command("read")
+def tool_checkpoint_read(
+    ticker: str = typer.Option(..., "--ticker"),
+    market: str = typer.Option(..., "--market"),
+    date: str = typer.Option(..., "--date"),
+    stage: str = typer.Option(..., "--stage"),
+    section: str | None = typer.Option(None, "--section"),
+) -> None:
+    from trader.orchestrator import tools
+
+    _tool_run(
+        tools.checkpoint_read, ticker=ticker, market=market, date=date, stage=stage, section=section
+    )
+
+
+@checkpoint_app.command("write")
+def tool_checkpoint_write(
+    ticker: str = typer.Option(..., "--ticker"),
+    market: str = typer.Option(..., "--market"),
+    date: str = typer.Option(..., "--date"),
+    stage: str = typer.Option(..., "--stage"),
+    agent: str | None = typer.Option(None, "--agent"),
+    json_text: str | None = typer.Option(None, "--json", help="페이로드 JSON (없으면 stdin)"),
+) -> None:
+    from trader.orchestrator import tools
+
+    _tool_run(
+        tools.checkpoint_write,
+        ticker=ticker,
+        market=market,
+        date=date,
+        stage=stage,
+        payload=_payload_arg(json_text),
+        agent=agent,
+    )
+
+
+@checkpoint_app.command("summarize")
+def tool_checkpoint_summarize(
+    ticker: str = typer.Option(..., "--ticker"),
+    market: str = typer.Option(..., "--market"),
+    date: str = typer.Option(..., "--date"),
+) -> None:
+    from trader.orchestrator import tools
+
+    _tool_run(tools.checkpoint_summarize, ticker=ticker, market=market, date=date)
+
+
+@tool_app.command("submit-decision")
+def tool_submit_decision(
+    ticker: str = typer.Option(..., "--ticker"),
+    market: str = typer.Option(..., "--market"),
+    date: str = typer.Option(..., "--date"),
+    json_text: str | None = typer.Option(None, "--json", help="Decision JSON (없으면 stdin)"),
+) -> None:
+    from trader.orchestrator import tools
+
+    _tool_run(
+        tools.submit_decision,
+        ticker=ticker,
+        market=market,
+        date=date,
+        payload=_payload_arg(json_text),
+    )
+
+
 @app.command("notify-test")
 def notify_test() -> None:
     """텔레그램으로 테스트 메시지를 보낸다 (미설정이면 NullNotifier 로 성공)."""
