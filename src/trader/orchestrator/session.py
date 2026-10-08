@@ -17,6 +17,7 @@ import logging
 import os
 import sqlite3
 import subprocess
+import sys
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -240,10 +241,13 @@ def run_session(
     prompt = registry.orchestrator_prompt(settings, agents_dir)
     session_id = str(uuid.uuid4())
     cmd = build_command(spec, settings, bin_path, agents_file, session_id=session_id, prompt=prompt)
+    # `python -m trader tool …` 이 venv 의 python 으로 풀리도록 실행파일 디렉터리를 PATH 앞에 둔다
+    venv_bin = str(Path(sys.executable).parent)
     env = {
         **os.environ,
         "CLAUDE_CODE_RETRY_WATCHDOG": "1",
         "TRADER_HOME": str(paths.project_root()),
+        "PATH": venv_bin + os.pathsep + os.environ.get("PATH", ""),
     }
     model = settings.models.get("orchestrator", "sonnet")
     started = now()

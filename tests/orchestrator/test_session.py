@@ -95,6 +95,7 @@ def _ok_result(**over):
 
 def test_run_session_records_call_and_writes_agents_file(project, conn, accounts, monkeypatch):
     monkeypatch.delenv("FAKE_CLAUDE", raising=False)
+    monkeypatch.setenv("PATH", "/usr/bin")  # venv bin 이 PATH 에 없는 상황을 흉내 낸다
     _inputs()
     seen = {}
 
@@ -117,6 +118,11 @@ def test_run_session_records_call_and_writes_agents_file(project, conn, accounts
     assert seen["kw"]["shell"] is False and seen["kw"]["encoding"] == "utf-8"
     assert seen["kw"]["env"]["CLAUDE_CODE_RETRY_WATCHDOG"] == "1"
     assert seen["kw"]["env"]["TRADER_HOME"] == str(project)
+    # `python -m trader tool …` 이 venv 의 python 으로 풀리도록 PATH 앞에 실행파일 디렉터리를 둔다
+    import os
+    import sys
+
+    assert seen["kw"]["env"]["PATH"].split(os.pathsep)[0] == str(Path(sys.executable).parent)
     assert Path(seen["kw"]["cwd"]).name == "claude_cwd" and Path(seen["kw"]["cwd"]).is_dir()
     stdin = json.loads(seen["kw"]["input"])
     assert stdin["tickers"][0]["ticker"] == "005930" and stdin["dry_run"] is True
