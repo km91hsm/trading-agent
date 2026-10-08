@@ -16,6 +16,7 @@ from trader.broker.kis_client import KisClient
 from trader.broker.kis_market import KisMarket
 from trader.logging_setup import configure
 from trader.notify.telegram import make_notifier
+from trader.orchestrator.session import run_session
 from trader.platform import paths
 from trader.sources.inputs import InputDeps, collect_and_save
 
@@ -286,6 +287,96 @@ def features_backfill(
 ) -> None:
     """유니버스 전체의 과거 피처를 재구성해 저장한다."""
     _run_features("backfill", market, years=years)
+
+
+# --- analyze -----------------------------------------------------------------
+
+
+@app.command("analyze")
+def analyze(
+    ticker: str = typer.Option(..., "--ticker", help="종목코드/심볼"),
+    market: str = typer.Option("KR", "--market", help="KR 또는 US"),
+    exchange: str | None = typer.Option(None, "--exchange", help="미국 거래소 코드 (NAS/NYS/AMS)"),
+    asof: str | None = typer.Option(None, "--asof", help="기준 시각 ISO8601 (기본: 현재 UTC)"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="결정까지만 (Phase 3 는 항상 동일)"),
+    skip_collect: bool = typer.Option(False, "--skip-collect", help="00_inputs 수집 생략"),
+) -> None:
+    """오케스트레이터 세션을 띄워 종목 하나를 분석하고 30_decision.json 을 만든다."""
+    import json
+    from zoneinfo import ZoneInfo
+
+    from trader.ledger import db
+    from trader.orchestrator.run_store import read_checkpoint, run_dir
+    from trader.orchestrator.session import PipelineError, SessionSpec
+
+    try:
+        configure(paths.state_dir())
+        if market not in ("KR", "US"):
+            raise config.ConfigError(f"시장은 KR 또는 US 여야 합니다: {market}")
+        if market == "US" and not exchange:
+            raise config.ConfigError("미국 종목은 --exchange(거래소 코드)가 필요합니다")
+        settings = config.load_settings()
+        accounts = config.load_accounts()
+        secrets = config.load_secrets()
+        when = datetime.fromisoformat(asof) if asof else datetime.now(UTC)
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=UTC)
+        day = when.astimezone(ZoneInfo("Asia/Seoul")).date()
+        d = run_dir(day, market, ticker)  # type: ignore[arg-type]
+        if read_checkpoint(d, "00_inputs") is None:
+            if skip_collect:
+                raise config.ConfigError(f"00_inputs 가 없습니다: {d} (--skip-collect 해제)")
+            cfg = config.load_sources()
+            collect_and_save(
+                ticker=ticker,
+                market=market,
+                exchange=exchange,
+                asof=when,
+                cfg=cfg,  # type: ignore[arg-type]
+                secrets=secrets,
+                deps=_build_input_deps(secrets, cfg),
+            )
+        if not dry_run:
+            typer.echo("안내: Phase 4 전까지는 --dry-run 과 동일하게 결정에서 멈춥니다.")
+        conn = db.connect()
+        db.init_schema(conn)
+        try:
+            res = run_session(
+                SessionSpec(
+                    market=market,
+                    date=day,
+                    tickers=[{"ticker": ticker, "exchange": exchange}],
+                    dry_run=True,
+                ),
+                settings,
+                conn,
+                accounts,
+            )
+        finally:
+            conn.close()
+    except (config.ConfigError, paths.ProjectRootNotFound, PipelineError, ValueError) as e:
+        typer.echo(f"오류: {e}", err=True)
+        raise typer.Exit(code=1) from e
+    if not res.ok:
+        typer.echo(f"세션 실패: {res.error}", err=True)
+        raise typer.Exit(code=1)
+    mode = "FAKE" if res.fake else f"session={res.session_id}"
+    typer.echo(f"세션 완료 ({mode}) 비용 ${res.cost_usd or 0:.2f}")
+    if res.stages_written:
+        typer.echo("새로 쓴 단계: " + ", ".join(res.stages_written))
+    decision = read_checkpoint(d, "30_decision")
+    if decision is None:
+        typer.echo("결정 없음 (30_decision.json 이 만들어지지 않았습니다)", err=True)
+        raise typer.Exit(code=1)
+    data = decision["data"]
+    typer.echo(
+        f"결정: {data['action']} target_weight={data['target_weight']} "
+        f"confidence={data['confidence']}"
+    )
+    typer.echo(f"저장: {d / '30_decision.json'}")
+    errors = (read_checkpoint(d, "00_inputs") or {}).get("errors", [])
+    if errors:
+        typer.echo(f"입력 오류 절 {len(errors)}건: {json.dumps(errors, ensure_ascii=False)[:300]}")
 
 
 # --- tool: LLM 오케스트레이터 전용 (stdout 에 JSON 만) ---------------------

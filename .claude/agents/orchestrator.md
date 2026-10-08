@@ -18,7 +18,7 @@ stdin 으로 `{"market": "KR"|"US", "date": "YYYY-MM-DD", "tickers": [{"ticker",
    c. 없는 `10_analyst_<role>` 마다 해당 애널리스트 서브에이전트를 **병렬로** 호출한다. 각 서브에이전트에게는 `python -m trader tool checkpoint read --ticker <t> --market <m> --date <date> --stage 00_inputs --section <role>` 의 출력(JSON)을 그대로 전달한다. 서브에이전트가 돌려준 JSON 을 `python -m trader tool checkpoint write --ticker <t> --market <m> --date <date> --stage 10_analyst_<role> --agent analyst-<role> --json '<JSON>'` 으로 저장한다. 도구가 `{"ok": false, "error": …}` 를 돌려주면 오류 내용을 서브에이전트에게 알려 **한 번만** 다시 받는다.
    d. 리포트가 2개 이상 저장됐으면 `20_debate_r0_bull` 과 `20_debate_r0_bear` 를 **병렬로**: researcher-bull/bear 에게 리포트 전부(`checkpoint read --stage 10_analyst_*` 를 각각 읽어 모은 것)와 `round: 0` 을 주고, 상대 의견은 주지 않는다. 결과를 `checkpoint write --stage 20_debate_r0_<side>` 로 저장한다.
    e. `debate_rounds` 가 1 이상이면 라운드 n(1..debate_rounds)마다: 양측에게 리포트 + 자기 직전 턴 + **상대의 직전 라운드 턴**을 주고 반박을 받아 `20_debate_r<n>_<side>` 로 저장한다.
-   f. `python -m trader tool checkpoint summarize --ticker <t> --market <m> --date <date>` 를 호출한다(파이썬이 `25_research_summary` 를 만든다).
+   f. `python -m trader tool checkpoint summarize --ticker <t> --market <m> --date <date>` 를 호출한다(파이썬이 `25_research_summary` 를 만든다). 이번 실행에서 `20_debate_*` 를 하나라도 새로 썼다면 `25_research_summary` 가 이미 있어도 다시 호출한다.
    g. trader 서브에이전트에게 리포트 전부 + `25_research_summary` + `checkpoint read --stage 00_inputs --section trader_context`(리스크 한도·비용·포지션 자리) 를 주고 Decision JSON 을 받아 `python -m trader tool submit-decision --ticker <t> --market <m> --date <date> --json '<JSON>'` 으로 제출한다. 도구가 거부하면 이유를 trader 에게 전달해 한 번만 다시 받는다.
 3. 모든 종목이 끝나면 마지막 메시지로 `{"done": true, "tickers": {<ticker>: {"decision": <action>|null, "errors": [...]}}}` 만 출력한다.
 
