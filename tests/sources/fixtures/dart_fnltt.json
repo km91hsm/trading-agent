@@ -1,0 +1,13 @@
+{
+  "status": "000",
+  "message": "정상",
+  "list": [
+    {"rcept_no": "20260312000001", "reprt_code": "11011", "bsns_year": "2025", "corp_code": "00126380", "sj_div": "BS", "sj_nm": "재무상태표", "account_id": "ifrs-full_Assets", "account_nm": "자산총계", "thstrm_nm": "제 57 기", "thstrm_amount": "500,000,000,000,000", "frmtrm_nm": "제 56 기", "frmtrm_amount": "455,000,000,000,000", "bfefrmtrm_nm": "제 55 기", "bfefrmtrm_amount": "448,000,000,000,000", "ord": "1", "currency": "KRW"},
+    {"rcept_no": "20260312000001", "reprt_code": "11011", "bsns_year": "2025", "corp_code": "00126380", "sj_div": "BS", "sj_nm": "재무상태표", "account_id": "ifrs-full_Liabilities", "account_nm": "부채총계", "thstrm_nm": "제 57 기", "thstrm_amount": "100,000,000,000,000", "frmtrm_amount": "92,000,000,000,000", "bfefrmtrm_amount": "93,000,000,000,000", "ord": "2", "currency": "KRW"},
+    {"rcept_no": "20260312000001", "reprt_code": "11011", "bsns_year": "2025", "corp_code": "00126380", "sj_div": "BS", "sj_nm": "재무상태표", "account_id": "ifrs-full_Equity", "account_nm": "자본총계", "thstrm_nm": "제 57 기", "thstrm_amount": "400,000,000,000,000", "frmtrm_amount": "363,000,000,000,000", "bfefrmtrm_amount": "355,000,000,000,000", "ord": "3", "currency": "KRW"},
+    {"rcept_no": "20260312000001", "reprt_code": "11011", "bsns_year": "2025", "corp_code": "00126380", "sj_div": "IS", "sj_nm": "손익계산서", "account_id": "ifrs-full_Revenue", "account_nm": "수익(매출액)", "thstrm_nm": "제 57 기", "thstrm_amount": "330,000,000,000,000", "frmtrm_amount": "300,000,000,000,000", "bfefrmtrm_amount": "258,000,000,000,000", "ord": "1", "currency": "KRW"},
+    {"rcept_no": "20260312000001", "reprt_code": "11011", "bsns_year": "2025", "corp_code": "00126380", "sj_div": "IS", "sj_nm": "손익계산서", "account_id": "dart_OperatingIncomeLoss", "account_nm": "영업이익", "thstrm_nm": "제 57 기", "thstrm_amount": "33,000,000,000,000", "frmtrm_amount": "32,700,000,000,000", "bfefrmtrm_amount": "6,500,000,000,000", "ord": "5", "currency": "KRW"},
+    {"rcept_no": "20260312000001", "reprt_code": "11011", "bsns_year": "2025", "corp_code": "00126380", "sj_div": "IS", "sj_nm": "손익계산서", "account_id": "ifrs-full_ProfitLoss", "account_nm": "당기순이익", "thstrm_nm": "제 57 기", "thstrm_amount": "40,000,000,000,000", "frmtrm_amount": "34,000,000,000,000", "bfefrmtrm_amount": "15,000,000,000,000", "ord": "9", "currency": "KRW"},
+    {"rcept_no": "20260312000001", "reprt_code": "11011", "bsns_year": "2025", "corp_code": "00126380", "sj_div": "CIS", "sj_nm": "포괄손익계산서", "account_id": "ifrs-full_ProfitLoss", "account_nm": "당기순이익", "thstrm_nm": "제 57 기", "thstrm_amount": "40,000,000,000,000", "frmtrm_amount": "34,000,000,000,000", "bfefrmtrm_amount": "15,000,000,000,000", "ord": "1", "currency": "KRW"}
+  ]
+}
