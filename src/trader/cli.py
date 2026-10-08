@@ -224,6 +224,70 @@ def collect(
     typer.echo(f"오류 절 {len(errors)}건")
 
 
+features_app = typer.Typer(help="피처 스토어", no_args_is_help=True)
+app.add_typer(features_app, name="features")
+
+
+def _build_dart(secrets: config.Secrets):
+    from trader.sources.dart import DartClient
+
+    cache = paths.state_dir() / "cache"
+    return DartClient(secrets.DART_API_KEY, cache) if secrets.DART_API_KEY else None
+
+
+def _run_features(action: str, market: str | None, **kwargs) -> None:
+    from trader.ml import features
+
+    try:
+        configure(paths.state_dir())
+        secrets = config.load_secrets()
+        universe = config.load_universe()
+        markets = [market] if market else ["KR", "US"]
+        if any(m not in ("KR", "US") for m in markets):
+            raise config.ConfigError(f"시장은 KR 또는 US 여야 합니다: {market}")
+        market_client = _build_market(secrets)
+        dart = _build_dart(secrets)
+        fn = features.backfill if action == "backfill" else features.snapshot
+        n = fn(
+            market_client=market_client,
+            dart=dart,
+            universe=universe,
+            markets=markets,  # type: ignore[arg-type]
+            progress=lambda s: typer.echo(f"  {s}"),
+            **kwargs,
+        )
+    except (config.ConfigError, paths.ProjectRootNotFound) as e:
+        typer.echo(f"오류: {e}", err=True)
+        raise typer.Exit(code=1) from e
+    except Exception as e:  # noqa: BLE001 - 시세 클라이언트 생성 실패 등
+        typer.echo(f"오류: {type(e).__name__}: {e}", err=True)
+        raise typer.Exit(code=1) from e
+    typer.echo(f"{action}: {n}행 저장")
+
+
+@features_app.command("snapshot")
+def features_snapshot(
+    market: str | None = typer.Option(None, "--market", help="KR 또는 US (기본: 둘 다)"),
+    asof: str | None = typer.Option(
+        None, "--asof", help="기준 시각 ISO8601 (24시간 넘은 과거는 거부)"
+    ),
+) -> None:
+    """유니버스 전체의 오늘 피처 행을 저장한다."""
+    when = datetime.fromisoformat(asof) if asof else None
+    if when is not None and when.tzinfo is None:
+        when = when.replace(tzinfo=UTC)
+    _run_features("snapshot", market, asof=when)
+
+
+@features_app.command("backfill")
+def features_backfill(
+    years: int = typer.Option(3, "--years", help="과거 적재 연수 (최대 약 4년=1000봉)"),
+    market: str | None = typer.Option(None, "--market", help="KR 또는 US (기본: 둘 다)"),
+) -> None:
+    """유니버스 전체의 과거 피처를 재구성해 저장한다."""
+    _run_features("backfill", market, years=years)
+
+
 @app.command("notify-test")
 def notify_test() -> None:
     """텔레그램으로 테스트 메시지를 보낸다 (미설정이면 NullNotifier 로 성공)."""
