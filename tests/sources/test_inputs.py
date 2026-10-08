@@ -58,6 +58,34 @@ def test_build_inputs_sections(project):
     assert d["errors"] == []
 
 
+def test_inputs_fundamental_history_section(project):
+    """스펙 §3.1: DART 3개년 + 최근 분기 재무가 fundamental.history 에 들어간다 (v2)."""
+    d = build_inputs(
+        ticker="005930",
+        market="KR",
+        exchange=None,
+        asof=T0,
+        cfg=cfg(),
+        secrets=Secrets(),
+        deps=deps(),
+    )
+    assert inputs.SCHEMA_VERSION == 2 and d["meta"]["schema_version"] == 2
+    h = d["fundamental"]["history"]["data"]
+    assert set(h["years"]) == {"2023", "2024", "2025"}  # JSON 키는 문자열
+    assert h["years"]["2025"]["매출액"] == "330"  # Decimal → str
+    assert h["latest_quarter"]["reprt_code"] == "11012"
+    us = build_inputs(
+        ticker="AAPL",
+        market="US",
+        exchange="NAS",
+        asof=T0,
+        cfg=cfg(),
+        secrets=Secrets(),
+        deps=deps(),
+    )
+    assert us["fundamental"]["history"]["error"] == "phase7"
+
+
 def test_failed_section_recorded_and_file_written(project):
     p = collect_and_save(
         ticker="005930",

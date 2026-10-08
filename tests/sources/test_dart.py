@@ -131,6 +131,43 @@ def test_corpcode_non_zip_error_is_dart_error(project, respx_mock):
     assert "020" in str(e.value) and "DART-KEY-SECRET" not in str(e.value)
 
 
+def test_ofs_fallback_when_cfs_empty(dart, respx_mock):
+    """연결(CFS)이 013 이면 개별(OFS)로 1회 재조회하고 _fs_div 로 표시한다."""
+    route = respx_mock.get(BASE + "/fnlttSinglAcntAll.json").mock(
+        side_effect=[
+            httpx.Response(200, json={"status": "013", "message": "없음"}),
+            httpx.Response(200, json=load("dart_fnltt.json")),
+        ]
+    )
+    fin = dart.financials("00126380", 2025)
+    assert fin["매출액"] == Decimal("330000000000000") and fin["_fs_div"] == "OFS"
+    assert [c.request.url.params["fs_div"] for c in route.calls] == ["CFS", "OFS"]
+
+
+def test_financial_history_three_years_and_quarter(dart, respx_mock):
+    route = respx_mock.get(BASE + "/fnlttSinglAcntAll.json").mock(
+        return_value=httpx.Response(200, json=load("dart_fnltt.json"))
+    )
+    h = dart.financial_history("00126380", date(2026, 10, 9))
+    assert sorted(h["years"]) == [2023, 2024, 2025]
+    assert h["years"][2025]["영업이익"] == Decimal("33000000000000")
+    q = h["latest_quarter"]
+    assert q["reprt_code"] == "11012" and q["year"] == 2026 and q["영업이익"] is not None
+    calls = [
+        (c.request.url.params["bsns_year"], c.request.url.params["reprt_code"]) for c in route.calls
+    ]
+    assert ("2026", "11012") in calls and ("2023", "11011") in calls
+
+
+def test_financial_history_quarter_before_june_uses_prev_year_q3(dart, respx_mock):
+    respx_mock.get(BASE + "/fnlttSinglAcntAll.json").mock(
+        return_value=httpx.Response(200, json=load("dart_fnltt.json"))
+    )
+    h = dart.financial_history("00126380", date(2026, 3, 15))
+    assert h["latest_quarter"]["reprt_code"] == "11014" and h["latest_quarter"]["year"] == 2025
+    assert sorted(h["years"]) == [2022, 2023, 2024]
+
+
 def test_basic_ratios_shared():
     fin = {
         "매출액": Decimal(200),

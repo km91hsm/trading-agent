@@ -151,16 +151,19 @@ class DartClient:
 
     # --- 재무제표 -----------------------------------------------------------
 
-    def financials(self, corp_code: str, year: int, reprt_code: str = ANNUAL) -> dict[str, Decimal]:
-        """연결재무제표 주요 계정 (공통 키 + `_전기`). 없으면 빈 dict."""
+    def financials(
+        self, corp_code: str, year: int, reprt_code: str = ANNUAL, fs_div: str = "CFS"
+    ) -> dict[str, Any]:
+        """주요 계정 (공통 키 + `_전기`). 연결(CFS)이 없으면 개별(OFS)로 1회 재조회하고
+        `_fs_div` 에 어느 쪽인지 표시한다. 둘 다 없으면 빈 dict."""
         data = self._get_json(
             "fnlttSinglAcntAll.json",
             corp_code=corp_code,
             bsns_year=str(year),
             reprt_code=reprt_code,
-            fs_div="CFS",
+            fs_div=fs_div,
         )
-        out: dict[str, Decimal] = {}
+        out: dict[str, Any] = {}
         for row in data.get("list") or []:
             name = re.sub(r"\s+", "", str(row.get("account_nm", "")))
             sj = str(row.get("sj_div", ""))
@@ -176,7 +179,35 @@ class DartClient:
                 prev = _dec(row.get("frmtrm_amount"))
                 if prev is not None:
                     out[f"{key}_전기"] = prev
+        if not out and fs_div == "CFS":
+            return self.financials(corp_code, year, reprt_code, fs_div="OFS")
+        if out:
+            out["_fs_div"] = fs_div
         return out
+
+    def financial_history(self, corp_code: str, asof: date) -> dict[str, Any]:
+        """3개년 사업보고서 + asof 시점에 공시돼 있는 최근 분기 (룩어헤드 방지, 한 달 여유).
+
+        분기 보고서 제출 기한: 1분기 5/15, 반기 8/14, 3분기 11/14 → 6월·9월·12월부터 사용.
+        """
+        latest_fy = fiscal_year_for(asof)
+        years: dict[int, dict[str, Any]] = {}
+        for y in (latest_fy - 2, latest_fy - 1, latest_fy):
+            fin = self.financials(corp_code, y)
+            if fin:
+                years[y] = fin
+        m = asof.month
+        if m >= 12:
+            q_year, q_code = asof.year, "11014"
+        elif m >= 9:
+            q_year, q_code = asof.year, "11012"
+        elif m >= 6:
+            q_year, q_code = asof.year, "11013"
+        else:
+            q_year, q_code = asof.year - 1, "11014"
+        quarter = self.financials(corp_code, q_year, q_code)
+        latest_quarter = {"reprt_code": q_code, "year": q_year, **quarter} if quarter else None
+        return {"years": years, "latest_quarter": latest_quarter}
 
     def shares(self, corp_code: str, year: int, reprt_code: str = ANNUAL) -> int | None:
         """보통주 발행주식총수."""

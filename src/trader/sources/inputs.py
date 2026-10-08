@@ -36,7 +36,7 @@ from trader.sources.news import collect_news
 logger = logging.getLogger("trader.sources")
 
 _KST = ZoneInfo("Asia/Seoul")
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2  # v2: fundamental.history (3개년 + 최근 분기) 추가
 MAX_PAST = timedelta(hours=24)
 
 
@@ -160,17 +160,18 @@ def _fundamental(ticker, market, asof, cfg, deps, technical) -> dict[str, Sectio
     quote = technical["quote"]["data"]
     price = Decimal(str(quote["price"])) if quote else None
     day = asof.astimezone(_KST).date()
+    keys = ("ratios", "history", "disclosures")
     if market == "KR":
         if not cfg.dart.enabled:
-            return {
-                "ratios": skipped_section("disabled", now=now),
-                "disclosures": skipped_section("disabled", now=now),
-            }
+            return {k: skipped_section("disabled", now=now) for k in keys}
         if deps.dart is None:
-            return {
-                "ratios": skipped_section("no dart client", now=now),
-                "disclosures": skipped_section("no dart client", now=now),
-            }
+            return {k: skipped_section("no dart client", now=now) for k in keys}
+
+        def history() -> dict:
+            code = deps.dart.corp_code(ticker)
+            if not code:
+                raise ValueError(f"DART 고유번호 없음: {ticker}")
+            return deps.dart.financial_history(code, day)
 
         def disclosures() -> list[dict]:
             code = deps.dart.corp_code(ticker)
@@ -178,20 +179,18 @@ def _fundamental(ticker, market, asof, cfg, deps, technical) -> dict[str, Sectio
 
         return {
             "ratios": run_section(lambda: ratios_kr(deps.dart, ticker, day, price), now=now),
+            "history": run_section(history, now=now),
             "disclosures": run_section(disclosures, now=now),
         }
     if not cfg.edgar.enabled:
-        return {
-            "ratios": skipped_section("disabled", now=now),
-            "disclosures": skipped_section("phase6", now=now),
-        }
-    if deps.edgar is None:
-        return {
-            "ratios": skipped_section("no edgar client", now=now),
-            "disclosures": skipped_section("phase6", now=now),
-        }
+        ratios = skipped_section("disabled", now=now)
+    elif deps.edgar is None:
+        ratios = skipped_section("no edgar client", now=now)
+    else:
+        ratios = run_section(lambda: ratios_us(deps.edgar, ticker, day, price), now=now)
     return {
-        "ratios": run_section(lambda: ratios_us(deps.edgar, ticker, day, price), now=now),
+        "ratios": ratios,
+        "history": skipped_section("phase7", now=now),
         "disclosures": skipped_section("phase6", now=now),
     }
 
