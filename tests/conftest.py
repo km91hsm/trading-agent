@@ -25,6 +25,23 @@ def conn(project: Path):
     c.close()
 
 
+@pytest.fixture(autouse=True)
+def _reset_logging():
+    """매 테스트 후 이 프로젝트가 붙인 로깅 핸들러·레벨을 원복한다."""
+    import logging
+
+    names = ("", "httpx", "httpcore")
+    saved = {n: logging.getLogger(n).level for n in names}
+    yield
+    try:
+        from trader import logging_setup
+    except ImportError:
+        return
+    logging_setup.reset()
+    for n, lvl in saved.items():
+        logging.getLogger(n).setLevel(lvl)
+
+
 def make_account(id: str, env: str, mode: str, markets: list[str] | None = None):
     from trader.config import AccountConfig
 
