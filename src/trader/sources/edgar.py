@@ -76,7 +76,7 @@ class EdgarClient:
         self._cache_dir = cache_dir
         self._http = http or httpx.Client(timeout=15)
         self._now = now
-        self._tickers: dict[str, str] | None = None
+        self._tickers: dict[str, Any] | None = None
 
     def _get(self, url: str) -> Any:
         resp = self._http.get(url, headers=self._headers)
@@ -84,7 +84,7 @@ class EdgarClient:
             raise EdgarError(f"EDGAR HTTP {resp.status_code}: {url}")
         return resp.json()
 
-    def _load_tickers(self) -> dict[str, str]:
+    def _load_tickers(self) -> dict[str, Any]:
         if self._tickers is not None:
             return self._tickers
         cache = self._cache_dir / "edgar_tickers.json"
@@ -97,11 +97,13 @@ class EdgarClient:
         except (OSError, ValueError, KeyError, TypeError):
             pass
         data = self._get(TICKERS_URL)
-        mapping = {
-            str(v["ticker"]).upper(): f"{int(v['cik_str']):010d}"
-            for v in (data.values() if isinstance(data, dict) else data)
-            if isinstance(v, dict) and v.get("ticker") and v.get("cik_str") is not None
-        }
+        mapping: dict[str, Any] = {}
+        for v in data.values() if isinstance(data, dict) else data:
+            if isinstance(v, dict) and v.get("ticker") and v.get("cik_str") is not None:
+                mapping[str(v["ticker"]).upper()] = {
+                    "cik": f"{int(v['cik_str']):010d}",
+                    "name": str(v.get("title") or "").strip(),
+                }
         self._cache_dir.mkdir(parents=True, exist_ok=True)
         tmp = cache.with_suffix(".json.tmp")
         tmp.write_text(
@@ -112,7 +114,10 @@ class EdgarClient:
         return mapping
 
     def cik(self, symbol: str) -> str | None:
-        return self._load_tickers().get(symbol.upper())
+        return (self._load_tickers().get(symbol.upper()) or {}).get("cik")
+
+    def company_name(self, symbol: str) -> str | None:
+        return (self._load_tickers().get(symbol.upper()) or {}).get("name") or None
 
     def companyfacts(self, cik: str) -> dict:
         return self._get(FACTS_URL.format(cik=cik))

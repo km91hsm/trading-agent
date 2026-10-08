@@ -35,6 +35,28 @@ FEATURE_COLUMNS: list[str] = (
     + COUNT_COLUMNS
 )
 MAX_DAYS = 1000  # KIS 일봉 10페이지 상한
+
+# 고정 스키마. snapshot/backfill 어느 경로로 써도 write_rows 가 이 dtype 으로 맞춘다.
+FEATURE_DTYPES: dict[str, str] = {
+    "ticker": "string",
+    "market": "string",
+    "close": "float64",
+    "volume": "int64",
+    **{
+        c: "Float64"
+        for c in indicators.COLUMNS + FLOW_COLUMNS + list(RATIO_COLUMNS) + COUNT_COLUMNS
+    },
+}
+
+
+def _coerce(df: pd.DataFrame) -> pd.DataFrame:
+    out = df[FEATURE_COLUMNS].copy()
+    out["date"] = out["date"].map(lambda x: pd.Timestamp(x).date())
+    for col, dtype in FEATURE_DTYPES.items():
+        out[col] = out[col].astype(dtype)
+    return out
+
+
 MAX_PAST = timedelta(hours=24)
 
 
@@ -121,12 +143,11 @@ def write_rows(df: pd.DataFrame, state: Path | None = None) -> list[Path]:
     """날짜별 parquet 에 (date, ticker) 기준으로 덮어쓴다. 멱등."""
     d = _features_dir(state)
     written: list[Path] = []
+    df = _coerce(df)
     for day, part in df.groupby("date", sort=True):
         path = d / f"{pd.Timestamp(day).date().isoformat()}.parquet"
-        part = part.copy()
-        part["date"] = part["date"].map(lambda x: pd.Timestamp(x).date())
         if path.exists():
-            old = pd.read_parquet(path)
+            old = _coerce(pd.read_parquet(path))
             old = old[~old["ticker"].isin(part["ticker"])]
             part = pd.concat([old, part], ignore_index=True)
         tmp = path.with_suffix(".parquet.tmp")

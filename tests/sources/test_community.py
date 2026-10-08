@@ -24,6 +24,28 @@ def test_reddit_rss_parsed(respx_mock):
     assert p["url"].endswith("/aapl_earnings/") and p["received_at"] == T0.isoformat()
 
 
+def test_reddit_posted_at_normalized_to_utc(respx_mock):
+    """+09:00 오프셋 항목도 UTC 로 정규화돼 asof 비교가 안전하다 (리뷰 I2)."""
+    respx_mock.get(url__startswith=REDDIT).mock(
+        return_value=httpx.Response(200, content=load_bytes("reddit_new.rss"))
+    )
+    posts = Reddit(httpx.Client(), now=lambda: T0, sleep=lambda s: None).fetch(
+        "stocks", keywords=("AAPL",)
+    )
+    assert posts[1]["posted_at"] == "2026-10-09T07:00:00+00:00"
+    out = collect_community(
+        CommunityCfg(),
+        ticker="AAPL",
+        name="Apple",
+        market="US",
+        asof=T0,
+        http=httpx.Client(),
+        now=lambda: T0,
+        sleep=lambda s: None,
+    )
+    assert all(p["title"] != "AAPL future post" for p in out["posts"])
+
+
 def test_clien_list_filtered_by_name(respx_mock):
     respx_mock.get(url__startswith=CLIEN).mock(
         return_value=httpx.Response(200, content=load_bytes("clien_board.html"))

@@ -14,6 +14,7 @@ from __future__ import annotations
 import html
 import logging
 import re
+import time
 import xml.etree.ElementTree as ET
 from collections.abc import Callable, Iterable
 from datetime import UTC, datetime
@@ -43,6 +44,19 @@ def _strip(text: str | None) -> str:
     return html.unescape(_TAG_RE.sub("", html.unescape(text or ""))).strip()
 
 
+def _iso_to_utc(s: str) -> str | None:
+    """ISO8601(오프셋 포함) → UTC ISO. 오프셋이 없으면 UTC 로 본다. 해석 불가면 None."""
+    if not s:
+        return None
+    try:
+        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return dt.astimezone(UTC).isoformat()
+
+
 def _kst_to_iso(s: str, fmt: str) -> str | None:
     try:
         return datetime.strptime(s.strip(), fmt).replace(tzinfo=_KST).astimezone(UTC).isoformat()
@@ -65,16 +79,12 @@ class _Source:
         now: Callable[[], datetime] = _utc_now,
         sleep: Callable[[float], None] | None = None,
     ) -> None:
-        import time
-
         self._http = http
         self._now = now
         self._sleep = sleep or time.sleep
         self._last: float | None = None
 
     def _get(self, url: str, **kw) -> httpx.Response:
-        import time
-
         if self._last is not None:
             wait = MIN_INTERVAL_S - (time.monotonic() - self._last)
             if wait > 0:
@@ -100,12 +110,13 @@ class Reddit(_Source):
             link = entry.find(f"{_ATOM}link")
             name_el = entry.find(f"{_ATOM}author/{_ATOM}name")
             author = _strip(name_el.text if name_el is not None else "")
+            posted = _iso_to_utc((entry.findtext(f"{_ATOM}published") or "").strip())
             out.append(
                 {
                     "title": title,
                     "body": _strip(entry.findtext(f"{_ATOM}content"))[:500],
                     "author": author.removeprefix("/u/"),
-                    "posted_at": (entry.findtext(f"{_ATOM}published") or "").strip() or None,
+                    "posted_at": posted,
                     "url": link.get("href", "") if link is not None else "",
                     "received_at": received,
                     "source": f"reddit/r/{subreddit}",

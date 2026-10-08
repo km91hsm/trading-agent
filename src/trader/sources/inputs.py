@@ -69,14 +69,25 @@ def _is_section(v: Any) -> bool:
     return isinstance(v, dict) and set(v) == {"data", "received_at", "error"}
 
 
+_SUB_SOURCE_OK = frozenset({"ok", "not available for KR", "not available for US"})
+
+
 def _collect_errors(inputs: dict) -> list[str]:
-    """error 가 있는 절을 '<역할>.<키>: <오류>' 목록으로 모은다 (SKIP_REASONS 제외)."""
+    """error 가 있는 절을 '<역할>.<키>: <오류>' 목록으로 모은다 (SKIP_REASONS 제외).
+
+    뉴스·커뮤니티처럼 절 안에 소스별 결과(`data.sources`)가 있으면 그 하위 실패도
+    '<역할>.<키>.<소스>: <오류>' 로 덧붙인다 (네이버 401, Reddit 429 등).
+    """
     out: list[str] = []
 
     def visit(path: str, v: Any) -> None:
         if _is_section(v):
             if v["error"] is not None and v["error"] not in SKIP_REASONS:
                 out.append(f"{path}: {v['error']}")
+            elif isinstance(v["data"], dict) and isinstance(v["data"].get("sources"), dict):
+                for src, status in v["data"]["sources"].items():
+                    if status not in _SUB_SOURCE_OK:
+                        out.append(f"{path}.{src}: {status}")
         elif isinstance(v, dict):
             for k, sub in v.items():
                 visit(f"{path}.{k}", sub)
@@ -244,13 +255,27 @@ def _sentiment(ticker, market, name, asof, cfg, deps) -> dict[str, Section]:
 
 
 def _name(ticker: str, market: Market, deps: InputDeps) -> str:
-    if market != "KR" or deps.dart is None:
-        return ticker
-    try:
-        return deps.dart.corp_name(ticker) or ticker
-    except Exception as e:  # noqa: BLE001 - 이름 조회 실패는 ticker 로 대체
-        logger.warning("종목명 조회 실패 %s: %s", ticker, type(e).__name__)
-        return ticker
+    """종목명. KR 은 DART → KIS 순, US 는 EDGAR 티커 맵. 전부 실패하면 ticker.
+
+    DART 는 점검(800)이 잦아 KIS 폴백이 상시 경로다 (실기 확인).
+    """
+    lookups: list[Callable[[], str | None]] = []
+    if market == "KR":
+        if deps.dart is not None:
+            lookups.append(lambda: deps.dart.corp_name(ticker))
+        if deps.market is not None and hasattr(deps.market, "get_name_kr"):
+            lookups.append(lambda: deps.market.get_name_kr(ticker))
+    elif deps.edgar is not None and hasattr(deps.edgar, "company_name"):
+        lookups.append(lambda: deps.edgar.company_name(ticker))
+    for fn in lookups:
+        try:
+            name = fn()
+        except Exception as e:  # noqa: BLE001 - 이름 조회 실패는 다음 소스로
+            logger.warning("종목명 조회 실패 %s: %s", ticker, type(e).__name__)
+            continue
+        if name:
+            return str(name).strip()
+    return ticker
 
 
 def build_inputs(

@@ -155,3 +155,8 @@ def test_orderbook_us_drops_empty_levels(market, respx_mock):
     ob = market.get_orderbook_us("AAPL", "NAS")
     assert ob.market == "US" and len(ob.asks) == 3 and len(ob.bids) == 3
     assert ob.asks[0] == (Decimal("227.5600"), 300) and ob.bids[0] == (Decimal("227.5500"), 250)
+
+
+def test_name_kr_from_daily_output1(market, respx_mock):
+    respx_mock.get(REAL + DOM_DAILY).mock(return_value=resp("daily_kr_p1.json"))
+    assert market.get_name_kr("005930") == "삼성전자"

@@ -118,6 +118,24 @@ class KisMarket:
             asof=self._now(),
         )
 
+    def get_name_kr(self, ticker: str) -> str | None:
+        """종목명 (일봉 API output1.hts_kor_isnm). DART 가 죽었을 때의 폴백."""
+        today = self._now().astimezone(_KST).date()
+        data = self._client.get(
+            path("DOM_DAILY"),
+            "DOM_DAILY",
+            {
+                "FID_COND_MRKT_DIV_CODE": "J",
+                "FID_INPUT_ISCD": ticker,
+                "FID_INPUT_DATE_1": (today - timedelta(days=7)).strftime("%Y%m%d"),
+                "FID_INPUT_DATE_2": today.strftime("%Y%m%d"),
+                "FID_PERIOD_DIV_CODE": "D",
+                "FID_ORG_ADJ_PRC": "0",
+            },
+        )
+        name = str((data.get("output1") or {}).get("hts_kor_isnm", "")).strip()
+        return name or None
+
     # --- 분봉 -----------------------------------------------------------------
 
     def get_minute_kr(self, ticker: str) -> list[Candle]:

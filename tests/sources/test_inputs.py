@@ -201,6 +201,97 @@ def test_dart_corp_lookup_failure_is_section_error(project):
     assert any(e.startswith("fundamental.ratios") for e in d["errors"])
 
 
+def test_sub_source_failures_are_collected(project, monkeypatch):
+    """뉴스·커뮤니티 절 안의 소스 단위 실패(네이버 401, Reddit 429)도 errors 에 보인다 (리뷰 I1)."""
+    monkeypatch.setattr(
+        inputs,
+        "collect_news",
+        lambda *a, **k: {
+            "stock": [],
+            "macro": [],
+            "sources": {"google_rss": "ok", "naver": "HTTPStatusError: 401"},
+        },
+    )
+    monkeypatch.setattr(
+        inputs,
+        "collect_community",
+        lambda *a, **k: {
+            "posts": [],
+            "sources": {"reddit": "not available for KR", "clien": "ConnectError: x"},
+        },
+    )
+    c = SourcesConfig.model_validate(
+        {"edgar": {"user_agent": "x y@z"}, "macro": {"enabled": False}}
+    )
+    d = build_inputs(
+        ticker="005930", market="KR", exchange=None, asof=T0, cfg=c, secrets=Secrets(), deps=deps()
+    )
+    assert "news_macro.news.naver: HTTPStatusError: 401" in d["errors"]
+    assert "sentiment.community.clien: ConnectError: x" in d["errors"]
+    assert not any("reddit" in e or "google_rss" in e for e in d["errors"])
+
+
+def test_macro_item_failures_are_collected(project, monkeypatch):
+    from trader.sources.base import run_section, skipped_section
+
+    def fake_macro(*a, **k):
+        return {
+            "kospi": run_section(
+                lambda: (_ for _ in ()).throw(RuntimeError("KIS down")), now=lambda: T0
+            ),
+            "vix": skipped_section("no api key", now=lambda: T0),
+        }
+
+    monkeypatch.setattr(inputs, "collect_macro", fake_macro)
+    c = SourcesConfig.model_validate({"edgar": {"user_agent": "x y@z"}, "news": {"enabled": False}})
+    d = build_inputs(
+        ticker="005930", market="KR", exchange=None, asof=T0, cfg=c, secrets=Secrets(), deps=deps()
+    )
+    assert "news_macro.macro.kospi: RuntimeError: KIS down" in d["errors"]
+    assert "news_macro.macro.vix: no api key" in d["errors"]
+
+
+def test_name_fallback_to_market_and_edgar(project):
+    """DART 가 죽어도 KIS 에서 종목명을, US 는 EDGAR 티커 맵에서 회사명을 얻는다 (리뷰 I5)."""
+
+    class BrokenDart(FakeDart):
+        def corp_name(self, ticker):
+            raise RuntimeError("DART status 800")
+
+    class NamedMarket(FakeMarket):
+        def get_name_kr(self, ticker):
+            self._rec("get_name_kr")
+            return "삼성전자"
+
+    class FakeEdgar:
+        def company_name(self, symbol):
+            return "Apple Inc."
+
+        def cik(self, symbol):
+            return None
+
+    d = build_inputs(
+        ticker="005930",
+        market="KR",
+        exchange=None,
+        asof=T0,
+        cfg=cfg(),
+        secrets=Secrets(),
+        deps=deps(dart=BrokenDart(), market=NamedMarket()),
+    )
+    assert d["meta"]["name"] == "삼성전자"
+    d = build_inputs(
+        ticker="AAPL",
+        market="US",
+        exchange="NAS",
+        asof=T0,
+        cfg=cfg(),
+        secrets=Secrets(),
+        deps=deps(edgar=FakeEdgar()),
+    )
+    assert d["meta"]["name"] == "Apple Inc."
+
+
 def test_no_market_client(project):
     d = build_inputs(
         ticker="005930",

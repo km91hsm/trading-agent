@@ -31,6 +31,10 @@ def test_cik_lookup_cached(edgar, respx_mock, project):
     assert respx_mock.get(TICKERS).call_count == 1
 
 
+def test_company_name_from_ticker_map(edgar):
+    assert edgar.company_name("AAPL") == "Apple Inc." and edgar.company_name("ZZZZ") is None
+
+
 def test_user_agent_header(edgar, respx_mock):
     edgar.cik("AAPL")
     req = respx_mock.get(TICKERS).calls[0].request

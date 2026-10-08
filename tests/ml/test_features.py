@@ -92,6 +92,31 @@ def test_write_rows_idempotent(project):
     assert len(got) == 2 and set(got["ticker"]) == {"005930", "000660"}
 
 
+def test_write_rows_dtypes_stable_across_paths(project):
+    """snapshot·backfill 행을 같은 날짜 파일에 섞어 써도 dtype 이 고정된다 (리뷰 I3)."""
+    candles = make_candles(3)
+    hist = features.history_rows(ticker="005930", market="KR", candles=candles, ratios_by_year=None)
+    features.write_rows(hist)
+    row = features.snapshot_row(
+        ticker="000660",
+        market="KR",
+        candles=candles,
+        flows=None,
+        ratios=None,
+        news_count=None,
+        community_count=None,
+    )
+    features.write_rows(pd.DataFrame([row])[features.FEATURE_COLUMNS])
+    got = pd.read_parquet(
+        project / "state" / "features" / f"{candles[-1].date.isoformat()}.parquet"
+    )
+    assert len(got) == 2
+    for col in ("sma_120", "roe", "news_count", "flow_foreign_20d"):
+        assert str(got[col].dtype) == "Float64", (col, got[col].dtype)
+    assert str(got["close"].dtype) == "float64" and str(got["volume"].dtype) == "int64"
+    assert str(got["ticker"].dtype) in ("object", "string", "str")
+
+
 def test_backfill_continues_on_failure(project):
     class Market(FakeMarket):
         def get_daily_kr(self, ticker, days=250):

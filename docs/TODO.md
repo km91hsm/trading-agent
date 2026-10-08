@@ -35,6 +35,7 @@
 - [ ] 사용자 확인 대기: DART 점검 종료 후 `collect`·`features backfill --years 3` 재실행으로 재무비율 적재
 
 ## Phase 3 에이전트
+- [ ] fundamental 입력 확장: DART 3개년 추세 + 최근 분기 재무, CFS 없으면 OFS 폴백, `inputs.SCHEMA_VERSION` 2 (Phase 2 이연, 스펙 §3.1)
 - [ ] `tool` CLI 4개 (collect·checkpoint·submit-decision·status) + 전제조건 검증
 - [ ] 출력 스키마 (AnalystReport·DebateTurn·Decision·CallMeta)
 - [ ] `.claude/agents/` md 8개 (orchestrator·analyst×4·researcher×2·trader)
@@ -72,8 +73,9 @@
 - [ ] KRX 공매도·대차잔고, 검색트렌드 (Phase 2 이연)
 - [ ] 토스증권·네이버 종목토론실 API 조사 후 구현 여부 결정 (Phase 2 이연)
 - [ ] 7일 이벤트 캘린더 소스 확정 (Phase 2 이연, 현재 `events` 없음)
-- [ ] 종목명 조회 폴백: DART 실패 시 KIS 일봉 output1 `hts_kor_isnm` 사용 (Phase 2 이연)
-- [ ] Reddit 429 대응: OAuth API 전환 또는 서브레딧 간 간격 확대 (Phase 2 이연)
+- [ ] Reddit 429 대응: OAuth API 전환 + User-Agent 를 Reddit 형식(`<platform>:<app>:<ver> (by /u/<user>)`)으로 (Phase 2 이연)
+- [ ] 커뮤니티 키워드 매칭을 ASCII 티커는 단어 경계로 (짧은 티커 과잉 매칭, Phase 2 이연)
+- [ ] 공시 조회 종료일을 KST 기준으로, `collect` 가 기존 파일 건너뜀을 표시, 미래 asof 거부 (Phase 2 이연)
 - [ ] 완료 기준: 평일 자동 1주 무사고, 트리거→재평가→계좌별 주문, Windows 에서 install 후 로그온 시 데몬 기동 확인
 
 ## Phase 7 ML 1단계
