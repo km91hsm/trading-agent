@@ -1,5 +1,6 @@
 import sqlite3
 
+import pytest
 from conftest import make_account
 
 from trader.ledger import db
@@ -25,7 +26,7 @@ def test_init_schema_idempotent(conn):
 
 
 def test_migration_applies_only_newer(conn, monkeypatch):
-    extra = (db.SCHEMA_VERSION + 1, "CREATE TABLE IF NOT EXISTS extra_t (id INTEGER PRIMARY KEY);")
+    extra = (db.SCHEMA_VERSION + 1, ["CREATE TABLE IF NOT EXISTS extra_t (id INTEGER PRIMARY KEY)"])
     monkeypatch.setattr(db, "MIGRATIONS", [*db.MIGRATIONS, extra])
     monkeypatch.setattr(db, "SCHEMA_VERSION", extra[0])
     db.init_schema(conn)
@@ -33,6 +34,29 @@ def test_migration_applies_only_newer(conn, monkeypatch):
     assert db.current_version(conn) == extra[0]
     db.init_schema(conn)
     assert conn.execute("SELECT COUNT(*) FROM schema_version").fetchone()[0] == 1
+
+
+def test_migration_partial_failure_rolls_back(conn, monkeypatch):
+    bad = (db.SCHEMA_VERSION + 1, ["ALTER TABLE runs ADD COLUMN note TEXT", "CREATE TABLE nope (;"])
+    monkeypatch.setattr(db, "MIGRATIONS", [*db.MIGRATIONS, bad])
+    monkeypatch.setattr(db, "SCHEMA_VERSION", bad[0])
+    with pytest.raises(sqlite3.OperationalError):
+        db.init_schema(conn)
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(runs)").fetchall()}
+    assert "note" not in cols
+    assert db.current_version(conn) == bad[0] - 1
+
+
+def test_migration_does_not_reapply_non_idempotent_v1(conn, monkeypatch):
+    # v1 을 IF NOT EXISTS 없는 문장으로 바꿔 두면 재적용 시 즉시 실패해야 한다.
+    monkeypatch.setattr(db, "MIGRATIONS", [(1, ["CREATE TABLE control (key TEXT PRIMARY KEY)"])])
+    db.init_schema(conn)  # 이미 v1 이므로 아무것도 적용하지 않는다
+    assert db.current_version(conn) == 1
+
+
+def test_migrations_must_be_ascending():
+    with pytest.raises(ValueError):
+        db.check_migrations([(1, ["SELECT 1"]), (3, ["SELECT 1"]), (2, ["SELECT 1"])])
 
 
 def test_sync_accounts_upsert(conn):

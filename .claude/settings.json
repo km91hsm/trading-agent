@@ -26,7 +26,20 @@
     ],
     "deny": [
       "Read(./secrets/.env)",
-      "Bash(cat secrets/.env)",
+      "Bash(cat secrets/.env*)",
+      "Bash(cat ./secrets/.env*)",
+      "Bash(head secrets/.env*)",
+      "Bash(head ./secrets/.env*)",
+      "Bash(tail secrets/.env*)",
+      "Bash(tail ./secrets/.env*)",
+      "Bash(sed * secrets/.env*)",
+      "Bash(sed * ./secrets/.env*)",
+      "Bash(grep * secrets/.env*)",
+      "Bash(grep * ./secrets/.env*)",
+      "Bash(less secrets/.env*)",
+      "Bash(less ./secrets/.env*)",
+      "Bash(more secrets/.env*)",
+      "Bash(more ./secrets/.env*)",
       "Bash(python -m trader kis order *)",
       "Bash(uv run trader kis order *)"
     ]

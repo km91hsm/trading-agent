@@ -47,5 +47,9 @@ def test_settings_json_has_hook_and_denies_secrets():
     hooks = s["hooks"]["SessionStart"][0]
     assert "clear" in hooks["matcher"] and "session_start.py" in hooks["hooks"][0]["command"]
     deny = s["permissions"]["deny"]
-    assert any("secrets/.env" in d for d in deny)
+    assert "Read(./secrets/.env)" in deny
+    assert not any(".env.example" in d for d in deny)
+    for cmd in ("cat", "head", "tail", "sed", "grep", "less", "more"):
+        rules = [d for d in deny if d.startswith(f"Bash({cmd} ") and d.endswith("secrets/.env*)")]
+        assert any(" ./secrets/" in r for r in rules) and any(" secrets/" in r for r in rules), cmd
     assert any("kis order" in d for d in deny)

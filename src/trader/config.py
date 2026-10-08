@@ -210,12 +210,18 @@ def _describe(e: ValidationError) -> str:
 
 
 def _read_yaml(path: Path) -> dict:
-    if not path.exists():
-        return {}
     try:
-        data = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except (yaml.YAMLError, OSError) as e:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {}
+    except UnicodeDecodeError as e:
+        raise ConfigError(f"{path.name} 은 UTF-8 로 저장해야 합니다 (cp949 등 감지): {e}") from e
+    except OSError as e:
         raise ConfigError(f"{path.name} 읽기 실패: {e}") from e
+    try:
+        data = yaml.safe_load(text)
+    except yaml.YAMLError as e:
+        raise ConfigError(f"{path.name} 구문 오류: {e}") from e
     if data is None:
         return {}
     if not isinstance(data, dict):
@@ -265,9 +271,13 @@ def load_secrets(path: Path | None = None) -> Secrets:
     p = path or paths.secrets_path()
     values: dict[str, str | None] = {}
     if p.exists():
-        values.update(dotenv_values(p, encoding="utf-8"))
+        try:
+            values.update(dotenv_values(p, encoding="utf-8"))
+        except UnicodeDecodeError as e:
+            raise ConfigError(f"{p.name} 은 UTF-8 로 저장해야 합니다 (cp949 등 감지): {e}") from e
     for key in Secrets.model_fields:
-        env = os.environ.get(key)
+        env = (os.environ.get(key) or "").strip()
         if env:
             values[key] = env
-    return _validate(Secrets, {k: v for k, v in values.items() if v}, p.name)
+    cleaned = {k: v.strip() for k, v in values.items() if v and v.strip()}
+    return _validate(Secrets, cleaned, p.name)

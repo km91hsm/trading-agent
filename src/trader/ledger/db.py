@@ -5,55 +5,69 @@ from __future__ import annotations
 import json
 import sqlite3
 from datetime import UTC, datetime
+from itertools import pairwise
 from pathlib import Path
 
 from trader.config import AccountConfig
 from trader.platform import paths
 
-# 마이그레이션은 (버전, SQL) 순서 목록. 새 테이블·컬럼은 버전을 올려 뒤에 추가한다.
-MIGRATIONS: list[tuple[int, str]] = [
+# 마이그레이션은 (버전, 문장 목록) 오름차순 목록. 새 테이블·컬럼은 버전을 올려 뒤에 추가한다.
+# 한 버전의 문장들과 버전 갱신은 BEGIN IMMEDIATE 트랜잭션 하나로 묶인다(전부 적용 또는 전부 롤백).
+MIGRATIONS: list[tuple[int, list[str]]] = [
     (
         1,
-        """
-        CREATE TABLE IF NOT EXISTS accounts (
-            id TEXT PRIMARY KEY,
-            env TEXT NOT NULL,
-            cano TEXT NOT NULL,
-            acnt_prdt_cd TEXT NOT NULL,
-            markets TEXT NOT NULL,
-            created_at TEXT NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS control (
-            key TEXT PRIMARY KEY,
-            value TEXT NOT NULL,
-            updated_at TEXT NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS runs (
-            id INTEGER PRIMARY KEY,
-            kind TEXT NOT NULL,
-            market TEXT,
-            started_at TEXT NOT NULL,
-            finished_at TEXT,
-            status TEXT NOT NULL,
-            error TEXT
-        );
-        CREATE TABLE IF NOT EXISTS agent_calls (
-            id INTEGER PRIMARY KEY,
-            run_id INTEGER,
-            ticker TEXT,
-            market TEXT,
-            agent TEXT NOT NULL,
-            model TEXT,
-            session_id TEXT,
-            cost_usd REAL,
-            duration_ms INTEGER,
-            status TEXT NOT NULL,
-            error TEXT,
-            created_at TEXT NOT NULL
-        );
-        """,
+        [
+            """CREATE TABLE IF NOT EXISTS accounts (
+                id TEXT PRIMARY KEY,
+                env TEXT NOT NULL,
+                cano TEXT NOT NULL,
+                acnt_prdt_cd TEXT NOT NULL,
+                markets TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )""",
+            """CREATE TABLE IF NOT EXISTS control (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )""",
+            """CREATE TABLE IF NOT EXISTS runs (
+                id INTEGER PRIMARY KEY,
+                kind TEXT NOT NULL,
+                market TEXT,
+                started_at TEXT NOT NULL,
+                finished_at TEXT,
+                status TEXT NOT NULL,
+                error TEXT
+            )""",
+            """CREATE TABLE IF NOT EXISTS agent_calls (
+                id INTEGER PRIMARY KEY,
+                run_id INTEGER,
+                ticker TEXT,
+                market TEXT,
+                agent TEXT NOT NULL,
+                model TEXT,
+                session_id TEXT,
+                cost_usd REAL,
+                duration_ms INTEGER,
+                status TEXT NOT NULL,
+                error TEXT,
+                created_at TEXT NOT NULL
+            )""",
+        ],
     ),
 ]
+
+
+def check_migrations(migrations: list[tuple[int, list[str]]]) -> None:
+    """버전이 양수이고 엄격히 오름차순인지 검사한다."""
+    versions = [v for v, _ in migrations]
+    if not versions or versions[0] < 1:
+        raise ValueError("마이그레이션 버전은 1 이상이어야 합니다")
+    if any(a >= b for a, b in pairwise(versions)):
+        raise ValueError(f"마이그레이션 버전이 오름차순이 아닙니다: {versions}")
+
+
+check_migrations(MIGRATIONS)
 SCHEMA_VERSION = MIGRATIONS[-1][0]
 
 
@@ -62,7 +76,10 @@ def now_iso() -> str:
 
 
 def connect(path: Path | None = None) -> sqlite3.Connection:
-    """원장 DB 연결을 연다. 기본 경로는 state_dir()/trader.db."""
+    """원장 DB 연결을 연다. 기본 경로는 state_dir()/trader.db.
+
+    check_same_thread=False 는 Phase 5 웹 서버(스레드 풀)가 같은 연결 팩토리를 쓰기 위한 것이다.
+    """
     db_path = path if path is not None else paths.state_dir() / "trader.db"
     conn = sqlite3.connect(db_path, timeout=30, check_same_thread=False)
     conn.execute("PRAGMA journal_mode=WAL")
@@ -77,16 +94,25 @@ def current_version(conn: sqlite3.Connection) -> int:
 
 
 def init_schema(conn: sqlite3.Connection) -> None:
-    """현재 버전보다 큰 마이그레이션만 순서대로 적용한다. 멱등."""
-    version = current_version(conn)
-    for target, sql in MIGRATIONS:
-        if target <= version:
-            continue
-        conn.executescript(sql)
-        conn.execute("DELETE FROM schema_version")
-        conn.execute("INSERT INTO schema_version(version) VALUES (?)", (target,))
-        conn.commit()
-        version = target
+    """현재 버전보다 큰 마이그레이션만 순서대로 적용한다. 멱등이며 동시 실행에 안전하다."""
+    check_migrations(MIGRATIONS)
+    current_version(conn)  # schema_version 테이블 보장
+    conn.commit()
+    for target, statements in MIGRATIONS:
+        conn.execute("BEGIN IMMEDIATE")  # 쓰기 잠금 안에서 버전을 다시 읽는다
+        try:
+            row = conn.execute("SELECT MAX(version) AS v FROM schema_version").fetchone()
+            if target <= int(row["v"] or 0):
+                conn.execute("COMMIT")
+                continue
+            for sql in statements:
+                conn.execute(sql)
+            conn.execute("DELETE FROM schema_version")
+            conn.execute("INSERT INTO schema_version(version) VALUES (?)", (target,))
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
 
 
 def sync_accounts(conn: sqlite3.Connection, accounts: list[AccountConfig]) -> None:

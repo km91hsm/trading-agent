@@ -27,6 +27,13 @@ def test_state_dir_is_created(project: Path):
     assert paths.state_dir().is_dir()
 
 
+def test_trader_home_missing_dir_raises(tmp_path, monkeypatch):
+    monkeypatch.setenv("TRADER_HOME", str(tmp_path / "오타"))
+    with pytest.raises(paths.ProjectRootNotFound, match="TRADER_HOME"):
+        paths.project_root()
+    assert not (tmp_path / "오타").exists()
+
+
 def test_root_not_found(tmp_path, monkeypatch):
     monkeypatch.delenv("TRADER_HOME", raising=False)
     monkeypatch.chdir(tmp_path)

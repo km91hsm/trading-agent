@@ -45,5 +45,5 @@ def test_status_cli_utf8_korean_path(tmp_path, monkeypatch):
         cwd=str(root),
     )
     assert r.returncode == 0, r.stderr
-    assert "STATUS.md" in r.stdout
+    assert "저장: " in r.stdout and "한글 경로" in r.stdout
     assert "Phase 0 골격" in (root / "state" / "STATUS.md").read_text(encoding="utf-8")

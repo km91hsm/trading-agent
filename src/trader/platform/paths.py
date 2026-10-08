@@ -14,7 +14,10 @@ def project_root() -> Path:
     """TRADER_HOME 을 우선 쓰고, 없으면 cwd 에서 위로 올라가며 pyproject.toml 을 찾는다."""
     env = os.environ.get("TRADER_HOME")
     if env:
-        return Path(env)
+        home = Path(env)
+        if not home.is_dir():
+            raise ProjectRootNotFound(f"TRADER_HOME 이 가리키는 디렉터리가 없습니다: {env}")
+        return home
     current = Path.cwd().resolve()
     for candidate in (current, *current.parents):
         if (candidate / "pyproject.toml").is_file():

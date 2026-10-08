@@ -127,6 +127,25 @@ def test_env_overrides_file(project, monkeypatch):
     assert s.WEB_TOKEN == "file"
 
 
+def test_cp949_yaml_is_config_error(project):
+    raw = "# 한글 주석\ndebate_rounds: 1\n".encode("cp949")
+    (project / "config" / "settings.yaml").write_bytes(raw)
+    with pytest.raises(config.ConfigError, match="UTF-8"):
+        config.load_settings()
+
+
+def test_cp949_env_is_config_error(project):
+    (project / "secrets" / ".env").write_bytes("# 한글\nDART_API_KEY=x\n".encode("cp949"))
+    with pytest.raises(config.ConfigError, match="UTF-8"):
+        config.load_secrets()
+
+
+def test_whitespace_env_does_not_override(project, monkeypatch):
+    (project / "secrets" / ".env").write_text("DART_API_KEY=file\n", encoding="utf-8")
+    monkeypatch.setenv("DART_API_KEY", "   ")
+    assert config.load_secrets().DART_API_KEY == "file"
+
+
 def test_bad_yaml_is_config_error(project):
     (project / "config" / "settings.yaml").write_text("a: [", encoding="utf-8")
     with pytest.raises(config.ConfigError):

@@ -37,4 +37,4 @@ channels:
 
 # 자동 수집 불가로 확인된 사이트 (기록용). 세이브티커는 Cloudflare 봇 검증으로 403.
 disabled_sites:
-  - "https://www.saveticker.com/news  # Cloudflare 차단, 2026-10-09 확인"
+  - "https://www.saveticker.com/news"   # Cloudflare 봇 검증으로 403, 2026-10-09 확인
