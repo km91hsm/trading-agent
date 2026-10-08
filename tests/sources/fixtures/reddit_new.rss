@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>newest submissions : stocks</title>
+  <entry>
+    <author><name>/u/trader1</name></author>
+    <id>t3_abc1</id>
+    <link href="https://www.reddit.com/r/stocks/comments/abc1/aapl_earnings/" />
+    <updated>2026-10-09T05:30:00+00:00</updated>
+    <published>2026-10-09T05:30:00+00:00</published>
+    <title>AAPL earnings next week, thoughts?</title>
+    <content type="html">&lt;!-- SC_OFF --&gt;&lt;div class="md"&gt;&lt;p&gt;Expecting a beat on services.&lt;/p&gt;&lt;/div&gt;&lt;!-- SC_ON --&gt;</content>
+  </entry>
+  <entry>
+    <author><name>/u/trader2</name></author>
+    <id>t3_abc2</id>
+    <link href="https://www.reddit.com/r/stocks/comments/abc2/future_post/" />
+    <updated>2026-10-09T07:00:00+00:00</updated>
+    <published>2026-10-09T07:00:00+00:00</published>
+    <title>AAPL future post</title>
+    <content type="html">&lt;p&gt;This is after asof.&lt;/p&gt;</content>
+  </entry>
+  <entry>
+    <author><name>/u/trader3</name></author>
+    <id>t3_abc3</id>
+    <link href="https://www.reddit.com/r/stocks/comments/abc3/msft/" />
+    <updated>2026-10-08T20:00:00+00:00</updated>
+    <published>2026-10-08T20:00:00+00:00</published>
+    <title>MSFT cloud growth</title>
+    <content type="html">&lt;p&gt;Not about Apple.&lt;/p&gt;</content>
+  </entry>
+</feed>
