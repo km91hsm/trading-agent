@@ -45,10 +45,13 @@
 - [x] FAKE_CLAUDE 스텁 + `analyze --dry-run`
 - [x] 완료 기준: `FAKE_CLAUDE=1 analyze --ticker 005930 --dry-run` → 30_decision.json, 중간 파일 삭제 후 해당 단계만 재실행 (2026-10-09 확인)
 - [x] 완료 기준(실기): 실제 `claude -p` 1회로 서브에이전트 호출·도구 제한 동작 확인 (2026-10-09, 2회: 1차 $1.58 에서 절 출력 잘림 발견 → 압축 후 2차 $1.89/4분 23초, 애널리스트 4·토론 2라운드·요약·HOLD 결정, 스키마 거부→재제출 동작 확인)
-- [ ] 트레이더 rationale 에 `&lt;` 같은 HTML 엔티티가 섞임 → `checkpoint write`/`submit-decision` 에서 문자열 값 html.unescape (Phase 3 이연)
+- [x] HTML 엔티티(`&lt;` 등, Claude Code 가 서브에이전트 출력을 이스케이프)를 도구 저장 시 복원 (2026-10-09 리뷰 반영)
+- [x] 세션 `duration_ms` 를 파이썬 측 측정값으로, running 행 선기록 (2026-10-09 리뷰 반영)
 - [ ] 체크포인트 `call.model` 이 LLM 쓰기에선 None → `tool checkpoint write --model` 또는 agents.json 에서 역추적 (Phase 3 이연)
-- [ ] 세션 `duration_ms` 가 claude 결과의 마지막 턴 기준(6.8초)이라 실제 소요(4분)와 다름 → 파이썬 측 측정값으로 교체 (Phase 3 이연)
+- [ ] 세션 cwd 를 저장소 밖(tempfile)으로 옮겨 상위 CLAUDE.md 자동 탐색 가정 제거 (Phase 3 이연)
+- [ ] 리서처 라운드 1·트레이더 입력(리포트 4개 + 요약 ≈ 30KB)이 Agent 프롬프트에 전문으로 들어가는지 실기 확인 후, 크면 `checkpoint read --stage 10_analyst_* --section brief` 파이썬 압축 추가 (Phase 3 이연)
 - [ ] 완료 기준: Windows 에서 FAKE_CLAUDE dry-run 동일 동작 (사용자 확인 대기)
+- [ ] 사용자 확인 대기(Windows): `claude.cmd` 가 다줄 9KB `--append-system-prompt` 를 cmd.exe 재해석 없이 받는지 실제 `claude -p` 1회. 깨지면 `claude.exe` 우선 또는 `--agent` 파일 전달로 전환
 
 ## Phase 4 리스크·계좌별 실행
 - [ ] rules·stance·costs (TDD)
