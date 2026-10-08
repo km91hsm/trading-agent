@@ -12,3 +12,20 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("TRADER_HOME", str(tmp_path))
     monkeypatch.chdir(tmp_path)
     return tmp_path
+
+
+@pytest.fixture
+def conn(project: Path):
+    """초기화된 원장 DB 연결."""
+    from trader.ledger import db
+
+    c = db.connect()
+    db.init_schema(c)
+    yield c
+    c.close()
+
+
+def make_account(id: str, env: str, mode: str, markets: list[str] | None = None):
+    from trader.config import AccountConfig
+
+    return AccountConfig(id=id, env=env, cano="00000000", markets=markets or ["KR"], mode=mode)
