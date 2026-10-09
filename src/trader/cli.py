@@ -16,7 +16,7 @@ from trader.broker.kis_auth import KisAuth
 from trader.broker.kis_client import KisClient
 from trader.broker.kis_market import KisMarket
 from trader.logging_setup import configure
-from trader.notify.telegram import make_notifier
+from trader.notify.telegram import make_notifier, make_receiver, parse_command
 from trader.orchestrator.session import run_session
 from trader.platform import paths
 from trader.platform.claude_bin import ClaudeNotFound
@@ -616,6 +616,159 @@ def tool_submit_decision(
         date=date,
         payload=_payload_arg(json_text),
     )
+
+
+# --- 승인 (Phase 4) ------------------------------------------------------------
+
+approvals_app = typer.Typer(help="approve 모드 계좌의 승인 요청 조회·승인·거부")
+app.add_typer(approvals_app, name="approvals")
+telegram_app = typer.Typer(help="텔레그램 수신 (승인 명령 1회 폴링)")
+app.add_typer(telegram_app, name="telegram")
+
+
+def _exec_ctx():
+    """CLI 용 ExecContext. 브로커는 앱키가 있는 계좌만 (없으면 승인 시 실패로 기록)."""
+    from trader.ledger import db
+    from trader.orchestrator.executor import ExecContext
+
+    configure(paths.state_dir())
+    secrets = config.load_secrets()
+    accounts = config.load_accounts()
+    conn = db.connect()
+    db.init_schema(conn)
+    return ExecContext(
+        settings=config.load_settings(),
+        accounts=accounts,
+        conn=conn,
+        brokers={b.account.id: b for b in _build_brokers(secrets, accounts)},
+        notifier=make_notifier(secrets),
+    ), secrets
+
+
+def _approval_line(a: dict) -> str:
+    o = a["order"]
+    return (
+        f"#{a['id']} {a['account_id']} {o.get('side')} {o.get('ticker')} {o.get('qty')}주 "
+        f"@{o.get('price') or '시장가'} 만료 {a['expires_at']}"
+    )
+
+
+@approvals_app.command("list")
+def approvals_list() -> None:
+    """미처리 승인 요청 목록 (만료분은 expired 로 정리)."""
+    from trader.ledger import repo
+    from trader.orchestrator import executor
+
+    try:
+        ectx, _ = _exec_ctx()
+    except (config.ConfigError, paths.ProjectRootNotFound) as e:
+        typer.echo(f"오류: {e}", err=True)
+        raise typer.Exit(code=1) from e
+    try:
+        expired = executor.expire_approvals(ectx)
+        pending = repo.pending_approvals(ectx.conn)
+    finally:
+        ectx.conn.close()
+    if expired:
+        typer.echo(f"만료 처리: {', '.join(f'#{i}' for i in expired)}")
+    if not pending:
+        typer.echo("미승인 주문 없음")
+    for a in pending:
+        typer.echo(_approval_line(a))
+
+
+def _decide(approval_id: int, action: str) -> None:
+    from trader.orchestrator import executor
+
+    try:
+        ectx, _ = _exec_ctx()
+    except (config.ConfigError, paths.ProjectRootNotFound) as e:
+        typer.echo(f"오류: {e}", err=True)
+        raise typer.Exit(code=1) from e
+    try:
+        r = (
+            executor.approve(ectx, approval_id)
+            if action == "approve"
+            else executor.reject(ectx, approval_id)
+        )
+    finally:
+        ectx.conn.close()
+    if not r["ok"]:
+        typer.echo(f"실패: {r.get('error') or r.get('order')}", err=True)
+        raise typer.Exit(code=1)
+    if action == "approve":
+        o = r["order"]
+        typer.echo(f"승인 #{approval_id} → 주문 접수번호 {o.get('order_no')} {o.get('message')}")
+    else:
+        typer.echo(f"거부 #{approval_id}")
+
+
+@approvals_app.command("approve")
+def approvals_approve(approval_id: int = typer.Argument(..., help="승인 요청 id")) -> None:
+    """승인 요청을 주문으로 실행한다 (30분 만료, 1회만)."""
+    _decide(approval_id, "approve")
+
+
+@approvals_app.command("reject")
+def approvals_reject(approval_id: int = typer.Argument(..., help="승인 요청 id")) -> None:
+    """승인 요청을 거부한다."""
+    _decide(approval_id, "reject")
+
+
+@telegram_app.command("poll")
+def telegram_poll() -> None:
+    """getUpdates 1회: /approve <id>·/reject <id>·/status 를 처리하고 오프셋을 저장한다."""
+    from trader.control import control
+    from trader.ledger import repo
+    from trader.orchestrator import executor
+
+    try:
+        ectx, secrets = _exec_ctx()
+    except (config.ConfigError, paths.ProjectRootNotFound) as e:
+        typer.echo(f"오류: {e}", err=True)
+        raise typer.Exit(code=1) from e
+    receiver = make_receiver(secrets)
+    if receiver is None:
+        ectx.conn.close()
+        typer.echo("오류: 텔레그램 토큰·chat_id 가 없습니다", err=True)
+        raise typer.Exit(code=1)
+    try:
+        offset = control.get_flag(ectx.conn, "telegram_offset")
+        updates = receiver.poll(offset)
+        executor.expire_approvals(ectx)
+        handled = 0
+        for u in updates:
+            cmd = parse_command(u.text)
+            if cmd is None:
+                continue
+            name, arg = cmd
+            handled += 1
+            if name == "status":
+                pending = repo.pending_approvals(ectx.conn)
+                modes = ", ".join(
+                    f"{a.id}={control.get_account_mode(ectx.conn, a)}" for a in ectx.accounts
+                )
+                body = "\n".join(_approval_line(a) for a in pending) or "없음"
+                ectx.notifier.send(f"[상태] 계좌 모드: {modes}\n미승인 주문:\n{body}")
+                typer.echo(f"status → 미승인 {len(pending)}건")
+                continue
+            if arg is None or not arg.isdigit():
+                ectx.notifier.send(f"사용법: /{name} <승인 id>")
+                continue
+            r = (
+                executor.approve(ectx, int(arg))
+                if name == "approve"
+                else executor.reject(ectx, int(arg))
+            )
+            msg = f"{name} #{arg} → {'ok' if r['ok'] else r.get('error') or '실패'}"
+            typer.echo(msg)
+            if not r["ok"]:
+                ectx.notifier.send(f"[{name} 실패] {r.get('error') or r.get('order')}")
+        if updates:
+            control.set_flag(ectx.conn, "telegram_offset", max(u.update_id for u in updates) + 1)
+        typer.echo(f"수신 {len(updates)}건, 명령 {handled}건")
+    finally:
+        ectx.conn.close()
 
 
 @app.command("notify-test")

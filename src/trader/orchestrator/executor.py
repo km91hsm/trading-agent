@@ -15,6 +15,7 @@ from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from trader.agents import schemas
 from trader.agents.schemas import Decision
@@ -29,6 +30,7 @@ from trader.risk import rules
 from trader.risk import stance as stance_mod
 
 logger = logging.getLogger("trader.executor")
+_KST = ZoneInfo("Asia/Seoul")
 
 APPROVAL_TTL = timedelta(minutes=30)
 
@@ -262,3 +264,73 @@ def _place(
         f"({mode}) 접수번호 {result.order_no or '-'} {result.message}"
     )
     return payload["result"] | {"status": status}
+
+
+# --- 승인 처리 (approve 모드) ---------------------------------------------------
+
+
+def expire_approvals(ctx: ExecContext) -> list[int]:
+    """만료 시각이 지난 pending 승인을 expired 로 바꾸고 id 목록을 돌려준다."""
+    now = ctx.now()
+    expired: list[int] = []
+    for a in repo.pending_approvals(ctx.conn):
+        if datetime.fromisoformat(a["expires_at"]) <= now:
+            repo.decide_approval(ctx.conn, a["id"], "expired", decided_at=now.isoformat())
+            expired.append(a["id"])
+    return expired
+
+
+def _take_pending(ctx: ExecContext, approval_id: int) -> tuple[dict | None, str | None]:
+    a = repo.get_approval(ctx.conn, approval_id)
+    if a is None:
+        return None, f"승인 요청 #{approval_id} 없음"
+    if a["status"] != "pending":
+        return None, f"승인 요청 #{approval_id} 은 이미 처리됨: {a['status']}"
+    if datetime.fromisoformat(a["expires_at"]) <= ctx.now():
+        repo.decide_approval(ctx.conn, approval_id, "expired", decided_at=ctx.now().isoformat())
+        return None, f"승인 요청 #{approval_id} 은 만료됨 (30분 초과)"
+    return a, None
+
+
+def approve(ctx: ExecContext, approval_id: int) -> dict:
+    """pending·미만료 승인 요청을 주문으로 실행한다. 두 번째 호출은 거부된다."""
+    a, err = _take_pending(ctx, approval_id)
+    if a is None:
+        return {"ok": False, "error": err}
+    account = next((x for x in ctx.accounts if x.id == a["account_id"]), None)
+    if account is None:
+        return {"ok": False, "error": f"계좌 {a['account_id']} 가 설정에 없음"}
+    request = OrderRequest.model_validate(a["order"])
+    dec = repo.get_decision(ctx.conn, a["decision_id"]) if a["decision_id"] else None
+    day = date.fromisoformat(dec["date"]) if dec else ctx.now().astimezone(_KST).date()
+    d = run_dir(day, request.market, request.ticker, ctx.state)
+    repo.decide_approval(ctx.conn, approval_id, "approved", decided_at=ctx.now().isoformat())
+    broker = ctx.brokers.get(account.id)
+    if broker is None:
+        result = {"accepted": False, "order_no": None, "message": "브로커 없음(앱키 미설정)"}
+        write_checkpoint(
+            d,
+            f"50_order_{account.id}",
+            _wrap(
+                {
+                    "request": request.model_dump(mode="json"),
+                    "result": result,
+                    "mode": "approve",
+                    "status": "failed",
+                }
+            ),
+        )
+        return {"ok": False, "error": result["message"], "order": result}
+    result = _place(ctx, d, account, broker, a["decision_id"] or None, request, "approve")
+    return {"ok": bool(result["accepted"]), "approval_id": approval_id, "order": result}
+
+
+def reject(ctx: ExecContext, approval_id: int) -> dict:
+    a, err = _take_pending(ctx, approval_id)
+    if a is None:
+        return {"ok": False, "error": err}
+    repo.decide_approval(ctx.conn, approval_id, "rejected", decided_at=ctx.now().isoformat())
+    ctx.notifier.send(
+        f"[거부] 승인 요청 #{approval_id} {a['account_id']} {a['order'].get('ticker')}"
+    )
+    return {"ok": True, "approval_id": approval_id}

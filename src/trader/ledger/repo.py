@@ -119,6 +119,11 @@ def ingest_checkpoint(
     return None
 
 
+def get_decision(conn: sqlite3.Connection, decision_id: int) -> dict | None:
+    row = conn.execute("SELECT * FROM decisions WHERE id=?", (decision_id,)).fetchone()
+    return dict(row) if row else None
+
+
 def decision_id(conn: sqlite3.Connection, d: date, market: str, ticker: str) -> int | None:
     row = conn.execute(
         "SELECT id FROM decisions WHERE date=? AND market=? AND ticker=?",

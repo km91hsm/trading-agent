@@ -1,4 +1,4 @@
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -197,3 +197,44 @@ def test_us_order_carries_exchange(ectx):
     assert r["approved"]
     o = ectx.brokers["paper-main"].orders[0]
     assert o.market == "US" and o.exchange == "NAS" and o.order_type == "LIMIT"
+
+
+def _pending(ectx) -> int:
+    control.set_account_mode(ectx.conn, ectx.accounts[0], "approve")
+    results = _run(ectx)
+    return next(x for x in results if x["account_id"] == "paper-main")["approval_id"]
+
+
+def test_approve_executes_order_once(ectx):
+    aid = _pending(ectx)
+    r = executor.approve(ectx, aid)
+    assert r["ok"] and r["order"]["accepted"] and r["order"]["order_no"] == "FAKE-1"
+    assert len(ectx.brokers["paper-main"].orders) == 1
+    assert repo.get_approval(ectx.conn, aid)["status"] == "approved"
+    oc = read_checkpoint(run_dir(D, "KR", "005930"), "50_order_paper-main")
+    assert oc["data"]["mode"] == "approve" and oc["data"]["result"]["accepted"]
+    row = ectx.conn.execute("SELECT mode, status FROM orders").fetchone()
+    assert (row["mode"], row["status"]) == ("approve", "accepted")
+    r2 = executor.approve(ectx, aid)  # 두 번째 승인은 거부, 주문 1건 유지
+    assert r2["ok"] is False and len(ectx.brokers["paper-main"].orders) == 1
+    assert executor.approve(ectx, 999)["ok"] is False
+
+
+def test_expired_approval_not_executed(ectx):
+    aid = _pending(ectx)
+    ectx.now = lambda: T0 + timedelta(minutes=31)
+    r = executor.approve(ectx, aid)
+    assert r["ok"] is False and "만료" in r["error"]
+    assert ectx.brokers["paper-main"].orders == []
+    assert repo.get_approval(ectx.conn, aid)["status"] == "expired"
+
+
+def test_reject_and_expire_pass(ectx):
+    aid = _pending(ectx)
+    assert executor.reject(ectx, aid)["ok"]
+    assert repo.get_approval(ectx.conn, aid)["status"] == "rejected"
+    assert executor.reject(ectx, aid)["ok"] is False
+    aid2 = _pending(ectx)
+    ectx.now = lambda: T0 + timedelta(hours=1)
+    assert executor.expire_approvals(ectx) == [aid2]
+    assert repo.pending_approvals(ectx.conn) == []
