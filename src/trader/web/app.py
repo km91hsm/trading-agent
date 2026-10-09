@@ -43,6 +43,7 @@ class WebDeps:
 
 
 def create_app(deps: WebDeps) -> FastAPI:
+    from trader.web import sse
     from trader.web.routers import accounts, charts, control, ml, orders, portfolio, runs, system
 
     app = FastAPI(title="trader", docs_url="/api/docs", openapi_url="/api/openapi.json")
@@ -56,6 +57,7 @@ def create_app(deps: WebDeps) -> FastAPI:
         charts.router,
         ml.router,
         control.router,
+        sse.router,
     )
     for router in routers:
         app.include_router(router, prefix="/api")
