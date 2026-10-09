@@ -936,6 +936,63 @@ def control_resume() -> None:
     typer.echo("일시정지: 아니오")
 
 
+# --- 웹 UI (Phase 5) ------------------------------------------------------------
+
+
+def _web_deps():
+    from trader.ledger import db
+    from trader.web.app import WebDeps
+
+    configure(paths.state_dir())
+    settings = config.load_settings()
+    accounts = config.load_accounts()
+    secrets = config.load_secrets()
+    log = logging.getLogger("trader.web")
+    try:
+        market = _build_market(secrets)
+    except Exception as e:  # noqa: BLE001 - 시세 없이도 조회 페이지는 뜬다
+        log.warning("시세 클라이언트 생성 실패(차트 비활성): %s", e)
+        market = None
+    if not secrets.WEB_TOKEN:
+        log.warning("WEB_TOKEN 미설정: 제어 API 비활성(401)")
+    conn = db.connect()
+    db.init_schema(conn)
+    conn.close()
+    return WebDeps(
+        settings=settings,
+        accounts=accounts,
+        conn_factory=db.connect,
+        brokers={b.account.id: b for b in _build_brokers(secrets, accounts)},
+        market=market,
+        token=secrets.WEB_TOKEN or None,
+        dist=paths.project_root() / "web" / "dist",
+        notifier=make_notifier(secrets),
+    )
+
+
+@app.command("web")
+def web(
+    host: str | None = typer.Option(None, "--host", help="바인드 주소 (기본 settings.web.bind)"),
+    port: int | None = typer.Option(None, "--port", help="포트 (기본 settings.web.port)"),
+) -> None:
+    """웹 UI 서버를 띄운다 (조회는 토큰 없음, 제어는 Bearer WEB_TOKEN)."""
+    import uvicorn
+
+    from trader.web.app import create_app
+
+    try:
+        deps = _web_deps()
+    except (config.ConfigError, paths.ProjectRootNotFound) as e:
+        typer.echo(f"오류: {e}", err=True)
+        raise typer.Exit(code=1) from e
+    uvicorn.run(
+        create_app(deps),
+        host=host or deps.settings.web.bind,
+        port=port or deps.settings.web.port,
+        log_level="info",
+    )
+
+
 @app.command("notify-test")
 def notify_test() -> None:
     """텔레그램으로 테스트 메시지를 보낸다 (미설정이면 NullNotifier 로 성공)."""
