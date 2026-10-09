@@ -36,7 +36,7 @@ packages = ["src/trader"]
 
 [tool.pytest.ini_options]
 filterwarnings = [
-    "ignore:Using `httpx` with `starlette.testclient` is deprecated:DeprecationWarning",
+    "ignore:Using `httpx` with `starlette.testclient` is deprecated",
 ]
 testpaths = ["tests"]
 
