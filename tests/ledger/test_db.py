@@ -50,8 +50,8 @@ def test_migration_partial_failure_rolls_back(conn, monkeypatch):
 def test_migration_does_not_reapply_non_idempotent_v1(conn, monkeypatch):
     # v1 을 IF NOT EXISTS 없는 문장으로 바꿔 두면 재적용 시 즉시 실패해야 한다.
     monkeypatch.setattr(db, "MIGRATIONS", [(1, ["CREATE TABLE control (key TEXT PRIMARY KEY)"])])
-    db.init_schema(conn)  # 이미 v1 이므로 아무것도 적용하지 않는다
-    assert db.current_version(conn) == 1
+    db.init_schema(conn)  # 이미 v1 이상이므로 아무것도 적용하지 않는다
+    assert db.current_version(conn) == db.SCHEMA_VERSION
 
 
 def test_migrations_must_be_ascending():
