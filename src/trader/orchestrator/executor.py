@@ -110,8 +110,12 @@ def execute(
     price: Decimal,
     exchange: str | None = None,
     dry_run: bool = True,
+    is_stop_loss: bool = False,
 ) -> list[dict]:
-    """계좌마다 판정·기록·(모드별) 주문. 계좌 하나의 실패가 다른 계좌를 막지 않는다."""
+    """계좌마다 판정·기록·(모드별) 주문. 계좌 하나의 실패가 다른 계좌를 막지 않는다.
+
+    is_stop_loss 면 보유기간·주 2회 규칙을 면제하고 approve 계좌도 승인 없이 즉시 낸다(사후 통보).
+    """
     d = run_dir(date, market, decision.ticker, ctx.state)
     decision_id = repo.decision_id(ctx.conn, date, market, decision.ticker)
     paused = control.is_paused(ctx.conn)
@@ -134,6 +138,7 @@ def execute(
                 market=market,
                 price=price,
                 today=date,
+                is_stop_loss=is_stop_loss,
             )
         except (KisApiError, ValueError) as e:
             verdict = rules.RiskVerdict(
@@ -146,7 +151,7 @@ def execute(
         if (
             verdict.approved
             and decision_id is not None
-            and repo.has_open_order_or_approval(ctx.conn, decision_id, account.id)
+            and repo.has_open_order_or_approval(ctx.conn, decision_id, account.id, verdict.side)
         ):
             verdict = verdict.model_copy(
                 update={
@@ -194,7 +199,7 @@ def execute(
             price=verdict.price,
             exchange=exchange,
         )
-        if mode == "approve":
+        if mode == "approve" and not is_stop_loss:
             entry["approval_id"] = _request_approval(ctx, account, decision_id, request, verdict)
         else:
             entry["order"] = _place(ctx, d, account, broker, decision_id, request, mode, price)

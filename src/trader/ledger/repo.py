@@ -17,6 +17,7 @@ from trader.ledger.db import now_iso
 
 _KST = ZoneInfo("Asia/Seoul")
 _ANALYST_RE = re.compile(r"^10_analyst_([a-z_]+)$")
+_DECISION_RE = re.compile(r"^(30_decision|31_decision_r\d+)$")
 _DEBATE_RE = re.compile(r"^20_debate_r(\d+)_(bull|bear)$")
 
 
@@ -95,7 +96,7 @@ def ingest_checkpoint(
                 (d.isoformat(), market, ticker, m.group(2), int(m.group(1))),
             ).fetchone()["id"]
         )
-    if stage == "30_decision":
+    if _DECISION_RE.match(stage):
         conn.execute(
             "INSERT INTO decisions(date, market, ticker, action, target_weight, confidence, "
             "session_id, json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
@@ -283,20 +284,42 @@ def last_trigger_handled_at(conn: sqlite3.Connection, market: str, ticker: str) 
     return datetime.fromisoformat(row["t"]) if row and row["t"] else None
 
 
-def has_open_order_or_approval(conn: sqlite3.Connection, decision_id: int, account_id: str) -> bool:
-    """같은 결정·계좌에 살아 있는 주문(실패·거부·취소 제외)이나 pending 승인이 있으면 True."""
-    row = conn.execute(
+def has_open_order_or_approval(
+    conn: sqlite3.Connection, decision_id: int, account_id: str, side: str | None = None
+) -> bool:
+    """같은 결정·계좌(·방향)에 살아 있는 주문(실패·거부·취소 제외)이나 pending 승인이 있으면 True.
+
+    재평가(31_decision_r<n>)는 같은 decisions 행을 갱신하므로 방향이 다르면(BUY 뒤 SELL) 허용한다.
+    """
+    sql = (
         "SELECT 1 FROM orders WHERE decision_id=? AND account_id=? "
-        "AND status NOT IN ('rejected','cancelled','failed') LIMIT 1",
-        (decision_id, account_id),
-    ).fetchone()
-    if row:
+        "AND status NOT IN ('rejected','cancelled','failed')"
+    )
+    args: list = [decision_id, account_id]
+    if side:
+        sql += " AND side=?"
+        args.append(side)
+    if conn.execute(sql + " LIMIT 1", args).fetchone():
         return True
+    sql = "SELECT 1 FROM approvals WHERE decision_id=? AND account_id=? AND status='pending'"
+    args = [decision_id, account_id]
+    if side:
+        sql += " AND json_extract(order_json, '$.side')=?"
+        args.append(side)
+    return conn.execute(sql + " LIMIT 1", args).fetchone() is not None
+
+
+def latest_decision(conn: sqlite3.Connection, market: str, ticker: str) -> dict | None:
+    """종목의 가장 최근 결정 행 (json → data). monitor 가 손절선·익절·무효화 조건을 읽는다."""
     row = conn.execute(
-        "SELECT 1 FROM approvals WHERE decision_id=? AND account_id=? AND status='pending' LIMIT 1",
-        (decision_id, account_id),
+        "SELECT * FROM decisions WHERE market=? AND ticker=? ORDER BY date DESC, id DESC LIMIT 1",
+        (market, ticker),
     ).fetchone()
-    return row is not None
+    if row is None:
+        return None
+    d = dict(row)
+    d["data"] = json.loads(d.pop("json"))
+    return d
 
 
 def today_buy_tickers(conn: sqlite3.Connection, account_id: str, d: date) -> set[str]:

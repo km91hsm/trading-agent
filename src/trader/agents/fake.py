@@ -143,6 +143,22 @@ def run_fake_ticker(
         if not r["ok"]:
             raise tools.ToolError(r["error"])
         written.append("25_research_summary")
+    if trigger is not None:
+        n = 1 + sum(1 for s in list_checkpoints(d) if s.startswith("31_decision_r"))
+        stage = f"31_decision_r{n}"
+        r = tools.submit_decision(
+            ctx,
+            ticker=ticker,
+            market=market,
+            date=date,
+            payload=fake_decision(ticker),
+            agent="trader",
+            call_meta=_call("trader"),
+            stage=stage,
+        )
+        if not r["ok"]:
+            raise tools.ToolError(r["error"])
+        return written + [stage]
     if "30_decision" not in list_checkpoints(d):
         r = tools.submit_decision(
             ctx,

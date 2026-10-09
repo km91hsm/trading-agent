@@ -677,6 +677,7 @@ def tool_submit_decision(
     market: str = typer.Option(..., "--market"),
     date: str = typer.Option(..., "--date"),
     json_text: str | None = typer.Option(None, "--json", help="Decision JSON (없으면 stdin)"),
+    stage: str | None = typer.Option(None, "--stage", help="재평가면 31_decision_r<n>"),
 ) -> None:
     from trader.orchestrator import tools
 
@@ -686,6 +687,7 @@ def tool_submit_decision(
         market=market,
         date=date,
         payload=_payload_arg(json_text),
+        stage=stage,
     )
 
 
@@ -1111,6 +1113,66 @@ def scan(
         typer.echo(f"오류: {e}", err=True)
         raise typer.Exit(code=1) from e
     typer.echo(json.dumps(out, ensure_ascii=False, default=str))
+
+
+@app.command("monitor")
+def monitor_cmd(
+    market: str = typer.Option("KR", "--market", help="KR 또는 US"),
+    once: bool = typer.Option(False, "--once", help="1회만 점검하고 종료"),
+    interval: int = typer.Option(60, "--interval", help="반복 주기(초)"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="손절 주문·재평가 주문 없이 기록만"),
+    max_iterations: int | None = typer.Option(None, "--max-iterations", hidden=True),
+) -> None:
+    """보유종목 장중 점검: 손절 즉시 매도, 트리거 → 재평가 세션 (스펙 §5.2)."""
+    import json
+    import time
+
+    from trader.ledger import db
+    from trader.orchestrator import monitor as monitor_mod
+    from trader.orchestrator.session import run_session
+
+    try:
+        configure(paths.state_dir())
+        if market not in ("KR", "US"):
+            raise config.ConfigError(f"시장은 KR 또는 US 여야 합니다: {market}")
+        settings = config.load_settings()
+        accounts = config.load_accounts()
+        secrets = config.load_secrets()
+        universe = config.load_universe()
+        market_client = _build_market(secrets)
+    except (config.ConfigError, paths.ProjectRootNotFound) as e:
+        typer.echo(f"오류: {e}", err=True)
+        raise typer.Exit(code=1) from e
+    except Exception as e:  # noqa: BLE001 - 시세 클라이언트 없이는 monitor 를 돌릴 수 없다
+        typer.echo(f"오류: 시세 클라이언트 생성 실패: {e}", err=True)
+        raise typer.Exit(code=1) from e
+    conn = db.connect()
+    db.init_schema(conn)
+    ctx = monitor_mod.MonitorContext(
+        settings=settings,
+        accounts=accounts,
+        conn=conn,
+        brokers={b.account.id: b for b in _build_brokers(secrets, accounts)},
+        market_client=market_client,
+        notifier=make_notifier(secrets),
+        session_runner=run_session,
+        dry_run=dry_run,
+        exchanges={u.symbol: u.exchange for u in universe.us},
+    )
+    n = 0
+    try:
+        while True:
+            today = datetime.now(_KST).date()
+            r = monitor_mod.monitor_once(ctx, market=market, today=today)
+            typer.echo(
+                json.dumps({"market": market, "date": today.isoformat(), **r}, ensure_ascii=False)
+            )
+            n += 1
+            if once or (max_iterations is not None and n >= max_iterations):
+                break
+            time.sleep(interval)
+    finally:
+        conn.close()
 
 
 @app.command("notify-test")

@@ -11,6 +11,7 @@ tools: []
 `{"reports": [AnalystReport…], "research_summary": {rounds, round0: {bull, bear}, final: {bull, bear}, gap_round0, gap_final, timing_agree, sycophantic, preferred, issues}, "context": {quote, risk_limits, costs_bp, portfolio: null, memory: [], calibration: null}}`.
 - `research_summary.preferred` 가 `"round0"` 이면 토론 뒤 양측이 한쪽으로 쏠린(아첨적 수렴) 경우다. **라운드 0 의 독립 의견을 우선**하고 최종 라운드는 참고만 한다.
 - `portfolio` 가 null 이면 현재 포지션 정보가 없으므로 ADD/TRIM 대신 BUY/SELL/HOLD 로 답한다.
+- 입력에 `trigger`({kind: take_profit|move_7pct|invalidation, price, detail})가 있으면 장중 재평가다. 원래 결정(`30_decision`)을 전제로 **유지(HOLD)·익절(SELL/TRIM)·추가(ADD)** 중 하나를 현재가 기준으로 다시 정한다. 손절은 파이썬이 이미 처리하므로 손절 사유로 SELL 하지 않는다.
 
 # 판단 규칙
 1. **검증가능성으로 판단한다.** 리포트와 리서처의 자신감 어조·수사는 무시하고, 입력 값으로 확인되는 근거의 수와 일관성만 센다.
