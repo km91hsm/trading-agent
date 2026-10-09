@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, Request
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -37,6 +38,7 @@ class WebDeps:
     dist: Path | None = None
     notifier: Any = field(default_factory=NullNotifier)
     now: Callable[[], datetime] = field(default=lambda: datetime.now(UTC))
+    extra_hosts: list[str] = field(default_factory=list)  # --host 로 다른 바인드를 쓸 때
 
     def account(self, account_id: str) -> AccountConfig | None:
         return next((a for a in self.accounts if a.id == account_id), None)
@@ -48,6 +50,11 @@ def create_app(deps: WebDeps) -> FastAPI:
 
     app = FastAPI(title="trader", docs_url="/api/docs", openapi_url="/api/openapi.json")
     app.state.deps = deps
+    # 로컬 전용: DNS 리바인딩으로 토큰 없는 조회 API 를 읽지 못하게 Host 를 제한한다
+    app.add_middleware(
+        TrustedHostMiddleware,
+        allowed_hosts=["127.0.0.1", "localhost", "[::1]", "testserver", *deps.extra_hosts],
+    )
     routers = (
         system.router,
         accounts.router,
@@ -66,7 +73,7 @@ def create_app(deps: WebDeps) -> FastAPI:
     def _api_404(rest: str) -> JSONResponse:
         return JSONResponse({"detail": f"없는 API: /api/{rest}"}, status_code=404)
 
-    dist = deps.dist
+    dist = deps.dist.resolve() if deps.dist is not None else None
     if dist is not None and (dist / "index.html").is_file():
         if (dist / "assets").is_dir():
             app.mount("/assets", StaticFiles(directory=dist / "assets"), name="assets")

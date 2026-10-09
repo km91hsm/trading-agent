@@ -5,7 +5,7 @@ from __future__ import annotations
 from contextlib import closing
 from datetime import date as _date
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 
 from trader.ledger import views
 from trader.orchestrator import tools
@@ -33,13 +33,13 @@ def _ids(ticker: str | None, market: str | None, stage: str | None = None) -> No
 
 
 @router.get("/runs")
-def runs(request: Request, limit: int = 20) -> list[dict]:
+def runs(request: Request, limit: int = Query(20, ge=1, le=200)) -> list[dict]:
     with closing(deps_of(request).conn_factory()) as conn:
-        return views.list_runs(conn, limit=min(limit, 200))
+        return views.list_runs(conn, limit=limit)
 
 
 @router.get("/calls")
-def calls(request: Request, days: int = 7) -> dict:
+def calls(request: Request, days: int = Query(7, ge=1, le=365)) -> dict:
     deps = deps_of(request)
     with closing(deps.conn_factory()) as conn:
         rows = views.list_agent_calls(conn, days=days, now=deps.now())
@@ -103,7 +103,9 @@ def checkpoint(
 
 
 @router.get("/decisions")
-def decisions(request: Request, days: int = 30, market: str | None = None) -> list[dict]:
+def decisions(
+    request: Request, days: int = Query(30, ge=1, le=3650), market: str | None = None
+) -> list[dict]:
     deps = deps_of(request)
     if market is not None:
         require_market(market)

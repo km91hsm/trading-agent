@@ -349,3 +349,25 @@ def test_risk_check_checkpoint_round_trips_as_verdict(ectx):
     cp = read_checkpoint(run_dir(D, "KR", "005930"), "40_risk_check_paper-main")
     v = RiskVerdict.model_validate(cp["data"])
     assert v.mode == "auto" and v.dry_run is False and v.stance == "normal"
+
+
+# --- 일시정지 (Phase 5 리뷰 반영): paused 면 주문·승인 요청·승인 실행을 내지 않는다 ---
+
+
+def test_paused_blocks_orders_and_approval_requests(ectx):
+    control.set_flag(ectx.conn, "paused", True)
+    r = _run(ectx)
+    p = next(x for x in r if x["account_id"] == "paper-main")
+    assert p["order"] is None and p["approval_id"] is None
+    assert p["approved"] is True and "일시정지" in (p["note"] or "")
+    assert ectx.brokers["paper-main"].orders == [] and repo.pending_approvals(ectx.conn) == []
+
+
+def test_paused_blocks_approve(ectx):
+    aid = _pending(ectx)
+    control.set_flag(ectx.conn, "paused", True)
+    r = executor.approve(ectx, aid)
+    assert r["ok"] is False and "일시정지" in r["error"]
+    assert repo.get_approval(ectx.conn, aid)["status"] == "pending"  # 요청은 살아 있다
+    control.set_flag(ectx.conn, "paused", False)
+    assert executor.approve(ectx, aid)["ok"]

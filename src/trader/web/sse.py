@@ -1,5 +1,6 @@
 """SSE `/api/events`: 원장 카운터 스냅샷이 바뀔 때만 `change` 이벤트, 15초마다 ping.
 
+비동기 제너레이터라 스레드 풀을 점유하지 않는다(스냅샷 조회만 run_in_threadpool).
 트리거·데몬 이벤트 푸시는 Phase 6 (지금은 폴링 기반).
 """
 
@@ -8,10 +9,12 @@ from __future__ import annotations
 import json
 import sqlite3
 import time
-from collections.abc import Iterator
+from collections.abc import AsyncIterator
 from contextlib import closing
 
+import anyio
 from fastapi import APIRouter, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse
 
 from trader.control import control
@@ -40,13 +43,19 @@ def snapshot(conn: sqlite3.Connection) -> dict:
     }
 
 
-def stream(deps, *, interval_s: float = 2.0, max_events: int | None = None) -> Iterator[str]:
+def _snapshot_now(deps) -> dict:
+    with closing(deps.conn_factory()) as conn:
+        return snapshot(conn)
+
+
+async def stream(
+    deps, *, interval_s: float = 2.0, max_events: int | None = None
+) -> AsyncIterator[str]:
     last: dict | None = None
     sent = 0
     last_ping = time.monotonic()
     while True:
-        with closing(deps.conn_factory()) as conn:
-            snap = snapshot(conn)
+        snap = await run_in_threadpool(_snapshot_now, deps)
         if snap != last:
             last = snap
             sent += 1
@@ -56,11 +65,11 @@ def stream(deps, *, interval_s: float = 2.0, max_events: int | None = None) -> I
         elif time.monotonic() - last_ping >= PING_EVERY_S:
             last_ping = time.monotonic()
             yield ": ping\n\n"
-        time.sleep(interval_s)
+        await anyio.sleep(interval_s)
 
 
 @router.get("/events")
-def events(request: Request, once: int = 0) -> StreamingResponse:
+async def events(request: Request, once: int = 0) -> StreamingResponse:
     deps = request.app.state.deps
     gen = stream(deps, max_events=1 if once else None)
     return StreamingResponse(

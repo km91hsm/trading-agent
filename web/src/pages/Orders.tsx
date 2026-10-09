@@ -6,7 +6,7 @@ import { useApp, useLoad } from "../hooks";
 import type { Approval, Order, RiskCheck } from "../types";
 
 export function OrdersPage() {
-  const { accountId, token, tick } = useApp();
+  const { accountId, accounts, token, tick } = useApp();
   const [msg, setMsg] = useState<string | null>(null);
   const approvals = useLoad(
     () => (accountId ? getJson<Approval[]>(withAccount("/api/approvals", accountId)) : null),
@@ -21,6 +21,10 @@ export function OrdersPage() {
     [accountId, tick],
   );
   const decide = async (action: "approve" | "reject", id: number) => {
+    const acct = accounts.find((a) => a.id === accountId);
+    if (action === "approve" && acct?.env === "real" && !window.confirm(`실전 계좌 ${acct.id} 주문을 승인합니다. 계속할까요?`)) {
+      return;
+    }
     try {
       const r = await postJson<{ ok: boolean; order?: { order_no?: string } }>(
         `/api/control/${action}`,

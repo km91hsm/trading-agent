@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { getJson, postJson, withAccount } from "../api";
 import { AccountPicker } from "../components/AccountPicker";
 import { ApprovalsTable, ErrorBox, OrdersTable, PositionsTable } from "../components/Tables";
@@ -9,6 +9,10 @@ export function AccountPage() {
   const { accountId, accounts, token, tick } = useApp();
   const acct = accounts.find((a) => a.id === accountId);
   const [market, setMarket] = useState<Market>("KR");
+  useEffect(() => {
+    // 계좌를 바꾸면 그 계좌가 쓰는 첫 시장으로 맞춘다 (KR 전용 계좌에서 US 조회 400 방지)
+    if (acct && !acct.markets.includes(market)) setMarket(acct.markets[0] ?? "KR");
+  }, [acct, market]);
   const [msg, setMsg] = useState<string | null>(null);
   const pf = useLoad(
     () => (accountId ? getJson<Portfolio>(withAccount(`/api/portfolio?market=${market}`, accountId)) : null),

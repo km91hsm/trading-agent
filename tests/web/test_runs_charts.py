@@ -148,3 +148,20 @@ def test_charts_us_requires_exchange_and_without_market_503(project, conn):
 def test_ml_placeholder(client):
     r = client.get("/api/ml/models").json()
     assert r["models"] == [] and "Phase 7" in r["note"]
+
+
+def test_charts_days_bounds_and_cache(client, deps):
+    assert client.get("/api/charts?ticker=005930&market=KR&days=0").status_code == 422
+    assert client.get("/api/charts?ticker=005930&market=KR&days=5000").status_code == 422
+    before = len(deps.market.calls)
+    assert client.get("/api/charts?ticker=005930&market=KR&days=60").status_code == 200
+    assert client.get("/api/charts?ticker=005930&market=KR&days=60").status_code == 200
+    assert len(deps.market.calls) == before + 1  # 같은 날·같은 키는 캐시
+
+
+def test_query_bounds_on_limits_and_days(client):
+    assert client.get("/api/orders?account_id=paper-main&limit=-1").status_code == 422
+    assert client.get("/api/orders?account_id=paper-main&limit=10000").status_code == 422
+    assert client.get("/api/decisions?days=1000000000").status_code == 422
+    assert client.get("/api/calls?days=0").status_code == 422
+    assert client.get("/api/runs?limit=0").status_code == 422

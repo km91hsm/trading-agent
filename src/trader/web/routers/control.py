@@ -55,8 +55,12 @@ def _decide(request: Request, approval_id: int, action: str) -> dict:
         fn = executor.approve if action == "approve" else executor.reject
         r = fn(ectx, approval_id)
     if not r["ok"]:
-        detail = r.get("error") or (r.get("order") or {}).get("message") or f"{action} 실패"
-        raise HTTPException(status_code=409, detail=detail)
+        order = r.get("order")
+        if order is not None:  # 승인은 됐으나 브로커가 거부·실패 → 게이트웨이 오류
+            raise HTTPException(
+                status_code=502, detail=f"브로커 거부: {order.get('message') or '알 수 없음'}"
+            )
+        raise HTTPException(status_code=409, detail=r.get("error") or f"{action} 실패")
     return r
 
 

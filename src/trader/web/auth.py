@@ -11,7 +11,11 @@ def require_token(request: Request) -> None:
     token = request.app.state.deps.token
     header = request.headers.get("authorization", "")
     given = header[7:] if header.lower().startswith("bearer ") else ""
-    if not token or not given or not hmac.compare_digest(given, token):
+    if (
+        not token
+        or not given
+        or not hmac.compare_digest(given.encode("utf-8"), token.encode("utf-8"))
+    ):
         raise HTTPException(
             status_code=401, detail="토큰이 필요합니다 (Authorization: Bearer <WEB_TOKEN>)"
         )

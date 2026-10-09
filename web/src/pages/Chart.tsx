@@ -6,7 +6,7 @@ import { useApp, useLoad } from "../hooks";
 import type { ChartData, Market } from "../types";
 
 export function ChartPage() {
-  const { accounts, tick } = useApp();
+  const { accounts } = useApp();
   const [ticker, setTicker] = useState("005930");
   const [market, setMarket] = useState<Market>("KR");
   const [exchange, setExchange] = useState("NAS");
@@ -19,7 +19,7 @@ export function ChartPage() {
     if (q.market === "US") params.exchange = q.exchange;
     if (q.accountId) params.account_id = q.accountId;
     return getJson<ChartData>("/api/charts", params);
-  }, [q, tick]);
+  }, [q]); // 원장 이벤트(tick)마다 KIS 일봉을 다시 받지 않는다. 조회 버튼으로만 갱신.
 
   useEffect(() => {
     if (!box.current || !data.data) return;

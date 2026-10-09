@@ -45,7 +45,7 @@ export function TodayPage({ title = "오늘의 실행", inputsOnly = false }: { 
       ticker && stage && today.data
         ? getJson<Checkpoint>("/api/checkpoint", { ticker, market, date: today.data.date, stage })
         : null,
-    [ticker, stage, today.data?.date],
+    [ticker, stage, market, today.data?.date],
   );
   const stages = (today.data?.tickers[ticker] ?? []).filter((s) => !inputsOnly || s === "00_inputs");
   const cpData = cp.data?.data as Record<string, unknown> | undefined;
@@ -55,7 +55,14 @@ export function TodayPage({ title = "오늘의 실행", inputsOnly = false }: { 
       <div className="row">
         <label>
           시장
-          <select value={market} onChange={(e) => setMarket(e.target.value as Market)}>
+          <select
+            value={market}
+            onChange={(e) => {
+              setMarket(e.target.value as Market);
+              setTicker("");
+              setStage("");
+            }}
+          >
             <option>KR</option><option>US</option>
           </select>
         </label>

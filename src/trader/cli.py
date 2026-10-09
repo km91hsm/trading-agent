@@ -985,9 +985,15 @@ def web(
     except (config.ConfigError, paths.ProjectRootNotFound) as e:
         typer.echo(f"오류: {e}", err=True)
         raise typer.Exit(code=1) from e
+    bind = host or deps.settings.web.bind
+    if bind not in ("127.0.0.1", "localhost", "::1"):
+        logging.getLogger("trader.web").warning(
+            "루프백이 아닌 주소(%s)에 바인드: 조회 API 는 토큰 없이 열립니다", bind
+        )
+        deps.extra_hosts.append(bind)
     uvicorn.run(
         create_app(deps),
-        host=host or deps.settings.web.bind,
+        host=bind,
         port=port or deps.settings.web.port,
         log_level="info",
     )

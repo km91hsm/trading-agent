@@ -132,3 +132,31 @@ def test_events_once_returns_snapshot(client):
     r = client.get("/api/events?once=1")
     assert r.status_code == 200 and r.headers["content-type"].startswith("text/event-stream")
     assert "event: change" in r.text and '"paused"' in r.text and '"approvals_pending"' in r.text
+
+
+def test_web_approve_while_paused_conflict(client, deps):
+    aid = _pending_approval(deps)
+    assert client.post("/api/control/pause", headers=AUTH).status_code == 200
+    r = client.post("/api/control/approve", json={"approval_id": aid}, headers=AUTH)
+    assert r.status_code == 409 and "일시정지" in r.json()["detail"]
+    assert deps.brokers["paper-main"].orders == []
+
+
+def test_web_approve_broker_rejected_is_502(client, deps):
+    from trader.broker.fake import FakeBroker
+
+    aid = _pending_approval(deps)
+    old = deps.brokers["paper-main"]
+    deps.brokers["paper-main"] = FakeBroker(old.account, cash=old.cash, fail={"place_order"})
+    r = client.post("/api/control/approve", json={"approval_id": aid}, headers=AUTH)
+    assert r.status_code == 502 and "가짜 실패" in r.json()["detail"]
+
+
+def test_events_endpoint_is_async_and_bounded(client):
+    import inspect
+
+    from trader.web import sse
+
+    assert inspect.iscoroutinefunction(sse.events)
+    r = client.get("/api/events?once=1")
+    assert r.text.count("event: change") == 1
