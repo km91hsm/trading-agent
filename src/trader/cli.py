@@ -1230,6 +1230,29 @@ def monitor_cmd(
         conn.close()
 
 
+@app.command("install")
+def install_cmd(
+    dry_run: bool = typer.Option(False, "--dry-run", help="파일을 쓰지 않고 내용·명령만 출력"),
+    uninstall: bool = typer.Option(False, "--uninstall", help="등록 해제"),
+) -> None:
+    """로그온 시 데몬 자동 시작 등록 (macOS launchd / Windows 작업 스케줄러)."""
+    from trader.platform import installer
+
+    try:
+        if uninstall:
+            r = installer.uninstall()
+            typer.echo(f"해제: {r['path']} ({' '.join(r['command'])})")
+            return
+        r = installer.install(dry_run=dry_run)
+    except config.ConfigError as e:
+        typer.echo(f"오류: {e}", err=True)
+        raise typer.Exit(code=1) from e
+    typer.echo(("[dry-run] " if dry_run else "") + f"파일: {r['path']}")
+    typer.echo("명령: " + " ".join(r["command"]))
+    if dry_run:
+        typer.echo(r["content"])
+
+
 @app.command("notify-test")
 def notify_test() -> None:
     """텔레그램으로 테스트 메시지를 보낸다 (미설정이면 NullNotifier 로 성공)."""
