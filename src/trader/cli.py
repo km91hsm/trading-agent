@@ -17,7 +17,7 @@ from trader.broker.kis_auth import KisAuth
 from trader.broker.kis_client import KisClient
 from trader.broker.kis_market import KisMarket
 from trader.logging_setup import configure
-from trader.notify.telegram import make_notifier, make_receiver, parse_command
+from trader.notify.telegram import make_notifier, make_receiver
 from trader.orchestrator.session import run_session
 from trader.platform import paths
 from trader.platform.claude_bin import ClaudeNotFound
@@ -801,9 +801,22 @@ def approvals_reject(approval_id: int = typer.Argument(..., help="승인 요청 
 @telegram_app.command("poll")
 def telegram_poll() -> None:
     """getUpdates 1회: /approve <id>·/reject <id>·/status 를 처리하고 오프셋을 저장한다."""
-    from trader.control import control
-    from trader.ledger import repo
-    from trader.orchestrator import executor
+    _telegram_run(interval=0, max_iterations=1)
+
+
+@telegram_app.command("loop")
+def telegram_loop(
+    interval: int = typer.Option(30, "--interval", help="폴링 주기(초)"),
+    max_iterations: int | None = typer.Option(None, "--max-iterations", hidden=True),
+) -> None:
+    """텔레그램 명령을 주기적으로 처리한다 (데몬 밖에서 단독 실행용)."""
+    _telegram_run(interval=interval, max_iterations=max_iterations)
+
+
+def _telegram_run(*, interval: int, max_iterations: int | None) -> None:
+    import time
+
+    from trader.notify.commands import poll_once
 
     try:
         ectx, secrets = _exec_ctx()
@@ -815,43 +828,75 @@ def telegram_poll() -> None:
         ectx.conn.close()
         typer.echo("오류: 텔레그램 토큰·chat_id 가 없습니다", err=True)
         raise typer.Exit(code=1)
+    n = 0
     try:
-        offset = control.get_flag(ectx.conn, "telegram_offset")
-        updates = receiver.poll(offset)
-        executor.expire_approvals(ectx)
-        handled = 0
-        for u in updates:
-            cmd = parse_command(u.text)
-            if cmd is None:
-                continue
-            name, arg = cmd
-            handled += 1
-            if name == "status":
-                pending = repo.pending_approvals(ectx.conn)
-                modes = ", ".join(
-                    f"{a.id}={control.get_account_mode(ectx.conn, a)}" for a in ectx.accounts
-                )
-                body = "\n".join(_approval_line(a) for a in pending) or "없음"
-                ectx.notifier.send(f"[상태] 계좌 모드: {modes}\n미승인 주문:\n{body}")
-                typer.echo(f"status → 미승인 {len(pending)}건")
-                continue
-            if arg is None or not arg.isdigit():
-                ectx.notifier.send(f"사용법: /{name} <승인 id>")
-                continue
-            r = (
-                executor.approve(ectx, int(arg))
-                if name == "approve"
-                else executor.reject(ectx, int(arg))
-            )
-            msg = f"{name} #{arg} → {'ok' if r['ok'] else r.get('error') or '실패'}"
-            typer.echo(msg)
-            if not r["ok"]:
-                ectx.notifier.send(f"[{name} 실패] {r.get('error') or r.get('order')}")
-        if updates:
-            control.set_flag(ectx.conn, "telegram_offset", max(u.update_id for u in updates) + 1)
-        typer.echo(f"수신 {len(updates)}건, 명령 {handled}건")
+        while True:
+            poll_once(ectx, receiver, echo=typer.echo)
+            n += 1
+            if max_iterations is not None and n >= max_iterations:
+                break
+            time.sleep(interval)
     finally:
         ectx.conn.close()
+
+
+@app.command("daemon")
+def daemon_cmd(
+    no_web: bool = typer.Option(False, "--no-web", help="웹 서버를 띄우지 않음"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="세션·monitor 를 dry_run 으로"),
+) -> None:
+    """스케줄 데몬: schedule.yaml 대로 scan/analyze/monitor·텔레그램·체결 동기화 + web (§10.1)."""
+    from trader import daemon as daemon_mod
+    from trader.ledger import db
+
+    try:
+        configure(paths.state_dir())
+        settings = config.load_settings()
+        schedule = config.load_schedule()
+        accounts = config.load_accounts()
+        secrets = config.load_secrets()
+        universe = config.load_universe()
+        sources_cfg = config.load_sources()
+    except (config.ConfigError, paths.ProjectRootNotFound) as e:
+        typer.echo(f"오류: {e}", err=True)
+        raise typer.Exit(code=1) from e
+    try:
+        market_client = _build_market(secrets)
+    except Exception as e:  # noqa: BLE001
+        logging.getLogger("trader.daemon").warning(
+            "시세 클라이언트 없음(휴장일·monitor 비활성): %s", e
+        )
+        market_client = None
+    conn = db.connect()
+    db.init_schema(conn)
+    conn.close()
+
+    def web_app():
+        from trader.web.app import create_app
+
+        return create_app(_web_deps())
+
+    deps = daemon_mod.DaemonDeps(
+        settings=settings,
+        schedule=schedule,
+        accounts=accounts,
+        brokers={b.account.id: b for b in _build_brokers(secrets, accounts)},
+        market_client=market_client,
+        conn_factory=db.connect,
+        notifier=make_notifier(secrets),
+        receiver=make_receiver(secrets),
+        secrets=secrets,
+        universe=universe,
+        sources_cfg=sources_cfg,
+        input_deps=_build_input_deps(secrets, sources_cfg),
+        web_app_factory=web_app,
+        dry_run=dry_run,
+    )
+    r = daemon_mod.run(deps, web=not no_web)
+    if not r.get("ok"):
+        typer.echo(f"오류: {r.get('error')}", err=True)
+        raise typer.Exit(code=1)
+    typer.echo("데몬 종료")
 
 
 # --- 체결 동기화 (Phase 6) ------------------------------------------------------
