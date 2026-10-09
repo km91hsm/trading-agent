@@ -1,4 +1,4 @@
-"""계좌별 브로커: 잔고·예수금 조회 (주문·취소·체결은 Phase 4)."""
+"""계좌별 브로커: 잔고·예수금 조회 (체결 조회는 Phase 6)."""
 
 from __future__ import annotations
 

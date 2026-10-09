@@ -175,11 +175,12 @@ def test_today_pnl_from_previous_snapshot_blocks_buy(ectx):
         ectx.conn,
         account_id="paper-main",
         d=date(2026, 10, 8),
+        market="KR",
         nav=Decimal("10800000"),
         cash=Decimal("10800000"),
         positions=[],
     )
-    assert repo.latest_nav_before(ectx.conn, "paper-main", D) == Decimal("10800000")
+    assert repo.latest_nav_before(ectx.conn, "paper-main", D, market="KR") == Decimal("10800000")
     results = _run(ectx)
     r = next(x for x in results if x["account_id"] == "paper-main")
     assert r["approved"] is False and any("일일 손실" in s for s in r["reasons"])
@@ -238,3 +239,113 @@ def test_reject_and_expire_pass(ectx):
     ectx.now = lambda: T0 + timedelta(hours=1)
     assert executor.expire_approvals(ectx) == [aid2]
     assert repo.pending_approvals(ectx.conn) == []
+
+
+# --- 리뷰 반영 ---------------------------------------------------------------------
+
+
+def test_resubmit_does_not_duplicate_order(ectx):
+    """같은 결정을 두 번 실행해도(세션 재시도·재실행) 계좌당 주문은 1건."""
+    from trader.broker.models import Position
+
+    pos = Position(
+        ticker="005930",
+        market="KR",
+        qty=10,
+        avg_price=Decimal("70000"),
+        current_price=Decimal("71500"),
+        eval_amount=Decimal("715000"),
+        pnl_pct=0.02,
+    )
+    ectx.brokers["paper-main"].positions = [pos]
+    dec = ok_decision(action="SELL", target_weight=0.0)
+    _run(ectx, dec)
+    r = _run(ectx, dec)
+    assert len(ectx.brokers["paper-main"].orders) == 1
+    rr = next(x for x in r if x["account_id"] == "paper-main")
+    assert rr["order"] is None and any("이미" in s for s in rr["reasons"])
+
+
+def test_resubmit_does_not_duplicate_approval(ectx):
+    control.set_account_mode(ectx.conn, ectx.accounts[0], "approve")
+    _run(ectx)
+    _run(ectx)
+    assert len(repo.pending_approvals(ectx.conn)) == 1
+
+
+def test_place_value_error_recorded_and_continues(ectx):
+    class BadBroker:
+        def __init__(self, inner):
+            self.inner = inner
+
+        def get_positions(self, m):
+            return self.inner.get_positions(m)
+
+        def get_cash(self, m):
+            return self.inner.get_cash(m)
+
+        def place_order(self, req):
+            raise ValueError("US 주문에는 exchange 가 필요합니다")
+
+    second = AccountConfig(id="paper-2", env="paper", cano="3", markets=["KR"], mode="auto")
+    ectx.accounts.append(second)
+    ectx.brokers["paper-2"] = _broker(second)
+    ectx.brokers["paper-main"] = BadBroker(_broker(ectx.accounts[0]))
+    results = _run(ectx)
+    by = {r["account_id"]: r for r in results}
+    assert by["paper-main"]["order"]["accepted"] is False
+    assert by["paper-2"]["order"]["accepted"] is True
+    assert read_checkpoint(run_dir(D, "KR", "005930"), "50_order_paper-main") is not None
+
+
+def test_approve_failure_marks_status_failed_not_lost(ectx):
+    aid = _pending(ectx)
+    ectx.brokers["paper-main"] = _broker(ectx.accounts[0], fail={"place_order"})
+    r = executor.approve(ectx, aid)
+    assert r["ok"] is False
+    assert repo.get_approval(ectx.conn, aid)["status"] == "failed"
+    assert (
+        read_checkpoint(run_dir(D, "KR", "005930"), "50_order_paper-main")["data"]["status"]
+        == "failed"
+    )
+
+
+def test_approve_conditional_update_guards_race(ectx):
+    aid = _pending(ectx)
+    # 다른 프로세스가 먼저 처리한 상황을 흉내: pending 이 아니면 UPDATE 가 0행
+    assert repo.decide_approval(ectx.conn, aid, "approved") is True
+    assert repo.decide_approval(ectx.conn, aid, "approved") is False
+    assert executor.approve(ectx, aid)["ok"] is False
+    assert ectx.brokers["paper-main"].orders == []
+
+
+def test_dual_market_aggregates_are_per_market(ectx):
+    """KR 1천만원 스냅샷·주문이 US(1만달러) 판정에 섞이면 안 된다."""
+    _run(ectx)  # KR BUY 13주 @71000 = 923,000 KRW 주문 + KR 스냅샷
+    assert repo.today_order_amount(ectx.conn, "paper-main", D, market="US") == Decimal(0)
+    assert repo.today_order_amount(ectx.conn, "paper-main", D, market="KR") == Decimal("923000")
+    r = _run(
+        ectx,
+        ok_decision(ticker="AAPL", limit_price=200.0, take_profit=230.0),
+        market="US",
+        exchange="NAS",
+        price=Decimal("200"),
+    )
+    us = next(x for x in r if x["account_id"] == "paper-main")
+    assert us["approved"] and us["qty"] == 5  # 0.1 × 10,000 / 200
+    # 다음 날 US 일일 손익은 US NAV 기준 (KR nav 1천만원이 아니라 1만달러)
+    assert repo.latest_nav_before(
+        ectx.conn, "paper-main", D + timedelta(days=1), market="US"
+    ) == Decimal("10000")
+    assert repo.latest_nav_before(
+        ectx.conn, "paper-main", D + timedelta(days=1), market="KR"
+    ) == Decimal("10000000")
+
+
+def test_risk_check_checkpoint_round_trips_as_verdict(ectx):
+    from trader.risk.rules import RiskVerdict
+
+    _run(ectx)
+    cp = read_checkpoint(run_dir(D, "KR", "005930"), "40_risk_check_paper-main")
+    v = RiskVerdict.model_validate(cp["data"])
+    assert v.mode == "auto" and v.dry_run is False and v.stance == "normal"

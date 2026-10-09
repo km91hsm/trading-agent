@@ -53,3 +53,5 @@ def test_settings_json_has_hook_and_denies_secrets():
         rules = [d for d in deny if d.startswith(f"Bash({cmd} ") and d.endswith("secrets/.env*)")]
         assert any(" ./secrets/" in r for r in rules) and any(" secrets/" in r for r in rules), cmd
     assert any("kis order" in d for d in deny)
+    for cmd in ("approvals approve", "telegram poll", "kis order-test"):
+        assert any(cmd in d and d.startswith("Bash(uv run trader") for d in deny), cmd

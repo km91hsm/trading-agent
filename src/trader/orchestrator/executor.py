@@ -62,12 +62,13 @@ def build_portfolio(
     positions = {p.ticker: p for p in broker.get_positions(market)}
     cash = broker.get_cash(market)
     nav = cash.total + sum((p.eval_amount for p in positions.values()), Decimal(0))
-    prev = repo.latest_nav_before(conn, account.id, today)
+    prev = repo.latest_nav_before(conn, account.id, today, market=market)
     today_pnl = float(nav / prev - 1) if prev else 0.0
     repo.snapshot_positions(
         conn,
         account_id=account.id,
         d=today,
+        market=market,
         nav=nav,
         cash=cash.total,
         positions=[
@@ -90,7 +91,7 @@ def build_portfolio(
         positions=positions,
         today_pnl_pct=today_pnl,
         today_buy_tickers=repo.today_buy_tickers(conn, account.id, today),
-        today_order_amount=repo.today_order_amount(conn, account.id, today),
+        today_order_amount=repo.today_order_amount(conn, account.id, today, market=market),
         held_since=repo.held_since(conn, account.id),
         trades_this_week=repo.trades_this_week(conn, account.id, today),
     )
@@ -119,7 +120,7 @@ def execute(
             continue
         mode, note = effective_mode(ctx.conn, account)
         broker = ctx.brokers.get(account.id)
-        st = stance_mod.decide(repo.realized_pnl_5d(ctx.conn, account.id, date))
+        st = stance_mod.decide(repo.realized_pnl_5d(ctx.conn, account.id, date, market=market))
         try:
             if broker is None:
                 raise KisApiError("NO_BROKER", f"계좌 {account.id} 브로커 없음(앱키 미설정)")
@@ -140,6 +141,22 @@ def execute(
                 adjusted_qty=0,
                 reasons=[f"잔고 조회 실패로 판정 불가: {e}"],
             )
+        # 멱등: 같은 결정·계좌에 살아 있는 주문·승인 요청이 있으면 다시 내지 않는다 (재실행·재시도)
+        if (
+            verdict.approved
+            and decision_id is not None
+            and repo.has_open_order_or_approval(ctx.conn, decision_id, account.id)
+        ):
+            verdict = verdict.model_copy(
+                update={
+                    "approved": False,
+                    "adjusted_qty": 0,
+                    "reasons": verdict.reasons + ["이미 이 결정에 대한 주문/승인 요청이 존재"],
+                }
+            )
+        verdict = verdict.model_copy(
+            update={"mode": mode, "note": note, "stance": st, "dry_run": dry_run}
+        )
         entry: dict[str, Any] = {
             "account_id": account.id,
             "mode": mode,
@@ -152,19 +169,7 @@ def execute(
             "order": None,
             "approval_id": None,
         }
-        write_checkpoint(
-            d,
-            f"40_risk_check_{account.id}",
-            _wrap(
-                {
-                    **verdict.model_dump(mode="json"),
-                    "mode": mode,
-                    "note": note,
-                    "stance": st,
-                    "dry_run": dry_run,
-                }
-            ),
-        )
+        write_checkpoint(d, f"40_risk_check_{account.id}", _wrap(verdict.model_dump(mode="json")))
         if decision_id is not None:
             repo.insert_risk_check(
                 ctx.conn,
@@ -189,7 +194,7 @@ def execute(
         if mode == "approve":
             entry["approval_id"] = _request_approval(ctx, account, decision_id, request, verdict)
         else:
-            entry["order"] = _place(ctx, d, account, broker, decision_id, request, mode)
+            entry["order"] = _place(ctx, d, account, broker, decision_id, request, mode, price)
         results.append(entry)
     return results
 
@@ -227,6 +232,7 @@ def _place(
     decision_id: int | None,
     request: OrderRequest,
     mode: Mode,
+    quote_price: Decimal | None = None,
 ) -> dict:
     try:
         result = broker.place_order(request)
@@ -235,6 +241,11 @@ def _place(
         result = OrderResult(order_no=None, accepted=False, message=f"{e.msg_cd}: {e.msg1}")
         status = "failed"
         logger.warning("주문 실패 %s %s: %s", account.id, request.ticker, e)
+    except ValueError as e:  # 거래소 코드 누락·계좌 시장 불일치 등 요청 자체의 오류
+        result = OrderResult(order_no=None, accepted=False, message=f"INVALID: {e}")
+        status = "failed"
+        logger.warning("주문 요청 오류 %s %s: %s", account.id, request.ticker, e)
+    sizing_price = request.price if request.price is not None else quote_price
     repo.insert_order(
         ctx.conn,
         decision_id=decision_id,
@@ -250,6 +261,8 @@ def _place(
         message=result.message,
         mode=mode,
         created_at=ctx.now().isoformat(),
+        amount=Decimal(request.qty) * sizing_price if sizing_price is not None else None,
+        org_no=result.org_no,
     )
     payload = {
         "request": request.model_dump(mode="json"),
@@ -304,24 +317,20 @@ def approve(ctx: ExecContext, approval_id: int) -> dict:
     dec = repo.get_decision(ctx.conn, a["decision_id"]) if a["decision_id"] else None
     day = date.fromisoformat(dec["date"]) if dec else ctx.now().astimezone(_KST).date()
     d = run_dir(day, request.market, request.ticker, ctx.state)
-    repo.decide_approval(ctx.conn, approval_id, "approved", decided_at=ctx.now().isoformat())
     broker = ctx.brokers.get(account.id)
     if broker is None:
-        result = {"accepted": False, "order_no": None, "message": "브로커 없음(앱키 미설정)"}
-        write_checkpoint(
-            d,
-            f"50_order_{account.id}",
-            _wrap(
-                {
-                    "request": request.model_dump(mode="json"),
-                    "result": result,
-                    "mode": "approve",
-                    "status": "failed",
-                }
-            ),
-        )
-        return {"ok": False, "error": result["message"], "order": result}
+        return {
+            "ok": False,
+            "error": f"계좌 {account.id} 브로커 없음(앱키 미설정): 요청은 pending 유지",
+        }
+    # 조건부 UPDATE: 다른 프로세스(telegram poll ↔ approvals approve)가 먼저 처리했으면 주문 없음
+    if not repo.decide_approval(
+        ctx.conn, approval_id, "approved", decided_at=ctx.now().isoformat()
+    ):
+        return {"ok": False, "error": f"승인 요청 #{approval_id} 은 이미 다른 프로세스가 처리함"}
     result = _place(ctx, d, account, broker, a["decision_id"] or None, request, "approve")
+    if not result["accepted"]:
+        repo.decide_approval(ctx.conn, approval_id, "failed", expect="approved")
     return {"ok": bool(result["accepted"]), "approval_id": approval_id, "order": result}
 
 

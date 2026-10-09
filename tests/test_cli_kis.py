@@ -179,3 +179,14 @@ def test_kis_order_test_cancels_even_if_cancel_fails(project, monkeypatch):
     monkeypatch.setattr(cli, "_build_brokers", brokers)
     r = CliRunner().invoke(app, ["kis", "order-test", "--account", "paper-main"])
     assert r.exit_code == 1 and "취소 실패" in r.stdout
+
+
+def test_tool_ctx_builds_brokers_even_in_dry_run(project, monkeypatch):
+    """dry_run 은 주문만 막고 판정은 실제 잔고로 한다 (리뷰 I5)."""
+    _accounts(project)
+    market, brokers = _fakes()
+    monkeypatch.setattr(cli, "_build_brokers", brokers)
+    monkeypatch.delenv("TRADER_DRY_RUN", raising=False)
+    ctx = cli._tool_ctx()
+    ctx.conn.close()
+    assert ctx.dry_run is True and set(ctx.brokers) == {"paper-main", "real-main"}

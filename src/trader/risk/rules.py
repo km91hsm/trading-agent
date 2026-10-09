@@ -51,6 +51,11 @@ class RiskVerdict(BaseModel):
     side: str | None = None  # BUY | SELL
     order_type: str | None = None  # LIMIT | MARKET
     price: Decimal | None = None
+    # executor 가 채우는 실행 맥락 (체크포인트 저장용)
+    mode: str | None = None
+    note: str | None = None
+    stance: str | None = None
+    dry_run: bool | None = None
 
 
 def _floor_qty(value: Decimal, price: Decimal) -> int:

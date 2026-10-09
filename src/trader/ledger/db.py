@@ -112,6 +112,13 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
             )""",
         ],
     ),
+    (
+        3,  # Phase 4 리뷰: 시장가 주문 금액(amount), KR 취소용 org_no, _CASH 스냅샷의 market
+        [
+            "ALTER TABLE orders ADD COLUMN amount TEXT",
+            "ALTER TABLE orders ADD COLUMN org_no TEXT",
+        ],
+    ),
 ]
 
 

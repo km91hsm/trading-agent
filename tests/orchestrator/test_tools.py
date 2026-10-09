@@ -465,6 +465,10 @@ def test_submit_decision_runs_executor(ctx, project):
     assert len(ctx.brokers["paper-main"].orders) == 1  # 가격은 00_inputs quote 71500 → 13주
     assert ctx.brokers["paper-main"].orders[0].qty == 13
     assert ctx.brokers["real-main"].orders == []
+    # 같은 날 재제출은 기존 결정을 돌려주고 다시 실행하지 않는다 (리뷰 C1)
+    r2 = tools.submit_decision(ctx, ticker="005930", market="KR", date=D, payload=ok_decision())
+    assert r2["ok"] and r2.get("already") is True
+    assert len(ctx.brokers["paper-main"].orders) == 1
 
 
 def test_submit_rejects_invalid_decision(ctx, project):

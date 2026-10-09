@@ -176,11 +176,16 @@ def insert_order(
     message: str,
     mode: str,
     created_at: str | None = None,
+    amount: Decimal | None = None,
+    org_no: str | None = None,
 ) -> int:
+    """amount 는 가능금액 차감용 주문금액(시장가는 판정 때 현재가 × 수량). 없으면 qty × price."""
+    if amount is None and price is not None:
+        amount = Decimal(qty) * price
     cur = conn.execute(
         "INSERT INTO orders(decision_id, account_id, ticker, market, side, qty, order_type, price, "
-        "status, order_no, message, mode, created_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "status, order_no, message, mode, created_at, amount, org_no) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             decision_id,
             account_id,
@@ -195,6 +200,8 @@ def insert_order(
             message,
             mode,
             created_at or now_iso(),
+            str(amount) if amount is not None else None,
+            org_no,
         ),
     )
     conn.commit()
@@ -218,6 +225,22 @@ def insert_fill(
     return int(cur.lastrowid)
 
 
+def has_open_order_or_approval(conn: sqlite3.Connection, decision_id: int, account_id: str) -> bool:
+    """같은 결정·계좌에 살아 있는 주문(실패·거부·취소 제외)이나 pending 승인이 있으면 True."""
+    row = conn.execute(
+        "SELECT 1 FROM orders WHERE decision_id=? AND account_id=? "
+        "AND status NOT IN ('rejected','cancelled','failed') LIMIT 1",
+        (decision_id, account_id),
+    ).fetchone()
+    if row:
+        return True
+    row = conn.execute(
+        "SELECT 1 FROM approvals WHERE decision_id=? AND account_id=? AND status='pending' LIMIT 1",
+        (decision_id, account_id),
+    ).fetchone()
+    return row is not None
+
+
 def today_buy_tickers(conn: sqlite3.Connection, account_id: str, d: date) -> set[str]:
     lo, hi = _kst_day_bounds(d)
     rows = conn.execute(
@@ -229,16 +252,26 @@ def today_buy_tickers(conn: sqlite3.Connection, account_id: str, d: date) -> set
     return {r["ticker"] for r in rows}
 
 
-def today_order_amount(conn: sqlite3.Connection, account_id: str, d: date) -> Decimal:
-    """당일 누적 매수 주문금액 (환전 API 없음 → 가능금액에서 차감)."""
+def today_order_amount(
+    conn: sqlite3.Connection, account_id: str, d: date, market: str | None = None
+) -> Decimal:
+    """당일 누적 매수 주문금액 (가능금액 차감용). 통화가 달라 market 으로 거른다."""
     lo, hi = _kst_day_bounds(d)
-    rows = conn.execute(
-        "SELECT qty, price FROM orders WHERE account_id=? AND side='BUY' "
-        "AND status NOT IN ('rejected','cancelled','failed') "
-        "AND created_at >= ? AND created_at < ?",
-        (account_id, lo, hi),
-    ).fetchall()
-    return sum((Decimal(r["qty"]) * _dec(r["price"]) for r in rows), Decimal(0))
+    sql = (
+        "SELECT qty, price, amount FROM orders WHERE account_id=? AND side='BUY' "
+        "AND status NOT IN ('rejected','cancelled','failed') AND created_at >= ? AND created_at < ?"
+    )
+    args: list = [account_id, lo, hi]
+    if market:
+        sql += " AND market=?"
+        args.append(market)
+    total = Decimal(0)
+    for r in conn.execute(sql, args).fetchall():
+        if r["amount"] is not None:
+            total += _dec(r["amount"])
+        else:
+            total += Decimal(r["qty"]) * _dec(r["price"])
+    return total
 
 
 def trades_this_week(conn: sqlite3.Connection, account_id: str, d: date) -> dict[str, int]:
@@ -255,15 +288,24 @@ def trades_this_week(conn: sqlite3.Connection, account_id: str, d: date) -> dict
     return {r["ticker"]: int(r["n"]) for r in rows}
 
 
-def realized_pnl_5d(conn: sqlite3.Connection, account_id: str, d: date) -> Decimal:
-    """최근 5거래일(달력 7일 근사) 실현손익: 매도 체결금액 − 해당 수량의 평균 매수가."""
+def realized_pnl_5d(
+    conn: sqlite3.Connection, account_id: str, d: date, market: str | None = None
+) -> Decimal:
+    """최근 5거래일(달력 7일 근사) 실현손익: 매도 체결금액 − 해당 수량의 평균 매수가.
+
+    fills 는 Phase 6 체결 동기화 전까지 비어 있어 0 이다. 통화가 섞이지 않게 market 으로 거른다.
+    """
     lo, _ = _kst_day_bounds(d - timedelta(days=7))
     _, hi = _kst_day_bounds(d)
-    sells = conn.execute(
+    sql = (
         "SELECT o.ticker, f.qty, f.price FROM fills f JOIN orders o ON o.id=f.order_id "
-        "WHERE f.account_id=? AND o.side='SELL' AND f.filled_at >= ? AND f.filled_at < ?",
-        (account_id, lo, hi),
-    ).fetchall()
+        "WHERE f.account_id=? AND o.side='SELL' AND f.filled_at >= ? AND f.filled_at < ?"
+    )
+    args: list = [account_id, lo, hi]
+    if market:
+        sql += " AND o.market=?"
+        args.append(market)
+    sells = conn.execute(sql, args).fetchall()
     total = Decimal(0)
     for s in sells:
         buys = conn.execute(
@@ -278,13 +320,21 @@ def realized_pnl_5d(conn: sqlite3.Connection, account_id: str, d: date) -> Decim
 
 
 def held_since(conn: sqlite3.Connection, account_id: str) -> dict[str, date]:
-    """종목별 최초 매수 체결일 (최소 보유기간 계산용)."""
+    """종목별 최초 매수일 (최소 보유기간용). 체결 기록이 없으면 접수된 매수 주문일로 대신한다."""
     rows = conn.execute(
         "SELECT o.ticker, MIN(f.filled_at) AS first FROM fills f JOIN orders o ON o.id=f.order_id "
         "WHERE f.account_id=? AND o.side='BUY' GROUP BY o.ticker",
         (account_id,),
     ).fetchall()
-    return {r["ticker"]: datetime.fromisoformat(r["first"]).astimezone(_KST).date() for r in rows}
+    out = {r["ticker"]: datetime.fromisoformat(r["first"]).astimezone(_KST).date() for r in rows}
+    rows = conn.execute(
+        "SELECT ticker, MIN(created_at) AS first FROM orders WHERE account_id=? AND side='BUY' "
+        "AND status='accepted' GROUP BY ticker",
+        (account_id,),
+    ).fetchall()
+    for r in rows:
+        out.setdefault(r["ticker"], datetime.fromisoformat(r["first"]).astimezone(_KST).date())
+    return out
 
 
 def snapshot_positions(
@@ -295,12 +345,14 @@ def snapshot_positions(
     nav: Decimal,
     cash: Decimal,
     positions: list[dict],
+    market: str | None = None,
 ) -> None:
+    """계좌·날짜·종목 단위 upsert. nav·cash 는 시장(통화)별이라 _CASH 자리에도 market 을 둔다."""
     created = now_iso()
     rows = positions or [
         {
-            "ticker": "_CASH",
-            "market": None,
+            "ticker": f"_CASH_{market}" if market else "_CASH",
+            "market": market,
             "qty": 0,
             "avg_price": None,
             "current_price": None,
@@ -319,7 +371,7 @@ def snapshot_positions(
                 account_id,
                 d.isoformat(),
                 p["ticker"],
-                p.get("market"),
+                p.get("market") or market,
                 int(p.get("qty", 0)),
                 _s(p.get("avg_price")),
                 _s(p.get("current_price")),
@@ -332,13 +384,16 @@ def snapshot_positions(
     conn.commit()
 
 
-def latest_nav_before(conn: sqlite3.Connection, account_id: str, d: date) -> Decimal | None:
-    """d 이전 마지막 스냅샷의 NAV (일일 손익 계산 기준). 없으면 None."""
-    row = conn.execute(
-        "SELECT nav FROM positions_snapshot WHERE account_id=? AND date < ? "
-        "ORDER BY date DESC LIMIT 1",
-        (account_id, d.isoformat()),
-    ).fetchone()
+def latest_nav_before(
+    conn: sqlite3.Connection, account_id: str, d: date, market: str | None = None
+) -> Decimal | None:
+    """d 이전 마지막 스냅샷의 NAV (일일 손익 기준). 시장별 통화가 달라 market 으로 거른다."""
+    sql = "SELECT nav FROM positions_snapshot WHERE account_id=? AND date < ?"
+    args: list = [account_id, d.isoformat()]
+    if market:
+        sql += " AND market=?"
+        args.append(market)
+    row = conn.execute(sql + " ORDER BY date DESC, id DESC LIMIT 1", args).fetchone()
     return _dec(row["nav"]) if row and row["nav"] is not None else None
 
 
@@ -384,10 +439,17 @@ def pending_approvals(conn: sqlite3.Connection) -> list[dict]:
 
 
 def decide_approval(
-    conn: sqlite3.Connection, approval_id: int, status: str, *, decided_at: str | None = None
-) -> None:
-    conn.execute(
-        "UPDATE approvals SET status=?, decided_at=? WHERE id=?",
-        (status, decided_at or now_iso(), approval_id),
+    conn: sqlite3.Connection,
+    approval_id: int,
+    status: str,
+    *,
+    decided_at: str | None = None,
+    expect: str = "pending",
+) -> bool:
+    """`expect` 상태일 때만 바꾼다(조건부 UPDATE). 다른 프로세스가 먼저 처리했으면 False."""
+    cur = conn.execute(
+        "UPDATE approvals SET status=?, decided_at=? WHERE id=? AND status=?",
+        (status, decided_at or now_iso(), approval_id, expect),
     )
     conn.commit()
+    return cur.rowcount == 1

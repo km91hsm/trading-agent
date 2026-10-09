@@ -68,7 +68,7 @@ def _build_market(secrets: config.Secrets) -> KisMarket:
 def _session_brokers(
     secrets: config.Secrets, accounts: list[config.AccountConfig], *, dry_run: bool
 ) -> dict:
-    """세션용 브로커 맵. FAKE 모드는 가짜 브로커(현금 1천만원/1만달러), dry_run 은 빈 맵."""
+    """세션용 브로커 맵. FAKE 모드만 가짜 브로커(현금 1천만원/1만달러)를 준다."""
     from trader.orchestrator.session import is_fake
 
     if is_fake():
@@ -82,9 +82,7 @@ def _session_brokers(
             "US": Cash(currency="USD", available=Decimal("10000"), total=Decimal("10000")),
         }
         return {a.id: FakeBroker(a, cash=cash) for a in accounts}
-    if dry_run:
-        return {}
-    return {b.account.id: b for b in _build_brokers(secrets, accounts)}
+    return {}  # 실제 세션은 tool 서브프로세스가 _tool_ctx 로 자기 브로커를 만든다
 
 
 def _build_brokers(
@@ -506,7 +504,8 @@ def _tool_ctx():
     accounts = config.load_accounts()
     # 세션이 env 로 넘긴 값. 없으면 안전하게 dry_run(주문·승인 요청 없음).
     dry_run = os.environ.get("TRADER_DRY_RUN", "1") != "0"
-    brokers = {} if dry_run else {b.account.id: b for b in _build_brokers(secrets, accounts)}
+    # dry_run 도 잔고로 판정은 한다(주문·승인 요청만 생략). 브로커 생성은 네트워크를 쓰지 않는다.
+    brokers = {b.account.id: b for b in _build_brokers(secrets, accounts)}
     return ToolContext(
         settings=config.load_settings(),
         accounts=accounts,

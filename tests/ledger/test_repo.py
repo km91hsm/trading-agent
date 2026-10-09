@@ -13,7 +13,7 @@ def _tables(c):
 
 
 def test_v2_migration_adds_tables(conn):
-    assert db.SCHEMA_VERSION == 2 and db.current_version(conn) == 2
+    assert db.SCHEMA_VERSION >= 2 and db.current_version(conn) == db.SCHEMA_VERSION
     assert {
         "analyst_reports",
         "debate_turns",
@@ -25,7 +25,7 @@ def test_v2_migration_adds_tables(conn):
         "approvals",
     } <= _tables(conn)
     db.init_schema(conn)  # 멱등
-    assert db.current_version(conn) == 2
+    assert db.current_version(conn) == db.SCHEMA_VERSION
 
 
 def test_ingest_checkpoint_idempotent(conn):
@@ -194,3 +194,110 @@ def test_approvals_lifecycle(conn):
     repo.decide_approval(conn, aid, "approved", decided_at="2026-10-09T06:10:00+00:00")
     assert repo.pending_approvals(conn) == []
     assert repo.get_approval(conn, aid)["status"] == "approved"
+
+
+# --- 리뷰 반영 ---------------------------------------------------------------------
+
+
+def test_v3_adds_amount_and_org_no(conn):
+    assert db.SCHEMA_VERSION == 3
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(orders)")}
+    assert {"amount", "org_no"} <= cols
+
+
+def test_market_order_amount_uses_amount_column(conn):
+    dec_id = repo.ingest_checkpoint(
+        conn, D, "KR", "005930", "30_decision", {"data": ok_decision(), "call": None}
+    )
+    repo.insert_order(
+        conn,
+        decision_id=dec_id,
+        account_id="paper-main",
+        ticker="005930",
+        market="KR",
+        side="BUY",
+        qty=3,
+        order_type="MARKET",
+        price=None,
+        amount=Decimal("214500"),
+        status="accepted",
+        order_no="1",
+        message="",
+        mode="auto",
+        org_no="91252",
+    )
+    assert repo.today_order_amount(conn, "paper-main", D, market="KR") == Decimal("214500")
+    assert repo.today_order_amount(conn, "paper-main", D, market="US") == Decimal(0)
+    assert conn.execute("SELECT org_no FROM orders").fetchone()["org_no"] == "91252"
+
+
+def test_held_since_falls_back_to_accepted_buy_orders(conn):
+    dec_id = repo.ingest_checkpoint(
+        conn, D, "KR", "005930", "30_decision", {"data": ok_decision(), "call": None}
+    )
+    repo.insert_order(
+        conn,
+        decision_id=dec_id,
+        account_id="paper-main",
+        ticker="005930",
+        market="KR",
+        side="BUY",
+        qty=1,
+        order_type="LIMIT",
+        price=Decimal("100"),
+        status="accepted",
+        order_no="1",
+        message="",
+        mode="auto",
+        created_at="2026-10-02T01:00:00+00:00",
+    )
+    assert repo.held_since(conn, "paper-main") == {"005930": date(2026, 10, 2)}
+
+
+def test_existing_order_or_approval_lookup(conn):
+    dec_id = repo.ingest_checkpoint(
+        conn, D, "KR", "005930", "30_decision", {"data": ok_decision(), "call": None}
+    )
+    assert repo.has_open_order_or_approval(conn, dec_id, "paper-main") is False
+    repo.insert_order(
+        conn,
+        decision_id=dec_id,
+        account_id="paper-main",
+        ticker="005930",
+        market="KR",
+        side="BUY",
+        qty=1,
+        order_type="LIMIT",
+        price=Decimal("100"),
+        status="failed",
+        order_no=None,
+        message="x",
+        mode="auto",
+    )
+    assert (
+        repo.has_open_order_or_approval(conn, dec_id, "paper-main") is False
+    )  # 실패는 재시도 가능
+    repo.create_approval(
+        conn,
+        decision_id=dec_id,
+        account_id="paper-main",
+        order={},
+        requested_at="a",
+        expires_at="b",
+    )
+    assert repo.has_open_order_or_approval(conn, dec_id, "paper-main") is True
+
+
+def test_latest_nav_before_prefers_latest_row(conn):
+    for nav in ("1", "2"):
+        repo.snapshot_positions(
+            conn,
+            account_id="a",
+            d=date(2026, 10, 8),
+            market="KR",
+            nav=Decimal(nav),
+            cash=Decimal(nav),
+            positions=[],
+        )
+    assert repo.latest_nav_before(conn, "a", D, market="KR") == Decimal("2")
+    assert repo.latest_nav_before(conn, "a", D, market="US") is None

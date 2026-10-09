@@ -515,6 +515,16 @@ def submit_decision(
 ) -> dict:
     d = _dir(ctx, ticker, market, date)
     stages = list_checkpoints(d)
+    if "30_decision" in stages:
+        # 같은 날 재제출(세션 재시도·재실행)은 기존 결정을 돌려주고 실행을 반복하지 않는다 (멱등)
+        existing = read_checkpoint(d, "30_decision") or {}
+        return {
+            "ok": True,
+            "already": True,
+            "path": str(d / "30_decision.json"),
+            "action": (existing.get("data") or {}).get("action"),
+            "message": "30_decision 이 이미 있어 기존 결정을 유지함",
+        }
     reports = [s for s in stages if _ANALYST_RE.match(s)]
     missing: list[str] = []
     if len(reports) < MIN_REPORTS:
