@@ -6,6 +6,7 @@ import logging
 import os
 import sys
 from datetime import UTC, datetime
+from decimal import Decimal
 from zoneinfo import ZoneInfo
 
 import typer
@@ -188,6 +189,77 @@ def kis_ping(
     typer.echo(f"실패 {failures}건")
     if failures:
         raise typer.Exit(code=1)
+
+
+def _tick_size_kr(price: Decimal) -> Decimal:
+    """KRX 호가단위 (2023-01 개편 기준)."""
+    for limit, tick in (
+        (2000, 1),
+        (5000, 5),
+        (20000, 10),
+        (50000, 50),
+        (200000, 100),
+        (500000, 500),
+    ):
+        if price < limit:
+            return Decimal(tick)
+    return Decimal(1000)
+
+
+@kis_app.command("order-test")
+def kis_order_test(
+    account: str = typer.Option(..., "--account", help="모의 계좌 id (실전 거부)"),
+    ticker: str = typer.Option("005930", "--ticker", help="KR 종목코드"),
+) -> None:
+    """Phase 4 실기 전용: 모의 계좌에 현재가 10% 아래 1주 지정가 매수 → 즉시 취소 (원장 미기록)."""
+    try:
+        configure(paths.state_dir())
+        secrets = config.load_secrets()
+        accounts = config.load_accounts()
+    except (config.ConfigError, paths.ProjectRootNotFound) as e:
+        typer.echo(f"오류: {e}", err=True)
+        raise typer.Exit(code=1) from e
+    acct = next((a for a in accounts if a.id == account), None)
+    if acct is None:
+        typer.echo(f"오류: 계좌 id 를 찾을 수 없습니다: {account}", err=True)
+        raise typer.Exit(code=1)
+    if acct.env != "paper":
+        typer.echo("오류: order-test 는 모의(paper) 계좌에서만 실행합니다", err=True)
+        raise typer.Exit(code=1)
+    broker = next((b for b in _build_brokers(secrets, [acct]) if b.account.id == acct.id), None)
+    if broker is None:
+        typer.echo("오류: 모의 앱키가 없어 브로커를 만들지 못했습니다", err=True)
+        raise typer.Exit(code=1)
+    from trader.broker.models import OrderRequest
+
+    try:
+        price = _build_market(secrets).get_price_kr(ticker).price
+        tick = _tick_size_kr(price)
+        limit = (price * Decimal("0.9") // tick) * tick
+        req = OrderRequest(
+            ticker=ticker,
+            market="KR",
+            side="BUY",
+            qty=1,
+            order_type="LIMIT",
+            price=limit,
+            exchange=None,
+        )
+        res = broker.place_order(req)
+        typer.echo(
+            f"접수: {ticker} 1주 @{limit} (현재가 {price}) 주문번호 {res.order_no} {res.message}"
+        )
+    except Exception as e:  # noqa: BLE001 - 실기 점검은 모든 실패를 보고한다
+        typer.echo(f"주문 실패: {type(e).__name__}: {e}")
+        raise typer.Exit(code=1) from e
+    try:
+        cres = broker.cancel_order(res.order_no or "", market="KR", org_no=res.org_no)
+        typer.echo(f"취소: 주문번호 {cres.order_no} {cres.message}")
+    except Exception as e:  # noqa: BLE001
+        typer.echo(
+            f"취소 실패(미체결 주문이 남아 있을 수 있음, HTS/앱에서 확인): {type(e).__name__}: {e}"
+        )
+        raise typer.Exit(code=1) from e
 
 
 def _build_input_deps(secrets: config.Secrets, cfg: config.SourcesConfig) -> InputDeps:
