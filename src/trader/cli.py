@@ -1039,6 +1039,80 @@ def web(
     )
 
 
+@tool_app.command("submit-screen")
+def tool_submit_screen(
+    market: str = typer.Option(..., "--market"),
+    date: str = typer.Option(..., "--date"),
+    json_text: str | None = typer.Option(None, "--json", help="Screened JSON (없으면 stdin)"),
+) -> None:
+    from trader.orchestrator import tools
+
+    _tool_run(tools.submit_screen, market=market, date=date, payload=_payload_arg(json_text))
+
+
+@app.command("scan")
+def scan(
+    market: str = typer.Option("KR", "--market", help="KR 또는 US"),
+    asof: str | None = typer.Option(None, "--asof", help="기준 시각 ISO8601 (기본: 현재 UTC)"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="screener 세션 없이 정량 상위만"),
+) -> None:
+    """정량 필터 → screener 세션 → 오늘 분석 대상 목록 (_scan.json, stdout JSON)."""
+    import json
+
+    from trader.ledger import db
+    from trader.orchestrator import tools
+    from trader.orchestrator.run_store import write_checkpoint
+    from trader.orchestrator.session import PipelineError
+    from trader.scan import quant, screener
+
+    try:
+        configure(paths.state_dir())
+        if market not in ("KR", "US"):
+            raise config.ConfigError(f"시장은 KR 또는 US 여야 합니다: {market}")
+        settings = config.load_settings()
+        accounts = config.load_accounts()
+        secrets = config.load_secrets()
+        universe = config.load_universe()
+        when = datetime.fromisoformat(asof) if asof else datetime.now(UTC)
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=UTC)
+        day = when.astimezone(_KST).date()
+        cands = quant.candidates(universe, market)  # type: ignore[arg-type]
+        conn = db.connect()
+        db.init_schema(conn)
+        try:
+            cap_hit = dry_run or tools.sessions_today(conn, when) >= settings.llm.daily_session_cap
+            brokers = {b.account.id: b for b in _build_brokers(secrets, accounts)}
+            r = screener.run_screen(
+                settings,
+                conn,
+                accounts,
+                market=market,
+                date=day,
+                candidates=cands,
+                cap_hit=cap_hit,
+                brokers=brokers,
+                watch=list(universe.watch),
+                asof=when,
+            )
+        finally:
+            conn.close()
+        out = {
+            "market": market,
+            "date": day.isoformat(),
+            "candidates": cands,
+            "picks": r["picks"],
+            "analyze_targets": r["analyze_targets"],
+            "session": r["session"],
+            "cap_hit": cap_hit,
+        }
+        write_checkpoint(screener.market_dir(day, market), "_scan", out)
+    except (config.ConfigError, paths.ProjectRootNotFound, PipelineError, ValueError) as e:
+        typer.echo(f"오류: {e}", err=True)
+        raise typer.Exit(code=1) from e
+    typer.echo(json.dumps(out, ensure_ascii=False, default=str))
+
+
 @app.command("notify-test")
 def notify_test() -> None:
     """텔레그램으로 테스트 메시지를 보낸다 (미설정이면 NullNotifier 로 성공)."""

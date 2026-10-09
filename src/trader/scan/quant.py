@@ -1,0 +1,131 @@
+"""정량 필터·점수 (스펙 §5.1). 피처 스토어 최신 행만 쓰고 네트워크를 쓰지 않는다.
+
+규칙: 거래대금(close×volume) 하위 30% 제외, 변동성(atr_14/close) 상위 10% 제외,
+점수 = z(roc_10)·0.5 + z(high_52w_pos)·0.3 + z(log 거래대금)·0.2, 상한 30.
+ML 랭킹(Phase 7)은 `rank_fn` 으로 끼운다.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+
+from trader.config import Universe
+from trader.ml import features
+
+TOP_N = 30
+TURNOVER_DROP_Q = 0.30
+VOLATILITY_DROP_Q = 0.90
+
+
+def _z(s: pd.Series) -> pd.Series:
+    s = pd.to_numeric(s, errors="coerce")
+    sd = s.std(ddof=0)
+    if not np.isfinite(sd) or sd == 0:
+        return pd.Series(0.0, index=s.index)
+    return ((s - s.mean()) / sd).fillna(0.0)
+
+
+def score(df: pd.DataFrame, *, top: int = TOP_N) -> pd.DataFrame:
+    """ticker·market·score·reasons 를 점수 내림차순으로 돌려준다 (빈 입력은 빈 프레임)."""
+    cols = ["ticker", "market", "score", "reasons"]
+    if df is None or df.empty:
+        return pd.DataFrame(columns=cols)
+    d = df.copy()
+    for c in ("atr_14", "roc_10", "high_52w_pos", "close", "volume"):
+        if c not in d.columns:
+            d[c] = np.nan
+    d["turnover"] = pd.to_numeric(d["close"], errors="coerce") * pd.to_numeric(
+        d["volume"], errors="coerce"
+    )
+    d["vol_ratio"] = pd.to_numeric(d["atr_14"], errors="coerce") / pd.to_numeric(
+        d["close"], errors="coerce"
+    )
+    reasons: dict[int, list[str]] = {i: [] for i in d.index}
+    keep = pd.Series(True, index=d.index)
+    if d["turnover"].notna().sum() >= 3:
+        cut = d["turnover"].quantile(TURNOVER_DROP_Q)
+        low = d["turnover"] <= cut
+        keep &= ~low
+    if d["vol_ratio"].notna().sum() >= 3:
+        cut = d["vol_ratio"].quantile(VOLATILITY_DROP_Q)
+        high = d["vol_ratio"] > cut
+        keep &= ~high
+    d = d[keep].copy()
+    if d.empty:
+        return pd.DataFrame(columns=cols)
+    z_roc = _z(d["roc_10"])
+    z_pos = _z(d["high_52w_pos"])
+    z_to = _z(np.log1p(d["turnover"].clip(lower=0)))
+    d["score"] = (z_roc * 0.5 + z_pos * 0.3 + z_to * 0.2).round(4)
+    for i in d.index:
+        r = reasons[i]
+        if z_roc[i] > 0.5:
+            r.append("모멘텀 상위")
+        if z_pos[i] > 0.5:
+            r.append("52주 고점 근접")
+        if z_to[i] > 0.5:
+            r.append("거래대금 상위")
+        if not r:
+            r.append("필터 통과")
+    d["reasons"] = [reasons[i] for i in d.index]
+    out = d.sort_values("score", ascending=False).head(top)
+    return out[cols].reset_index(drop=True)
+
+
+def latest_features(market: str, *, state: Path | None = None) -> pd.DataFrame:
+    """피처 스토어의 종목별 최신 행."""
+    fdir = features._features_dir(state)
+    files = sorted(fdir.glob("*.parquet")) if fdir.exists() else []
+    if not files:
+        return pd.DataFrame()
+    frames = [pd.read_parquet(f) for f in files]
+    df = pd.concat(frames, ignore_index=True)
+    df = df[df["market"] == market]
+    if df.empty:
+        return df
+    df = df.sort_values("date").groupby("ticker", as_index=False).tail(1)
+    return df.reset_index(drop=True)
+
+
+def candidates(
+    universe: Universe,
+    market: str,
+    *,
+    state: Path | None = None,
+    rank_fn: Callable[[pd.DataFrame], pd.DataFrame] | None = None,
+    exclude: set[str] | None = None,
+) -> list[dict]:
+    """유니버스(+watch) 를 점수순으로. 피처가 없는 종목은 점수 None 으로 끝에 둔다."""
+    excl = set(universe.exclude) | (exclude or set())
+    if market == "KR":
+        ids = [(t, None) for t in universe.kr]
+    else:
+        ids = [(u.symbol, u.exchange) for u in universe.us]
+    for w in universe.watch:
+        if all(w != t for t, _ in ids):
+            ids.append((w, None))
+    ids = [(t, e) for t, e in ids if t not in excl]
+    exch = dict(ids)
+    df = latest_features(market, state=state)
+    df = df[df["ticker"].isin(exch)] if not df.empty else df
+    scored = (rank_fn or score)(df) if not df.empty else pd.DataFrame()
+    out: list[dict] = []
+    seen: set[str] = set()
+    for _, r in scored.iterrows():
+        out.append(
+            {
+                "ticker": str(r["ticker"]),
+                "exchange": exch.get(str(r["ticker"])),
+                "score": float(r["score"]),
+                "reasons": list(r["reasons"]),
+            }
+        )
+        seen.add(str(r["ticker"]))
+    for t, e in ids:
+        if t not in seen:
+            out.append({"ticker": t, "exchange": e, "score": None, "reasons": ["피처 없음"]})
+    return out

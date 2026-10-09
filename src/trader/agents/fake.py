@@ -77,8 +77,33 @@ def _call(agent: str) -> dict:
     }
 
 
+def run_fake_screen(
+    ctx: tools.ToolContext, *, market: str, date: date, candidates: list[dict]
+) -> list[str]:
+    """screen 모드: 점수 있는 후보 상위 5개를 그대로 고른다."""
+    scored = [c for c in candidates if c.get("score") is not None] or candidates
+    picks = [{"ticker": c["ticker"], "reason": "FAKE: 정량 상위"} for c in scored[:5]]
+    r = tools.submit_screen(
+        ctx,
+        market=market,
+        date=date,
+        payload={"picks": picks, "rejected": [c["ticker"] for c in scored[5:]]},
+        agent="screener",
+        call_meta=_call("screener"),
+    )
+    if not r["ok"]:
+        raise tools.ToolError(r["error"])
+    return ["_screen"]
+
+
 def run_fake_ticker(
-    ctx: tools.ToolContext, *, ticker: str, market: str, date: date, debate_rounds: int
+    ctx: tools.ToolContext,
+    *,
+    ticker: str,
+    market: str,
+    date: date,
+    debate_rounds: int,
+    trigger: dict | None = None,
 ) -> list[str]:
     """한 종목에 대해 남은 단계만 실행하고 새로 쓴 단계 이름을 돌려준다."""
     d = run_dir(date, market, ticker, ctx.state)

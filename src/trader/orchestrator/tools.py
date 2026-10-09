@@ -602,6 +602,36 @@ def _ingest_run(ctx: ToolContext, d: Path, date: date, market: Market, ticker: s
             repo.ingest_checkpoint(ctx.conn, date, market, ticker, stage, cp)
 
 
+# --- submit-screen (Phase 6 scan) ---------------------------------------------
+
+
+def submit_screen(
+    ctx: ToolContext,
+    *,
+    market: Market,
+    date: date,
+    payload: dict,
+    agent: str = "screener",
+    call_meta: dict | None = None,
+) -> dict:
+    """Screened 검증 후 state/runs/<date>/<market>/_screen.json 저장."""
+    if market not in ("KR", "US"):
+        return {"ok": False, "error": f"market 은 KR 또는 US: {market!r}"}
+    try:
+        screened = schemas.Screened.model_validate(_unescape(payload))
+    except ValidationError as e:
+        msgs = "; ".join(
+            f"{'.'.join(str(x) for x in err['loc'])}: {err['msg']}" for err in e.errors()
+        )
+        return {"ok": False, "error": f"스키마 검증 실패(Screened): {msgs}"}
+    base = ctx.state if ctx.state is not None else paths.state_dir()
+    d = base / "runs" / date.isoformat() / market
+    d.mkdir(parents=True, exist_ok=True)
+    path = write_checkpoint(d, "_screen", _wrap(screened.model_dump(), _call(agent, call_meta)))
+    logger.info("스크리닝 저장 %s: %s", market, [p.ticker for p in screened.picks])
+    return {"ok": True, "path": str(path), "picks": [p.ticker for p in screened.picks]}
+
+
 # --- status -----------------------------------------------------------------
 
 

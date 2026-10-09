@@ -85,6 +85,22 @@ class Decision(BaseModel):
     memory_ids_used: list[str] = Field(default_factory=list)
 
 
+class Pick(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    ticker: str
+    reason: str = Field(max_length=200)
+
+
+class Screened(BaseModel):
+    """screener 출력 (스펙 §5.1): 오늘 분석할 종목 1~5개."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    picks: list[Pick] = Field(min_length=1, max_length=5)
+    rejected: list[str] = Field(default_factory=list)
+
+
 class CallMeta(BaseModel):
     """LLM 호출 기록 (체크포인트 `call` 필드)."""
 
