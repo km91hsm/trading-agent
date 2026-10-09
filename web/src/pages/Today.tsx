@@ -9,17 +9,22 @@ type TodayResp = { date: string; market: string; tickers: Record<string, string[
 
 function DebateView({ data }: { data: Record<string, unknown> }) {
   const s = (k: string) => String(data[k] ?? "");
-  const args = Array.isArray(data["key_arguments"]) ? (data["key_arguments"] as unknown[]) : [];
+  const list = (k: string) => (Array.isArray(data[k]) ? (data[k] as unknown[]) : []);
+  const item = (a: unknown, i: number) => <li key={i}>{typeof a === "string" ? a : JSON.stringify(a)}</li>;
   return (
     <div className="debate">
       <div>
-        <b>{s("side")}</b> 라운드 {s("round")} · 입장 <b>{s("stance")}</b> · 확신 {s("conviction")}
+        <b>{s("side")}</b> 라운드 {s("round")} · 입장 <b>{s("stance")}</b> · 밸류에이션 {s("valuation_view")} · 확신{" "}
+        {s("conviction")}
       </div>
-      <ul>
-        {args.map((a, i) => (
-          <li key={i}>{typeof a === "string" ? a : JSON.stringify(a)}</li>
-        ))}
-      </ul>
+      <h4>논거</h4>
+      <ul>{list("arguments").map(item)}</ul>
+      {list("rebuttals").length > 0 && (
+        <>
+          <h4>반박</h4>
+          <ul>{list("rebuttals").map(item)}</ul>
+        </>
+      )}
       <JsonView value={data} depth={1} />
     </div>
   );

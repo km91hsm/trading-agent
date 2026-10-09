@@ -9,7 +9,7 @@ from fastapi import APIRouter, HTTPException, Request
 
 from trader.ledger import views
 from trader.orchestrator import tools
-from trader.orchestrator.run_store import list_checkpoints, read_checkpoint, run_dir
+from trader.orchestrator.run_store import list_checkpoints, read_checkpoint
 from trader.platform import paths
 from trader.web.routers._common import deps_of, require_market, today_kst
 
@@ -72,8 +72,8 @@ def today(request: Request, market: str | None = None, date: str | None = None) 
     tickers: dict[str, list[str]] = {}
     if market_dir.exists():
         for p in sorted(market_dir.iterdir()):
-            if p.is_dir():
-                tickers[p.name] = list_checkpoints(p)
+            if p.is_dir() and (stages := list_checkpoints(p)):  # 빈 디렉터리는 숨긴다
+                tickers[p.name] = stages
     return {"date": d.isoformat(), "market": m, "tickers": tickers}
 
 
@@ -88,7 +88,10 @@ def checkpoint(
     _ids(ticker, market, stage or "")
     d = _date_arg(request, date)
     deps = deps_of(request)
-    cp = read_checkpoint(run_dir(d, market, ticker, deps.state), stage)  # type: ignore[arg-type]
+    base = deps.state if deps.state is not None else paths.state_dir()
+    # run_dir 은 디렉터리를 만들므로 조회에서는 경로만 조립한다 (존재하지 않으면 404)
+    d_path = base / "runs" / d.isoformat() / market / ticker  # type: ignore[operator]
+    cp = read_checkpoint(d_path, stage) if d_path.is_dir() else None  # type: ignore[arg-type]
     if cp is None:
         raise HTTPException(status_code=404, detail=f"체크포인트 없음: {stage}")
     return {

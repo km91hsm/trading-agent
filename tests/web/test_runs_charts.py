@@ -42,6 +42,15 @@ def test_today_and_checkpoint_read(client):
     assert client.get("/api/today?market=XX").status_code == 400
 
 
+def test_today_hides_empty_dirs_and_read_does_not_create(client):
+    _write_run()
+    (run_store.run_dir(D, "KR", "000660").parent / "_").mkdir(exist_ok=True)
+    assert "_" not in client.get("/api/today?market=KR&date=2026-10-09").json()["tickers"]
+    r = client.get("/api/checkpoint?ticker=999999&market=KR&date=2026-10-09&stage=00_inputs")
+    assert r.status_code == 404
+    assert not (run_store.run_dir(D, "KR", "000660").parent / "999999").exists()
+
+
 def test_checkpoint_path_traversal_rejected(client):
     _write_run()
     bad = [
