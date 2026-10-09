@@ -209,6 +209,9 @@ class Secrets(BaseModel):
     FRED_API_KEY: str | None = None
     ECOS_API_KEY: str | None = None
     WEB_TOKEN: str | None = None
+    REDDIT_CLIENT_ID: str | None = None
+    REDDIT_CLIENT_SECRET: str | None = None
+    REDDIT_USER: str | None = None
 
 
 # --- 로더 -------------------------------------------------------------------

@@ -299,6 +299,13 @@ def collect(
         if when.tzinfo is None:
             when = when.replace(tzinfo=UTC)
         deps = _build_input_deps(secrets, cfg)
+        from trader.orchestrator.run_store import read_checkpoint as _rc
+        from trader.orchestrator.run_store import run_dir as _rd
+
+        existed = (
+            not force
+            and _rc(_rd(when.astimezone(_KST).date(), market, ticker), "00_inputs") is not None  # type: ignore[arg-type]
+        )
         path = collect_and_save(
             ticker=ticker,
             market=market,
@@ -313,7 +320,10 @@ def collect(
     except (config.ConfigError, paths.ProjectRootNotFound, ValueError) as e:
         typer.echo(f"오류: {e}", err=True)
         raise typer.Exit(code=1) from e
-    typer.echo(f"저장: {path}")
+    if existed:
+        typer.echo(f"건너뜀(이미 존재, --force 로 덮어씀): {path}")
+    else:
+        typer.echo(f"저장: {path}")
     for e in errors:
         typer.echo(f"  - {e}")
     typer.echo(f"오류 절 {len(errors)}건")

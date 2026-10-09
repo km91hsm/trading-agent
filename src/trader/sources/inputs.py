@@ -25,9 +25,9 @@ from pydantic import BaseModel
 
 from trader.config import ConfigError, Market, Secrets, SourcesConfig
 from trader.orchestrator.run_store import read_checkpoint, run_dir, write_checkpoint
-from trader.sources import indicators
+from trader.sources import indicators, manual_inputs
 from trader.sources.base import SKIP_REASONS, Section, run_section, skipped_section
-from trader.sources.community import collect_community
+from trader.sources.community import collect_channels, collect_community  # noqa: F401
 from trader.sources.dart import ratios_kr
 from trader.sources.edgar import ratios_us
 from trader.sources.macro import collect_macro
@@ -38,6 +38,7 @@ logger = logging.getLogger("trader.sources")
 _KST = ZoneInfo("Asia/Seoul")
 SCHEMA_VERSION = 2  # v2: fundamental.history (3개년 + 최근 분기) 추가
 MAX_PAST = timedelta(hours=24)
+MAX_FUTURE = timedelta(hours=24)  # 과거와 대칭. 연도 오타 같은 먼 미래만 거부
 
 
 @dataclass
@@ -221,7 +222,39 @@ def _news_macro(ticker, market, name, asof, cfg, secrets, deps) -> dict[str, Any
     return {"news": news, "macro": macro}
 
 
-def _sentiment(ticker, market, name, asof, cfg, deps) -> dict[str, Section]:
+_EVENT_KINDS = (
+    ("실적", "earnings"),
+    ("배당", "dividend"),
+    ("유상증자", "offering"),
+    ("무상증자", "bonus"),
+    ("자기주식", "buyback"),
+    ("합병", "merger"),
+    ("분할", "split"),
+    ("소송", "lawsuit"),
+)
+
+
+def _events(fundamental: dict, asof: datetime, now) -> Section:
+    """최근 7일 공시를 이벤트 종류로 분류한다. 예정 이벤트 소스는 아직 없어 upcoming 은 빈 목록."""
+
+    def build() -> dict:
+        disc = fundamental.get("disclosures") or {}
+        items = disc.get("data") or []  # Section 은 TypedDict(dict)
+        since = (asof - timedelta(days=7)).date().isoformat()
+        recent = []
+        for it in items:
+            d = str(it.get("date") or it.get("filed") or "")[:10]
+            if d and d < since:
+                continue
+            title = str(it.get("title") or "")
+            kind = next((k for word, k in _EVENT_KINDS if word in title), "other")
+            recent.append({"date": d, "kind": kind, "title": title, "source": it.get("source")})
+        return {"recent": recent, "upcoming": [], "note": "예정 이벤트(실적일·배당락) 소스 미확정"}
+
+    return run_section(build, now=now)
+
+
+def _sentiment(ticker, market, name, asof, cfg, deps, secrets=None) -> dict[str, Section]:
     now = deps.now
     if market != "KR":
         flow = skipped_section("not available for US", now=now)
@@ -244,13 +277,30 @@ def _sentiment(ticker, market, name, asof, cfg, deps) -> dict[str, Section]:
                 asof=asof,
                 http=deps.http,
                 now=now,
+                reddit_auth=_reddit_auth(secrets),
+                channels=cfg.channels,
             ),
             enabled=cfg.community.enabled,
             now=now,
         ),
-        "trends": skipped_section("phase6", now=now),
-        "manual_inputs": skipped_section("phase6", now=now),
+        "trends": skipped_section("phase8", now=now),
+        "manual_inputs": _manual(ticker, now),
     }
+
+
+def _reddit_auth(secrets: Secrets | None) -> tuple[str, str, str] | None:
+    if secrets and secrets.REDDIT_CLIENT_ID and secrets.REDDIT_CLIENT_SECRET:
+        return (secrets.REDDIT_CLIENT_ID, secrets.REDDIT_CLIENT_SECRET, secrets.REDDIT_USER or "")
+    return None
+
+
+def _manual(ticker: str, now) -> Section:
+    data = manual_inputs.read(ticker)
+    if data is None:
+        return skipped_section("no manual input", now=now)
+    if data.get("error"):
+        return Section(data=None, received_at=now().isoformat(), error=data["error"])
+    return Section(data=data, received_at=now().isoformat(), error=None)
 
 
 def _name(ticker: str, market: Market, deps: InputDeps) -> str:
@@ -305,8 +355,9 @@ def build_inputs(
         "technical": technical,
         "fundamental": _fundamental(ticker, market, asof, cfg, deps, technical),
         "news_macro": _news_macro(ticker, market, name, asof, cfg, secrets, deps),
-        "sentiment": _sentiment(ticker, market, name, asof, cfg, deps),
+        "sentiment": _sentiment(ticker, market, name, asof, cfg, deps, secrets),
     }
+    result["news_macro"]["events"] = _events(result["fundamental"], asof, deps.now)
     result = _jsonable(result)
     result["errors"] = _collect_errors(result)
     return result
@@ -334,6 +385,8 @@ def collect_and_save(
         raise ConfigError(
             f"과거 asof 재수집은 Phase 7 백테스트에서 지원합니다 (asof={asof.isoformat()})"
         )
+    if asof - deps.now() > MAX_FUTURE:
+        raise ConfigError(f"미래 asof 는 허용하지 않습니다 (asof={asof.isoformat()})")
     d = run_dir(asof.astimezone(_KST).date(), market, ticker, state)
     if not force and read_checkpoint(d, "00_inputs") is not None:
         logger.info("00_inputs 이미 존재, 건너뜀: %s", d)

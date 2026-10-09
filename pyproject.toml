@@ -15,6 +15,7 @@ dependencies = [
     "typer>=0.27.3",
     "tzdata>=2026.5",
     "uvicorn[standard]>=0.54.0",
+    "youtube-transcript-api>=1.2.4",
 ]
 
 [project.scripts]

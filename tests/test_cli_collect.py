@@ -68,3 +68,15 @@ def test_cli_collect_us_without_exchange_fails(quiet_project, monkeypatch):
 def test_cli_collect_bad_market(quiet_project):
     r = CliRunner().invoke(app, ["collect", "--ticker", "X", "--market", "JP"])
     assert r.exit_code == 1
+
+
+def test_cli_collect_reports_skip_when_existing(quiet_project, monkeypatch):
+    monkeypatch.setattr(
+        cli,
+        "_build_input_deps",
+        lambda s, c: InputDeps(market=FakeMarket(), dart=FakeDart(), edgar=None),
+    )
+    args = ["collect", "--ticker", "005930", "--asof", "2026-10-09T06:00:00+00:00"]
+    assert CliRunner().invoke(app, args).exit_code == 0
+    r = CliRunner().invoke(app, args)
+    assert r.exit_code == 0 and "건너뜀" in r.stdout

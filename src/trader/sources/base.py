@@ -10,7 +10,9 @@ from typing import Any, TypedDict
 logger = logging.getLogger("trader.sources")
 
 # 의도적으로 건너뛴 절의 error 값. 00_inputs.errors 에 집계하지 않는다.
-SKIP_REASONS = frozenset({"disabled", "phase6", "phase7", "not available for US"})
+SKIP_REASONS = frozenset(
+    {"disabled", "phase6", "phase7", "phase8", "not available for US", "no manual input"}
+)
 
 
 class Section(TypedDict):

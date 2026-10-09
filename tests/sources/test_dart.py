@@ -180,3 +180,20 @@ def test_basic_ratios_shared():
     r = basic_ratios(fin, shares=10, price=Decimal(5))
     assert r["매출성장률"] == 1.0 and r["PSR"] == pytest.approx(50 / 200)
     assert basic_ratios({}, shares=None, price=None)["PER"] is None
+
+
+def test_disclosure_end_date_kst(respx_mock, tmp_path):
+    """asof 가 UTC 16:00 이면 KST 는 다음 날이므로 end_de 도 다음 날이어야 한다."""
+    from datetime import UTC, datetime
+
+    import httpx as _httpx
+
+    from trader.sources.dart import DartClient
+
+    route = respx_mock.get(url__startswith="https://opendart.fss.or.kr/api/list.json").mock(
+        return_value=httpx.Response(200, json={"status": "000", "list": []})
+    )
+    c = DartClient("key", tmp_path, http=_httpx.Client())
+    c.disclosures("00126380", datetime(2026, 10, 9, 16, 0, tzinfo=UTC), days=7)
+    p = route.calls[0].request.url.params
+    assert p["end_de"] == "20261010" and p["bgn_de"] == "20261003"
