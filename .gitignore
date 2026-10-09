@@ -24,3 +24,7 @@ build/
 Thumbs.db
 .idea/
 .vscode/
+
+# 웹 프런트 빌드 산출물·모듈
+web/dist/
+web/node_modules/
