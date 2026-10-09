@@ -1,4 +1,4 @@
-# 시스템 상태 (생성: 2026-10-09 07:32 KST)
+# 시스템 상태 (생성: 2026-10-09 11:10 KST)
 
 ## 실행 제어
 - 일시정지: 아니오
@@ -6,32 +6,40 @@
 - 하루 세션 상한: 12
 
 ## 계좌
-| id | env | 모드 | 시장 |
-|---|---|---|---|
-| paper-main | paper | auto | KR,US |
-| real-main | real | off | KR,US |
+| id | env | 모드 | 시장 | 성향 |
+|---|---|---|---|---|
+| paper-main | paper | auto | KR,US | normal |
+| real-main | real | off | KR,US | normal |
 
 ## 마지막 실행
+- analyze KR 2026-10-09T02:06:43.334830+00:00 → ok
 - analyze KR 2026-10-08T22:27:33.236179+00:00 → ok
 - analyze KR 2026-10-08T22:18:45.675287+00:00 → ok
 - analyze KR 2026-10-08T21:55:53.980653+00:00 → ok
 - analyze KR 2026-10-08T21:48:58.634436+00:00 → ok
-- analyze KR 2026-10-08T21:47:19.612526+00:00 → ok
 
 ## 오늘 LLM 호출
 - 4건, $5.99
 
 ## 최근 결정
+- 2026-10-09 KR 000660: HOLD w=0.0 conf=0.5
 - 2026-10-09 KR 005930: HOLD w=0.0 conf=0.4
+
+## 결정 분포(30일)
+- HOLD 1
+- 토론 수렴율: 0%
+
+## 미승인 주문
+- 없음
 
 ## 구현 진행도
 - Phase 0 골격: 8/9
 - Phase 1 브로커: 9/9
 - Phase 2 수집: 8/10
 - Phase 3 에이전트: 13/18
-- Phase 4 리스크·계좌별 실행: 0/7
+- Phase 4 리스크·계좌별 실행: 7/10
 - Phase 5 웹 UI: 0/6
-- Phase 6 scan·monitor·데몬: 0/12
+- Phase 6 scan·monitor·데몬: 0/16
 - Phase 7 ML 1단계: 0/8
 - Phase 8 학습·평가·보정: 0/7
 - Phase 9 RL 사이징(실험): 0/5
