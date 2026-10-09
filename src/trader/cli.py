@@ -516,6 +516,10 @@ def _tool_ctx():
     dry_run = os.environ.get("TRADER_DRY_RUN", "1") != "0"
     # dry_run 도 잔고로 판정은 한다(주문·승인 요청만 생략). 브로커 생성은 네트워크를 쓰지 않는다.
     brokers = {b.account.id: b for b in _build_brokers(secrets, accounts)}
+    try:
+        holiday_fn = _build_market(secrets).is_holiday  # 7일 캐시, 보유 거래일 계산용
+    except Exception:  # noqa: BLE001 - 실전 앱키가 없으면 휴장일 없이 평일 수로 계산
+        holiday_fn = None
     return ToolContext(
         settings=config.load_settings(),
         accounts=accounts,
@@ -523,6 +527,7 @@ def _tool_ctx():
         brokers=brokers,
         notifier=make_notifier(secrets),
         dry_run=dry_run,
+        holiday_fn=holiday_fn,
     )
 
 
@@ -633,11 +638,13 @@ def tool_checkpoint_write(
     stage: str = typer.Option(..., "--stage"),
     agent: str | None = typer.Option(None, "--agent"),
     json_text: str | None = typer.Option(None, "--json", help="페이로드 JSON (없으면 stdin)"),
+    model: str | None = typer.Option(None, "--model", help="서브에이전트 모델명 (call.model 기록)"),
 ) -> None:
     from trader.orchestrator import tools
 
     _tool_run(
         tools.checkpoint_write,
+        model=model,
         ticker=ticker,
         market=market,
         date=date,

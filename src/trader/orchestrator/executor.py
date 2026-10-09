@@ -44,6 +44,25 @@ class ExecContext:
     notifier: Notifier = field(default_factory=NullNotifier)
     state: Path | None = None
     now: Callable[[], datetime] = field(default=lambda: datetime.now(UTC))
+    holiday_fn: Callable[[date], bool] | None = None  # 보유 거래일 계산용 (KIS 휴장일, 캐시)
+
+
+def _holidays_between(
+    fn: Callable[[date], bool] | None, start: date | None, end: date
+) -> set[date]:
+    if fn is None or start is None or start >= end:
+        return set()
+    out: set[date] = set()
+    d = start
+    while d < end:
+        d += timedelta(days=1)
+        if d.weekday() < 5:
+            try:
+                if fn(d):
+                    out.add(d)
+            except Exception:  # noqa: BLE001 - 휴장일 조회 실패는 개장일로 본다
+                pass
+    return out
 
 
 def effective_mode(conn: sqlite3.Connection, account: AccountConfig) -> tuple[Mode, str | None]:
@@ -139,6 +158,9 @@ def execute(
                 price=price,
                 today=date,
                 is_stop_loss=is_stop_loss,
+                holidays=_holidays_between(
+                    ctx.holiday_fn, portfolio.held_since.get(decision.ticker), date
+                ),
             )
         except (KisApiError, ValueError) as e:
             verdict = rules.RiskVerdict(

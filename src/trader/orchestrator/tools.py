@@ -44,7 +44,7 @@ ANALYST_ROLES = ("technical", "fundamental", "news_macro", "sentiment")
 _ANALYST_RE = re.compile(r"^10_analyst_(technical|fundamental|news_macro|sentiment)$")
 _DEBATE_RE = re.compile(r"^20_debate_r(\d+)_(bull|bear)$")
 _RESUME_RE = re.compile(r"^31_decision_r(\d+)$")
-_TICKER_RE = re.compile(r"^[A-Za-z0-9.\-]{1,16}$")
+_TICKER_RE = re.compile(r"^(?!\.+$)[A-Za-z0-9.\-]{1,16}$")  # 점만 있는 값(., ..)은 거부
 _STAGE_RE = re.compile(r"^\d{2}_[a-z0-9_\-]{1,40}$")
 # LLM 이 checkpoint write 로 쓸 수 있는 단계. 30_decision 은 submit-decision 전용(전제조건 검증).
 _LLM_WRITABLE = (_ANALYST_RE, _DEBATE_RE)
@@ -107,6 +107,7 @@ class ToolContext:
     brokers: dict[str, Any] = field(default_factory=dict)
     notifier: Any = None
     dry_run: bool = True
+    holiday_fn: Callable[[date], bool] | None = None  # 보유 거래일 계산용 (KIS 휴장일)
 
 
 def _dir(ctx: ToolContext, ticker: str, market: Market, d: date) -> Path:
@@ -134,16 +135,39 @@ def checkpoint_list(ctx: ToolContext, *, ticker: str, market: Market, date: date
 
 
 def trader_context(ctx: ToolContext, inputs: dict, market: Market) -> dict:
-    """트레이더 입력의 파이썬 제공분. portfolio·memory·calibration 은 Phase 4·8 자리."""
+    """트레이더 입력의 파이썬 제공분. portfolio 는 계좌별 최신 스냅샷, memory 등은 Phase 8."""
     quote = ((inputs.get("technical") or {}).get("quote") or {}).get("data")
     return {
         "quote": quote,
         "risk_limits": ctx.settings.risk.model_dump(),
         "costs_bp": ROUND_TRIP_COST_BP[market],
-        "portfolio": None,
+        "portfolio": _portfolio_context(ctx, market),
         "memory": [],
         "calibration": None,
     }
+
+
+def _portfolio_context(ctx: ToolContext, market: Market) -> dict | None:
+    """계좌별 {mode, date, nav, cash, positions} (positions_snapshot 최신). 원장이 없으면 None."""
+    if ctx.conn is None:
+        return None
+    from trader.control import control
+    from trader.ledger import views
+
+    out: dict[str, dict] = {}
+    for a in ctx.accounts:
+        if market not in a.markets:
+            continue
+        snap = views.latest_positions(ctx.conn, a.id, market) or {}
+        out[a.id] = {
+            "env": a.env,
+            "mode": control.get_account_mode(ctx.conn, a),
+            "date": snap.get("date"),
+            "nav": snap.get("nav"),
+            "cash": snap.get("cash"),
+            "positions": snap.get("positions") or [],
+        }
+    return out
 
 
 # 서브에이전트에 넘기는 절은 Claude Code 의 Bash 출력 한도(약 30KB, 초과 시 파일로 치환돼
@@ -283,7 +307,10 @@ def checkpoint_write(
     payload: dict,
     agent: str | None = None,
     call_meta: dict | None = None,
+    model: str | None = None,
 ) -> dict:
+    if model:
+        call_meta = {**(call_meta or {}), "model": model}
     if stage.startswith("30_decision"):
         return {"ok": False, "error": "30_decision 은 submit-decision 도구로만 제출할 수 있습니다"}
     if not any(p.match(stage) for p in _LLM_WRITABLE):
@@ -581,6 +608,7 @@ def submit_decision(
         notifier=ctx.notifier or NullNotifier(),
         state=ctx.state,
         now=ctx.now,
+        holiday_fn=ctx.holiday_fn,
     )
     executions = executor.execute(
         ectx,

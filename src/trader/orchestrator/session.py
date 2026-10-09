@@ -15,9 +15,11 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -271,9 +273,8 @@ def run_session(
 
     # 호출자가 경로를 넘기면(테스트·dry-run) 그대로 쓰고, 아니면 settings/PATH 에서 찾는다
     bin_path = bin_override if bin_override else claude_bin_mod.find_claude(settings.claude_bin)
-    base_state = state if state is not None else paths.state_dir()
-    cwd = base_state / "claude_cwd"
-    cwd.mkdir(parents=True, exist_ok=True)
+    # cwd 는 저장소 밖 임시 디렉터리: claude 가 상위 CLAUDE.md·settings 를 탐색하지 못하게 한다
+    cwd = Path(tempfile.mkdtemp(prefix="trader-claude-"))
     agents_file = cwd / "agents.json"
     names = registry.SCREEN_AGENTS if spec.kind == "screen" else registry.AGENTS
     agents_file.write_text(
@@ -323,7 +324,10 @@ def run_session(
             timeout=settings.llm.timeout_s,
         )
     except subprocess.TimeoutExpired:
+        shutil.rmtree(cwd, ignore_errors=True)
         return fail(f"세션 타임아웃 ({settings.llm.timeout_s}s)")
+    finally:
+        shutil.rmtree(cwd, ignore_errors=True)
     try:
         data = _parse_result(proc.stdout)
     except PipelineError as e:

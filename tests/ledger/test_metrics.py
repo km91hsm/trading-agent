@@ -112,3 +112,14 @@ def test_pending_and_stances(conn):
         filled_at="2026-10-08T01:00:00+00:00",
     )
     assert metrics.account_stance(conn, "paper-main", D) == "conservative"
+
+
+def test_metrics_window_uses_kst_date(conn):
+    """UTC 15:30 = KST 다음 날 00:30. 30일 창의 기준일은 KST 날짜여야 한다."""
+    from trader.ledger import views
+
+    _decision(conn, "005930", "BUY", d=date(2026, 10, 8))
+    late = datetime(2026, 10, 9, 15, 30, tzinfo=UTC)  # KST 2026-10-10 00:30
+    assert metrics.decision_distribution(conn, days=1, now=late) == {}  # since = 10-09 (KST)
+    assert metrics.decision_distribution(conn, days=2, now=late) == {"BUY": 1}
+    assert views.list_decisions(conn, days=1, now=late) == []

@@ -64,12 +64,12 @@ def _floor_qty(value: Decimal, price: Decimal) -> int:
     return int((value / price).to_integral_value(rounding=ROUND_FLOOR))
 
 
-def _trading_days_between(start: date, end: date) -> int:
-    """start 다음 날부터 end 까지의 평일 수 (휴장일은 Phase 6 에서 반영)."""
+def _trading_days_between(start: date, end: date, holidays: set[date] | None = None) -> int:
+    """start 다음 날부터 end 까지의 거래일 수 (주말·휴장일 제외)."""
     n, d = 0, start
     while d < end:
         d += timedelta(days=1)
-        if d.weekday() < 5:
+        if d.weekday() < 5 and not (holidays and d in holidays):
             n += 1
     return n
 
@@ -84,6 +84,7 @@ def evaluate(
     price: Decimal,
     today: date,
     is_stop_loss: bool = False,
+    holidays: set[date] | None = None,
 ) -> RiskVerdict:
     acct = portfolio.account_id
     if decision.action == "HOLD":
@@ -169,7 +170,7 @@ def evaluate(
     else:
         since = portfolio.held_since.get(ticker)
         if since is not None and not is_stop_loss:
-            days = _trading_days_between(since, today)
+            days = _trading_days_between(since, today, holidays)
             if days < MIN_HOLD_TRADING_DAYS:
                 rejected.append(
                     f"최소 보유 {MIN_HOLD_TRADING_DAYS}거래일 미충족 (보유 {days}거래일)"

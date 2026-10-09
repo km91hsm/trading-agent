@@ -8,9 +8,11 @@ from __future__ import annotations
 import json
 import sqlite3
 from datetime import UTC, date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from trader.ledger import metrics, repo
 
+_KST = ZoneInfo("Asia/Seoul")
 MARKETS = ("KR", "US")
 
 
@@ -84,7 +86,7 @@ def list_decisions(
     market: str | None = None,
     now: datetime | None = None,
 ) -> list[dict]:
-    since = ((now or datetime.now(UTC)).date() - timedelta(days=days)).isoformat()
+    since = ((now or datetime.now(UTC)).astimezone(_KST).date() - timedelta(days=days)).isoformat()
     sql = (
         "SELECT id, date, market, ticker, action, target_weight, confidence, session_id, "
         "created_at FROM decisions WHERE date >= ?"
