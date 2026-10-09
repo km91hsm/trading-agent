@@ -189,3 +189,26 @@ def test_daemon_run_refuses_when_locked(project, conn):
     r = daemon.run(deps, web=False, scheduler_factory=FakeScheduler)
     assert r["ok"] is False and "잠금" in r["error"]
     lock.release()
+
+
+def test_signal_handler_shuts_down_and_exits():
+    import pytest
+
+    sched = FakeScheduler()
+    calls = []
+    sched.shutdown = lambda wait=False: calls.append(wait)
+    handler = daemon.make_signal_handler(sched)
+    with pytest.raises(SystemExit):
+        handler(15, None)
+    assert calls == [False]
+
+
+def test_run_names_jobs_by_id(project, conn):
+    class NamedScheduler(FakeScheduler):
+        def add_job(self, fn, trigger, **kw):
+            self.jobs.append((kw.get("id"), kw.get("name"), fn))
+
+    sched = NamedScheduler()
+    deps = _deps(conn, FakeMarket(), now=lambda: datetime.now(UTC))
+    daemon.run(deps, web=False, scheduler_factory=lambda: sched)
+    assert all(j[0] == j[1] for j in sched.jobs)

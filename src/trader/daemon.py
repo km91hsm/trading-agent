@@ -444,15 +444,45 @@ def run(
                 partial(run_job, job.id, job_body(deps, job), conn_factory=deps.conn_factory),
                 _trigger(job),
                 id=job.id,
+                name=job.id,
                 max_instances=1,
                 coalesce=True,
                 misfire_grace_time=120,
             )
         logger.info("데몬 시작: 잡 %d개, web=%s", len(jobs), web)
-        scheduler.start()
+        _install_signals(scheduler)
+        try:
+            scheduler.start()
+        except (KeyboardInterrupt, SystemExit):
+            logger.info("데몬 종료")
         return {"ok": True, "jobs": len(jobs)}
     finally:
         lock.release()
+
+
+def make_signal_handler(scheduler: Any) -> Callable[[int, Any], None]:
+    """SIGINT/SIGTERM → 스케줄러 중단 후 SystemExit (finally 의 잠금 해제가 돌도록)."""
+
+    def handler(signum: int, frame: Any) -> None:
+        logger.info("시그널 %s 수신, 데몬을 종료합니다", signum)
+        try:
+            scheduler.shutdown(wait=False)
+        except Exception:  # noqa: BLE001 - 종료 중 오류는 무시
+            pass
+        raise SystemExit(0)
+
+    return handler
+
+
+def _install_signals(scheduler: Any) -> None:
+    import signal
+
+    handler = make_signal_handler(scheduler)
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            signal.signal(sig, handler)
+        except (ValueError, OSError):  # 메인 스레드가 아니면 등록 불가
+            pass
 
 
 def _trigger(job: Job) -> Any:
