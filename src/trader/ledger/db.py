@@ -119,6 +119,20 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
             "ALTER TABLE orders ADD COLUMN org_no TEXT",
         ],
     ),
+    (
+        4,  # Phase 6: 트리거 기록, 체결 중복 방지 인덱스
+        [
+            """CREATE TABLE IF NOT EXISTS triggers (
+                id INTEGER PRIMARY KEY,
+                account_id TEXT, market TEXT NOT NULL, ticker TEXT NOT NULL,
+                kind TEXT NOT NULL, detail TEXT NOT NULL, price TEXT,
+                decision_id INTEGER, created_at TEXT NOT NULL,
+                handled_at TEXT, session_id TEXT
+            )""",
+            "CREATE UNIQUE INDEX IF NOT EXISTS ux_fills_dedupe "
+            "ON fills(account_id, order_id, filled_at, qty, price)",
+        ],
+    ),
 ]
 
 

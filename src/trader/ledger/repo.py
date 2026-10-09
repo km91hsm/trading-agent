@@ -216,13 +216,71 @@ def insert_fill(
     qty: int,
     price: Decimal,
     filled_at: str | None = None,
-) -> int:
+) -> int | None:
+    """체결 1건 적재. 같은 (계좌, 주문, 시각, 수량, 가격) 은 무시하고 None (재동기화 멱등)."""
     cur = conn.execute(
-        "INSERT INTO fills(order_id, account_id, qty, price, filled_at) VALUES (?, ?, ?, ?, ?)",
+        "INSERT OR IGNORE INTO fills(order_id, account_id, qty, price, filled_at) "
+        "VALUES (?, ?, ?, ?, ?)",
         (order_id, account_id, qty, str(price), filled_at or now_iso()),
     )
     conn.commit()
+    return int(cur.lastrowid) if cur.rowcount == 1 else None
+
+
+# --- 트리거 (Phase 6 monitor) ------------------------------------------------------
+
+
+def insert_trigger(
+    conn: sqlite3.Connection,
+    *,
+    market: str,
+    ticker: str,
+    kind: str,
+    detail: dict,
+    price: Decimal | None,
+    decision_id: int | None,
+    account_id: str | None = None,
+) -> int:
+    cur = conn.execute(
+        "INSERT INTO triggers(account_id, market, ticker, kind, detail, price, decision_id, "
+        "created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            account_id,
+            market,
+            ticker,
+            kind,
+            json.dumps(detail, ensure_ascii=False, default=str),
+            str(price) if price is not None else None,
+            decision_id,
+            now_iso(),
+        ),
+    )
+    conn.commit()
     return int(cur.lastrowid)
+
+
+def mark_trigger_handled(
+    conn: sqlite3.Connection,
+    trigger_id: int,
+    session_id: str | None,
+    *,
+    handled_at: str | None = None,
+) -> None:
+    conn.execute(
+        "UPDATE triggers SET handled_at=?, session_id=? WHERE id=?",
+        (handled_at or now_iso(), session_id, trigger_id),
+    )
+    conn.commit()
+
+
+def last_trigger_handled_at(conn: sqlite3.Connection, market: str, ticker: str) -> datetime | None:
+    """해당 종목의 마지막 재평가 시각 (30분 1회 제한용)."""
+    row = conn.execute(
+        "SELECT MAX(handled_at) AS t FROM triggers WHERE market=? AND ticker=? "
+        "AND handled_at IS NOT NULL",
+        (market, ticker),
+    ).fetchone()
+    return datetime.fromisoformat(row["t"]) if row and row["t"] else None
 
 
 def has_open_order_or_approval(conn: sqlite3.Connection, decision_id: int, account_id: str) -> bool:

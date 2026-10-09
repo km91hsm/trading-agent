@@ -200,7 +200,7 @@ def test_approvals_lifecycle(conn):
 
 
 def test_v3_adds_amount_and_org_no(conn):
-    assert db.SCHEMA_VERSION == 3
+    assert db.SCHEMA_VERSION >= 3
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(orders)")}
     assert {"amount", "org_no"} <= cols
 
@@ -301,3 +301,56 @@ def test_latest_nav_before_prefers_latest_row(conn):
         )
     assert repo.latest_nav_before(conn, "a", D, market="KR") == Decimal("2")
     assert repo.latest_nav_before(conn, "a", D, market="US") is None
+
+
+# --- Phase 6: v4 triggers·fills 중복 방지 ------------------------------------------
+
+
+def test_v4_triggers_and_fill_dedupe(conn):
+    from datetime import datetime
+
+    assert db.SCHEMA_VERSION >= 4
+    tables = _tables(conn)
+    assert "triggers" in tables
+    dec_id = repo.ingest_checkpoint(
+        conn, D, "KR", "005930", "30_decision", {"data": ok_decision(), "call": None}
+    )
+    oid = repo.insert_order(
+        conn,
+        decision_id=dec_id,
+        account_id="paper-main",
+        ticker="005930",
+        market="KR",
+        side="BUY",
+        qty=2,
+        order_type="LIMIT",
+        price=Decimal("100"),
+        status="accepted",
+        order_no="1",
+        message="",
+        mode="auto",
+    )
+    kw = dict(
+        order_id=oid,
+        account_id="paper-main",
+        qty=2,
+        price=Decimal("100"),
+        filled_at="2026-10-09T01:00:00+00:00",
+    )
+    assert isinstance(repo.insert_fill(conn, **kw), int)
+    assert repo.insert_fill(conn, **kw) is None  # 같은 체결은 무시
+    assert conn.execute("SELECT COUNT(*) FROM fills").fetchone()[0] == 1
+    tid = repo.insert_trigger(
+        conn,
+        market="KR",
+        ticker="005930",
+        kind="move_7pct",
+        detail={"pct": 0.08},
+        price=Decimal("77000"),
+        decision_id=dec_id,
+    )
+    assert repo.last_trigger_handled_at(conn, "KR", "005930") is None
+    repo.mark_trigger_handled(conn, tid, "sess-1")
+    assert isinstance(repo.last_trigger_handled_at(conn, "KR", "005930"), datetime)
+    row = conn.execute("SELECT kind, detail, session_id FROM triggers").fetchone()
+    assert row["kind"] == "move_7pct" and '"pct"' in row["detail"] and row["session_id"] == "sess-1"
