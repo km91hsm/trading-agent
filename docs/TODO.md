@@ -65,6 +65,7 @@
 - [ ] 실기(사용자 확인 대기, 영업일 09:00~15:30 KST): `uv run trader kis order-test --account paper-main` → 1주 지정가(현재가 −10%) 접수·취소 메시지 확인
 - [ ] 실기(사용자 확인 대기): 텔레그램 승인 — `uv run trader control mode paper-main approve` → `FAKE_CLAUDE=1` 없이 `uv run trader analyze --ticker 005930`(결정이 BUY 일 때만 승인 요청, 약 $2) 또는 `uv run trader approvals list` 로 요청 확인 → 텔레그램에서 `/approve <id>` → `uv run trader telegram poll` → 주문 접수 확인 → `uv run trader control mode paper-main auto` 원복
 - [ ] 사용자 확인 대기(Windows): Phase 4 테스트 전체 통과 (`uv run pytest`)
+- [ ] 리뷰 Minor 이연: approvals.decision_id 0 기록, metrics 30일 창의 UTC/KST 하루 오차, telegram_offset 이 타 chat 메시지로 전진 안 함, KR limit_price 호가단위·범위 검증, 승인 시점 게이트 재평가 (Phase 5~6 에서 해당 모듈 손댈 때)
 
 ## Phase 5 웹 UI
 - [ ] FastAPI 라우터 (accounts·portfolio·runs·orders·charts·ml·control·system) + SSE + bearer 토큰
@@ -80,7 +81,7 @@
 - [ ] daemon (APScheduler + web 동시 실행, 단일 인스턴스 잠금, 휴장일 건너뜀)
 - [ ] install (launchd / Windows 작업 스케줄러, 파이썬 템플릿)
 - [ ] YouTube 자막·텔레그램 채널 수집, manual_inputs, UI 실시간
-- [ ] 체결 동기화: 주문 체결 조회로 `fills` 자동 적재·`orders.status` 갱신 (Phase 4 이연)
+- [ ] 체결 동기화: 주문 체결 조회로 `fills` 자동 적재·`orders.status` 갱신 (Phase 4 이연). 그 전까지 `realized_pnl_5d`=0 이라 conservative 성향이 켜지지 않고 보유기간은 매수 주문일로 근사한다
 - [ ] 텔레그램 수신 상시 루프 + /pause /resume /mode 명령 (Phase 4 이연, 현재 `telegram poll` 1회)
 - [ ] 손절(`stop_loss_pct`) 자동 매도·트리거 재평가 (Phase 4 이연, `rules.evaluate(is_stop_loss=True)` 가 보유기간 예외를 둠)
 - [ ] 트레이더 묶음 `context.portfolio` 를 계좌 잔고로 채우기, 휴장일 반영한 보유 거래일 계산 (Phase 4 이연)
