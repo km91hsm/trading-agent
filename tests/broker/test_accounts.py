@@ -89,9 +89,3 @@ def test_market_not_in_account_rejected(paper_client):
     broker = KisBroker(make_account("paper-main", "paper", "auto", ["KR"]), paper_client)
     with pytest.raises(ValueError, match="US"):
         broker.get_positions("US")
-
-
-def test_order_not_implemented(paper_client):
-    broker = KisBroker(make_account("paper-main", "paper", "auto"), paper_client)
-    with pytest.raises(NotImplementedError):
-        broker.place_order(None)

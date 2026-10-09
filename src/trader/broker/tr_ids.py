@@ -59,6 +59,11 @@ _TR: dict[str, tuple[str, str, str | None]] = {
     ),
     "DOM_ORDER_BUY": ("/uapi/domestic-stock/v1/trading/order-cash", "TTTC0012U", "VTTC0012U"),
     "DOM_ORDER_SELL": ("/uapi/domestic-stock/v1/trading/order-cash", "TTTC0011U", "VTTC0011U"),
+    "DOM_ORDER_CANCEL": (
+        "/uapi/domestic-stock/v1/trading/order-rvsecncl",
+        "TTTC0013U",
+        "VTTC0013U",
+    ),
     # 해외 시세
     "OVS_PRICE": ("/uapi/overseas-price/v1/quotations/price", "HHDFS00000300", "HHDFS00000300"),
     "OVS_DAILY": (
@@ -90,6 +95,11 @@ _TR: dict[str, tuple[str, str, str | None]] = {
     ),
     "OVS_ORDER_BUY_US": ("/uapi/overseas-stock/v1/trading/order", "TTTT1002U", "VTTT1002U"),
     "OVS_ORDER_SELL_US": ("/uapi/overseas-stock/v1/trading/order", "TTTT1006U", "VTTT1006U"),
+    "OVS_ORDER_CANCEL_US": (
+        "/uapi/overseas-stock/v1/trading/order-rvsecncl",
+        "TTTT1004U",
+        "VTTT1004U",
+    ),
 }
 
 

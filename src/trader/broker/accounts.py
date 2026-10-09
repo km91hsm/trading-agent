@@ -6,6 +6,7 @@ import logging
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
+from trader.broker.errors import KisApiError
 from trader.broker.kis_client import KisClient
 from trader.broker.models import Cash, Market, OrderRequest, OrderResult, Position
 from trader.broker.tr_ids import path
@@ -145,8 +146,107 @@ class KisBroker:
             total=_dec(usd.get("frcr_dncl_amt_2")),
         )
 
-    def place_order(self, request: OrderRequest | None) -> OrderResult:
-        raise NotImplementedError("주문은 Phase 4 에서 구현합니다")
+    # --- 주문 (Phase 4). 호출은 orchestrator/executor 만 한다. -------------------------
 
-    def cancel_order(self, order_no: str) -> OrderResult:
-        raise NotImplementedError("주문 취소는 Phase 4 에서 구현합니다")
+    def place_order(self, request: OrderRequest) -> OrderResult:
+        """현금 주문. 접수 실패(rt_cd≠0)는 KisApiError. US 는 지정가만(모의 서버 제약)."""
+        self._check_market(request.market)
+        if request.market == "KR":
+            name = "DOM_ORDER_BUY" if request.side == "BUY" else "DOM_ORDER_SELL"
+            body = {
+                **self._acct(),
+                "PDNO": request.ticker,
+                "ORD_DVSN": "00" if request.order_type == "LIMIT" else "01",
+                "ORD_QTY": str(request.qty),
+                "ORD_UNPR": _price_str(request.price) if request.order_type == "LIMIT" else "0",
+            }
+        else:
+            if request.order_type != "LIMIT" or request.price is None:
+                raise KisApiError("UNSUPPORTED", "US 주문은 지정가만 지원합니다")
+            name = "OVS_ORDER_BUY_US" if request.side == "BUY" else "OVS_ORDER_SELL_US"
+            body = {
+                **self._acct(),
+                "OVRS_EXCG_CD": _us_order_exchange(request.exchange),
+                "PDNO": request.ticker,
+                "ORD_QTY": str(request.qty),
+                "OVRS_ORD_UNPR": _price_str(request.price),
+                "ORD_SVR_DVSN_CD": "0",
+                "ORD_DVSN": "00",
+            }
+            if request.side == "SELL":
+                body["SLL_TYPE"] = "00"
+        data = self._client.post(path(name), name, body)
+        out = data.get("output") or {}
+        return OrderResult(
+            order_no=str(out.get("ODNO") or "") or None,
+            accepted=True,
+            message=str(data.get("msg1") or ""),
+            org_no=str(out.get("KRX_FWDG_ORD_ORGNO") or "") or None,
+        )
+
+    def cancel_order(
+        self,
+        order_no: str,
+        *,
+        market: Market = "KR",
+        org_no: str | None = None,
+        ticker: str | None = None,
+        exchange: str | None = None,
+        qty: int = 0,
+    ) -> OrderResult:
+        """미체결 전량 취소. US 는 ticker·exchange·qty 가 필요하다."""
+        self._check_market(market)
+        if market == "KR":
+            name = "DOM_ORDER_CANCEL"
+            body = {
+                **self._acct(),
+                "KRX_FWDG_ORD_ORGNO": org_no or "",
+                "ORGN_ODNO": order_no,
+                "ORD_DVSN": "00",
+                "RVSE_CNCL_DVSN_CD": "02",
+                "ORD_QTY": "0",
+                "ORD_UNPR": "0",
+                "QTY_ALL_ORD_YN": "Y",
+            }
+        else:
+            if not ticker or qty <= 0:
+                raise ValueError("US 주문 취소에는 ticker 와 qty 가 필요합니다")
+            name = "OVS_ORDER_CANCEL_US"
+            body = {
+                **self._acct(),
+                "OVRS_EXCG_CD": _us_order_exchange(exchange),
+                "PDNO": ticker,
+                "ORGN_ODNO": order_no,
+                "RVSE_CNCL_DVSN_CD": "02",
+                "ORD_QTY": str(qty),
+                "OVRS_ORD_UNPR": "0",
+            }
+        data = self._client.post(path(name), name, body)
+        out = data.get("output") or {}
+        return OrderResult(
+            order_no=str(out.get("ODNO") or "") or order_no,
+            accepted=True,
+            message=str(data.get("msg1") or ""),
+        )
+
+
+# 주문용 거래소 코드 (시세 EXCD 와 다르다): NAS→NASD, NYS→NYSE, AMS→AMEX
+US_ORDER_EXCHANGE = {"NAS": "NASD", "NYS": "NYSE", "AMS": "AMEX"}
+
+
+def _us_order_exchange(exchange: str | None) -> str:
+    if not exchange:
+        raise ValueError("US 주문에는 exchange(NAS|NYS|AMS)가 필요합니다")
+    if exchange in US_ORDER_EXCHANGE.values():
+        return exchange
+    try:
+        return US_ORDER_EXCHANGE[exchange]
+    except KeyError:
+        raise ValueError(f"알 수 없는 US 거래소: {exchange}") from None
+
+
+def _price_str(price: Decimal | None) -> str:
+    if price is None:
+        return "0"
+    s = format(price.normalize(), "f")
+    return s

@@ -110,3 +110,4 @@ class OrderResult(BaseModel):
     order_no: str | None
     accepted: bool
     message: str
+    org_no: str | None = None  # KR 취소 시 필요한 KRX_FWDG_ORD_ORGNO
