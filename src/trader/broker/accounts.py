@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import logging
+from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from trader.broker.errors import KisApiError
 from trader.broker.kis_client import KisClient
-from trader.broker.models import Cash, Market, OrderRequest, OrderResult, Position
+from trader.broker.models import Cash, Fill, Market, OrderRequest, OrderResult, Position
 from trader.broker.tr_ids import path
 from trader.config import AccountConfig
 
@@ -146,6 +148,80 @@ class KisBroker:
             total=_dec(usd.get("frcr_dncl_amt_2")),
         )
 
+    # --- 체결 조회 (Phase 6 fills 동기화) ---------------------------------------------
+
+    def get_fills(self, market: Market, d: date) -> list[Fill]:
+        """해당 날짜의 체결 내역 (체결수량 0 행 제외). 시각은 KR=KST, US=ET 를 UTC 로 바꾼다."""
+        self._check_market(market)
+        ymd = d.strftime("%Y%m%d")
+        if market == "KR":
+            params = {
+                **self._acct(),
+                "INQR_STRT_DT": ymd,
+                "INQR_END_DT": ymd,
+                "SLL_BUY_DVSN_CD": "00",
+                "INQR_DVSN": "00",
+                "PDNO": "",
+                "CCLD_DVSN": "01",
+                "ORD_GNO_BRNO": "",
+                "ODNO": "",
+                "INQR_DVSN_3": "00",
+                "INQR_DVSN_1": "",
+                "CTX_AREA_FK100": "",
+                "CTX_AREA_NK100": "",
+            }
+            data = self._client.get(path("DOM_CCLD"), "DOM_CCLD", params)
+            out: list[Fill] = []
+            for r in _rows(data.get("output1")):
+                qty = _int(r.get("tot_ccld_qty"))
+                if qty <= 0:
+                    continue
+                out.append(
+                    Fill(
+                        order_no=str(r.get("odno") or ""),
+                        ticker=str(r.get("pdno") or ""),
+                        market="KR",
+                        side="SELL" if str(r.get("sll_buy_dvsn_cd")) == "01" else "BUY",
+                        qty=qty,
+                        price=_dec(r.get("avg_prvs")),
+                        filled_at=_local_dt(r.get("ord_dt"), r.get("ord_tmd"), _KST),
+                    )
+                )
+            return out
+        params = {
+            **self._acct(),
+            "PDNO": "",
+            "ORD_STRT_DT": ymd,
+            "ORD_END_DT": ymd,
+            "SLL_BUY_DVSN": "00",
+            "CCLD_NCCS_DVSN": "00",
+            "OVRS_EXCG_CD": US_EXCHANGE_CODE,
+            "SORT_SQN": "DS",
+            "ORD_DT": "",
+            "ORD_GNO_BRNO": "",
+            "ODNO": "",
+            "CTX_AREA_NK200": "",
+            "CTX_AREA_FK200": "",
+        }
+        data = self._client.get(path("OVS_CCLD_US"), "OVS_CCLD_US", params)
+        out = []
+        for r in _rows(data.get("output")):
+            qty = _int(r.get("ft_ccld_qty"))
+            if qty <= 0:
+                continue
+            out.append(
+                Fill(
+                    order_no=str(r.get("odno") or ""),
+                    ticker=str(r.get("pdno") or ""),
+                    market="US",
+                    side="SELL" if str(r.get("sll_buy_dvsn_cd")) == "01" else "BUY",
+                    qty=qty,
+                    price=_dec(r.get("ft_ccld_unpr3")),
+                    filled_at=_local_dt(r.get("ord_dt"), r.get("ord_tmd"), _ET),
+                )
+            )
+        return out
+
     # --- 주문 (Phase 4). 호출은 orchestrator/executor 만 한다. -------------------------
 
     def place_order(self, request: OrderRequest) -> OrderResult:
@@ -228,6 +304,20 @@ class KisBroker:
             accepted=True,
             message=str(data.get("msg1") or ""),
         )
+
+
+_KST = ZoneInfo("Asia/Seoul")
+_ET = ZoneInfo("America/New_York")
+
+
+def _local_dt(ymd: Any, hms: Any, tz: ZoneInfo) -> datetime:
+    """'20261009' + '100512' 를 해당 시간대로 해석해 UTC 로 돌려준다 (시각 없으면 00:00)."""
+    s = f"{ymd or ''}{str(hms or '000000').zfill(6)}"
+    try:
+        local = datetime.strptime(s, "%Y%m%d%H%M%S").replace(tzinfo=tz)
+    except ValueError:
+        local = datetime.strptime(str(ymd), "%Y%m%d").replace(tzinfo=tz)
+    return local.astimezone(UTC)
 
 
 # 주문용 거래소 코드 (시세 EXCD 와 다르다): NAS→NASD, NYS→NYSE, AMS→AMEX

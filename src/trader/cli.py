@@ -842,6 +842,46 @@ def telegram_poll() -> None:
         ectx.conn.close()
 
 
+# --- 체결 동기화 (Phase 6) ------------------------------------------------------
+
+fills_app = typer.Typer(help="체결 조회로 fills 를 적재하고 주문 상태를 갱신한다")
+app.add_typer(fills_app, name="fills")
+
+
+@fills_app.command("sync")
+def fills_sync(
+    account: str | None = typer.Option(None, "--account", help="특정 계좌 id 만"),
+    date: str | None = typer.Option(None, "--date", help="YYYY-MM-DD (기본 KST 오늘)"),
+) -> None:
+    """계좌별 체결을 원장에 적재한다 (멱등)."""
+    from datetime import date as _date
+
+    from trader.ledger import db
+    from trader.orchestrator.fills import sync_fills
+
+    try:
+        configure(paths.state_dir())
+        secrets = config.load_secrets()
+        accounts = config.load_accounts()
+        d = _date.fromisoformat(date) if date else datetime.now(_KST).date()
+    except (config.ConfigError, paths.ProjectRootNotFound, ValueError) as e:
+        typer.echo(f"오류: {e}", err=True)
+        raise typer.Exit(code=1) from e
+    if account:
+        accounts = [a for a in accounts if a.id == account]
+    conn = db.connect()
+    db.init_schema(conn)
+    try:
+        for b in _build_brokers(secrets, accounts):
+            r = sync_fills(conn, b, b.account, d)
+            typer.echo(
+                f"{r['account_id']} {r['date']}: 체결 {r['inserted']}건 적재, "
+                f"주문 {r['orders_updated']}건 갱신"
+            )
+    finally:
+        conn.close()
+
+
 # --- 런타임 제어 (control 테이블) -----------------------------------------------
 
 control_app = typer.Typer(help="일시정지·계좌 모드 (SQLite control 테이블, yaml 보다 우선)")

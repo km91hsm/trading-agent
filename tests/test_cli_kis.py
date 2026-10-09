@@ -190,3 +190,39 @@ def test_tool_ctx_builds_brokers_even_in_dry_run(project, monkeypatch):
     ctx = cli._tool_ctx()
     ctx.conn.close()
     assert ctx.dry_run is True and set(ctx.brokers) == {"paper-main", "real-main"}
+
+
+def test_cli_fills_sync(project, monkeypatch):
+    from datetime import UTC, datetime
+    from decimal import Decimal
+
+    from trader.broker.models import Fill
+
+    _accounts(project)
+    market, brokers = _fakes()
+
+    def _brokers(secrets, accounts):
+        bs = brokers(secrets, accounts)
+        for b in bs:
+            if b.account.id == "paper-main":
+                b.fills[("KR", datetime.now(UTC).date())] = [
+                    Fill(
+                        order_no="Q",
+                        ticker="005930",
+                        market="KR",
+                        side="BUY",
+                        qty=1,
+                        price=Decimal("70000"),
+                        filled_at=datetime.now(UTC),
+                    )
+                ]
+        return bs
+
+    monkeypatch.setattr(cli, "_build_brokers", _brokers)
+    r = CliRunner().invoke(app, ["fills", "sync", "--account", "paper-main"])
+    assert r.exit_code == 0, r.stdout
+    assert "paper-main" in r.stdout and "1" in r.stdout
+    conn = db.connect()
+    db.init_schema(conn)
+    assert conn.execute("SELECT COUNT(*) FROM fills").fetchone()[0] == 1
+    conn.close()
