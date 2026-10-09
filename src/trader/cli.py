@@ -843,6 +843,100 @@ def telegram_poll() -> None:
         ectx.conn.close()
 
 
+# --- 런타임 제어 (control 테이블) -----------------------------------------------
+
+control_app = typer.Typer(help="일시정지·계좌 모드 (SQLite control 테이블, yaml 보다 우선)")
+app.add_typer(control_app, name="control")
+
+
+def _control_conn():
+    from trader.ledger import db
+
+    configure(paths.state_dir())
+    accounts = config.load_accounts()
+    conn = db.connect()
+    db.init_schema(conn)
+    return conn, accounts
+
+
+@control_app.command("show")
+def control_show() -> None:
+    """일시정지 여부와 계좌별 실효 모드를 보여준다."""
+    from trader.control import control
+
+    try:
+        conn, accounts = _control_conn()
+    except (config.ConfigError, paths.ProjectRootNotFound) as e:
+        typer.echo(f"오류: {e}", err=True)
+        raise typer.Exit(code=1) from e
+    try:
+        typer.echo(f"일시정지: {'예' if control.is_paused(conn) else '아니오'}")
+        for a in accounts:
+            mode = control.get_account_mode(conn, a)
+            src = "control" if control.get_flag(conn, f"mode:{a.id}") is not None else "yaml"
+            typer.echo(f"{a.id} ({a.env}): {mode} [{src}]")
+    finally:
+        conn.close()
+
+
+@control_app.command("mode")
+def control_mode(
+    account: str = typer.Argument(..., help="계좌 id"),
+    mode: str = typer.Argument(..., help="auto | approve | off"),
+    confirm: str | None = typer.Option(None, "--confirm", help="실전 auto 전환 확인 문자열(LIVE)"),
+) -> None:
+    """계좌 실행 모드를 바꾼다. 실전 auto 는 --confirm LIVE 가 있어야 하며 확인 기록을 남긴다."""
+    from trader.control import control
+
+    try:
+        conn, accounts = _control_conn()
+    except (config.ConfigError, paths.ProjectRootNotFound) as e:
+        typer.echo(f"오류: {e}", err=True)
+        raise typer.Exit(code=1) from e
+    try:
+        acct = next((a for a in accounts if a.id == account), None)
+        if acct is None:
+            typer.echo(f"오류: 계좌 id 를 찾을 수 없습니다: {account}", err=True)
+            raise typer.Exit(code=1)
+        try:
+            control.set_account_mode(conn, acct, mode, confirm=confirm)
+        except control.ConfirmationRequired as e:
+            typer.echo(f"오류: {e}", err=True)
+            raise typer.Exit(code=1) from e
+        except ValueError as e:
+            typer.echo(f"오류: {e}", err=True)
+            raise typer.Exit(code=1) from e
+        typer.echo(f"{account}: {mode}")
+    finally:
+        conn.close()
+
+
+@control_app.command("pause")
+def control_pause() -> None:
+    """paused 플래그를 켠다 (Phase 6 데몬이 확인)."""
+    from trader.control import control
+
+    conn, _ = _control_conn()
+    try:
+        control.set_flag(conn, "paused", True)
+    finally:
+        conn.close()
+    typer.echo("일시정지: 예")
+
+
+@control_app.command("resume")
+def control_resume() -> None:
+    """paused 플래그를 끈다."""
+    from trader.control import control
+
+    conn, _ = _control_conn()
+    try:
+        control.set_flag(conn, "paused", False)
+    finally:
+        conn.close()
+    typer.echo("일시정지: 아니오")
+
+
 @app.command("notify-test")
 def notify_test() -> None:
     """텔레그램으로 테스트 메시지를 보낸다 (미설정이면 NullNotifier 로 성공)."""
