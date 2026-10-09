@@ -85,8 +85,8 @@
 | 클리앙 주식게시판 | 목록 HTML 200, robots 가 `/service/board/` 허용·검색·쿼리 금지 | **기본 on** (목록 1페이지, 검색 없음) |
 | DC 미국주식·코스피 마이너갤 | HTML 200, robots 가 AI 크롤러(ClaudeBot 등) 명시 차단 | 구현, **기본 off** |
 | 에펨코리아 주식게시판 | HTML 200 + 검색 가능, robots 가 AI 크롤러 차단 | 구현, **기본 off** |
-| 토스증권 커뮤니티 | SPA, robots 허용, 내부 API 는 브라우저 조사 필요(GET 405) | Phase 6 조사 후 결정 |
-| 네이버 종목토론실 | `stock.naver.com` SPA, robots 전면 차단 | Phase 6 조사, 기본 off |
+| 토스증권 커뮤니티 | SPA, robots 허용, 내부 API 는 비공개(GET 405)·약관상 자동 수집 금지 | **영구 off** (Phase 6 결정: 공개 API 없음) |
+| 네이버 종목토론실 | `stock.naver.com` SPA, robots 전면 차단 | **영구 off** (Phase 6 결정: robots 차단) |
 | StockTwits | 403, 인증 필요 | 제외 |
 | X, Seeking Alpha | 로그인·유료 API | 제외 |
 

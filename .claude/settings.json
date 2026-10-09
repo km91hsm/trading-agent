@@ -47,7 +47,15 @@
       "Bash(python -m trader approvals approve *)",
       "Bash(uv run trader approvals approve *)",
       "Bash(python -m trader telegram poll*)",
-      "Bash(uv run trader telegram poll*)"
+      "Bash(uv run trader telegram poll*)",
+      "Bash(python -m trader telegram loop*)",
+      "Bash(uv run trader telegram loop*)",
+      "Bash(python -m trader daemon*)",
+      "Bash(uv run trader daemon*)",
+      "Bash(python -m trader monitor*)",
+      "Bash(uv run trader monitor*)",
+      "Bash(python -m trader install*)",
+      "Bash(uv run trader install*)"
     ]
   }
 }

@@ -79,22 +79,26 @@
 - [ ] Phase 5 이연: SSE 를 트리거·데몬 이벤트 푸시로(Phase 6), 관심종목 제어(Phase 6), 차트 지표 오버레이·분봉(Phase 6), ML 페이지 실데이터(Phase 7), 성과 페이지(Phase 8)
 
 ## Phase 6 scan·monitor·데몬
-- [ ] 정량 스크리너 + screener 세션 (haiku)
-- [ ] monitor·트리거·`--resume` 재평가·손절 즉시 매도
-- [ ] daemon (APScheduler + web 동시 실행, 단일 인스턴스 잠금, 휴장일 건너뜀)
-- [ ] install (launchd / Windows 작업 스케줄러, 파이썬 템플릿)
-- [ ] YouTube 자막·텔레그램 채널 수집, manual_inputs, UI 실시간
-- [ ] 체결 동기화: 주문 체결 조회로 `fills` 자동 적재·`orders.status` 갱신 (Phase 4 이연). 그 전까지 `realized_pnl_5d`=0 이라 conservative 성향이 켜지지 않고 보유기간은 매수 주문일로 근사한다
-- [ ] 텔레그램 수신 상시 루프 + /pause /resume /mode 명령 (Phase 4 이연, 현재 `telegram poll` 1회)
-- [ ] 손절(`stop_loss_pct`) 자동 매도·트리거 재평가 (Phase 4 이연, `rules.evaluate(is_stop_loss=True)` 가 보유기간 예외를 둠)
-- [ ] 트레이더 묶음 `context.portfolio` 를 계좌 잔고로 채우기, 휴장일 반영한 보유 거래일 계산 (Phase 4 이연)
-- [ ] KRX 공매도·대차잔고, 검색트렌드 (Phase 2 이연)
-- [ ] 토스증권·네이버 종목토론실 API 조사 후 구현 여부 결정 (Phase 2 이연)
-- [ ] 7일 이벤트 캘린더 소스 확정 (Phase 2 이연, 현재 `events` 없음)
-- [ ] Reddit 429 대응: OAuth API 전환 + User-Agent 를 Reddit 형식(`<platform>:<app>:<ver> (by /u/<user>)`)으로 (Phase 2 이연)
-- [ ] 커뮤니티 키워드 매칭을 ASCII 티커는 단어 경계로 (짧은 티커 과잉 매칭, Phase 2 이연)
-- [ ] 공시 조회 종료일을 KST 기준으로, `collect` 가 기존 파일 건너뜀을 표시, 미래 asof 거부 (Phase 2 이연)
-- [ ] 완료 기준: 평일 자동 1주 무사고, 트리거→재평가→계좌별 주문, Windows 에서 install 후 로그온 시 데몬 기동 확인
+- [x] 정량 스크리너(`scan/quant`, 피처 스토어 기반) + screener 세션(haiku, `kind=screen`, `tool submit-screen`) + `trader scan` (ML 랭킹은 `rank_fn` 자리, Phase 7)
+- [x] monitor·트리거(`triggers` v4)·재평가 세션(`kind=resume` → `31_decision_r<n>`)·손절 즉시 매도(approve 도 승인 없이, off 는 기록만) + `trader monitor [--once]`
+- [x] daemon (APScheduler, web 스레드, `state/daemon.lock` 단일 인스턴스·stale 인계, 주말·휴장일·paused 건너뜀, SIGTERM 정리) + `trader daemon [--no-web]`
+- [x] install (launchd plist / 작업 스케줄러 XML 파이썬 템플릿) + `trader install [--dry-run|--uninstall]`
+- [x] YouTube 자막(RSS + youtube-transcript-api)·텔레그램 공개채널(t.me/s 미리보기) 수집, manual_inputs(`state/manual_inputs/<ticker>.md|json`). UI 실시간 push 는 Phase 8 로(SSE 카운터 폴링으로 충분)
+- [x] 체결 동기화: `KisBroker.get_fills`(KR TTTC0081R·US TTTS3035R) + `fills.sync_fills`(멱등, external 주문 행, filled/partial) + `trader fills sync`, 데몬 잡 (Phase 4 이연)
+- [x] 텔레그램 수신 루프 `trader telegram loop` + 데몬 잡(30초). /pause /resume /mode 텔레그램 명령은 웹·CLI `control` 로 대체(명령 추가는 Phase 8 선택)
+- [x] 손절 자동 매도·트리거 재평가 (Phase 4 이연)
+- [x] 트레이더 묶음 `context.portfolio` 를 계좌별 최신 스냅샷으로, 휴장일 반영 보유 거래일(`holiday_fn`) (Phase 4 이연)
+- [x] 토스증권·네이버 종목토론실: 공개 API 없음·robots 차단·약관 리스크로 **영구 off** 결정(스펙 §0.3 표 갱신) (Phase 2 이연)
+- [x] 이벤트 절 `news_macro.events`: 최근 7일 공시를 종류(실적·배당·증자…)로 분류, 예정 이벤트(`upcoming`)는 소스 미확정으로 빈 목록 (Phase 2 이연)
+- [x] Reddit OAuth(`REDDIT_CLIENT_ID/SECRET/USER`, `client_credentials`) + Reddit 형식 User-Agent, 키 없으면 RSS 유지 (Phase 2 이연)
+- [x] 커뮤니티 키워드: ASCII 티커 단어 경계 (Phase 2 이연)
+- [x] 공시 조회 종료일 KST, `collect` 건너뜀 표시, 미래 asof(24시간 초과) 거부 (Phase 2 이연)
+- [x] Phase 3·5 이연: `checkpoint write --model`(call.model 기록), 세션 cwd 를 저장소 밖 임시 디렉터리로, `_validate_ids` 가 `.`/`..` 거부, 30일 창 KST
+- [x] 완료 기준(실기 일부): `FAKE_CLAUDE=1 trader scan --market KR` → 정량 점수 20종목·picks 5·`_scan.json`; `trader monitor --once`(보유 2건 점검, 신호 없음); `trader install --dry-run` plist 출력; `trader fills sync --account paper-main` 0건(휴장일); `trader daemon --no-web` 14초 기동 → 잡 10개 등록·잠금 생성, SIGTERM 으로 잠금 해제 확인 (2026-10-09)
+- [ ] 완료 기준(사용자 확인 대기): 평일 자동 1주 무사고 — `uv run trader install` 로 등록 후 `state/logs/daemon.out` 과 `trader status` 로 매일 확인. 트리거→재평가→계좌별 주문은 보유 종목이 ±7%/익절선에 닿을 때 `triggers`·`31_decision_r*` 로 확인
+- [ ] 완료 기준(사용자 확인 대기, Windows): `uv run trader install` 후 로그온 시 작업 스케줄러에서 데몬 기동 확인, `uv run pytest`
+- [ ] 사용자 확인 대기: `config/sources.yaml` 의 `channels.youtube`(채널 ID)·`channels.telegram`(공개채널명) 입력 후 `uv run trader collect --ticker 005930 --force` 로 `sentiment.community.sources.youtube/*` 확인. Reddit OAuth 는 `secrets/.env` 에 `REDDIT_CLIENT_ID/SECRET/USER` 입력
+- [ ] Phase 6 이연: KRX 공매도·대차잔고·검색트렌드(Phase 8), UI 실시간 push·관심종목 제어·차트 지표 오버레이(Phase 8), 텔레그램 /pause /resume /mode 명령(Phase 8 선택)
 
 ## Phase 7 ML 1단계
 - [ ] features/dataset/labels (라벨 엠바고)
