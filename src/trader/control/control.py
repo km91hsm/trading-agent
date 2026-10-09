@@ -53,3 +53,7 @@ def set_account_mode(
             f"실전 계좌 '{account.id}' 를 auto 로 바꾸려면 confirm='{LIVE_CONFIRM}' 가 필요합니다."
         )
     set_flag(conn, f"mode:{account.id}", mode)
+    if account.env == "real":
+        # 실전 auto 확인 기록. executor 는 이 기록이 없으면 auto 를 off 로 취급한다.
+        confirmed = {"confirm": confirm, "at": now_iso()} if mode == "auto" else None
+        set_flag(conn, f"live_confirmed:{account.id}", confirmed)

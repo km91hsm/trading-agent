@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import sys
 from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
@@ -61,6 +62,28 @@ def _build_client(secrets: config.Secrets, env: config.Env) -> KisClient:
 def _build_market(secrets: config.Secrets) -> KisMarket:
     """시세 클라이언트 (실전 env 전용)."""
     return KisMarket(_build_client(secrets, "real"))
+
+
+def _session_brokers(
+    secrets: config.Secrets, accounts: list[config.AccountConfig], *, dry_run: bool
+) -> dict:
+    """세션용 브로커 맵. FAKE 모드는 가짜 브로커(현금 1천만원/1만달러), dry_run 은 빈 맵."""
+    from trader.orchestrator.session import is_fake
+
+    if is_fake():
+        from decimal import Decimal
+
+        from trader.broker.fake import FakeBroker
+        from trader.broker.models import Cash
+
+        cash = {
+            "KR": Cash(currency="KRW", available=Decimal("10000000"), total=Decimal("10000000")),
+            "US": Cash(currency="USD", available=Decimal("10000"), total=Decimal("10000")),
+        }
+        return {a.id: FakeBroker(a, cash=cash) for a in accounts}
+    if dry_run:
+        return {}
+    return {b.account.id: b for b in _build_brokers(secrets, accounts)}
 
 
 def _build_brokers(
@@ -299,7 +322,7 @@ def analyze(
     market: str = typer.Option("KR", "--market", help="KR 또는 US"),
     exchange: str | None = typer.Option(None, "--exchange", help="미국 거래소 코드 (NAS/NYS/AMS)"),
     asof: str | None = typer.Option(None, "--asof", help="기준 시각 ISO8601 (기본: 현재 UTC)"),
-    dry_run: bool = typer.Option(False, "--dry-run", help="결정까지만 (Phase 3 는 항상 동일)"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="판정·기록까지만, 주문·승인 요청 없음"),
     skip_collect: bool = typer.Option(False, "--skip-collect", help="00_inputs 수집 생략"),
 ) -> None:
     """오케스트레이터 세션을 띄워 종목 하나를 분석하고 30_decision.json 을 만든다."""
@@ -337,8 +360,6 @@ def analyze(
                 secrets=secrets,
                 deps=_build_input_deps(secrets, cfg),
             )
-        if not dry_run:
-            typer.echo("안내: Phase 4 전까지는 --dry-run 과 동일하게 결정에서 멈춥니다.")
         conn = db.connect()
         db.init_schema(conn)
         try:
@@ -347,12 +368,14 @@ def analyze(
                     market=market,
                     date=day,
                     tickers=[{"ticker": ticker, "exchange": exchange}],
-                    dry_run=True,
+                    dry_run=dry_run,
                     asof=when,
                 ),
                 settings,
                 conn,
                 accounts,
+                brokers=_session_brokers(secrets, accounts, dry_run=dry_run),
+                notifier=make_notifier(secrets),
             )
         finally:
             conn.close()
@@ -407,7 +430,19 @@ def _tool_ctx():
     ]  # stdout 은 JSON 전용이므로 콘솔 핸들러 제거
     conn = db.connect()
     db.init_schema(conn)
-    return ToolContext(settings=config.load_settings(), accounts=config.load_accounts(), conn=conn)
+    secrets = config.load_secrets()
+    accounts = config.load_accounts()
+    # 세션이 env 로 넘긴 값. 없으면 안전하게 dry_run(주문·승인 요청 없음).
+    dry_run = os.environ.get("TRADER_DRY_RUN", "1") != "0"
+    brokers = {} if dry_run else {b.account.id: b for b in _build_brokers(secrets, accounts)}
+    return ToolContext(
+        settings=config.load_settings(),
+        accounts=accounts,
+        conn=conn,
+        brokers=brokers,
+        notifier=make_notifier(secrets),
+        dry_run=dry_run,
+    )
 
 
 def _emit(result: dict) -> None:

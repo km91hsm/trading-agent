@@ -327,6 +327,16 @@ def snapshot_positions(
     conn.commit()
 
 
+def latest_nav_before(conn: sqlite3.Connection, account_id: str, d: date) -> Decimal | None:
+    """d 이전 마지막 스냅샷의 NAV (일일 손익 계산 기준). 없으면 None."""
+    row = conn.execute(
+        "SELECT nav FROM positions_snapshot WHERE account_id=? AND date < ? "
+        "ORDER BY date DESC LIMIT 1",
+        (account_id, d.isoformat()),
+    ).fetchone()
+    return _dec(row["nav"]) if row and row["nav"] is not None else None
+
+
 def _s(v: Any) -> str | None:
     return None if v is None else str(v)
 
