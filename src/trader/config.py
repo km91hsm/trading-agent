@@ -356,6 +356,83 @@ class ScheduleConfig(BaseModel):
         return _check_hm(v)
 
 
+# --- ml.yaml (Phase 7) ----------------------------------------------------------
+
+
+class LabelThresholds(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    up: float = 0.02
+    down: float = -0.02
+
+
+class LabelCfg(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    horizon_days: int = Field(default=5, ge=1, le=60)
+    thresholds: LabelThresholds = Field(default_factory=LabelThresholds)
+    embargo_days: int = Field(default=5, ge=0, le=60)
+
+
+class TrainCfg(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    window_years: int = Field(default=3, ge=1, le=10)
+    walk_forward_folds: int = Field(default=6, ge=2, le=20)
+
+
+class QuantModelCfg(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    promote_min_accuracy: float = 0.40
+    promote_min_alpha: float = 0.0
+
+
+class RankerCfg(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+
+
+class CalibrationCfg(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    min_decisions: int = 60
+
+
+class RlSizerCfg(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    seeds: int = 3
+
+
+class MlModelsCfg(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    quant: QuantModelCfg = Field(default_factory=QuantModelCfg)
+    ranker: RankerCfg = Field(default_factory=RankerCfg)
+    calibration: CalibrationCfg = Field(default_factory=CalibrationCfg)
+    rl_sizer: RlSizerCfg = Field(default_factory=RlSizerCfg)
+
+
+class MlConfig(BaseModel):
+    """config/ml.yaml (스펙 §9). 없으면 기본값."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    label: LabelCfg = Field(default_factory=LabelCfg)
+    train: TrainCfg = Field(default_factory=TrainCfg)
+    models: MlModelsCfg = Field(default_factory=MlModelsCfg)
+
+
+def load_ml(path: Path | None = None) -> MlConfig:
+    p = path or paths.config_dir() / "ml.yaml"
+    return _validate(MlConfig, _read_yaml(p), p.name)
+
+
 def load_schedule(path: Path | None = None) -> ScheduleConfig:
     p = path or paths.config_dir() / "schedule.yaml"
     if not p.exists():
