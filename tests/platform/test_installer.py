@@ -63,7 +63,7 @@ def test_install_darwin_writes_and_calls_launchctl(tmp_path):
         project_root=tmp_path / "proj",
     )
     assert r["written"] is True and r["path"].exists()
-    assert calls == [["launchctl", "load", "-w", str(r["path"])]]
+    assert calls[-1] == ["launchctl", "load", "-w", str(r["path"])]
     installer.uninstall(run=run, platform="darwin", home=tmp_path)
     assert calls[-1] == ["launchctl", "unload", "-w", str(r["path"])] and not r["path"].exists()
 
@@ -128,3 +128,40 @@ def test_cli_install_dry_run(project):
     r = CliRunner().invoke(app, ["install", "--dry-run"])
     assert r.exit_code == 0, r.stdout
     assert "launchctl" in r.stdout or "schtasks" in r.stdout
+
+
+def test_render_plist_includes_path_with_claude_dir(tmp_path):
+    text = installer.render(
+        "darwin",
+        python=Path("/venv/bin/python"),
+        project_root=tmp_path,
+        extra_paths=[Path("/opt/homebrew/bin")],
+    )
+    assert (
+        "<key>PATH</key>" in text
+        and "/opt/homebrew/bin:/venv/bin:/usr/local/bin:/usr/bin:/bin" in text
+    )
+
+
+def test_install_darwin_unloads_before_load(tmp_path):
+    calls = []
+
+    def run(cmd, **kw):
+        calls.append(cmd)
+
+        class R:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return R()
+
+    installer.install(
+        dry_run=False,
+        run=run,
+        platform="darwin",
+        home=tmp_path,
+        python=Path("/venv/bin/python"),
+        project_root=tmp_path / "proj",
+    )
+    assert calls[0][:2] == ["launchctl", "unload"] and calls[1][:2] == ["launchctl", "load"]

@@ -289,11 +289,25 @@ class MonitorWindow(BaseModel):
 
 
 class MarketSchedule(BaseModel):
+    """시장별 시각. tz 는 그 시장의 시간대(기본 KST; US 는 America/New_York 권장)."""
+
     model_config = ConfigDict(extra="forbid")
 
     scan: str
     analyze: str
     monitor: MonitorWindow
+    tz: str = "Asia/Seoul"
+
+    @field_validator("tz")
+    @classmethod
+    def _tz(cls, v: str) -> str:
+        from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+        try:
+            ZoneInfo(v)
+        except (ZoneInfoNotFoundError, ValueError):
+            raise ValueError(f"알 수 없는 시간대: {v!r}") from None
+        return v
 
     @field_validator("scan", "analyze")
     @classmethod

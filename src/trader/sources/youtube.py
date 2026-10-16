@@ -7,6 +7,7 @@ API 키 없이 공개 RSS(`feeds/videos.xml?channel_id=`)와 youtube-transcript-
 from __future__ import annotations
 
 import logging
+import re
 import xml.etree.ElementTree as ET
 from collections.abc import Callable, Iterable
 from datetime import UTC, datetime
@@ -21,6 +22,7 @@ RSS_URL = "https://www.youtube.com/feeds/videos.xml?channel_id={channel}"
 EXCERPT_CHARS = 2000
 _ATOM = "{http://www.w3.org/2005/Atom}"
 _YT = "{http://www.youtube.com/xml/schemas/2015}"
+_CHANNEL_RE = re.compile(r"^[A-Za-z0-9_\-]{1,64}$")
 _MEDIA = "{http://search.yahoo.com/mrss/}"
 
 
@@ -42,6 +44,9 @@ class YouTubeSource:
         transcript_fn: Callable[[str], str] | None = None,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
+        for ch in channels:
+            if not _CHANNEL_RE.match(ch):
+                raise ValueError(f"YouTube 채널 ID 형식 오류: {ch!r}")
         self.channels = channels
         self._http = http
         self.max_videos = max_videos

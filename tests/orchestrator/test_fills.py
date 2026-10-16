@@ -80,3 +80,20 @@ def test_sync_skips_markets_not_in_account(conn):
     broker = FakeBroker(acct, fills={("US", D): [_fill("X")]})
     r = fills_mod.sync_fills(conn, broker, acct, D)
     assert r["inserted"] == 0 and "get_fills" in broker.calls
+
+
+def test_sync_cumulative_fill_updates_not_duplicates(conn):
+    """KIS 체결 조회는 주문당 누적 수량이라 장중 2주 → 마감 5주는 한 행이 5주로 갱신돼야 한다."""
+    acct = make_account("paper-main", "paper", "auto")
+    oid = _order(conn, "A", qty=5)
+    broker = FakeBroker(acct, fills={("KR", D): [_fill("A", qty=2)]})
+    fills_mod.sync_fills(conn, broker, acct, D)
+    broker.fills[("KR", D)] = [_fill("A", qty=5, price="70950")]
+    r = fills_mod.sync_fills(conn, broker, acct, D)
+    rows = conn.execute("SELECT qty, price FROM fills WHERE order_id=?", (oid,)).fetchall()
+    assert len(rows) == 1 and rows[0]["qty"] == 5 and rows[0]["price"] == "70950"
+    assert r["updated"] == 1
+    assert (
+        conn.execute("SELECT status FROM orders WHERE id=?", (oid,)).fetchone()["status"]
+        == "filled"
+    )

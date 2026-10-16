@@ -6,6 +6,7 @@ Telethon(API id 필요)은 쓰지 않는다. 비공개·미리보기 차단 채�
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Callable, Iterable
 from datetime import UTC, datetime
 
@@ -17,6 +18,7 @@ from trader.sources.community import USER_AGENT, _iso_to_utc, _matches, _strip
 logger = logging.getLogger("trader.sources")
 
 PREVIEW_URL = "https://t.me/s/{channel}"
+_CHANNEL_RE = re.compile(r"^[A-Za-z0-9_]{1,64}$")
 
 
 class TelegramChannelSource:
@@ -28,6 +30,9 @@ class TelegramChannelSource:
         max_posts: int = 30,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
+        for ch in channels:
+            if not _CHANNEL_RE.match(ch):
+                raise ValueError(f"텔레그램 채널명 형식 오류: {ch!r}")
         self.channels = channels
         self._http = http
         self.max_posts = max_posts

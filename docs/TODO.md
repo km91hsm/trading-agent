@@ -98,7 +98,9 @@
 - [ ] 완료 기준(사용자 확인 대기): 평일 자동 1주 무사고 — `uv run trader install` 로 등록 후 `state/logs/daemon.out` 과 `trader status` 로 매일 확인. 트리거→재평가→계좌별 주문은 보유 종목이 ±7%/익절선에 닿을 때 `triggers`·`31_decision_r*` 로 확인
 - [ ] 완료 기준(사용자 확인 대기, Windows): `uv run trader install` 후 로그온 시 작업 스케줄러에서 데몬 기동 확인, `uv run pytest`
 - [ ] 사용자 확인 대기: `config/sources.yaml` 의 `channels.youtube`(채널 ID)·`channels.telegram`(공개채널명) 입력 후 `uv run trader collect --ticker 005930 --force` 로 `sentiment.community.sources.youtube/*` 확인. Reddit OAuth 는 `secrets/.env` 에 `REDDIT_CLIENT_ID/SECRET/USER` 입력
-- [ ] Phase 6 이연: KRX 공매도·대차잔고·검색트렌드(Phase 8), UI 실시간 push·관심종목 제어·차트 지표 오버레이(Phase 8), 텔레그램 /pause /resume /mode 명령(Phase 8 선택)
+- [ ] Phase 6 이연: KRX 공매도·대차잔고·검색트렌드(Phase 8), UI 실시간 push·관심종목 제어·차트 지표 오버레이(Phase 8), 텔레그램 /pause /resume /mode 명령(Phase 8 선택), US 휴장일 건너뜀(KIS 해외 휴장 API 확인 후, Phase 8)
+- [ ] 사용자 확인 대기(실기): US 체결 조회(`fills sync`)의 날짜 기준(ET vs KST)·`_local_dt(ET)` 가정, `OVRS_EXCG_CD=NASD` 고정으로 NYS/AMS 체결이 조회되는지 — US 모의 체결 1건 뒤 `uv run trader fills sync --account paper-main --date <ET 날짜>` 로 확인
+- [ ] 리뷰 Minor 이연(Phase 6): SIGTERM 중 실행 중인 claude 세션은 launchd SIGKILL 로 `agent_calls` running 행이 남아 상한에 집계됨(기동 시 stale running 정리), `pid_alive` 가 PermissionError 를 생존으로 봄, quant 가 NaN 피처 행을 z=0 으로 통과시킴, `latest_features` 가 parquet 전부를 읽음
 
 ## Phase 7 ML 1단계
 - [ ] features/dataset/labels (라벨 엠바고)

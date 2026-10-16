@@ -130,13 +130,18 @@ def execute(
     exchange: str | None = None,
     dry_run: bool = True,
     is_stop_loss: bool = False,
+    decision_id: int | None = None,
 ) -> list[dict]:
     """계좌마다 판정·기록·(모드별) 주문. 계좌 하나의 실패가 다른 계좌를 막지 않는다.
 
     is_stop_loss 면 보유기간·주 2회 규칙을 면제하고 approve 계좌도 승인 없이 즉시 낸다(사후 통보).
     """
     d = run_dir(date, market, decision.ticker, ctx.state)
-    decision_id = repo.decision_id(ctx.conn, date, market, decision.ticker)
+    if decision_id is None:
+        decision_id = repo.decision_id(ctx.conn, date, market, decision.ticker)
+    # 손절은 오늘 분석의 40_/50_ 체크포인트를 덮어쓰지 않도록 별도 이름을 쓴다
+    risk_stage = "45_stop_loss" if is_stop_loss else "40_risk_check"
+    order_stage = "55_order_sl" if is_stop_loss else "50_order"
     paused = control.is_paused(ctx.conn)
     results: list[dict] = []
     for account in ctx.accounts:
@@ -199,7 +204,7 @@ def execute(
             "order": None,
             "approval_id": None,
         }
-        write_checkpoint(d, f"40_risk_check_{account.id}", _wrap(verdict.model_dump(mode="json")))
+        write_checkpoint(d, f"{risk_stage}_{account.id}", _wrap(verdict.model_dump(mode="json")))
         if decision_id is not None:
             repo.insert_risk_check(
                 ctx.conn,
@@ -224,7 +229,9 @@ def execute(
         if mode == "approve" and not is_stop_loss:
             entry["approval_id"] = _request_approval(ctx, account, decision_id, request, verdict)
         else:
-            entry["order"] = _place(ctx, d, account, broker, decision_id, request, mode, price)
+            entry["order"] = _place(
+                ctx, d, account, broker, decision_id, request, mode, price, order_stage=order_stage
+            )
         results.append(entry)
     return results
 
@@ -263,6 +270,7 @@ def _place(
     request: OrderRequest,
     mode: Mode,
     quote_price: Decimal | None = None,
+    order_stage: str = "50_order",
 ) -> dict:
     try:
         result = broker.place_order(request)
@@ -300,7 +308,7 @@ def _place(
         "mode": mode,
         "status": status,
     }
-    write_checkpoint(d, f"50_order_{account.id}", _wrap(payload))
+    write_checkpoint(d, f"{order_stage}_{account.id}", _wrap(payload))
     head = "[주문]" if result.accepted else "[주문 실패]"
     ctx.notifier.send(
         f"{head} {account.id} {request.side} {request.ticker} {request.qty}주 "

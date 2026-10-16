@@ -309,6 +309,36 @@ def has_open_order_or_approval(
     return conn.execute(sql + " LIMIT 1", args).fetchone() is not None
 
 
+def has_open_order_today(
+    conn: sqlite3.Connection, account_id: str, ticker: str, side: str, d: date
+) -> bool:
+    """오늘 같은 계좌·종목·방향의 살아 있는 주문이 있으면 True (손절 반복 발주 방지)."""
+    lo, hi = _kst_day_bounds(d)
+    row = conn.execute(
+        "SELECT 1 FROM orders WHERE account_id=? AND ticker=? AND side=? "
+        "AND status NOT IN ('rejected','cancelled','failed') "
+        "AND created_at >= ? AND created_at < ? LIMIT 1",
+        (account_id, ticker, side, lo, hi),
+    ).fetchone()
+    return row is not None
+
+
+def unhandled_trigger_id(
+    conn: sqlite3.Connection, market: str, ticker: str, kind: str
+) -> int | None:
+    """같은 종목·종류의 미처리 트리거 id (있으면 다시 쌓지 않고 그 행을 재평가에 연결한다)."""
+    row = conn.execute(
+        "SELECT id FROM triggers WHERE market=? AND ticker=? AND kind=? AND handled_at IS NULL "
+        "ORDER BY id LIMIT 1",
+        (market, ticker, kind),
+    ).fetchone()
+    return int(row["id"]) if row else None
+
+
+def has_unhandled_trigger(conn: sqlite3.Connection, market: str, ticker: str, kind: str) -> bool:
+    return unhandled_trigger_id(conn, market, ticker, kind) is not None
+
+
 def latest_decision(conn: sqlite3.Connection, market: str, ticker: str) -> dict | None:
     """종목의 가장 최근 결정 행 (json → data). monitor 가 손절선·익절·무효화 조건을 읽는다."""
     row = conn.execute(

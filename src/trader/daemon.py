@@ -86,13 +86,26 @@ def in_window(now_t: time, start: str, end: str) -> bool:
     return now_t >= s or now_t <= e
 
 
+MARKET_TZ = {"KR": ZoneInfo("Asia/Seoul"), "US": ZoneInfo("America/New_York")}
+
+
+def market_date(market: str, now: datetime | date) -> date:
+    """시장 현지 날짜 (주말 판정용). date 를 주면 그대로 쓴다."""
+    if isinstance(now, datetime):
+        return now.astimezone(MARKET_TZ.get(market, KST)).date()
+    return now
+
+
 def should_skip(
-    market: str, today: date, market_client: Any | None, conn: sqlite3.Connection | None
+    market: str, today: datetime | date, market_client: Any | None, conn: sqlite3.Connection | None
 ) -> str | None:
+    """paused·주말(시장 현지 날짜)·KR 휴장일(KIS). US 휴장일은 Phase 8(KIS 해외 휴장 API 미확인)."""
     if conn is not None and control.is_paused(conn):
         return "일시정지"
-    if today.weekday() >= 5:
+    local = market_date(market, today)
+    if local.weekday() >= 5:
         return "주말"
+    today = local
     if market == "KR" and market_client is not None:
         try:
             if market_client.is_holiday(today):
@@ -121,7 +134,12 @@ def build_jobs(schedule: ScheduleConfig, settings: Settings, *, markets: list[st
         lo = m.lower()
         h, mi = ms.scan_hm()
         jobs.append(
-            Job(f"{lo}_scan", "scan", m, cron={"hour": h, "minute": mi, "day_of_week": "mon-fri"})
+            Job(
+                f"{lo}_scan",
+                "scan",
+                m,
+                cron={"hour": h, "minute": mi, "day_of_week": "mon-fri", "timezone": ms.tz},
+            )
         )
         h, mi = ms.analyze_hm()
         jobs.append(
@@ -129,7 +147,7 @@ def build_jobs(schedule: ScheduleConfig, settings: Settings, *, markets: list[st
                 f"{lo}_analyze",
                 "analyze",
                 m,
-                cron={"hour": h, "minute": mi, "day_of_week": "mon-fri"},
+                cron={"hour": h, "minute": mi, "day_of_week": "mon-fri", "timezone": ms.tz},
             )
         )
         jobs.append(Job(f"{lo}_monitor", "monitor", m, interval_s=ms.monitor.interval_s))
@@ -156,29 +174,39 @@ def build_jobs(schedule: ScheduleConfig, settings: Settings, *, markets: list[st
 
 
 def run_job(
-    name: str, fn: Callable[[], Any], *, conn_factory: Callable[[], sqlite3.Connection]
+    name: str,
+    fn: Callable[[], Any],
+    *,
+    conn_factory: Callable[[], sqlite3.Connection],
+    interval: bool = False,
 ) -> Any:
-    """잡 본체를 감싼다: runs 에 시작·종료 기록, 예외는 로그·error 행으로 남기고 삼킨다."""
-    conn = conn_factory()
-    try:
-        run_id = db.start_run(conn, name, None)
-    finally:
-        conn.close()
+    """잡 본체를 감싼다. cron 잡은 runs 에 시작·종료를 남기고, interval 잡(monitor·텔레그램)은
+    오류일 때만 남긴다(분 단위 행 폭주 방지). 예외는 로그·error 행으로 삼킨다."""
+    run_id: int | None = None
+    if not interval:
+        conn = conn_factory()
+        try:
+            run_id = db.start_run(conn, name, None)
+        finally:
+            conn.close()
     try:
         result = fn()
     except Exception as e:  # noqa: BLE001 - 잡 하나의 실패가 데몬을 죽이지 않는다
         logger.exception("잡 실패 %s", name)
         conn = conn_factory()
         try:
+            if run_id is None:
+                run_id = db.start_run(conn, name, None)
             db.finish_run(conn, run_id, "error", f"{type(e).__name__}: {e}")
         finally:
             conn.close()
         return None
-    conn = conn_factory()
-    try:
-        db.finish_run(conn, run_id, "ok", None)
-    finally:
-        conn.close()
+    if run_id is not None:
+        conn = conn_factory()
+        try:
+            db.finish_run(conn, run_id, "ok", None)
+        finally:
+            conn.close()
     return result
 
 
@@ -203,6 +231,7 @@ class DaemonDeps:
     state: Path | None = None
     web_app_factory: Callable[[], Any] | None = None
     dry_run: bool = False
+    session_runner: Callable[..., Any] | None = None  # 테스트 주입용 (기본 run_session)
 
 
 def _today(deps: DaemonDeps) -> date:
@@ -213,7 +242,7 @@ def market_job(deps: DaemonDeps, market: str, kind: str, fn: Callable[[], Any]) 
     """시장 잡 공통 게이트: 주말·휴장일·paused 면 건너뛴다."""
     conn = deps.conn_factory()
     try:
-        why = should_skip(market, _today(deps), deps.market_client, conn)
+        why = should_skip(market, deps.now(), deps.market_client, conn)
     finally:
         conn.close()
     if why:
@@ -225,9 +254,9 @@ def market_job(deps: DaemonDeps, market: str, kind: str, fn: Callable[[], Any]) 
 
 def monitor_job(deps: DaemonDeps, market: str, fn: Callable[[], Any]) -> dict | None:
     ms = deps.schedule.kr if market == "KR" else deps.schedule.us
-    now_kst = deps.now().astimezone(KST)
+    now_local = deps.now().astimezone(ZoneInfo(ms.tz))
     if not in_window(
-        now_kst.time().replace(second=0, microsecond=0), ms.monitor.start, ms.monitor.end
+        now_local.time().replace(second=0, microsecond=0), ms.monitor.start, ms.monitor.end
     ):
         return {"skipped": "창 밖"}
     return market_job(deps, market, "monitor", fn)
@@ -299,31 +328,48 @@ def _analyze_body(deps: DaemonDeps, market: str) -> dict:
                 )
             except Exception as e:  # noqa: BLE001 - 한 종목 수집 실패는 세션이 다시 시도한다
                 logger.warning("수집 실패 %s %s: %s", market, t["ticker"], e)
-    conn = deps.conn_factory()
-    try:
-        res = run_session(
-            SessionSpec(
-                market=market, date=today, tickers=targets, dry_run=deps.dry_run, asof=deps.now()
-            ),
-            deps.settings,
-            conn,
-            deps.accounts,
-            state=deps.state,
-            now=deps.now,
-            brokers=deps.brokers,
-            notifier=deps.notifier,
-        )
-    finally:
-        conn.close()
-    if not res.ok:
-        raise RuntimeError(f"analyze 세션 실패: {res.error}")
-    return {"targets": len(targets), "session_id": res.session_id, "cost_usd": res.cost_usd}
+    # 종목당 세션 1회(--max-budget-usd 는 세션 단위). 실패한 종목은 기록하고 다음 종목으로.
+    runner = deps.session_runner or run_session
+    ok, failed, sessions = 0, [], []
+    for t in targets:
+        conn = deps.conn_factory()
+        try:
+            res = runner(
+                SessionSpec(
+                    market=market, date=today, tickers=[t], dry_run=deps.dry_run, asof=deps.now()
+                ),
+                deps.settings,
+                conn,
+                deps.accounts,
+                state=deps.state,
+                now=deps.now,
+                brokers=deps.brokers,
+                notifier=deps.notifier,
+            )
+        except Exception as e:  # noqa: BLE001 - 한 종목 세션 실패가 나머지를 막지 않는다
+            logger.exception("analyze 세션 기동 실패 %s %s", market, t["ticker"])
+            failed.append(t["ticker"])
+            deps.notifier.send(f"[analyze 실패] {market} {t['ticker']}: {type(e).__name__}: {e}")
+            continue
+        finally:
+            conn.close()
+        if res.ok:
+            ok += 1
+            sessions.append(
+                {"ticker": t["ticker"], "session_id": res.session_id, "cost_usd": res.cost_usd}
+            )
+        else:
+            failed.append(t["ticker"])
+            deps.notifier.send(f"[analyze 실패] {market} {t['ticker']}: {res.error}")
+    return {"targets": len(targets), "ok": ok, "failed": failed, "sessions": sessions}
 
 
 def _monitor_body(deps: DaemonDeps, market: str) -> dict:
     from trader.orchestrator import monitor as monitor_mod
     from trader.orchestrator.session import run_session
 
+    if deps.market_client is None:
+        return {"skipped": "시세 클라이언트 없음"}
     conn = deps.conn_factory()
     try:
         ctx = monitor_mod.MonitorContext(
@@ -334,7 +380,7 @@ def _monitor_body(deps: DaemonDeps, market: str) -> dict:
             market_client=deps.market_client,
             notifier=deps.notifier,
             now=deps.now,
-            session_runner=run_session,
+            session_runner=deps.session_runner or run_session,
             dry_run=deps.dry_run,
             state=deps.state,
             exchanges={u.symbol: u.exchange for u in (deps.universe.us if deps.universe else [])},
@@ -441,7 +487,13 @@ def run(
         jobs = build_jobs(deps.schedule, deps.settings, markets=list(deps.settings.markets))
         for job in jobs:
             scheduler.add_job(
-                partial(run_job, job.id, job_body(deps, job), conn_factory=deps.conn_factory),
+                partial(
+                    run_job,
+                    job.id,
+                    job_body(deps, job),
+                    conn_factory=deps.conn_factory,
+                    interval=job.interval_s is not None,
+                ),
                 _trigger(job),
                 id=job.id,
                 name=job.id,
@@ -492,5 +544,7 @@ def _trigger(job: Job) -> Any:
     except ImportError:  # pragma: no cover - 의존성 누락
         return job.cron or {"interval_s": job.interval_s}
     if job.cron:
-        return CronTrigger(timezone=KST, **job.cron)
+        cron = dict(job.cron)
+        tz = ZoneInfo(cron.pop("timezone", "Asia/Seoul"))
+        return CronTrigger(timezone=tz, **cron)
     return IntervalTrigger(seconds=int(job.interval_s or 60), timezone=KST)

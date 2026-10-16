@@ -32,7 +32,11 @@ _PLIST = """<?xml version="1.0" encoding="UTF-8"?>
   </array>
   <key>WorkingDirectory</key><string>{root}</string>
   <key>EnvironmentVariables</key>
-  <dict><key>TRADER_HOME</key><string>{root}</string><key>PYTHONIOENCODING</key><string>utf-8</string></dict>
+  <dict>
+    <key>TRADER_HOME</key><string>{root}</string>
+    <key>PYTHONIOENCODING</key><string>utf-8</string>
+    <key>PATH</key><string>{path_env}</string>
+  </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>StandardOutPath</key><string>{out}</string>
@@ -63,15 +67,31 @@ _TASK_XML = """<?xml version="1.0" encoding="UTF-16"?>
 """
 
 
-def render(platform: str, *, python: Path, project_root: Path, label: str = LABEL) -> str:
+DEFAULT_PATH = ("/usr/local/bin", "/usr/bin", "/bin")
+
+
+def render(
+    platform: str,
+    *,
+    python: Path,
+    project_root: Path,
+    label: str = LABEL,
+    extra_paths: list[Path] | None = None,
+) -> str:
+    """extra_paths(claude 디렉터리 등)를 launchd PATH 앞에 둔다 (launchd 는 셸 PATH 가 없다)."""
     logs = project_root / "state" / "logs"
     if platform == "darwin":
+        dirs: list[str] = []
+        for d in [*(extra_paths or []), python.parent, *map(Path, DEFAULT_PATH)]:
+            if str(d) not in dirs:
+                dirs.append(str(d))
         return _PLIST.format(
             label=escape(label),
             python=escape(str(python)),
             root=escape(str(project_root)),
             out=escape(str(logs / "daemon.out")),
             err=escape(str(logs / "daemon.err")),
+            path_env=escape(":".join(dirs)),
         )
     if platform == "win32":
         return _TASK_XML.format(python=escape(str(python)), root=escape(str(project_root)))
@@ -102,13 +122,14 @@ def install(
     home: Path | None = None,
     python: Path | None = None,
     project_root: Path | None = None,
+    extra_paths: list[Path] | None = None,
 ) -> dict:
     """템플릿을 쓰고 OS 등록 명령을 실행한다. dry_run 이면 아무것도 쓰지 않고 명령만 돌려준다."""
     home = home or Path.home()
     python = python or Path(sys.executable)
     project_root = project_root or paths.project_root()
     path = _target(platform, home)
-    text = render(platform, python=python, project_root=project_root)
+    text = render(platform, python=python, project_root=project_root, extra_paths=extra_paths)
     if platform == "darwin":
         command = ["launchctl", "load", "-w", str(path)]
     else:
@@ -118,6 +139,14 @@ def install(
     path.parent.mkdir(parents=True, exist_ok=True)
     (project_root / "state" / "logs").mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8" if platform == "darwin" else "utf-16")
+    if platform == "darwin":  # 이미 로드된 라벨은 load 가 실패하므로 먼저 내린다 (실패 무시)
+        run(
+            ["launchctl", "unload", "-w", str(path)],
+            shell=False,
+            capture_output=True,
+            encoding="utf-8",
+            errors="replace",
+        )
     _run(run, command)
     return {"path": path, "command": command, "written": True, "content": text}
 

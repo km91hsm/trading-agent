@@ -77,3 +77,15 @@ def test_channels_config_defaults(project):
     c = config.load_sources().channels
     assert c.youtube == ["UCabc"] and c.telegram == ["chan"]
     assert c.max_videos == 3 and c.max_posts == 30
+
+
+def test_market_schedule_tz_optional(project):
+    data = dict(BASE)
+    data["us"] = {**BASE["us"], "tz": "America/New_York"}
+    _write(project, data)
+    s = config.load_schedule()
+    assert s.us.tz == "America/New_York" and s.kr.tz == "Asia/Seoul"
+    data["us"]["tz"] = "Mars/Olympus"
+    _write(project, data)
+    with pytest.raises(config.ConfigError):
+        config.load_schedule()

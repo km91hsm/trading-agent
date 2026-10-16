@@ -112,13 +112,19 @@ def _quote(ctx: MonitorContext, market: str, ticker: str) -> Decimal:
     return ctx.market_client.get_price_us(ticker, ctx.exchanges.get(ticker, "NAS")).price
 
 
+STOP_LOSS_LIMIT_DISCOUNT = Decimal("0.03")  # US 손절은 현재가 3% 아래 지정가(체결 가능 지정가)
+
+
 def _stop_loss_decision(ticker: str, market: str, quote: Decimal, sig: Signal) -> Decision:
+    limit = (quote * (1 - STOP_LOSS_LIMIT_DISCOUNT)).quantize(
+        Decimal("0.01"), rounding=ROUND_HALF_UP
+    )
     return Decision(
         ticker=ticker,
         action="SELL",
         target_weight=0.0,
         order_type="MARKET" if market == "KR" else "LIMIT",
-        limit_price=None if market == "KR" else float(quote),
+        limit_price=None if market == "KR" else float(limit),
         stop_loss=None,
         take_profit=None,
         horizon_days=1,
@@ -144,10 +150,13 @@ def _can_reevaluate(ctx: MonitorContext, market: str, ticker: str) -> str | None
 
 
 def monitor_once(ctx: MonitorContext, *, market: str, today: date) -> dict:
-    """계좌별 보유종목 1회 점검. 반환: checked·stop_loss_orders·triggers·reevaluated."""
+    """계좌별 보유종목 1회 점검. 1차: 손절(전 계좌), 2차: 트리거 기록·재평가.
+
+    재평가 세션 실패는 트리거에 기록하고 다음 종목으로 넘어간다 (손절 점검을 막지 않는다).
+    """
     result = {"checked": 0, "stop_loss_orders": 0, "triggers": 0, "reevaluated": 0}
     quotes: dict[str, Decimal | None] = {}
-    reevaluated_tickers: set[str] = set()
+    pending: list[tuple[AccountConfig, Position, list[Signal], dict | None]] = []
     for account in ctx.accounts:
         broker = ctx.brokers.get(account.id)
         if market not in account.markets or broker is None:
@@ -158,13 +167,7 @@ def monitor_once(ctx: MonitorContext, *, market: str, today: date) -> dict:
             logger.warning("보유 조회 실패 %s: %s", account.id, e)
             continue
         for pos in positions:
-            if pos.ticker not in quotes:
-                try:
-                    quotes[pos.ticker] = _quote(ctx, market, pos.ticker)
-                except (KisApiError, ValueError) as e:
-                    logger.warning("시세 실패 %s %s: %s", market, pos.ticker, e)
-                    quotes[pos.ticker] = None
-            quote = quotes[pos.ticker]
+            quote = _cached_quote(ctx, market, pos.ticker, quotes)
             if quote is None:
                 continue
             result["checked"] += 1
@@ -177,31 +180,39 @@ def monitor_once(ctx: MonitorContext, *, market: str, today: date) -> dict:
                 continue
             if signals[0].kind == "stop_loss":
                 result["stop_loss_orders"] += _sell_now(
-                    ctx, account, market, pos, quote, signals[0], today
+                    ctx, account, market, pos, quote, signals[0], today, latest
                 )
+            else:
+                pending.append((account, pos, signals, latest))
+    handled: set[str] = set()
+    for account, pos, signals, latest in pending:
+        first_id: int | None = None
+        for sig in signals:
+            existing = repo.unhandled_trigger_id(ctx.conn, market, pos.ticker, sig.kind)
+            if existing is not None:  # 미처리 트리거가 있으면 다시 쌓지 않고 그 행을 쓴다
+                first_id = first_id or existing
                 continue
-            if pos.ticker in reevaluated_tickers:
-                continue
-            first_id: int | None = None
-            for s in signals:
-                tid = repo.insert_trigger(
-                    ctx.conn,
-                    market=market,
-                    ticker=pos.ticker,
-                    kind=s.kind,
-                    detail=s.detail,
-                    price=s.price,
-                    decision_id=(latest or {}).get("id"),
-                    account_id=account.id,
-                )
-                first_id = first_id or tid
-                result["triggers"] += 1
-            reevaluated_tickers.add(pos.ticker)
-            why = _can_reevaluate(ctx, market, pos.ticker)
-            if why:
-                logger.info("재평가 생략 %s %s: %s", market, pos.ticker, why)
-                continue
-            s0 = signals[0]
+            tid = repo.insert_trigger(
+                ctx.conn,
+                market=market,
+                ticker=pos.ticker,
+                kind=sig.kind,
+                detail=sig.detail,
+                price=sig.price,
+                decision_id=(latest or {}).get("id"),
+                account_id=account.id,
+            )
+            first_id = first_id or tid
+            result["triggers"] += 1
+        if pos.ticker in handled:
+            continue
+        handled.add(pos.ticker)
+        why = _can_reevaluate(ctx, market, pos.ticker)
+        if why:
+            logger.info("재평가 생략 %s %s: %s", market, pos.ticker, why)
+            continue
+        s0 = signals[0]
+        try:
             res = resume.reevaluate(
                 ctx.settings,
                 ctx.conn,
@@ -219,9 +230,36 @@ def monitor_once(ctx: MonitorContext, *, market: str, today: date) -> dict:
                 session_runner=ctx.session_runner,
                 notifier=ctx.notifier,
             )
-            if res.ok:
-                result["reevaluated"] += 1
+        except Exception as e:  # noqa: BLE001 - 세션 기동 실패가 다른 종목 점검을 막지 않는다
+            logger.exception("재평가 세션 기동 실패 %s %s", market, pos.ticker)
+            if first_id:
+                repo.mark_trigger_handled(
+                    ctx.conn,
+                    first_id,
+                    f"실패: {type(e).__name__}: {e}"[:200],
+                    handled_at=ctx.now().isoformat(),
+                )
+            ctx.notifier.send(f"[재평가 실패] {market} {pos.ticker}: {type(e).__name__}: {e}")
+            continue
+        if res.ok:
+            result["reevaluated"] += 1
     return result
+
+
+def _cached_quote(
+    ctx: MonitorContext, market: str, ticker: str, quotes: dict[str, Decimal | None]
+) -> Decimal | None:
+    if ticker not in quotes:
+        try:
+            q = _quote(ctx, market, ticker)
+        except (KisApiError, ValueError) as e:
+            logger.warning("시세 실패 %s %s: %s", market, ticker, e)
+            q = None
+        if q is not None and q <= 0:
+            logger.warning("시세 0 (거래소 코드·종목 확인): %s %s", market, ticker)
+            q = None
+        quotes[ticker] = q
+    return quotes[ticker]
 
 
 def _sell_now(
@@ -232,7 +270,20 @@ def _sell_now(
     quote: Decimal,
     sig: Signal,
     today: date,
+    latest: dict | None,
 ) -> int:
+    """손절 즉시 매도. 같은 날 같은 종목의 살아 있는 SELL 이 있으면 다시 내지 않는다."""
+    if repo.has_open_order_today(ctx.conn, account.id, pos.ticker, "SELL", today):
+        return 0
+    if control.is_paused(ctx.conn):
+        key = f"sl_paused_notified:{market}:{pos.ticker}:{today.isoformat()}"
+        if not control.get_flag(ctx.conn, key):
+            control.set_flag(ctx.conn, key, True)
+            ctx.notifier.send(
+                f"[손절 보류: 일시정지] {market} {pos.ticker} 현재가 {quote} ≤ 손절선 "
+                f"{sig.detail.get('level')} — 재개하면 다음 점검에서 매도"
+            )
+        return 0
     dec = _stop_loss_decision(pos.ticker, market, quote, sig)
     ectx = executor.ExecContext(
         settings=ctx.settings,
@@ -252,6 +303,7 @@ def _sell_now(
         exchange=ctx.exchanges.get(pos.ticker),
         dry_run=ctx.dry_run,
         is_stop_loss=True,
+        decision_id=(latest or {}).get("id"),
     )
     r = results[0] if results else {}
     order = r.get("order")

@@ -2,6 +2,7 @@ import json
 import os
 from datetime import UTC, date, datetime, time
 from decimal import Decimal
+from zoneinfo import ZoneInfo
 
 from conftest import make_account
 
@@ -96,8 +97,13 @@ def test_build_jobs_registers_expected_ids_and_times():
         "telegram_poll",
         "fills_sync",
     } <= set(jobs)
-    assert jobs["kr_scan"].cron == {"hour": 7, "minute": 30, "day_of_week": "mon-fri"}
-    assert jobs["us_analyze"].cron == {"hour": 21, "minute": 40, "day_of_week": "mon-fri"}
+    assert jobs["kr_scan"].cron == {
+        "hour": 7,
+        "minute": 30,
+        "day_of_week": "mon-fri",
+        "timezone": "Asia/Seoul",
+    }
+    assert jobs["us_analyze"].cron["hour"] == 21 and jobs["us_analyze"].cron["minute"] == 40
     assert jobs["kr_monitor"].interval_s == 60 and jobs["telegram_poll"].interval_s == 30
     assert jobs["ml_train"].cron == {"hour": 10, "minute": 0, "day_of_week": "sat"}
     jobs_kr = {j.id for j in daemon.build_jobs(SCHED, Settings(markets=["KR"]), markets=["KR"])}
@@ -212,3 +218,90 @@ def test_run_names_jobs_by_id(project, conn):
     deps = _deps(conn, FakeMarket(), now=lambda: datetime.now(UTC))
     daemon.run(deps, web=False, scheduler_factory=lambda: sched)
     assert all(j[0] == j[1] for j in sched.jobs)
+
+
+# --- 리뷰 반영 ---------------------------------------------------------------------
+
+
+def test_analyze_body_one_session_per_target_continues_on_failure(project, conn):
+    from trader.orchestrator.run_store import write_checkpoint
+    from trader.orchestrator.session import SessionResult
+    from trader.scan import screener
+
+    deps = _deps(conn, FakeMarket(), now=lambda: datetime(2026, 10, 8, 0, 0, tzinfo=UTC))
+    write_checkpoint(
+        screener.market_dir(date(2026, 10, 8), "KR"),
+        "_scan",
+        {
+            "analyze_targets": [
+                {"ticker": "A", "exchange": None},
+                {"ticker": "B", "exchange": None},
+                {"ticker": "C", "exchange": None},
+            ]
+        },
+    )
+    seen = []
+
+    def runner(spec, settings, conn_, accounts_, **kw):
+        seen.append([t["ticker"] for t in spec.tickers])
+        if spec.tickers[0]["ticker"] == "B":
+            raise RuntimeError("세션 실패")
+        return SessionResult(ok=True, session_id=f"s-{spec.tickers[0]['ticker']}", cost_usd=1.0)
+
+    deps.session_runner = runner
+    r = daemon._analyze_body(deps, "KR")
+    assert seen == [["A"], ["B"], ["C"]]  # 종목당 세션 1회, 실패해도 계속
+    assert r["ok"] == 2 and r["failed"] == ["B"]
+
+
+def test_run_job_skips_runs_row_for_skipped_interval_job(conn):
+    daemon.run_job(
+        "kr_monitor", lambda: {"skipped": "창 밖"}, conn_factory=lambda: db.connect(), interval=True
+    )
+    assert conn.execute("SELECT COUNT(*) FROM runs").fetchone()[0] == 0
+    daemon.run_job(
+        "kr_monitor", lambda: {"checked": 1}, conn_factory=lambda: db.connect(), interval=True
+    )
+    assert (
+        conn.execute("SELECT COUNT(*) FROM runs").fetchone()[0] == 0
+    )  # interval 잡은 성공도 기록 안 함
+    daemon.run_job("kr_scan", lambda: {"ok": 1}, conn_factory=lambda: db.connect())
+    assert conn.execute("SELECT COUNT(*) FROM runs").fetchone()[0] == 1
+
+
+def test_should_skip_uses_market_timezone(conn):
+    # KST 토요일 03:00 = 미국 금요일 14:00 ET → US 는 주말이 아니다
+    sat_kst = datetime(2026, 10, 10, 3, 0, tzinfo=ZoneInfo("Asia/Seoul"))
+    assert daemon.should_skip("US", sat_kst, None, conn) is None
+    assert daemon.should_skip("KR", sat_kst, FakeMarket(), conn) == "주말"
+    sun_kst = datetime(2026, 10, 11, 12, 0, tzinfo=ZoneInfo("Asia/Seoul"))
+    assert daemon.should_skip("US", sun_kst, None, conn) == "주말"
+
+
+def test_monitor_window_in_market_timezone(conn):
+    sched = ScheduleConfig.model_validate(
+        {
+            **SCHED.model_dump(),
+            "us": {
+                "scan": "08:30",
+                "analyze": "08:40",
+                "monitor": {"start": "09:30", "end": "16:00", "interval_s": 60},
+                "tz": "America/New_York",
+            },
+        }
+    )
+    deps = _deps(
+        conn, FakeMarket(), now=lambda: datetime(2026, 10, 8, 14, 0, tzinfo=UTC)
+    )  # 10:00 EDT
+    deps.schedule = sched
+    ran = []
+    assert daemon.monitor_job(deps, "US", lambda: ran.append(1)) is None and ran == [1]
+    deps.now = lambda: datetime(2026, 10, 8, 21, 0, tzinfo=UTC)  # 17:00 EDT
+    assert daemon.monitor_job(deps, "US", lambda: ran.append(1)) == {"skipped": "창 밖"}
+    jobs = {j.id: j for j in daemon.build_jobs(sched, Settings(), markets=["US"])}
+    assert jobs["us_scan"].cron["timezone"] == "America/New_York"
+
+
+def test_monitor_body_without_market_client_skips(conn):
+    deps = _deps(conn, None, now=lambda: datetime(2026, 10, 8, 3, 0, tzinfo=UTC))
+    assert daemon._monitor_body(deps, "KR") == {"skipped": "시세 클라이언트 없음"}

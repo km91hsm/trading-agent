@@ -78,6 +78,7 @@ def test_orders_today_and_weekly_counts(conn):
         order_no="0001",
         message="ok",
         mode="auto",
+        created_at="2026-10-09T01:00:00+00:00",
     )
     assert isinstance(oid, int)
     assert repo.today_buy_tickers(conn, "paper-main", D) == {"005930"}
@@ -225,6 +226,7 @@ def test_market_order_amount_uses_amount_column(conn):
         message="",
         mode="auto",
         org_no="91252",
+        created_at="2026-10-09T01:00:00+00:00",
     )
     assert repo.today_order_amount(conn, "paper-main", D, market="KR") == Decimal("214500")
     assert repo.today_order_amount(conn, "paper-main", D, market="US") == Decimal(0)

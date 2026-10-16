@@ -205,7 +205,10 @@ def test_cli_fills_sync(project, monkeypatch):
         bs = brokers(secrets, accounts)
         for b in bs:
             if b.account.id == "paper-main":
-                b.fills[("KR", datetime.now(UTC).date())] = [
+                from zoneinfo import ZoneInfo
+
+                kst_today = datetime.now(ZoneInfo("Asia/Seoul")).date()
+                b.fills[("KR", kst_today)] = [
                     Fill(
                         order_no="Q",
                         ticker="005930",

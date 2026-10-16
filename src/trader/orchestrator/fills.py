@@ -59,6 +59,7 @@ def _refresh_status(conn: sqlite3.Connection, order_id: int) -> bool:
 def sync_fills(conn: sqlite3.Connection, broker: Any, account: AccountConfig, d: date) -> dict:
     """계좌의 시장별 체결을 적재한다. 같은 체결은 두 번 들어가지 않는다 (fills 유니크 인덱스)."""
     inserted = 0
+    replaced = 0
     updated: set[int] = set()
     for market in account.markets:
         try:
@@ -68,6 +69,17 @@ def sync_fills(conn: sqlite3.Connection, broker: Any, account: AccountConfig, d:
             continue
         for f in fills:
             oid = _order_id_for(conn, account.id, f)
+            # KIS 체결 조회는 주문당 누적 체결수량을 주므로 기존 행이 있으면 누적값으로 바꾼다
+            existing = conn.execute(
+                "SELECT COALESCE(SUM(qty), 0) AS q FROM fills WHERE order_id=?", (oid,)
+            ).fetchone()["q"]
+            if int(existing) == f.qty:
+                _refresh_status(conn, oid)
+                continue
+            if int(existing) > 0:
+                conn.execute("DELETE FROM fills WHERE order_id=?", (oid,))
+                conn.commit()
+                replaced += 1
             fid = repo.insert_fill(
                 conn,
                 order_id=oid,
@@ -83,6 +95,7 @@ def sync_fills(conn: sqlite3.Connection, broker: Any, account: AccountConfig, d:
     return {
         "account_id": account.id,
         "date": d.isoformat(),
-        "inserted": inserted,
+        "inserted": inserted - replaced,
+        "updated": replaced,
         "orders_updated": len(updated),
     }

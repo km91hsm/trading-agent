@@ -64,3 +64,10 @@ def test_youtube_channel_http_error_isolated(respx_mock):
     src = YouTubeSource(["UCbad"], http=httpx.Client(), transcript_fn=lambda v: "", now=lambda: T0)
     r = src.fetch(keywords=("x",), asof=T0)
     assert r["sources"] == {} and "youtube/UCbad" in r["errors"]
+
+
+def test_channel_id_validated():
+    import pytest
+
+    with pytest.raises(ValueError):
+        YouTubeSource(["bad/../id"], http=httpx.Client(), transcript_fn=lambda v: "")
