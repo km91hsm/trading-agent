@@ -20,6 +20,7 @@ stdin 의 `candidates`(정량 점수·사유 목록)를 **전문 그대로** scr
 1. `python -m trader tool status --market <market> --date <date>` 로 오늘 상태와 종목별 체크포인트 목록을 본다.
 2. 종목마다:
    a. `python -m trader tool collect --ticker <t> --market <m> --asof <asof> [--exchange <x>]` 로 `00_inputs` 를 확보한다(이미 있으면 도구가 건너뛴다). 출력 JSON 의 `path` 와 `errors` 를 기억한다.
+   a-2. `00_inputs` 가 생기면 파이썬이 승격된 퀀트 모델로 `05_quant`(5거래일 수익률 확률)를 자동으로 쓴다(모델이 없으면 없음). 너는 만들지 않는다.
    b. `python -m trader tool checkpoint list --ticker <t> --market <m> --date <date>` 로 남은 단계를 확인한다.
    c. 없는 `10_analyst_<role>` 마다 해당 애널리스트 서브에이전트를 **병렬로** 호출한다. 각 서브에이전트에게는 `python -m trader tool checkpoint read --ticker <t> --market <m> --date <date> --stage 00_inputs --section <role>` 의 출력(JSON)을 **전문 그대로 붙여 넣어** 전달한다(`--section` 출력은 이미 압축돼 있다). 서브에이전트는 도구가 없어 파일을 읽지 못하므로, 네가 데이터를 요약하거나 생략하지 말고 프롬프트에 JSON 전체를 담아라. 프롬프트 형식: `역할 지시 한 줄 + "입력 JSON:" + <JSON 전문>`. 서브에이전트가 돌려준 JSON 을 `python -m trader tool checkpoint write --ticker <t> --market <m> --date <date> --stage 10_analyst_<role> --agent analyst-<role> --json '<JSON>'` 으로 저장한다. 도구가 `{"ok": false, "error": …}` 를 돌려주면 오류 내용을 서브에이전트에게 알려 **한 번만** 다시 받는다.
    d. 리포트가 2개 이상 저장됐으면 `20_debate_r0_bull` 과 `20_debate_r0_bear` 를 **병렬로**: 각 측에 대해 `python -m trader tool checkpoint bundle --kind researcher --round 0 --side <bull|bear> --ticker <t> --market <m> --date <date>` 의 출력(JSON: 리포트 전부 + 직전 턴, 파이썬이 조립)을 **전문 그대로** 프롬프트에 붙여 researcher-<side> 를 호출한다. 결과를 `checkpoint write --stage 20_debate_r0_<side>` 로 저장한다.

@@ -270,7 +270,10 @@ def _scan_body(deps: DaemonDeps, market: str) -> dict:
 
     universe = deps.universe or load_universe()
     today = _today(deps)
-    cands = quant.candidates(universe, market, state=deps.state)
+    from trader.ml import ranker
+
+    ml = ranker.current(deps.state)
+    cands = quant.candidates(universe, market, state=deps.state, rank_fn=ml[0] if ml else None)
     conn = deps.conn_factory()
     try:
         cap_hit = tools.sessions_today(conn, deps.now()) >= deps.settings.llm.daily_session_cap
@@ -296,9 +299,29 @@ def _scan_body(deps: DaemonDeps, market: str) -> dict:
         "candidates": cands,
         **r,
         "cap_hit": cap_hit,
+        "ml_model": ml[1] if ml else None,
     }
     write_checkpoint(screener.market_dir(today, market, deps.state), "_scan", out)
     return out
+
+
+def _ensure_quant(deps: DaemonDeps, ticker: str, market: str, today: date) -> None:
+    from trader.orchestrator import tools
+
+    conn = deps.conn_factory()
+    try:
+        ctx = tools.ToolContext(
+            settings=deps.settings,
+            accounts=deps.accounts,
+            conn=conn,
+            state=deps.state,
+            now=deps.now,
+        )
+        tools.ensure_quant(ctx, ticker=ticker, market=market, date=today)  # type: ignore[arg-type]
+    except Exception as e:  # noqa: BLE001 - 05_quant 는 선택 입력
+        logger.warning("05_quant 생성 실패 %s %s: %s", market, ticker, e)
+    finally:
+        conn.close()
 
 
 def _analyze_body(deps: DaemonDeps, market: str) -> dict:
@@ -328,6 +351,7 @@ def _analyze_body(deps: DaemonDeps, market: str) -> dict:
                 )
             except Exception as e:  # noqa: BLE001 - 한 종목 수집 실패는 세션이 다시 시도한다
                 logger.warning("수집 실패 %s %s: %s", market, t["ticker"], e)
+            _ensure_quant(deps, t["ticker"], market, today)
     # 종목당 세션 1회(--max-budget-usd 는 세션 단위). 실패한 종목은 기록하고 다음 종목으로.
     runner = deps.session_runner or run_session
     ok, failed, sessions = 0, [], []

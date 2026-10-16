@@ -134,17 +134,45 @@ def checkpoint_list(ctx: ToolContext, *, ticker: str, market: Market, date: date
     return {"ok": True, "stages": list_checkpoints(_dir(ctx, ticker, market, date))}
 
 
-def trader_context(ctx: ToolContext, inputs: dict, market: Market) -> dict:
-    """트레이더 입력의 파이썬 제공분. portfolio 는 계좌별 최신 스냅샷, memory 등은 Phase 8."""
+def trader_context(
+    ctx: ToolContext, inputs: dict, market: Market, *, quant: dict | None = None
+) -> dict:
+    """트레이더 입력의 파이썬 제공분. portfolio 는 계좌별 스냅샷, quant 는 05_quant(없으면 None)."""
     quote = ((inputs.get("technical") or {}).get("quote") or {}).get("data")
     return {
         "quote": quote,
         "risk_limits": ctx.settings.risk.model_dump(),
         "costs_bp": ROUND_TRIP_COST_BP[market],
         "portfolio": _portfolio_context(ctx, market),
+        "quant": quant,
         "memory": [],
         "calibration": None,
     }
+
+
+def ensure_quant(ctx: ToolContext, *, ticker: str, market: Market, date: date) -> dict | None:
+    """승격된 퀀트 모델·피처 행이 있으면 05_quant 를 쓴다(이미 있으면 그대로). 없으면 None."""
+    from trader.ml import quant_report, registry
+
+    d = _dir(ctx, ticker, market, date)
+    existing = read_checkpoint(d, "05_quant")
+    if existing is not None:
+        return existing.get("data")
+    found = registry.latest("quant", state=ctx.state)
+    if found is None:
+        return None
+    model, meta = found
+    row = quant_report.latest_row(ticker, market, ctx.state)
+    if row is None:
+        logger.info("05_quant 생략 %s %s: 피처 행 없음", market, ticker)
+        return None
+    try:
+        data = quant_report.build(model, meta, row, ticker=ticker, asof=ctx.now().isoformat())
+    except Exception as e:  # noqa: BLE001 - 모델 오류는 분석을 막지 않는다
+        logger.warning("05_quant 생성 실패 %s %s: %s", market, ticker, e)
+        return None
+    write_checkpoint(d, "05_quant", _wrap(data, _call("quant", {"model": data["model"]})))
+    return data
 
 
 def _portfolio_context(ctx: ToolContext, market: Market) -> dict | None:
@@ -282,7 +310,11 @@ def checkpoint_read(
     if section is None:
         return {"ok": True, "data": data}
     if stage == "00_inputs" and section == "trader_context":
-        return {"ok": True, "data": trader_context(ctx, data, market)}
+        q = read_checkpoint(_dir(ctx, ticker, market, date), "05_quant")
+        return {
+            "ok": True,
+            "data": trader_context(ctx, data, market, quant=(q or {}).get("data")),
+        }
     body = data.get("data", data) if stage != "00_inputs" else data
     if section not in body:
         return {"ok": False, "error": f"절 없음: {section}"}
@@ -524,7 +556,9 @@ def checkpoint_bundle(
             "ticker": ticker,
             "reports": reports,
             "research_summary": _trader_summary(summ.get("data", summ)),
-            "context": trader_context(ctx, inputs, market),
+            "context": trader_context(
+                ctx, inputs, market, quant=(read_checkpoint(d, "05_quant") or {}).get("data")
+            ),
         }
         return {"ok": True, "data": _shrink(data, BUNDLE_LIMIT_BYTES, drop_evidence=True)}
     return {"ok": False, "error": f"알 수 없는 kind: {kind} (researcher|trader)"}

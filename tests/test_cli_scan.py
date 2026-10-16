@@ -65,3 +65,33 @@ def _full(df):
         if c not in df.columns:
             df[c] = np.nan
     return df
+
+
+def test_cli_scan_uses_ml_rank_when_promoted(project, monkeypatch):
+    from datetime import UTC, datetime
+
+    from helpers_ml import synthetic_features
+
+    from trader.ml import dataset, registry
+    from trader.ml.models import quant
+
+    _setup(project, monkeypatch)
+    df = dataset.make_labels(
+        synthetic_features(3, 120, signal=True), horizon_days=5, up=0.02, down=-0.02
+    )
+    cols = dataset.feature_columns(df)
+    X, y = dataset.split_xy(df, cols)
+    v = registry.save(
+        "quant",
+        quant.QuantModel(cols).fit(X, y),
+        {"features": cols},
+        now=lambda: datetime(2026, 10, 17, tzinfo=UTC),
+    )
+    registry.promote("quant", v)
+    r = CliRunner().invoke(
+        app, ["scan", "--market", "KR", "--asof", "2026-10-09T00:00:00+00:00", "--dry-run"]
+    )
+    assert r.exit_code == 0, r.stdout
+    out = json.loads(r.stdout.strip().splitlines()[-1])
+    assert out["ml_model"] == f"quant@{v}"
+    assert any("ML P(up)" in rs for c in out["candidates"] for rs in c["reasons"])

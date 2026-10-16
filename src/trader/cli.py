@@ -443,6 +443,14 @@ def analyze(
         conn = db.connect()
         db.init_schema(conn)
         try:
+            from trader.orchestrator import tools as _tools
+
+            _tools.ensure_quant(
+                _tools.ToolContext(settings=settings, accounts=accounts, conn=conn),
+                ticker=ticker,
+                market=market,
+                date=day,  # type: ignore[arg-type]
+            )
             res = run_session(
                 SessionSpec(
                     market=market,
@@ -598,7 +606,10 @@ def tool_collect(
             deps=_build_input_deps(secrets, cfg),
         )
         errors = json.loads(path.read_text(encoding="utf-8")).get("errors", [])
-        result = {"ok": True, "path": str(path), "errors": errors}
+        from trader.orchestrator import tools
+
+        q = tools.ensure_quant(ctx, ticker=ticker, market=market, date=when.astimezone(_KST).date())  # type: ignore[arg-type]
+        result = {"ok": True, "path": str(path), "errors": errors, "quant": bool(q)}
     except Exception as e:  # noqa: BLE001
         result = {"ok": False, "error": f"{type(e).__name__}: {e}"}
     _emit(result)
@@ -1141,7 +1152,10 @@ def scan(
         if when.tzinfo is None:
             when = when.replace(tzinfo=UTC)
         day = when.astimezone(_KST).date()
-        cands = quant.candidates(universe, market)  # type: ignore[arg-type]
+        from trader.ml import ranker
+
+        ml = ranker.current()
+        cands = quant.candidates(universe, market, rank_fn=ml[0] if ml else None)  # type: ignore[arg-type]
         conn = db.connect()
         db.init_schema(conn)
         try:
@@ -1169,6 +1183,7 @@ def scan(
             "analyze_targets": r["analyze_targets"],
             "session": r["session"],
             "cap_hit": cap_hit,
+            "ml_model": ml[1] if ml else None,
         }
         write_checkpoint(screener.market_dir(day, market), "_scan", out)
     except (config.ConfigError, paths.ProjectRootNotFound, PipelineError, ValueError) as e:
