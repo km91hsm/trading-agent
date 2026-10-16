@@ -57,3 +57,23 @@ def test_dataset_rows_for_fold_respect_embargo():
     train, test = walkforward.split(df, fs[0])
     assert train["date"].max() == fs[0].train_end and test["date"].min() == fs[0].test_start
     assert train["label"].notna().all() and len(test) > 0
+
+
+def test_shuffled_labels_give_chance_accuracy():
+    """피처에 미래 정보가 없다는 역검증: 라벨을 섞으면 정확도가 기준선 근처로 떨어진다."""
+    import numpy as np
+
+    from trader.config import MlConfig
+    from trader.ml.models import quant
+
+    df = synthetic_features(6, 320, signal=True)
+    df = dataset.make_labels(df, horizon_days=H, up=0.02, down=-0.02)
+    cols = dataset.feature_columns(df)
+    real = quant.evaluate_walkforward(df, MlConfig(), features=cols)
+    shuffled = df.copy()
+    rng = np.random.default_rng(1)
+    mask = shuffled["label"].notna()
+    shuffled.loc[mask, "label"] = rng.permutation(shuffled.loc[mask, "label"].to_numpy())
+    fake = quant.evaluate_walkforward(shuffled, MlConfig(), features=cols)
+    assert real["accuracy"] > fake["accuracy"] + 0.05
+    assert abs(fake["accuracy"] - fake["baseline"]) < 0.12

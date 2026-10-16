@@ -55,8 +55,8 @@ def feature_columns(df: pd.DataFrame) -> list[str]:
     for c in df.columns:
         if c in NON_FEATURE_COLUMNS:
             continue
-        if pd.api.types.is_numeric_dtype(df[c]):
-            cols.append(c)
+        if pd.api.types.is_numeric_dtype(df[c]) and df[c].notna().any():
+            cols.append(c)  # 전부 NaN 인 열(아직 채우지 않은 피처)은 제외
     return cols
 
 

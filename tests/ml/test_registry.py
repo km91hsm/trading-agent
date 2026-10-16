@@ -1,0 +1,42 @@
+from datetime import UTC, datetime
+
+from helpers_ml import synthetic_features
+
+from trader.ml import dataset, registry
+from trader.ml.models import quant
+
+NOW = datetime(2026, 10, 17, 1, 2, 3, tzinfo=UTC)
+
+
+def _model():
+    df = dataset.make_labels(
+        synthetic_features(2, 80, signal=False), horizon_days=5, up=0.02, down=-0.02
+    )
+    cols = dataset.feature_columns(df)
+    X, y = dataset.split_xy(df, cols)
+    return quant.QuantModel(cols).fit(X, y), cols
+
+
+def test_registry_save_list_latest_promote(project):
+    m, cols = _model()
+    assert registry.latest("quant") is None and registry.list_models("quant") == []
+    v1 = registry.save(
+        "quant", m, {"features": cols, "metrics": {"accuracy": 0.5}}, now=lambda: NOW
+    )
+    assert v1 == "20261017_010203"
+    assert (project / "state" / "models" / "quant" / v1 / "model.joblib").exists()
+    assert registry.latest("quant") is None  # 미승격
+    model, meta = registry.latest("quant", promoted_only=False)
+    assert meta["version"] == v1 and meta["promoted"] is False and meta["features"] == cols
+    assert model.predict_proba(
+        quant.align(synthetic_features(1, 20, signal=False), cols)[:1]
+    ).shape == (1, 3)
+    r = registry.promote("quant", v1, reason="테스트")
+    assert r["promoted"] is True and r["promote_reason"] == "테스트"
+    _, meta = registry.latest("quant")
+    assert meta["version"] == v1 and meta["promoted"] is True
+    v2 = registry.save(
+        "quant", m, {"features": cols}, now=lambda: datetime(2026, 10, 18, tzinfo=UTC)
+    )
+    assert [x["version"] for x in registry.list_models("quant")] == [v2, v1]
+    assert registry.latest("quant")[1]["version"] == v1  # 승격된 최신은 v1
