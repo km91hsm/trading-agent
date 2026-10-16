@@ -9,7 +9,6 @@ dependencies = [
     "fastapi>=0.143.0",
     "httpx>=0.28.1",
     "joblib>=1.6.0",
-    "lightgbm>=4.7.0",
     "pandas>=3.0.6",
     "pyarrow>=25.0.1",
     "pydantic>=2.14.0",
@@ -24,6 +23,11 @@ dependencies = [
 
 [project.scripts]
 trader = "trader.cli:app"
+
+[project.optional-dependencies]
+lightgbm = [
+    "lightgbm>=4",
+]
 
 [dependency-groups]
 dev = [

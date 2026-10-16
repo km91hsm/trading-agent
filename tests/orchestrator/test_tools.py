@@ -749,3 +749,17 @@ def test_ensure_quant_without_features_row_records_gap(ctx, project):
     _promote_quant(project)
     r = tools.ensure_quant(ctx, ticker="999999", market="KR", date=D)
     assert r is None  # 피처 행이 없으면 05_quant 를 쓰지 않는다
+
+
+def test_ensure_quant_disabled_or_broken_never_raises(ctx, project):
+    import yaml
+
+    _inputs(project)
+    v = _promote_quant(project)
+    (project / "config" / "ml.yaml").write_text(
+        yaml.safe_dump({"models": {"quant": {"enabled": False}}}), encoding="utf-8"
+    )
+    assert tools.ensure_quant(ctx, ticker="005930", market="KR", date=D) is None
+    (project / "config" / "ml.yaml").unlink()
+    (project / "state" / "models" / "quant" / v / "model.joblib").write_bytes(b"garbage")
+    assert tools.ensure_quant(ctx, ticker="005930", market="KR", date=D) is None

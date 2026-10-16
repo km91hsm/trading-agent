@@ -30,9 +30,13 @@ def test_train_label_windows_end_before_test_start():
         # 학습 행 라벨은 date + H 거래일 뒤 종가를 쓴다 → 그 날짜가 전부 test_start 이전
         latest_label_day = days[idx[train_days[-1]] + H]
         assert latest_label_day < f.test_start
-        walkforward.check_no_leak(train_days, f.test_start, horizon_days=H, embargo_days=E)
+        walkforward.check_no_leak(days, f.train_end, f.test_start, horizon_days=H, embargo_days=E)
+    # 거래일 인덱스 기준: 간격이 (H+E) 거래일 이하이면 누출
     with pytest.raises(ValueError):
-        walkforward.check_no_leak(days[:200], days[203], horizon_days=H, embargo_days=E)
+        walkforward.check_no_leak(days, days[199], days[209], horizon_days=H, embargo_days=E)
+    walkforward.check_no_leak(days, days[199], days[210], horizon_days=H, embargo_days=E)
+    with pytest.raises(ValueError):
+        walkforward.check_no_leak(days, days[199], days[203], horizon_days=H, embargo_days=E)
 
 
 def test_small_history_drops_folds():
@@ -60,7 +64,8 @@ def test_dataset_rows_for_fold_respect_embargo():
 
 
 def test_shuffled_labels_give_chance_accuracy():
-    """피처에 미래 정보가 없다는 역검증: 라벨을 섞으면 정확도가 기준선 근처로 떨어진다."""
+    """라벨을 섞으면 정확도가 기준선 근처로 떨어진다(라벨과 무관하게 정확도를 올리는 요소 없음),
+    신호 데이터에서는 학습된다. 피처 누출 자체는 NON_FEATURE_COLUMNS 거부·스토어 스키마가 막는다."""
     import numpy as np
 
     from trader.config import MlConfig

@@ -1070,7 +1070,6 @@ dependencies = [
     { name = "fastapi" },
     { name = "httpx" },
     { name = "joblib" },
-    { name = "lightgbm" },
     { name = "pandas" },
     { name = "pyarrow" },
     { name = "pydantic" },
@@ -1081,6 +1080,11 @@ dependencies = [
     { name = "tzdata" },
     { name = "uvicorn", extra = ["standard"] },
     { name = "youtube-transcript-api" },
+]
+
+[package.optional-dependencies]
+lightgbm = [
+    { name = "lightgbm" },
 ]
 
 [package.dev-dependencies]
@@ -1097,7 +1101,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.143.0" },
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "joblib", specifier = ">=1.6.0" },
-    { name = "lightgbm", specifier = ">=4.7.0" },
+    { name = "lightgbm", marker = "extra == 'lightgbm'", specifier = ">=4" },
     { name = "pandas", specifier = ">=3.0.6" },
     { name = "pyarrow", specifier = ">=25.0.1" },
     { name = "pydantic", specifier = ">=2.14.0" },
@@ -1109,6 +1113,7 @@ requires-dist = [
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.54.0" },
     { name = "youtube-transcript-api", specifier = ">=1.2.4" },
 ]
+provides-extras = ["lightgbm"]
 
 [package.metadata.requires-dev]
 dev = [

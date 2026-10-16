@@ -37,13 +37,20 @@ def align(df: pd.DataFrame, features: list[str]) -> np.ndarray:
 
 
 class QuantModel:
-    def __init__(self, features: list[str], *, random_state: int = 0) -> None:
+    def __init__(
+        self, features: list[str], *, random_state: int = 0, backend: str = "sklearn"
+    ) -> None:
         for c in features:
             if c in dataset.TARGET_COLUMNS:
                 raise ValueError(f"타깃 열이 피처에 섞였습니다: {c}")
         self.features = list(features)
         self.random_state = random_state
-        if _lightgbm_available():
+        if backend not in ("auto", "sklearn", "lightgbm"):
+            raise ValueError(f"알 수 없는 백엔드: {backend}")
+        use_lgbm = backend == "lightgbm" or (backend == "auto" and _lightgbm_available())
+        if backend == "lightgbm" and not _lightgbm_available():
+            raise ValueError("lightgbm 을 불러올 수 없습니다 (macOS 는 libomp 필요)")
+        if use_lgbm:
             from lightgbm import LGBMClassifier
 
             self.backend = "lightgbm"
@@ -100,7 +107,10 @@ class QuantModel:
 
 
 def evaluate_walkforward(df: pd.DataFrame, cfg: MlConfig, *, features: list[str]) -> dict:
-    """폴드별 정확도·기준선(최빈 라벨)·알파(예측 up 행의 평균 fwd_return − 전체 평균)."""
+    """폴드별 정확도·기준선(최빈 라벨)·알파(예측 up 행의 평균 fwd_return − 전체 평균)·up 예측 건수.
+
+    전체 정확도·기준선은 테스트 행 합산(pooled) 기준으로 같은 방식으로 집계한다.
+    """
     days = sorted(pd.to_datetime(df["date"]).dt.date.unique())
     fs = walkforward.folds(
         days,
@@ -110,14 +120,16 @@ def evaluate_walkforward(df: pd.DataFrame, cfg: MlConfig, *, features: list[str]
     )
     out: list[dict] = []
     correct = total = 0
+    class_counts = np.zeros(N_CLASSES, dtype=int)
     alphas: list[float] = []
+    backend = cfg.models.quant.backend
     for f in fs:
         train, test = walkforward.split(df, f)
         if train.empty or test.empty or train["label"].nunique() < 2:
             continue
         Xtr, ytr = dataset.split_xy(train, features)
         Xte, yte = dataset.split_xy(test, features)
-        model = QuantModel(features).fit(Xtr, ytr)
+        model = QuantModel(features, backend=backend).fit(Xtr, ytr)
         pred = model.predict(Xte)
         acc = float((pred == yte).mean())
         baseline = float(np.bincount(yte, minlength=N_CLASSES).max() / len(yte))
@@ -132,15 +144,17 @@ def evaluate_walkforward(df: pd.DataFrame, cfg: MlConfig, *, features: list[str]
                 "accuracy": round(acc, 4),
                 "baseline": round(baseline, 4),
                 "alpha": round(alpha, 6),
+                "up_count": int(up.sum()),
             }
         )
         correct += int((pred == yte).sum())
         total += len(yte)
+        class_counts += np.bincount(yte, minlength=N_CLASSES)
         alphas.append(alpha)
     return {
         "folds": out,
         "accuracy": round(correct / total, 4) if total else 0.0,
-        "baseline": round(float(np.mean([f["baseline"] for f in out])), 4) if out else 0.0,
+        "baseline": round(float(class_counts.max() / total), 4) if total else 0.0,
         "alpha": round(float(np.mean(alphas)), 6) if alphas else 0.0,
         "n_test": total,
     }

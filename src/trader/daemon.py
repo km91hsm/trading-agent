@@ -455,10 +455,21 @@ def _ml_train_body(deps: DaemonDeps) -> dict:
     from trader.config import load_ml
     from trader.ml import train as train_mod
 
-    r = train_mod.train_quant(load_ml(), state=deps.state, now=deps.now)
+    try:
+        r = train_mod.train_quant(load_ml(), state=deps.state, now=deps.now)
+    except Exception as e:  # noqa: BLE001 - 학습 실패는 통보하고 데몬은 계속
+        logger.exception("ML 학습 실패")
+        deps.notifier.send(f"[ML 학습 실패] {type(e).__name__}: {e}")
+        return {"status": "error", "error": f"{type(e).__name__}: {e}"}
+    met = r.get("metrics") or {}
+    acc = (
+        f"정확도 {met['accuracy']:.3f} / 기준선 {met['baseline']:.3f}"
+        if met
+        else r.get("promote_reason")
+    )
     deps.notifier.send(
-        f"[ML 학습] quant {r.get('version') or '-'}: {r.get('status')} "
-        f"정확도 {((r.get('metrics') or {}).get('accuracy') or 0):.3f} 승격={r.get('promoted')}"
+        f"[ML 학습] quant {r.get('version') or '-'}: {r.get('status')} {acc} "
+        f"승격={r.get('promoted')}"
     )
     return r
 

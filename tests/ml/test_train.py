@@ -42,3 +42,96 @@ def test_train_reports_insufficient_data(project):
     assert (
         train.train_quant(MlConfig(), now=lambda: NOW, market="US")["status"] == "insufficient_data"
     )
+
+
+# --- 리뷰 반영: 승격 게이트 ------------------------------------------------------------
+
+
+def _metrics(acc, baseline, alpha, folds=None):
+    folds = folds or [
+        {
+            "index": 0,
+            "accuracy": acc,
+            "baseline": baseline,
+            "alpha": alpha,
+            "up_count": 20,
+            "test_rows": 100,
+        }
+    ]
+    return {"accuracy": acc, "baseline": baseline, "alpha": alpha, "folds": folds, "n_test": 100}
+
+
+def test_promotion_requires_beating_baseline_and_positive_alpha():
+    cfg = MlConfig()
+    ok, why = train.promotion_decision(_metrics(0.52, 0.45, 0.002), cfg)
+    assert ok and "기준선" in why
+    assert train.promotion_decision(_metrics(0.43, 0.50, 0.002), cfg)[0] is False  # 기준선 미달
+    assert train.promotion_decision(_metrics(0.52, 0.45, 0.0), cfg)[0] is False  # 알파 0 은 불합격
+    no_up = _metrics(
+        0.52,
+        0.45,
+        0.002,
+        folds=[
+            {
+                "index": 0,
+                "accuracy": 0.52,
+                "baseline": 0.45,
+                "alpha": 0.0,
+                "up_count": 0,
+                "test_rows": 100,
+            }
+        ],
+    )
+    assert train.promotion_decision(no_up, cfg)[0] is False  # up 예측 없는 폴드
+    few_up = _metrics(
+        0.52,
+        0.45,
+        0.002,
+        folds=[
+            {
+                "index": 0,
+                "accuracy": 0.52,
+                "baseline": 0.45,
+                "alpha": 0.01,
+                "up_count": 2,
+                "test_rows": 100,
+            }
+        ],
+    )
+    assert train.promotion_decision(few_up, cfg)[0] is False  # 최소 예측 건수 미달
+    assert train.promotion_decision(_metrics(0.0, 0.0, 0.0, folds=[]), cfg)[0] is False
+
+
+def test_noise_is_not_promoted_under_default_config_across_seeds(project):
+    for seed in range(4):
+        features.write_rows(synthetic_features(5, 260, signal=False, seed=seed))
+        r = train.train_quant(MlConfig(), now=lambda: NOW)
+        assert r["status"] == "trained" and r["promoted"] is False, (seed, r["promote_reason"])
+
+
+def test_train_window_years_limits_rows(project):
+    features.write_rows(synthetic_features(2, 600, signal=False))
+    cfg = MlConfig.model_validate({"train": {"window_years": 1}})
+    r = train.train_quant(cfg, now=lambda: datetime(2027, 5, 1, tzinfo=UTC))
+    assert r["rows"] < 2 * 300  # 최근 1년치만 (600 거래일 ≈ 2.4년)
+
+
+def test_importances_come_from_holdout_fold(project):
+    features.write_rows(synthetic_features(5, 320, signal=True))
+    r = train.train_quant(MlConfig(), now=lambda: NOW)
+    meta = registry.list_models("quant")[0]
+    assert meta["importances_scope"] == "last_fold_holdout" and meta["importances"]
+    assert r["metrics"]["folds"][0]["up_count"] >= 0
+
+
+def test_backend_config_pins_sklearn(project):
+    from trader.ml.models import quant
+
+    cfg = MlConfig.model_validate({"models": {"quant": {"backend": "sklearn"}}})
+    assert cfg.models.quant.backend == "sklearn"
+    m = quant.QuantModel(["roc_10"], backend="sklearn")
+    assert m.backend == "sklearn"
+    import pytest
+
+    with pytest.raises(ValueError):
+        MlConfig.model_validate({"models": {"quant": {"backend": "xgboost"}}})

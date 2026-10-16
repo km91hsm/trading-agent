@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -15,6 +16,7 @@ import joblib
 
 from trader.platform import paths
 
+logger = logging.getLogger("trader.ml")
 META = "meta.json"
 MODEL = "model.joblib"
 
@@ -78,9 +80,21 @@ def latest(
             continue
         try:
             return load(name, meta["version"], state)
-        except (OSError, ValueError):
+        except Exception as e:  # noqa: BLE001 - 깨진 pickle·클래스 변경 등은 건너뛴다 (파이프라인 보호)
+            logger.warning("모델 로드 실패 %s %s: %s", name, meta.get("version"), e)
             continue
     return None
+
+
+def demote(name: str, version: str, *, state: Path | None = None, reason: str = "manual") -> dict:
+    """승격 해제. 이후 파이프라인은 다른 승격 버전이 없으면 ML 없이 돈다."""
+    p = _dir(name, state) / version / META
+    meta = json.loads(p.read_text(encoding="utf-8"))
+    meta["promoted"] = False
+    meta["promote_reason"] = f"해제: {reason}"
+    meta["demoted_at"] = datetime.now(UTC).isoformat()
+    p.write_text(json.dumps(meta, ensure_ascii=False, indent=1, default=str), encoding="utf-8")
+    return meta
 
 
 def promote(name: str, version: str, *, state: Path | None = None, reason: str = "manual") -> dict:

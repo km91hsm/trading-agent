@@ -387,6 +387,8 @@ class QuantModelCfg(BaseModel):
     enabled: bool = True
     promote_min_accuracy: float = 0.40
     promote_min_alpha: float = 0.0
+    backend: Literal["auto", "sklearn", "lightgbm"] = "sklearn"  # 플랫폼 간 동일 동작을 위해 고정
+    min_up_predictions: int = 5  # 폴드마다 up 예측 최소 건수 (알파 추정 노이즈 방지)
 
 
 class RankerCfg(BaseModel):

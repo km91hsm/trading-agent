@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from trader.config import MlConfig
@@ -15,6 +15,36 @@ logger = logging.getLogger("trader.ml")
 
 MIN_ROWS = 100
 NAME = "quant"
+
+
+def promotion_decision(metrics: dict, cfg: MlConfig) -> tuple[bool, str]:
+    """승격 조건: 폴드가 있고, 합산 정확도 > 기준선(최빈 라벨) 이면서 ≥ promote_min_accuracy,
+    알파 > promote_min_alpha(엄격), 모든 폴드의 up 예측 건수 ≥ min_up_predictions."""
+    q = cfg.models.quant
+    folds = metrics.get("folds") or []
+    acc, base, alpha = (
+        metrics.get("accuracy", 0.0),
+        metrics.get("baseline", 0.0),
+        metrics.get("alpha", 0.0),
+    )
+    fails: list[str] = []
+    if not folds:
+        fails.append("평가 폴드 없음")
+    if acc <= base:
+        fails.append(f"정확도 {acc:.3f} ≤ 기준선 {base:.3f}")
+    if acc < q.promote_min_accuracy:
+        fails.append(f"정확도 {acc:.3f} < {q.promote_min_accuracy}")
+    if alpha <= q.promote_min_alpha:
+        fails.append(f"알파 {alpha:.4f} ≤ {q.promote_min_alpha}")
+    low = [f["index"] for f in folds if int(f.get("up_count", 0)) < q.min_up_predictions]
+    if low:
+        fails.append(f"up 예측 {q.min_up_predictions}건 미만 폴드 {low}")
+    if fails:
+        return False, "미승격: " + "; ".join(fails)
+    return True, (
+        f"승격: 정확도 {acc:.3f} > 기준선 {base:.3f} (≥ {q.promote_min_accuracy}), "
+        f"알파 {alpha:.4f} > {q.promote_min_alpha}, 모든 폴드 up 예측 ≥ {q.min_up_predictions}"
+    )
 
 
 def train_quant(
@@ -38,6 +68,13 @@ def train_quant(
     }
     if df.empty:
         return base | {"promote_reason": "피처 스토어가 비어 있음"}
+    cutoff = (now().astimezone(UTC) - timedelta(days=365 * cfg.train.window_years)).date()
+    df = df[df["date"].dt.date >= cutoff].reset_index(drop=True)
+    if df.empty:
+        return base | {
+            "rows": 0,
+            "promote_reason": f"학습 창({cfg.train.window_years}년) 안에 행 없음",
+        }
     df = dataset.make_labels(
         df,
         horizon_days=cfg.label.horizon_days,
@@ -52,14 +89,10 @@ def train_quant(
             "promote_reason": f"데이터 부족: 라벨 행 {len(labeled)} (최소 {min_rows}), "
             f"라벨 종류 {labeled['label'].nunique()}",
         }
+    backend = cfg.models.quant.backend
     metrics = quant.evaluate_walkforward(df, cfg, features=cols)
-    X, y = dataset.split_xy(df, cols)
-    model = quant.QuantModel(cols).fit(X, y)
-    days = (
-        sorted(labeled["date"].dt.date.unique())
-        if hasattr(labeled["date"], "dt")
-        else sorted(labeled["date"].unique())
-    )
+    # 피처 중요도는 마지막 폴드의 홀드아웃(그 폴드까지만 학습한 모델)로 계산한다
+    days = sorted(df["date"].dt.date.unique())
     fs = walkforward.folds(
         days,
         n_folds=cfg.train.walk_forward_folds,
@@ -68,31 +101,28 @@ def train_quant(
     )
     importances: dict[str, float] = {}
     if fs:
-        _, test = walkforward.split(df, fs[-1])
-        if not test.empty:
-            Xt, yt = dataset.split_xy(test, cols)
+        train_df, test_df = walkforward.split(df, fs[-1])
+        if not train_df.empty and not test_df.empty and train_df["label"].nunique() >= 2:
             try:
-                importances = model.importances(Xt, yt)
+                Xa, ya = dataset.split_xy(train_df, cols)
+                Xt, yt = dataset.split_xy(test_df, cols)
+                importances = (
+                    quant.QuantModel(cols, backend=backend).fit(Xa, ya).importances(Xt, yt)
+                )
             except Exception as e:  # noqa: BLE001 - 중요도 계산 실패는 메타만 비운다
                 logger.warning("피처 중요도 계산 실패: %s", e)
-    q = cfg.models.quant
-    ok_acc = metrics["accuracy"] >= q.promote_min_accuracy
-    ok_alpha = metrics["alpha"] >= q.promote_min_alpha
-    promoted = bool(metrics["folds"]) and ok_acc and ok_alpha
-    reason = (
-        f"정확도 {metrics['accuracy']:.3f} ≥ {q.promote_min_accuracy} 및 알파 "
-        f"{metrics['alpha']:.4f} ≥ {q.promote_min_alpha}"
-        if promoted
-        else f"정확도 {metrics['accuracy']:.3f} (기준 {q.promote_min_accuracy}) / 알파 "
-        f"{metrics['alpha']:.4f} (기준 {q.promote_min_alpha}) 미달"
-    )
+    X, y = dataset.split_xy(df, cols)
+    model = quant.QuantModel(cols, backend=backend).fit(X, y)
+    promoted, reason = promotion_decision(metrics, cfg)
     meta = {
         "market": market,
         "rows": int(len(labeled)),
         "train_range": [str(days[0]), str(days[-1])] if days else None,
+        "window_years": cfg.train.window_years,
         "features": cols,
         "metrics": metrics,
         "importances": importances,
+        "importances_scope": "last_fold_holdout",
         "backend": model.backend,
         "label": cfg.label.model_dump(),
     }

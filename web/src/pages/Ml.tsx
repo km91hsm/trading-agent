@@ -73,7 +73,7 @@ export function MlPage() {
                   <tr><th>#</th><th>학습 행</th><th>테스트 행</th><th>정확도</th><th>기준선</th><th>알파</th></tr>
                 </thead>
                 <tbody>
-                  {detail.data.metrics.folds.map((f) => (
+                  {(detail.data.metrics.folds ?? []).map((f) => (
                     <tr key={f.index}>
                       <td>{f.index}</td><td>{f.train_rows}</td><td>{f.test_rows}</td>
                       <td>{f.accuracy}</td><td>{f.baseline}</td><td>{f.alpha}</td>

@@ -61,20 +61,19 @@ def folds(
 
 
 def check_no_leak(
-    train_dates: Sequence, test_start, *, horizon_days: int, embargo_days: int
+    all_dates: Sequence, train_end, test_start, *, horizon_days: int, embargo_days: int
 ) -> None:
-    """학습 마지막 날짜 + (horizon + embargo) 거래일이 test_start 이전이 아니면 ValueError."""
-    days = _unique_sorted(train_dates)
-    if not days:
-        return
+    """거래일 인덱스 기준: idx(test_start) − idx(train_end) 가 horizon + embargo 보다 커야 한다."""
+    days = _unique_sorted(all_dates)
+    idx = {d: i for i, d in enumerate(days)}
+    tr = pd.Timestamp(train_end).date()
     ts = pd.Timestamp(test_start).date()
-    # 학습 날짜 집합에는 테스트 이후가 없으므로 달력일로 보수적으로 검사한다 (거래일 ≤ 달력일)
-    last = days[-1]
+    if tr not in idx or ts not in idx:
+        raise ValueError("train_end·test_start 는 날짜 목록 안에 있어야 합니다")
     need = horizon_days + embargo_days
-    # 거래일 간격: train 날짜 목록만으로는 이후 거래일을 모르므로 달력일 기준 1.0 배 이상 요구
-    if (ts - last).days <= need:
+    if idx[ts] - idx[tr] <= need:
         raise ValueError(
-            f"라벨 누출: 학습 마지막 {last} 와 테스트 시작 {ts} 사이가 {need}거래일보다 짧습니다"
+            f"라벨 누출: 학습 마지막 {tr} 와 테스트 시작 {ts} 사이가 {need}거래일 이하입니다"
         )
 
 

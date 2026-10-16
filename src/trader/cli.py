@@ -1346,6 +1346,22 @@ def ml_promote(
     typer.echo(f"승격: quant {m['version']} ({reason})")
 
 
+@ml_app.command("demote")
+def ml_demote(
+    version: str = typer.Argument(..., help="YYYYMMDD_HHMMSS"),
+    reason: str = typer.Option("manual", "--reason"),
+) -> None:
+    """승격을 해제한다 (다른 승격 버전이 없으면 05_quant·ML 랭킹 비활성)."""
+    from trader.ml import registry
+
+    configure(paths.state_dir())
+    if not any(m.get("version") == version for m in registry.list_models("quant")):
+        typer.echo(f"오류: 모델 없음: {version}", err=True)
+        raise typer.Exit(code=1)
+    m = registry.demote("quant", version, reason=reason)
+    typer.echo(f"승격 해제: quant {m['version']} ({reason})")
+
+
 @app.command("notify-test")
 def notify_test() -> None:
     """텔레그램으로 테스트 메시지를 보낸다 (미설정이면 NullNotifier 로 성공)."""

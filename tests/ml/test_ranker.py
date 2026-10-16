@@ -33,3 +33,39 @@ def test_rank_fn_reorders_by_p_up(project):
     plain = scan_quant.score(latest)
     assert set(plain["ticker"]) == set(out["ticker"]) and len(out) == len(plain)  # 필터 동일
     features.write_rows(synthetic_features(4, 5, signal=False))
+
+
+def test_rank_fn_disabled_by_config(project):
+    import yaml
+
+    df = dataset.make_labels(
+        synthetic_features(3, 120, signal=True), horizon_days=5, up=0.02, down=-0.02
+    )
+    cols = dataset.feature_columns(df)
+    X, y = dataset.split_xy(df, cols)
+    v = registry.save(
+        "quant", quant.QuantModel(cols).fit(X, y), {"features": cols}, now=lambda: NOW
+    )
+    registry.promote("quant", v)
+    (project / "config" / "ml.yaml").write_text(
+        yaml.safe_dump({"models": {"ranker": {"enabled": False}}}), encoding="utf-8"
+    )
+    assert ranker.current() is None
+    (project / "config" / "ml.yaml").write_text(
+        yaml.safe_dump({"models": {"quant": {"enabled": False}}}), encoding="utf-8"
+    )
+    assert ranker.current() is None
+
+
+def test_rank_fn_survives_broken_model(project):
+    df = dataset.make_labels(
+        synthetic_features(3, 120, signal=True), horizon_days=5, up=0.02, down=-0.02
+    )
+    cols = dataset.feature_columns(df)
+    X, y = dataset.split_xy(df, cols)
+    v = registry.save(
+        "quant", quant.QuantModel(cols).fit(X, y), {"features": cols}, now=lambda: NOW
+    )
+    registry.promote("quant", v)
+    (project / "state" / "models" / "quant" / v / "model.joblib").write_bytes(b"garbage")
+    assert ranker.current() is None

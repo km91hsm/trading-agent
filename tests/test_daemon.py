@@ -319,3 +319,18 @@ def test_daemon_ml_train_job_calls_train(conn, monkeypatch):
     job = next(j for j in d.build_jobs(SCHED, Settings(), markets=["KR"]) if j.id == "ml_train")
     r = d.job_body(deps, job)()
     assert r == {"status": "trained"} and calls and calls[0]["state"] is None
+
+
+def test_ml_train_body_wraps_exceptions(conn, monkeypatch):
+    from trader import daemon as d
+    from trader.ml import train as train_mod
+
+    def boom(cfg, **kw):
+        raise RuntimeError("학습 폭발")
+
+    monkeypatch.setattr(train_mod, "train_quant", boom)
+    deps = _deps(conn, FakeMarket(), now=lambda: datetime(2026, 10, 10, 1, 0, tzinfo=UTC))
+    sent = []
+    deps.notifier = type("N", (), {"send": lambda self, t, **k: sent.append(t) or True})()
+    r = d._ml_train_body(deps)
+    assert r["status"] == "error" and any("학습 폭발" in m for m in sent)

@@ -158,11 +158,23 @@ def ensure_quant(ctx: ToolContext, *, ticker: str, market: Market, date: date) -
     existing = read_checkpoint(d, "05_quant")
     if existing is not None:
         return existing.get("data")
-    found = registry.latest("quant", state=ctx.state)
+    try:
+        from trader.config import load_ml
+
+        if not load_ml().models.quant.enabled:
+            return None
+        found = registry.latest("quant", state=ctx.state)
+    except Exception as e:  # noqa: BLE001 - ML 은 선택 입력: 어떤 오류도 수집·분석을 막지 않는다
+        logger.warning("05_quant 생략(레지스트리 오류): %s", e)
+        return None
     if found is None:
         return None
     model, meta = found
-    row = quant_report.latest_row(ticker, market, ctx.state)
+    try:
+        row = quant_report.latest_row(ticker, market, ctx.state)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("05_quant 생략(피처 읽기 실패) %s %s: %s", market, ticker, e)
+        return None
     if row is None:
         logger.info("05_quant 생략 %s %s: 피처 행 없음", market, ticker)
         return None

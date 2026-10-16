@@ -40,3 +40,19 @@ def test_registry_save_list_latest_promote(project):
     )
     assert [x["version"] for x in registry.list_models("quant")] == [v2, v1]
     assert registry.latest("quant")[1]["version"] == v1  # 승격된 최신은 v1
+
+
+def test_latest_skips_broken_model_file(project):
+    m, cols = _model()
+    v = registry.save("quant", m, {"features": cols}, now=lambda: NOW)
+    registry.promote("quant", v)
+    (project / "state" / "models" / "quant" / v / "model.joblib").write_bytes(b"garbage")
+    assert registry.latest("quant") is None  # 깨진 파일은 건너뛴다 (예외 전파 없음)
+
+
+def test_demote(project):
+    m, cols = _model()
+    v = registry.save("quant", m, {"features": cols}, now=lambda: NOW)
+    registry.promote("quant", v)
+    r = registry.demote("quant", v, reason="수동 해제")
+    assert r["promoted"] is False and registry.latest("quant") is None

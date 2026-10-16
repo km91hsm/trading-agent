@@ -26,3 +26,12 @@ def test_cli_ml_train_insufficient(project):
     r = CliRunner().invoke(app, ["ml", "train"])
     assert r.exit_code == 0
     assert json.loads(r.stdout.strip().splitlines()[-1])["status"] == "insufficient_data"
+
+
+def test_cli_ml_demote(project):
+    features.write_rows(synthetic_features(6, 320, signal=True))
+    runner = CliRunner()
+    out = json.loads(runner.invoke(app, ["ml", "train"]).stdout.strip().splitlines()[-1])
+    assert out["promoted"] is True
+    r = runner.invoke(app, ["ml", "demote", out["version"], "--reason", "검토"])
+    assert r.exit_code == 0 and registry.latest("quant") is None
