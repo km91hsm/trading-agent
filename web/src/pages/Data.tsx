@@ -6,7 +6,7 @@ export function DataPage() {
       <TodayPage title="데이터 탐색 (00_inputs)" inputsOnly />
       <section>
         <h2>피처 스토어</h2>
-        <p className="muted">state/features parquet 탐색은 Phase 7(ML)에서 추가한다.</p>
+        <p className="muted">피처 스토어(state/features parquet)는 ML 페이지의 모델 메타(피처 목록·중요도)로 확인한다. 행 단위 탐색은 Phase 8.</p>
       </section>
     </>
   );

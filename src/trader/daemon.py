@@ -451,6 +451,18 @@ def _fills_body(deps: DaemonDeps) -> dict:
     return out
 
 
+def _ml_train_body(deps: DaemonDeps) -> dict:
+    from trader.config import load_ml
+    from trader.ml import train as train_mod
+
+    r = train_mod.train_quant(load_ml(), state=deps.state, now=deps.now)
+    deps.notifier.send(
+        f"[ML 학습] quant {r.get('version') or '-'}: {r.get('status')} "
+        f"정확도 {((r.get('metrics') or {}).get('accuracy') or 0):.3f} 승격={r.get('promoted')}"
+    )
+    return r
+
+
 def job_body(deps: DaemonDeps, job: Job) -> Callable[[], Any]:
     if job.kind == "scan":
         return lambda: market_job(
@@ -471,7 +483,7 @@ def job_body(deps: DaemonDeps, job: Job) -> Callable[[], Any]:
     if job.kind == "reflect":
         return lambda: logger.info("reflect 는 Phase 8 에서 구현한다 (자리)")
     if job.kind == "ml_train":
-        return lambda: logger.info("ml train 은 Phase 7 에서 구현한다 (자리)")
+        return lambda: _ml_train_body(deps)
     raise ValueError(f"알 수 없는 잡: {job.kind}")
 
 

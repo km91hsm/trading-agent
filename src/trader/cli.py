@@ -1282,6 +1282,70 @@ def install_cmd(
         typer.echo(r["content"])
 
 
+# --- ML (Phase 7) ----------------------------------------------------------------
+
+ml_app = typer.Typer(help="퀀트 모델 학습·레지스트리")
+app.add_typer(ml_app, name="ml")
+
+
+@ml_app.command("train")
+def ml_train(
+    market: str | None = typer.Option(None, "--market", help="KR|US (기본 전체)"),
+    min_rows: int = typer.Option(100, "--min-rows", help="학습 최소 라벨 행 수"),
+) -> None:
+    """피처 스토어로 퀀트 모델을 워크포워드 학습·평가·저장하고 승격 기준을 판정한다."""
+    import json
+
+    from trader.ml import train as train_mod
+
+    try:
+        configure(paths.state_dir())
+        cfg = config.load_ml()
+        if market is not None and market not in ("KR", "US"):
+            raise config.ConfigError(f"시장은 KR 또는 US: {market}")
+    except (config.ConfigError, paths.ProjectRootNotFound) as e:
+        typer.echo(f"오류: {e}", err=True)
+        raise typer.Exit(code=1) from e
+    r = train_mod.train_quant(cfg, market=market, min_rows=min_rows)
+    typer.echo(json.dumps(r, ensure_ascii=False, default=str))
+
+
+@ml_app.command("models")
+def ml_models() -> None:
+    """레지스트리의 quant 모델 목록."""
+    from trader.ml import registry
+
+    configure(paths.state_dir())
+    metas = registry.list_models("quant")
+    if not metas:
+        typer.echo("모델 없음")
+        return
+    for m in metas:
+        met = m.get("metrics") or {}
+        typer.echo(
+            f"{m['version']}  정확도 {met.get('accuracy', '-')}  "
+            f"기준선 {met.get('baseline', '-')}  알파 {met.get('alpha', '-')}  "
+            f"행 {m.get('rows', '-')}  {'승격' if m.get('promoted') else '미승격'}  "
+            f"{m.get('promote_reason') or ''}"
+        )
+
+
+@ml_app.command("promote")
+def ml_promote(
+    version: str = typer.Argument(..., help="YYYYMMDD_HHMMSS"),
+    reason: str = typer.Option("manual", "--reason"),
+) -> None:
+    """모델을 수동 승격한다 (이후 05_quant·scan 랭킹에 쓰인다)."""
+    from trader.ml import registry
+
+    configure(paths.state_dir())
+    if not any(m.get("version") == version for m in registry.list_models("quant")):
+        typer.echo(f"오류: 모델 없음: {version}", err=True)
+        raise typer.Exit(code=1)
+    m = registry.promote("quant", version, reason=reason)
+    typer.echo(f"승격: quant {m['version']} ({reason})")
+
+
 @app.command("notify-test")
 def notify_test() -> None:
     """텔레그램으로 테스트 메시지를 보낸다 (미설정이면 NullNotifier 로 성공)."""
