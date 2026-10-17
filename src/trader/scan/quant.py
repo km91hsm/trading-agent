@@ -77,18 +77,8 @@ def score(df: pd.DataFrame, *, top: int = TOP_N) -> pd.DataFrame:
 
 
 def latest_features(market: str, *, state: Path | None = None) -> pd.DataFrame:
-    """피처 스토어의 종목별 최신 행."""
-    fdir = features._features_dir(state)
-    files = sorted(fdir.glob("*.parquet")) if fdir.exists() else []
-    if not files:
-        return pd.DataFrame()
-    frames = [pd.read_parquet(f) for f in files]
-    df = pd.concat(frames, ignore_index=True)
-    df = df[df["market"] == market]
-    if df.empty:
-        return df
-    df = df.sort_values("date").groupby("ticker", as_index=False).tail(1)
-    return df.reset_index(drop=True)
+    """피처 스토어의 종목별 최신 행 (최신 파일부터 부분 읽기)."""
+    return features.latest_rows(state, market)
 
 
 def candidates(

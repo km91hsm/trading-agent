@@ -24,6 +24,15 @@ def _decided_date(iso: str) -> date | None:
         return None
 
 
+HOLD_BAND = 0.02  # HOLD 적중 = 가격이 밴드 안에 머묾(라벨 up/down 임계와 같은 값)
+
+
+def _hit(action: str, realized: float, price_return: float | None) -> bool:
+    if action == "HOLD":
+        return price_return is not None and abs(float(price_return)) <= HOLD_BAND
+    return realized > 0
+
+
 def simple_backtest(
     conn: sqlite3.Connection,
     state: Path | None,
@@ -50,6 +59,7 @@ def simple_backtest(
         action = str(dec.get("action") or "HOLD").upper()
         if r["realized_return"] is not None:
             realized, alpha, source = float(r["realized_return"]), r["alpha_vs_benchmark"], "memory"
+            price_return = r["price_return"]
         else:
             m = r["market"]
             if m not in tables:
@@ -63,6 +73,7 @@ def simple_backtest(
             ret, bench = res
             realized = ret * outcomes.SIGN.get(action, 0.0)
             alpha, source = realized - bench, "features"
+            price_return = ret
         decisions.append(
             {
                 "entry_id": int(r["id"]),
@@ -72,7 +83,8 @@ def simple_backtest(
                 "action": action,
                 "realized_return": round(realized, 6),
                 "alpha": None if alpha is None else round(float(alpha), 6),
-                "hit": realized > 0,
+                "price_return": None if price_return is None else round(float(price_return), 6),
+                "hit": _hit(action, realized, price_return),
                 "source": source,
             }
         )

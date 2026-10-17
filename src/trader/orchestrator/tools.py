@@ -14,7 +14,7 @@ import re
 import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, time
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
@@ -29,6 +29,7 @@ from trader.notify.telegram import NullNotifier
 from trader.orchestrator import summary as summary_mod
 from trader.orchestrator.run_store import (
     list_checkpoints,
+    market_dir,
     read_checkpoint,
     run_dir,
     write_checkpoint,
@@ -256,7 +257,7 @@ def ensure_quant(ctx: ToolContext, *, ticker: str, market: Market, date: date) -
         return None
     model, meta = found
     try:
-        row = quant_report.latest_row(ticker, market, ctx.state)
+        row = quant_report.latest_row(ticker, market, ctx.state, asof=date)
     except Exception as e:  # noqa: BLE001
         logger.warning("05_quant 생략(피처 읽기 실패) %s %s: %s", market, ticker, e)
         return None
@@ -784,6 +785,16 @@ def _load_sizer(state: Path | None):
         return None
 
 
+_KST_CLOSE = time(15, 30)
+
+
+def _decided_at(now: datetime, run_date: date) -> datetime:
+    """운영일(run date)이 오늘(KST)이면 현재 시각, 아니면 그날 장 마감(15:30 KST) 시각(UTC)."""
+    if now.astimezone(_KST).date() == run_date:
+        return now
+    return datetime.combine(run_date, _KST_CLOSE, _KST).astimezone(UTC)
+
+
 def _record_memory(
     ctx: ToolContext, decision: schemas.Decision, market: Market, date: date
 ) -> int | None:
@@ -801,14 +812,14 @@ def _record_memory(
             (a.id for a in ctx.accounts if a.env == "paper"),
             ctx.accounts[0].id if ctx.accounts else "",
         )
-        row = quant_report.latest_row(decision.ticker, market, ctx.state)
+        row = quant_report.latest_row(decision.ticker, market, ctx.state, asof=date)
         return store.record_decision(
             ctx.conn,
             decision_id=decision_id,
             ticker=decision.ticker,
             market=market,
             account_id=paper,
-            decided_at=ctx.now().isoformat(),
+            decided_at=_decided_at(ctx.now(), date).isoformat(),
             decision=decision.model_dump(),
             row=row,
             horizon_days=decision.horizon_days,
@@ -858,9 +869,7 @@ def submit_screen(
             f"{'.'.join(str(x) for x in err['loc'])}: {err['msg']}" for err in e.errors()
         )
         return {"ok": False, "error": f"스키마 검증 실패(Screened): {msgs}"}
-    base = ctx.state if ctx.state is not None else paths.state_dir()
-    d = base / "runs" / date.isoformat() / market
-    d.mkdir(parents=True, exist_ok=True)
+    d = market_dir(date, market, ctx.state, create=True)
     path = write_checkpoint(d, "_screen", _wrap(screened.model_dump(), _call(agent, call_meta)))
     logger.info("스크리닝 저장 %s: %s", market, [p.ticker for p in screened.picks])
     return {"ok": True, "path": str(path), "picks": [p.ticker for p in screened.picks]}
@@ -900,9 +909,7 @@ def submit_reflection(
             return {"ok": False, "error": f"메모리 엔트리 없음: {r.entry_id}"}
     for r in parsed:
         store.set_reflection(ctx.conn, r.entry_id, r.model_dump())
-    base = ctx.state if ctx.state is not None else paths.state_dir()
-    d = base / "runs" / date.isoformat() / market
-    d.mkdir(parents=True, exist_ok=True)
+    d = market_dir(date, market, ctx.state, create=True)
     existing = read_checkpoint(d, "_reflect") or _wrap([], _call(agent, call_meta))
     data = list(existing.get("data") or []) + [r.model_dump() for r in parsed]
     write_checkpoint(d, "_reflect", _wrap(data, _call(agent, call_meta)))

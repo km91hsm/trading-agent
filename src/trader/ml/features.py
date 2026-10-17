@@ -141,6 +141,39 @@ def history_rows(
     return out[FEATURE_COLUMNS]
 
 
+def latest_rows(
+    state: Path | None,
+    market: str | None,
+    *,
+    tickers: list[str] | None = None,
+    asof: date | None = None,
+    max_files: int = 60,
+) -> pd.DataFrame:
+    """종목별 최신 행. 파일(`<date>.parquet`)을 최신부터 읽되 asof 이후 파일은 건너뛰고,
+    tickers 가 전부 모이면(또는 max_files 에 닿으면) 멈춘다 — parquet 전부를 읽지 않는다."""
+    fdir = _features_dir(state)
+    files = sorted(fdir.glob("*.parquet"), reverse=True) if fdir.exists() else []
+    if asof is not None:
+        files = [f for f in files if f.stem <= asof.isoformat()]
+    want = set(tickers) if tickers else None
+    seen: dict[str, pd.Series] = {}
+    for f in files[:max_files]:
+        part = _coerce(pd.read_parquet(f))
+        if market:
+            part = part[part["market"] == market]
+        for _, row in part.iterrows():
+            t = str(row["ticker"])
+            if t in seen or (want is not None and t not in want):
+                continue
+            seen[t] = row
+        if want is not None and want <= set(seen):
+            break
+    if not seen:
+        return pd.DataFrame(columns=FEATURE_COLUMNS)
+    out = pd.DataFrame(list(seen.values())).reset_index(drop=True)
+    return out.sort_values("ticker").reset_index(drop=True)
+
+
 def write_rows(df: pd.DataFrame, state: Path | None = None) -> list[Path]:
     """날짜별 parquet 에 (date, ticker) 기준으로 덮어쓴다. 멱등."""
     d = _features_dir(state)

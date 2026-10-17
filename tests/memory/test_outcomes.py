@@ -82,3 +82,12 @@ def test_sell_and_hold_decisions(conn, project):
     h = store.get_entry(conn, hold)
     # HOLD: 실현수익 0, 알파 = −벤치마크 (A −10%·B +10% → 1/N 0% → 알파 0)
     assert h["realized_return"] == 0.0 and abs(h["alpha_vs_benchmark"]) < 1e-9
+
+
+def test_mature_waits_for_today(conn, project):
+    # 종가는 30일 치가 있어도 today 가 만기 전이면 채우지 않는다(백필 데이터로 미래를 보지 않음)
+    _store({"A": [100] + [100] * 4 + [104] + [104] * 24})
+    eid = _decision(conn, 1, "A", "BUY", DAYS[0])
+    assert outcomes.mature(conn, state=None, today=DAYS[2]) == []
+    assert store.get_entry(conn, eid)["outcome_at"] is None
+    assert len(outcomes.mature(conn, state=None, today=DAYS[7])) == 1

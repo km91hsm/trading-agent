@@ -6,6 +6,7 @@ import pytest
 from helpers_agents import ok_decision, ok_report, ok_turn
 from helpers_sources import T0
 
+from trader.agents.schemas import Decision
 from trader.config import AccountConfig, Settings
 from trader.orchestrator import run_store, tools
 from trader.orchestrator.run_store import read_checkpoint, run_dir
@@ -924,3 +925,31 @@ def test_memory_context_records_vix_change(ctx):
     assert store.latest_vix_change(ctx.conn) == pytest.approx(0.35)
     tools._memory_context(ctx, {"meta": {"ticker": "005930"}}, "KR")  # macro 없음 → 유지
     assert store.latest_vix_change(ctx.conn) == pytest.approx(0.35)
+
+
+def test_record_memory_decided_at_follows_run_date(ctx, project):
+    # now 는 2026-10-09T01:00Z(KST 10-09) 이고 run date 가 10-09 → now 그대로;
+    # run date 가 10-01 이면 그날 15:30 KST = 06:30Z
+    from trader.ledger import repo
+    from trader.memory import store
+
+    dec = Decision(**ok_decision())
+    for d in (date(2026, 10, 9), date(2026, 10, 1)):
+        repo.ingest_checkpoint(
+            ctx.conn, d, "KR", "005930", "30_decision", {"data": dec.model_dump()}
+        )
+        tools._record_memory(ctx, dec, "KR", d)
+    rows = ctx.conn.execute("SELECT decided_at FROM memory_entries ORDER BY id").fetchall()
+    assert [r["decided_at"] for r in rows] == [
+        T0.isoformat(),
+        "2026-10-01T06:30:00+00:00",
+    ]
+    assert len(store.retrieve.__name__) > 0  # import 사용
+
+
+def test_market_dir_helper_creates_dir(project):
+    from trader.orchestrator import run_store
+
+    d = run_store.market_dir(date(2026, 10, 9), "KR", None, create=True)
+    assert d.is_dir() and d.name == "KR" and d.parent.name == "2026-10-09"
+    assert not run_store.market_dir(date(2026, 10, 10), "US", None).exists()

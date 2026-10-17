@@ -210,3 +210,42 @@ def test_snapshot_writes_today(project):
     got = pd.read_parquet(files[0])
     assert got.iloc[0]["flow_foreign_20d"] == 2000 and got.iloc[0]["roe"] == pytest.approx(0.1)
     assert Decimal(str(got.iloc[0]["close"])) > 0
+
+
+# --- 이연 회수: 최신 행 부분 읽기 -----------------------------------------------------
+
+
+def _rows(day: str, tickers: list[str]) -> pd.DataFrame:
+    import numpy as np
+
+    df = pd.DataFrame(
+        [
+            {
+                "date": date.fromisoformat(day),
+                "ticker": t,
+                "market": "KR",
+                "close": 100.0,
+                "volume": 1,
+            }
+            for t in tickers
+        ]
+    )
+    for c in features.FEATURE_COLUMNS:
+        if c not in df.columns:
+            df[c] = np.nan
+    return df[features.FEATURE_COLUMNS]
+
+
+def test_latest_rows_falls_back_to_older_files(project):
+    features.write_rows(_rows("2026-10-01", ["A", "B"]))
+    features.write_rows(_rows("2026-10-02", ["A"]))
+    df = features.latest_rows(None, "KR", tickers=["A", "B"])
+    got = {
+        t: pd.Timestamp(d).date().isoformat() for t, d in zip(df["ticker"], df["date"], strict=True)
+    }
+    assert got == {"A": "2026-10-02", "B": "2026-10-01"}
+    capped = features.latest_rows(None, "KR", asof=date(2026, 10, 1))
+    assert set(pd.to_datetime(capped["date"]).dt.date) == {date(2026, 10, 1)}
+    assert features.latest_rows(None, "US").empty
+    only = features.latest_rows(None, "KR", tickers=["A"], max_files=1)
+    assert list(only["ticker"]) == ["A"]

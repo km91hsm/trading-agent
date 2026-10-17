@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+from datetime import date
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
 
 from trader.agents import schemas
-from trader.ml import dataset
+from trader.ml import features
 from trader.ml.models import quant
 
 SIGNAL_THRESHOLD = 0.5
@@ -22,15 +23,14 @@ def signal_for(p_up: float, p_down: float) -> str:
     return "NEUTRAL"
 
 
-def latest_row(ticker: str, market: str, state: Path | None = None) -> dict | None:
-    """피처 스토어의 해당 종목 최신 행 (date 는 ISO 문자열)."""
-    df = dataset.load_all(state, market=market)
+def latest_row(
+    ticker: str, market: str, state: Path | None = None, *, asof: date | None = None
+) -> dict | None:
+    """피처 스토어의 해당 종목 최신 행 (asof 이하, date 는 ISO 문자열)."""
+    df = features.latest_rows(state, market, tickers=[ticker], asof=asof)
     if df.empty:
         return None
-    rows = df[df["ticker"] == ticker]
-    if rows.empty:
-        return None
-    r = rows.sort_values("date").iloc[-1].to_dict()
+    r = df.iloc[0].to_dict()
     r["date"] = pd.Timestamp(r["date"]).date().isoformat()
     return r
 
