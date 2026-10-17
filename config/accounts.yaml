@@ -1,0 +1,3 @@
+accounts:
+  - {id: paper-main, env: paper, cano: "50215191", acnt_prdt_cd: "01", markets: [KR, US], mode: auto}
+  - {id: real-main,  env: real,  cano: "43214961", acnt_prdt_cd: "01", markets: [KR, US], mode: "off"}

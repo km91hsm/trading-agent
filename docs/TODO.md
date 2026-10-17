@@ -1,15 +1,15 @@
 # 구현 진행 체크리스트 (스펙: docs/superpowers/specs/2026-10-09-trading-agent-design.md §11)
 
 ## Phase 0 골격
-- [ ] uv 프로젝트·CLI 진입점 (typer)
-- [ ] platform/paths·claude_bin (OS 분기는 여기만)
-- [ ] config 로더 5개 (settings·accounts·sources·universe·secrets), extra=forbid, ConfigError
-- [ ] SQLite 원장: 스키마 버전·순서 마이그레이션·control 테이블
-- [ ] 로깅 (UTF-8, 파일 회전, httpx WARNING)
-- [ ] STATUS.md 생성기 + `trader status`
-- [ ] CLAUDE.md·SessionStart 훅·settings.json 검증 테스트
-- [ ] 완료 기준: macOS 에서 `python -m trader status` 동작 + 새 claude 세션이 STATUS.md 자동 인식
-- [ ] 완료 기준: Windows 에서 `python -m trader status` 동일 동작 (사용자 확인 대기)
+- [x] uv 프로젝트·CLI 진입점 (typer)
+- [x] platform/paths·claude_bin (OS 분기는 여기만)
+- [x] config 로더 5개 (settings·accounts·sources·universe·secrets), extra=forbid, ConfigError
+- [x] SQLite 원장: 스키마 버전·순서 마이그레이션·control 테이블
+- [x] 로깅 (UTF-8, 파일 회전, httpx WARNING)
+- [x] STATUS.md 생성기 + `trader status`
+- [x] CLAUDE.md·SessionStart 훅·settings.json 검증 테스트
+- [x] 완료 기준: macOS 에서 `uv run trader status` 동작 + 새 claude 세션이 STATUS.md 자동 인식 (2026-10-09 확인, 훅 서브프로세스 테스트)
+- [ ] 완료 기준: Windows 에서 `uv sync` 후 `uv run trader status` 동일 동작 (사용자 확인 대기)
 
 ## Phase 1 브로커
 - [ ] KisAuth (env 별 토큰 캐시, 1분 1회 발급 보호)

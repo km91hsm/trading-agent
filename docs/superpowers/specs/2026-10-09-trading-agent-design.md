@@ -321,7 +321,7 @@ Decision { ticker, action: BUY|SELL|HOLD|ADD|TRIM, target_weight(0~0.25), order_
 ## 7. 세션 복구 (R2)
 
 - **운영 세션**: 단계 산출물이 전부 체크포인트 파일이므로, 세션이 끊기면 데몬이 같은 날짜로 재실행하고 오케스트레이터가 `tool checkpoint list` 로 남은 단계만 한다. `runs` 테이블에 세션 시작·종료·상태 기록.
-- **개발 세션**: `CLAUDE.md`(목적, 에이전트·모델 역할, 디렉터리 지도, "상태는 `state/STATUS.md` → `python -m trader status`", 실행 명령, 금지사항, "다음 할 일은 `docs/TODO.md`", 스펙 경로, 코딩 규칙). `state/STATUS.md`(자동, ≤8,000자): 마지막 실행·결과, 계좌별 모드·성향·NAV·손익·포지션, 미승인 주문, 실패 단계, 오늘 LLM 호출·비용, 결정 분포, ML 모델 버전, 다음 예정 실행, Phase 진행도. `.claude/hooks/session_start.py`(표준 라이브러리, UTF-8)가 STATUS.md + TODO.md 미완료 항목을 출력(10,000자 상한). `settings.json` SessionStart(matcher `startup|resume|clear|compact`) 명령은 `python .claude/hooks/session_start.py`. `docs/TODO.md` 는 Phase 별 체크리스트. git 은 Phase 마다 커밋·PR.
+- **개발 세션**: `CLAUDE.md`(목적, 에이전트·모델 역할, 디렉터리 지도, "상태는 `state/STATUS.md` → `python -m trader status`", 실행 명령, 금지사항, "다음 할 일은 `docs/TODO.md`", 스펙 경로, 코딩 규칙). `state/STATUS.md`(자동, ≤8,000자): 마지막 실행·결과, 계좌별 모드·성향·NAV·손익·포지션, 미승인 주문, 실패 단계, 오늘 LLM 호출·비용, 결정 분포, ML 모델 버전, 다음 예정 실행, Phase 진행도. `.claude/hooks/session_start.py`(표준 라이브러리, UTF-8)가 STATUS.md + TODO.md 미완료 항목을 출력(10,000자 상한). `settings.json` SessionStart(matcher `startup|resume|clear|compact`) 명령은 `uv run python .claude/hooks/session_start.py`(`python` 이 PATH 에 없는 환경이 있어 `uv run` 을 앞에 붙인다. 2026-10-09 Phase 0 에서 정정). `docs/TODO.md` 는 Phase 별 체크리스트. git 은 Phase 마다 커밋·PR.
 
 ---
 

@@ -9,7 +9,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 세션 시작 시 상태 확인
 - `state/STATUS.md` 는 SessionStart 훅(`.claude/hooks/session_start.py`)이 세션 시작·`/clear`·compact 때 자동 주입한다 (STATUS.md + `docs/TODO.md` 미완료 상위 항목).
-- 최신화는 `python -m trader status` (Phase 0 이후).
+- 최신화는 `uv run trader status` (`python` 이 PATH 에 없는 환경이 있어 항상 `uv run` 을 앞에 붙인다).
 - 다음 할 일은 `docs/TODO.md` 의 첫 미완료(`- [ ]`) 항목. 작업 완료 시 체크 표시를 갱신한다. 각 Phase 마지막은 `완료 기준:` 항목이며 확인 시 `(YYYY-MM-DD 확인)` 을 덧붙인다. 이전 Phase 에서 미룬 항목은 재개 Phase 절에 `(Phase N 이연)` 접미사로 둔다.
 
 ## 문서
@@ -21,7 +21,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `uv sync` : 의존성 설치 (Python 3.12)
 - `uv run pytest` : 전체 테스트 (네트워크 없이 전부 돈다)
 - `uv run ruff check src tests` : 린트, 경고 0건 유지
-- `python -m trader status` : `state/STATUS.md` 재생성
+- `uv run trader status` : `state/STATUS.md` 재생성 (`uv run python -m trader status` 와 동일)
 - `uv run trader --help` : 등록된 명령 확인
 - 브랜치는 Phase 단위 `feat/phase<N>-<이름>` 을 직전 Phase 브랜치 위에 쌓고, PR 도 직전 Phase 브랜치를 대상으로 연다 (Phase 0 은 `main`). `.gitattributes` 가 LF 를 강제한다.
 
@@ -40,7 +40,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `secrets/` 를 커밋하지 않는다. 읽지도 않는다 (settings.json 의 deny 규칙. Bash 로 읽는 명령도 거부되므로 다른 명령과 묶지 않는다). `config/accounts.yaml` 에는 실제 계좌번호가 있으므로 값을 출력·인용하지 않는다.
 - 계좌 모드(control 테이블)를 임의로 변경하지 않는다.
 - 셸 스크립트(.sh/.bat/.ps1)를 추가하지 않는다. 훅·설치·유틸은 전부 파이썬.
-- `state/` 파일을 직접 편집하지 않는다 (STATUS.md 는 `python -m trader status` 로만 갱신).
+- `state/` 파일을 직접 편집하지 않는다 (STATUS.md 는 `uv run trader status` 로만 갱신).
 - 커뮤니티·뉴스 수집기의 기본 on/off 는 스펙 §0.3 정책을 따른다. 사용자 결정 없이 off 소스를 켜지 않는다.
 
 ## 코딩 규칙

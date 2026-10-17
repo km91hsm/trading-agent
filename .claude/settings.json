@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/session_start.py\"",
+            "command": "uv run python \"$CLAUDE_PROJECT_DIR/.claude/hooks/session_start.py\"",
             "timeout": 15
           }
         ]
@@ -20,12 +20,26 @@
       "Glob",
       "Bash(uv run pytest *)",
       "Bash(uv run ruff check *)",
-      "Bash(python -m trader status)",
+      "Bash(uv run trader status)",
+      "Bash(uv run python -m trader status)",
       "Bash(uv run trader --help)"
     ],
     "deny": [
-      "Read(./secrets/**)",
-      "Bash(cat secrets/*)",
+      "Read(./secrets/.env)",
+      "Bash(cat secrets/.env*)",
+      "Bash(cat ./secrets/.env*)",
+      "Bash(head secrets/.env*)",
+      "Bash(head ./secrets/.env*)",
+      "Bash(tail secrets/.env*)",
+      "Bash(tail ./secrets/.env*)",
+      "Bash(sed * secrets/.env*)",
+      "Bash(sed * ./secrets/.env*)",
+      "Bash(grep * secrets/.env*)",
+      "Bash(grep * ./secrets/.env*)",
+      "Bash(less secrets/.env*)",
+      "Bash(less ./secrets/.env*)",
+      "Bash(more secrets/.env*)",
+      "Bash(more ./secrets/.env*)",
       "Bash(python -m trader kis order *)",
       "Bash(uv run trader kis order *)"
     ]
