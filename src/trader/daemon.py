@@ -318,6 +318,7 @@ def _ensure_quant(deps: DaemonDeps, ticker: str, market: str, today: date) -> No
             now=deps.now,
         )
         tools.ensure_quant(ctx, ticker=ticker, market=market, date=today)  # type: ignore[arg-type]
+        tools.ensure_calibration(ctx, ticker=ticker, market=market, date=today)  # type: ignore[arg-type]
     except Exception as e:  # noqa: BLE001 - 05_quant 는 선택 입력
         logger.warning("05_quant 생성 실패 %s %s: %s", market, ticker, e)
     finally:

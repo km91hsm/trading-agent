@@ -135,7 +135,12 @@ def checkpoint_list(ctx: ToolContext, *, ticker: str, market: Market, date: date
 
 
 def trader_context(
-    ctx: ToolContext, inputs: dict, market: Market, *, quant: dict | None = None
+    ctx: ToolContext,
+    inputs: dict,
+    market: Market,
+    *,
+    quant: dict | None = None,
+    calibration: dict | None = None,
 ) -> dict:
     """트레이더 입력의 파이썬 제공분. portfolio 는 계좌별 스냅샷, quant 는 05_quant(없으면 None)."""
     quote = ((inputs.get("technical") or {}).get("quote") or {}).get("data")
@@ -146,8 +151,39 @@ def trader_context(
         "portfolio": _portfolio_context(ctx, market),
         "quant": quant,
         "memory": [],
-        "calibration": None,
+        "calibration": calibration,
     }
+
+
+def ensure_calibration(ctx: ToolContext, *, ticker: str, market: Market, date: date) -> dict | None:
+    """결과 엔트리가 min_decisions(60) 이상일 때만 35_calibration 을 쓴다(있으면 그대로)."""
+    from trader.calibration import model as cal
+    from trader.config import load_ml
+    from trader.memory import vector as vec
+    from trader.ml import quant_report
+
+    if ctx.conn is None:
+        return None
+    d = _dir(ctx, ticker, market, date)
+    existing = read_checkpoint(d, "35_calibration")
+    if existing is not None:
+        return existing.get("data")
+    try:
+        cfg = load_ml().models.calibration
+        if not cfg.enabled and cfg.min_decisions <= 0:
+            return None
+        row = quant_report.latest_row(ticker, market, ctx.state)
+        qv = vec.situation_vector(row, market) if row else None
+        report = cal.build_calibration(
+            ctx.conn, min_decisions=cfg.min_decisions, query_vector=qv, asof=ctx.now().isoformat()
+        )
+    except Exception as e:  # noqa: BLE001 - 보정은 선택 입력
+        logger.warning("35_calibration 생략 %s %s: %s", market, ticker, e)
+        return None
+    if report is None:
+        return None
+    write_checkpoint(d, "35_calibration", _wrap(report, _call("calibration", None)))
+    return report
 
 
 def ensure_quant(ctx: ToolContext, *, ticker: str, market: Market, date: date) -> dict | None:
@@ -322,10 +358,14 @@ def checkpoint_read(
     if section is None:
         return {"ok": True, "data": data}
     if stage == "00_inputs" and section == "trader_context":
-        q = read_checkpoint(_dir(ctx, ticker, market, date), "05_quant")
+        dd = _dir(ctx, ticker, market, date)
+        q = read_checkpoint(dd, "05_quant")
+        c = read_checkpoint(dd, "35_calibration")
         return {
             "ok": True,
-            "data": trader_context(ctx, data, market, quant=(q or {}).get("data")),
+            "data": trader_context(
+                ctx, data, market, quant=(q or {}).get("data"), calibration=(c or {}).get("data")
+            ),
         }
     body = data.get("data", data) if stage != "00_inputs" else data
     if section not in body:
@@ -569,7 +609,11 @@ def checkpoint_bundle(
             "reports": reports,
             "research_summary": _trader_summary(summ.get("data", summ)),
             "context": trader_context(
-                ctx, inputs, market, quant=(read_checkpoint(d, "05_quant") or {}).get("data")
+                ctx,
+                inputs,
+                market,
+                quant=(read_checkpoint(d, "05_quant") or {}).get("data"),
+                calibration=(read_checkpoint(d, "35_calibration") or {}).get("data"),
             ),
         }
         return {"ok": True, "data": _shrink(data, BUNDLE_LIMIT_BYTES, drop_evidence=True)}

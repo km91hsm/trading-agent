@@ -763,3 +763,52 @@ def test_ensure_quant_disabled_or_broken_never_raises(ctx, project):
     (project / "config" / "ml.yaml").unlink()
     (project / "state" / "models" / "quant" / v / "model.joblib").write_bytes(b"garbage")
     assert tools.ensure_quant(ctx, ticker="005930", market="KR", date=D) is None
+
+
+# --- Phase 8: 35_calibration ---------------------------------------------------------
+
+
+def test_ensure_calibration_inactive_below_60(ctx, project):
+    from helpers_memory import seed_matured
+
+    _inputs(project)
+    seed_matured(ctx.conn, 59)
+    assert tools.ensure_calibration(ctx, ticker="005930", market="KR", date=D) is None
+    assert read_checkpoint(run_dir(D, "KR", "005930"), "35_calibration") is None
+    b = tools.trader_context(ctx, read_checkpoint(run_dir(D, "KR", "005930"), "00_inputs"), "KR")
+    assert b["calibration"] is None
+
+
+def test_ensure_calibration_active_at_60_and_in_context(ctx, project):
+    from helpers_memory import seed_matured
+
+    _inputs(project)
+    seed_matured(ctx.conn, 60)
+    r = tools.ensure_calibration(ctx, ticker="005930", market="KR", date=D)
+    assert r["active"] and r["roles"]["technical"]["n"] == 60
+    cp = read_checkpoint(run_dir(D, "KR", "005930"), "35_calibration")
+    assert cp["data"]["asof"] and cp["call"]["agent"] == "calibration"
+    for role in ("technical", "fundamental"):
+        tools.checkpoint_write(
+            ctx,
+            ticker="005930",
+            market="KR",
+            date=D,
+            stage=f"10_analyst_{role}",
+            payload=ok_report(role=role),
+            agent="a",
+        )
+    for side in ("bull", "bear"):
+        tools.checkpoint_write(
+            ctx,
+            ticker="005930",
+            market="KR",
+            date=D,
+            stage=f"20_debate_r0_{side}",
+            payload=ok_turn(side),
+            agent="r",
+        )
+    tools.checkpoint_summarize(ctx, ticker="005930", market="KR", date=D)
+    b = tools.checkpoint_bundle(ctx, ticker="005930", market="KR", date=D, kind="trader")
+    assert b["data"]["context"]["calibration"]["roles"]["technical"]["hit_rate"] is not None
+    assert tools.ensure_calibration(ctx, ticker="005930", market="KR", date=D)["active"]  # 멱등

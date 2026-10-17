@@ -445,12 +445,9 @@ def analyze(
         try:
             from trader.orchestrator import tools as _tools
 
-            _tools.ensure_quant(
-                _tools.ToolContext(settings=settings, accounts=accounts, conn=conn),
-                ticker=ticker,
-                market=market,
-                date=day,  # type: ignore[arg-type]
-            )
+            _tctx = _tools.ToolContext(settings=settings, accounts=accounts, conn=conn)
+            _tools.ensure_quant(_tctx, ticker=ticker, market=market, date=day)  # type: ignore[arg-type]
+            _tools.ensure_calibration(_tctx, ticker=ticker, market=market, date=day)  # type: ignore[arg-type]
             res = run_session(
                 SessionSpec(
                     market=market,
@@ -608,7 +605,9 @@ def tool_collect(
         errors = json.loads(path.read_text(encoding="utf-8")).get("errors", [])
         from trader.orchestrator import tools
 
-        q = tools.ensure_quant(ctx, ticker=ticker, market=market, date=when.astimezone(_KST).date())  # type: ignore[arg-type]
+        day_ = when.astimezone(_KST).date()
+        q = tools.ensure_quant(ctx, ticker=ticker, market=market, date=day_)  # type: ignore[arg-type]
+        tools.ensure_calibration(ctx, ticker=ticker, market=market, date=day_)  # type: ignore[arg-type]
         result = {"ok": True, "path": str(path), "errors": errors, "quant": bool(q)}
     except Exception as e:  # noqa: BLE001
         result = {"ok": False, "error": f"{type(e).__name__}: {e}"}
@@ -1419,6 +1418,38 @@ def reflect_cmd(
         raise typer.Exit(code=1) from e
     finally:
         conn.close()
+
+
+# --- 보정 (Phase 8) -------------------------------------------------------------------
+
+calibration_app = typer.Typer(help="애널리스트 신호 적중률 보정 (결정 60건 미만이면 비활성)")
+app.add_typer(calibration_app, name="calibration")
+
+
+@calibration_app.command("build")
+def calibration_build() -> None:
+    """현재 메모리 결과로 보정 리포트를 계산해 출력한다 (체크포인트는 analyze 때 종목별로 생성)."""
+    import json
+
+    from trader.calibration import model as cal
+    from trader.ledger import db
+
+    configure(paths.state_dir())
+    cfg = config.load_ml().models.calibration
+    conn = db.connect()
+    db.init_schema(conn)
+    try:
+        r = cal.build_calibration(
+            conn,
+            min_decisions=cfg.min_decisions,
+            query_vector=None,
+            asof=datetime.now(UTC).isoformat(),
+        )
+    finally:
+        conn.close()
+    typer.echo(
+        json.dumps(r or {"active": False, "min_decisions": cfg.min_decisions}, ensure_ascii=False)
+    )
 
 
 @app.command("notify-test")

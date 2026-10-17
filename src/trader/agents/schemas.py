@@ -134,6 +134,28 @@ class Reflection(BaseModel):
     confidence: float = Field(ge=0, le=1)
 
 
+class RoleCalibration(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    hit_rate: float | None
+    n: int
+    neighbor_hit_rate: float | None
+    neighbor_n: int
+    bias: float
+
+
+class CalibrationReport(BaseModel):
+    """35_calibration: 역할별 신호 적중률 (스펙 §9.3, 결정 60건 이상일 때만)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    asof: str
+    n_decisions: int
+    active: bool
+    min_decisions: int
+    roles: dict[str, RoleCalibration]
+
+
 class Pick(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -167,6 +189,7 @@ _STAGE_PATTERNS: list[tuple[re.Pattern[str], type[BaseModel]]] = [
     (re.compile(r"^20_debate_r\d+_(bull|bear)$"), DebateTurn),
     (re.compile(r"^30_decision$"), Decision),
     (re.compile(r"^05_quant$"), QuantReport),
+    (re.compile(r"^35_calibration$"), CalibrationReport),
 ]
 
 
