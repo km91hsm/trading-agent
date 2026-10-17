@@ -158,7 +158,8 @@ def latest_rows(
     want = set(tickers) if tickers else None
     seen: dict[str, pd.Series] = {}
     for f in files[:max_files]:
-        part = _coerce(pd.read_parquet(f))
+        # 이전 Phase 에 쓰인 파일은 뒤에 추가된 열이 없을 수 있다 → NaN 으로 맞춘다
+        part = _coerce(pd.read_parquet(f).reindex(columns=list(FEATURE_COLUMNS)))
         if market:
             part = part[part["market"] == market]
         for _, row in part.iterrows():

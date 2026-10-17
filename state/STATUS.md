@@ -1,4 +1,4 @@
-# 시스템 상태 (생성: 2026-10-17 16:00 KST)
+# 시스템 상태 (생성: 2026-10-17 16:21 KST)
 
 ## 실행 제어
 - 일시정지: 아니오
@@ -12,11 +12,11 @@
 | real-main | real | off | KR,US | normal |
 
 ## 마지막 실행
+- analyze KR 2026-10-17T07:16:55.300801+00:00 → ok
 - analyze KR 2026-10-17T06:29:17.941831+00:00 → ok
 - analyze KR 2026-10-17T00:53:21.290488+00:00 → ok
 - scan KR 2026-10-09T03:27:14.318886+00:00 → ok
 - analyze KR 2026-10-09T02:06:43.334830+00:00 → ok
-- analyze KR 2026-10-08T22:27:33.236179+00:00 → ok
 
 ## 오늘 LLM 호출
 - 0건, $0.00
@@ -45,17 +45,17 @@
 - Phase 0 골격: 8/9
 - Phase 1 브로커: 9/9
 - Phase 2 수집: 8/10
-- Phase 3 에이전트: 13/18
-- Phase 4 리스크·계좌별 실행: 7/11
-- Phase 5 웹 UI: 6/9
-- Phase 6 scan·monitor·데몬: 17/23
+- Phase 3 에이전트: 15/18
+- Phase 4 리스크·계좌별 실행: 8/11
+- Phase 5 웹 UI: 8/9
+- Phase 6 scan·monitor·데몬: 19/23
 - Phase 7 ML 1단계: 10/13
-- Phase 8 학습·평가·보정: 7/10
-- Phase 9 RL 사이징(실험): 5/9
+- Phase 8 학습·평가·보정: 8/10
+- Phase 9 RL 사이징(실험): 7/9
 
 ## 다음 할 일
 - 완료 기준: Windows 에서 `uv sync` 후 `uv run trader status` 동일 동작 (사용자 확인 대기)
 - 사용자 확인 대기: 네이버 검색 API 키가 401 — 애플리케이션에 '검색' API 권한이 있는지, 키 값이 맞는지 확인 후 `uv run trader collect --ticker 005930 --force` 재실행
 - 사용자 확인 대기: DART 점검 종료 후 `collect`·`features backfill --years 3` 재실행으로 재무비율 적재
-- 체크포인트 `call.model` 이 LLM 쓰기에선 None → `tool checkpoint write --model` 또는 agents.json 에서 역추적 (Phase 3 이연)
-- 세션 cwd 를 저장소 밖(tempfile)으로 옮겨 상위 CLAUDE.md 자동 탐색 가정 제거 (Phase 3 이연)
+- 실기(사용자 확인 대기): 처음부터 끝까지 bundle 경로로 1회 실행해 리서처 라운드 0·1 묶음이 Agent 프롬프트에 전문으로 들어가는지 세션 기록으로 확인 (`uv run trader analyze --ticker 005930 --dry-run`, 체크포인트 비운 뒤, 약 $2.5)
+- 완료 기준: Windows 에서 FAKE_CLAUDE dry-run 동일 동작 (사용자 확인 대기)

@@ -47,8 +47,8 @@
 - [x] 완료 기준(실기): 실제 `claude -p` 1회로 서브에이전트 호출·도구 제한 동작 확인 (2026-10-09, 2회: 1차 $1.58 에서 절 출력 잘림 발견 → 압축 후 2차 $1.89/4분 23초, 애널리스트 4·토론 2라운드·요약·HOLD 결정, 스키마 거부→재제출 동작 확인)
 - [x] HTML 엔티티(`&lt;` 등, Claude Code 가 서브에이전트 출력을 이스케이프)를 도구 저장 시 복원 (2026-10-09 리뷰 반영)
 - [x] 세션 `duration_ms` 를 파이썬 측 측정값으로, running 행 선기록 (2026-10-09 리뷰 반영)
-- [ ] 체크포인트 `call.model` 이 LLM 쓰기에선 None → `tool checkpoint write --model` 또는 agents.json 에서 역추적 (Phase 3 이연)
-- [ ] 세션 cwd 를 저장소 밖(tempfile)으로 옮겨 상위 CLAUDE.md 자동 탐색 가정 제거 (Phase 3 이연)
+- [x] 체크포인트 `call.model` 이 LLM 쓰기에선 None → `tool checkpoint write --model` 로 기록 (Phase 3 이연, 이미 구현됨 — 2026-10-17 확인)
+- [x] 세션 cwd 를 저장소 밖(tempfile)으로 옮겨 상위 CLAUDE.md 자동 탐색 가정 제거 (Phase 3 이연, Phase 6 에서 구현됨 — 2026-10-17 확인)
 - [x] 리서처·트레이더 입력을 파이썬이 조립하는 `tool checkpoint bundle`(24KB 바이트 한도) 추가. 실기 3차($1.80)에서 전문 전달이 예산 $2 를 소진해 중단 → 예산 $5 + bundle 로 4차($0.71, 재개 경로)에서 트레이더 묶음 17.8KB 전달·결정 확인 (2026-10-09)
 - [ ] 실기(사용자 확인 대기): 처음부터 끝까지 bundle 경로로 1회 실행해 리서처 라운드 0·1 묶음이 Agent 프롬프트에 전문으로 들어가는지 세션 기록으로 확인 (`uv run trader analyze --ticker 005930 --dry-run`, 체크포인트 비운 뒤, 약 $2.5)
 - [ ] 완료 기준: Windows 에서 FAKE_CLAUDE dry-run 동일 동작 (사용자 확인 대기)
@@ -65,7 +65,7 @@
 - [ ] 실기(사용자 확인 대기, 영업일 09:00~15:30 KST): `uv run trader kis order-test --account paper-main` → 1주 지정가(현재가 −10%) 접수·취소 메시지 확인
 - [ ] 실기(사용자 확인 대기): 텔레그램 승인 — `uv run trader control mode paper-main approve` → `FAKE_CLAUDE=1` 없이 `uv run trader analyze --ticker 005930`(결정이 BUY 일 때만 승인 요청, 약 $2) 또는 `uv run trader approvals list` 로 요청 확인 → 텔레그램에서 `/approve <id>` → `uv run trader telegram poll` → 주문 접수 확인 → `uv run trader control mode paper-main auto` 원복
 - [ ] 사용자 확인 대기(Windows): Phase 4 테스트 전체 통과 (`uv run pytest`)
-- [ ] 리뷰 Minor 이연: approvals.decision_id 0 기록, metrics 30일 창의 UTC/KST 하루 오차, telegram_offset 이 타 chat 메시지로 전진 안 함, KR limit_price 호가단위·범위 검증, 승인 시점 게이트 재평가 (Phase 5~6 에서 해당 모듈 손댈 때)
+- [x] 리뷰 Minor 이연(Phase 4) 회수(2026-10-17, 이연 회수 플랜): metrics KST 창·telegram_offset 전진·KR 호가단위(`kis order-test`)는 이미 해결. 이연 유지: approvals.decision_id 0(결정 없는 승인은 손절 경로뿐), 승인 시점 게이트 재평가(설계상 30분 내 변화 감수)
 
 ## Phase 5 웹 UI
 - [x] FastAPI 라우터 (accounts·portfolio·runs·orders·charts·ml(자리)·control·system) + SSE(`/api/events`, 원장 카운터 폴링) + bearer 토큰 (`WEB_TOKEN` 미설정이면 제어 API 401)
@@ -75,8 +75,8 @@
 - [x] 설정/제어 페이지 (토큰 저장·일시정지·계좌 모드, 실전 auto 는 LIVE 확인)
 - [x] 완료 기준: 계좌 전환, 산출물 열람, 웹 승인 주문, 차트 마커, 모의 주문이 실전 뷰에 안 섞임, 토큰 없는 제어 401 (2026-10-09 확인: TestClient 27개 — 계좌 분리·401·승인 2회 409·실전 auto confirm·경로 탈출; Vitest 5개; 브라우저 실기 — 대시보드·오늘의 실행(000660 토론 뷰)·차트(005930 KIS 일봉)·계좌·주문 페이지 렌더, 틀린 토큰으로 일시정지 → "토큰이 필요합니다" 표시. 웹 승인 주문 실기는 Phase 4 의 승인 실기(사용자 확인 대기)와 함께)
 - [ ] 사용자 확인 대기: `secrets/.env` 에 `WEB_TOKEN` 설정 후 `uv run trader web` → 설정 페이지에 토큰 입력 → 일시정지/재개가 반영되는지, 승인 요청이 있을 때 주문/승인 페이지에서 승인 → 주문 접수 확인
-- [ ] 리뷰 Minor 이연(Phase 5): `_validate_ids` 가 `.`·`..` 티커를 허용(경로 탈출은 없음), `list_decisions` 30일 창 UTC/KST 하루 오차, `favicon` 미지정
-- [ ] Phase 5 이연: SSE 를 트리거·데몬 이벤트 푸시로(Phase 6), 관심종목 제어(Phase 6), 차트 지표 오버레이·분봉(Phase 6), ML 페이지 실데이터(Phase 7), 성과 페이지(Phase 8)
+- [x] 리뷰 Minor 이연(Phase 5) 회수(2026-10-17, 이연 회수 플랜): `_validate_ids` 점 티커 거부(이미 해결), `favicon`(inline SVG). `list_decisions` 창은 metrics 와 같이 KST 날짜 기준
+- [x] Phase 5 이연 회수(2026-10-17, 이연 회수 플랜): SSE 스냅샷에 `triggers`·`watchlist` 추가, 관심종목 웹 제어(`/api/control/watchlist` + 설정 페이지), 차트 SMA20/60 오버레이, ML 페이지 실데이터(Phase 7)·성과 페이지(Phase 8). 이연 유지: 분봉 차트(사용자 결정)
 
 ## Phase 6 scan·monitor·데몬
 - [x] 정량 스크리너(`scan/quant`, 피처 스토어 기반) + screener 세션(haiku, `kind=screen`, `tool submit-screen`) + `trader scan` (ML 랭킹은 `rank_fn` 자리, Phase 7)
@@ -99,9 +99,9 @@
 - [ ] 완료 기준(사용자 확인 대기, Windows): `uv run trader install` 후 로그온 시 작업 스케줄러에서 데몬 기동 확인, `uv run pytest`
 - [ ] 사용자 확인 대기: `config/sources.yaml` 의 `channels.youtube`(채널 ID)·`channels.telegram`(공개채널명) 입력 후 `uv run trader collect --ticker 005930 --force` 로 `sentiment.community.sources.youtube/*` 확인. Reddit OAuth 는 `secrets/.env` 에 `REDDIT_CLIENT_ID/SECRET/USER` 입력
 - [x] Phase 6 이연(Phase 8 에서 회수): 텔레그램 `/pause /resume /mode <계좌> <모드> /watch add|remove|list`(실전 auto 는 거부), US 휴장일 정적 NYSE 달력 2026~2027(`daemon.US_HOLIDAYS`, KIS 해외 휴장 API 대신), 런타임 관심종목(`control.watchlist` → scan 후보·분석 대상)
-- [ ] Phase 6 이연(Phase 9 이후): KRX 공매도·대차잔고·검색트렌드, UI 실시간 push·관심종목 웹 제어·차트 지표 오버레이, US 휴장일 2028+ 달력 갱신
+- [x] Phase 6 이연 회수(2026-10-17, 이연 회수 플랜): UI push 카운터·관심종목 웹 제어·차트 지표 오버레이, US 휴장일은 NYSE 규칙 계산(`daemon.us_holidays`, 연도 제한 없음). 이연 유지(사용자 결정): KRX 공매도·대차잔고(API 약관·키), 네이버 검색트렌드(데이터랩 키)
 - [ ] 사용자 확인 대기(실기): US 체결 조회(`fills sync`)의 날짜 기준(ET vs KST)·`_local_dt(ET)` 가정, `OVRS_EXCG_CD=NASD` 고정으로 NYS/AMS 체결이 조회되는지 — US 모의 체결 1건 뒤 `uv run trader fills sync --account paper-main --date <ET 날짜>` 로 확인
-- [ ] 리뷰 Minor 이연(Phase 6): SIGTERM 중 실행 중인 claude 세션은 launchd SIGKILL 로 `agent_calls` running 행이 남아 상한에 집계됨(기동 시 stale running 정리), `pid_alive` 가 PermissionError 를 생존으로 봄, quant 가 NaN 피처 행을 z=0 으로 통과시킴, `latest_features` 가 parquet 전부를 읽음
+- [x] 리뷰 Minor 이연(Phase 6) 회수(2026-10-17, 이연 회수 플랜): 데몬 기동 시 1시간 넘은 running 세션을 error 로 정리, quant 는 신호 결측 행 제외, `features.latest_rows` 가 최신 파일부터 부분 읽기. 이연 유지: `pid_alive` PermissionError(POSIX 의미상 생존이 맞음)
 
 ## Phase 7 ML 1단계
 - [x] `ml.yaml` 로더(`MlConfig`), `ml/dataset`(적재·5거래일 3분류 라벨·피처 열), 라벨 엠바고
@@ -116,7 +116,7 @@
 - [x] Phase 7 이연(리뷰, Phase 8 회수): close 대비 비율 피처 `sma_5/20/60_rel·bb_pos·atr_pct·macd_hist_rel` 추가(옛 parquet 행은 NaN → `features backfill` 재실행 후 `ml train`). 중요도는 마지막 폴드 홀드아웃 기준
 - [x] Phase 7 이연: `features snapshot` 은 데몬 reflect 잡 앞에서 매일 실행(`DaemonDeps.snapshot_fn`, 실패는 통보). 재학습은 사용자 실기(`features backfill --years 3` → `ml train`)
 - [ ] 사용자 확인 대기: 3년 백필(`uv run trader features backfill --years 3`, DART 정상 시) 후 `ml train` 재실행 — 1년·20종목으로는 기준선을 못 넘음. 승격 전까지 05_quant·ML 랭킹은 비활성
-- [ ] Phase 7 이연: US 연도별 비율·동종업 비율·피처 행 탐색 UI·하이퍼파라미터 탐색(Phase 8)
+- [ ] Phase 7 이연 유지(별도 Phase·사용자 결정): US 연도별 재무비율·동종업 중앙값 비율(데이터 설계 필요), 피처 행 탐색 UI, 하이퍼파라미터 탐색
 
 ## Phase 8 학습·평가·보정
 - [x] memory 3층·엠바고·서킷브레이커 (`memory_entries` v5, 12차원 상황 벡터, 반감기 14/90/365, 워밍업 50, `control.memory_breaker`)
@@ -128,7 +128,7 @@
 - [x] 실기: `FAKE_CLAUDE=1 analyze --ticker 000660 --dry-run` → `memory_entries` 1행(워밍업·`35_calibration` 없음), `reflect --dry-run` 0건, `backtest --since 2026-10-01` n=0, `readiness` 불합격 항목 표시·모드 불변, `/api/performance` 200 (2026-10-17 확인)
 - [ ] 완료 기준(사용자 확인 대기): 모의 4주 이상 성과 리포트(웹 `/performance`·`trader readiness` 통과), 보정 모델 활성(만기 결정 60건), 사용자 판단으로 실전 approve(`docs/runbook-live-transition.md`)
 - [ ] 사용자 확인 대기: 파생 비율 피처 반영 재학습 — `features backfill --years 3` → `ml train` 으로 기준선 초과 여부 확인
-- [ ] 리뷰 Minor 이연(Phase 8): `tool` 컨텍스트 `now` 를 stdin asof 로(`decided_at` 과 run date 불일치), 상황 벡터는 run date 이하 피처 행으로, `cost_sensitivity` 미체결 주문 포함·UTC/KST 하루 오차, `nav_history(days)` 는 스냅샷 개수 기준, `outcomes.mature(today)` 미사용, 백테스트 HOLD 적중 정의, `/watch add` 인자 없을 때 사용법, 관심종목 시장 구분 없음, `submit_reflection` 디렉터리 직접 생성, `calibration_runs` 종목마다 1행 누적, 메모리 차원 `sma_5_rel` 과 피처 열 부호 반대, `record_decision(decision_id=None)` 멱등 깨짐, reflect 잡 `PipelineError` 시 남은 시장 건너뜀, `run_error_rate` 분모에 interval 잡 성공분 없음(보수적)
+- [x] 리뷰 Minor 이연(Phase 8) 회수(2026-10-17, 이연 회수 플랜): `decided_at` 운영일 규칙(오늘이면 now, 아니면 15:30 KST), 상황 벡터·05_quant 는 run date 이하 피처 행, `cost_sensitivity`·`nav_history` KST 날짜 창, `outcomes.mature(today)` 로 만기 봉 날짜 제한, 백테스트 HOLD 적중 = |가격수익| ≤ 2%, `/watch` 사용법(이미), 관심종목 시장 구분(`KR:`/`US:` 접두사·코드 형식 추정), `submit_*` 디렉터리는 `run_store.market_dir`, `calibration_runs` 하루 1행, `sma_*_rel` 부호 통일(close/sma−1), `record_decision(decision_id=None)` 거부, reflect 잡 시장별 격리, `run_error_rate` 분모에서 interval 잡 제외
 
 ## Phase 9 RL 사이징(실험)
 - [x] gym env (`ml/rl/env.SizingEnv`: 관측 16차원 = 상황 벡터 12 + 확신·LLM 비중 + 현재 비중·드로다운, 행동 0~0.25, 보상 = w·r − 회전 비용 − 드로다운 페널티; gymnasium 어댑터는 선택 extra)
@@ -138,5 +138,5 @@
 - [x] 실기(2026-10-17): `rl train --market KR --seeds 1`(피처 스토어 4,940 스텝·6폴드, CEM) → 테스트 창 평균 수익 RL −0.13% / 고정 10% +0.33% / 변동성 타깃 +0.89%, 정책은 변동성에 반응(atr 1% → 비중 0.20, 5% → 0.006) → **미승격**(1시드·1년 데이터로는 기준선 미달, 승격은 수동) → `rl report` → `FAKE_CLAUDE=1 analyze --dry-run`(HOLD·dry-run 이라 `rl_shadow` 0행, 모드 불변) → `/api/rl/*` 200 → STATUS 줄. 리뷰 전 버전 `20261017_063439` 는 정규화 전 수치(수익 2673%)라 무시
 - [ ] 완료 기준(사용자 확인 대기): 8주 워크포워드 비교 리포트 — 모의 운영 8주 뒤 `uv run trader rl train` → `rl report --account paper-main --weeks 8` 로 RL vs 고정·LLM 비교, 승격은 `rl promote <버전>` 수동(그 뒤 `ml.yaml rl_sizer.enabled: true`, 처음엔 `mode: shadow`)
 - [ ] 사용자 확인 대기: PPO 백엔드 — `uv sync --extra rl`(torch 휠 필요, 이 머신은 x86_64 Python 이라 설치가 안 될 수 있음) 후 `ml.yaml rl_sizer.backend: ppo` 로 `rl train`
-- [ ] Phase 9 이연: 멀티 종목 동시 포트폴리오 환경, RL 실험 전용 페이지, 피처 스토어 날짜별 parquet 전체 읽기(학습·섀도 관측마다 수 초)
-- [ ] 리뷰 Minor 이연(Phase 9): `rl train --seeds` 가 pydantic 범위(1~10) 검증을 우회, `rl_shadow.applied` 가 게이트 전 기록(거부돼도 applied=1)·재평가(`31_decision_r<n>`) 는 첫 행 유지, 메모리 스텝이 SELL/TRIM/HOLD 결정도 매수 비중으로 취급(LLM 기준선 불리), `/api/rl/report?market=` 미검증, `ml/models/__init__` docstring 의 "rl_sizer 는 Phase 9" 문구·`ml.yaml` horizon_days 주석, `uv.lock` 에 torch 계열 항목(extra 전용) — 학습 drawdown(에피소드 피크) 과 서빙 drawdown(30일 스냅샷 피크) 정의 차이는 메타 `obs_definitions` 에 명시만 함
+- [x] Phase 9 이연 회수(2026-10-17, 이연 회수 플랜): 섀도 관측·quant 는 `latest_rows` 부분 읽기(학습 `load_all` 은 전체 필요). 이연 유지(사용자 결정): 멀티 종목 동시 포트폴리오 환경, RL 실험 전용 페이지
+- [x] 리뷰 Minor 이연(Phase 9) 회수(2026-10-17, 이연 회수 플랜): `--seeds` 범위 1~10, `rl_shadow.applied` 는 게이트 승인 뒤 기록, 메모리 스텝 BUY/ADD 만, `/api/rl/report?market=` 검증, docstring·yaml 주석. 이연 유지: `uv.lock` torch(extra 전용), 학습/서빙 drawdown 정의(멀티 종목 환경과 함께)

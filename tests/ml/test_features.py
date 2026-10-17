@@ -249,3 +249,12 @@ def test_latest_rows_falls_back_to_older_files(project):
     assert features.latest_rows(None, "US").empty
     only = features.latest_rows(None, "KR", tickers=["A"], max_files=1)
     assert list(only["ticker"]) == ["A"]
+
+
+def test_latest_rows_fills_columns_missing_in_old_files(project):
+    old = _rows("2026-10-01", ["A"]).drop(columns=["sma_5_rel", "bb_pos"])
+    path = features._features_dir(None) / "2026-10-01.parquet"
+    old.to_parquet(path, index=False)  # Phase 8 이전에 쓰인 파일처럼 열이 빠져 있다
+    df = features.latest_rows(None, "KR")
+    assert list(df.columns) == list(features.FEATURE_COLUMNS)
+    assert pd.isna(df["sma_5_rel"].iloc[0])
