@@ -353,7 +353,7 @@ def test_us_holiday_skipped(conn):
     assert daemon.should_skip("US", date(2027, 6, 18), None, conn) == "휴장일"
     assert daemon.should_skip("US", date(2026, 12, 24), None, conn) is None
     assert daemon.should_skip("KR", date(2026, 12, 25), None, conn) is None  # KR 은 KIS 조회
-    assert len(daemon.US_HOLIDAYS) == 20
+    assert len(daemon.us_holidays(2026) | daemon.us_holidays(2027)) == 20
 
 
 def test_reflect_job_snapshots_features_first(conn):
@@ -404,3 +404,63 @@ def test_ml_train_job_also_trains_sizer_when_enabled(conn, monkeypatch):
     deps = _deps(conn, FakeMarket(), now=lambda: datetime(2026, 10, 10, 1, 0, tzinfo=UTC))
     r = d._ml_train_body(deps)
     assert calls == [1] and r["rl_sizer"]["status"] == "trained"
+
+
+# --- 이연 회수: 휴장일 규칙·stale running·reflect 시장별 격리 ---------------------------
+
+
+def test_us_holidays_rules_match_static_and_2028():
+    from trader import daemon as d
+
+    assert d.us_holidays(2026) == {
+        date(2026, 1, 1), date(2026, 1, 19), date(2026, 2, 16), date(2026, 4, 3),
+        date(2026, 5, 25), date(2026, 6, 19), date(2026, 7, 3), date(2026, 9, 7),
+        date(2026, 11, 26), date(2026, 12, 25),
+    }  # fmt: skip
+    assert d.us_holidays(2027) == {
+        date(2027, 1, 1), date(2027, 1, 18), date(2027, 2, 15), date(2027, 3, 26),
+        date(2027, 5, 31), date(2027, 6, 18), date(2027, 7, 5), date(2027, 9, 6),
+        date(2027, 11, 25), date(2027, 12, 24),
+    }  # fmt: skip
+    h28 = d.us_holidays(2028)
+    assert date(2028, 4, 14) in h28 and date(2028, 11, 23) in h28
+    assert date(2027, 12, 31) not in h28 and date(2028, 1, 1) not in h28  # 토요일 신정: 대체 없음
+    assert d.is_us_holiday(date(2028, 7, 4)) and not d.is_us_holiday(date(2028, 7, 5))
+    assert d.should_skip("US", date(2028, 4, 14), None, None) == "휴장일"
+
+
+def test_run_closes_stale_running_calls(conn, tmp_path):
+    now = datetime(2026, 10, 10, 1, 0, tzinfo=UTC)
+    for created in ("2026-10-09T20:00:00+00:00", "2026-10-10T00:50:00+00:00"):
+        conn.execute(
+            "INSERT INTO agent_calls(agent, status, created_at) "
+            "VALUES ('orchestrator','running',?)",
+            (created,),
+        )
+    conn.commit()
+    deps = _deps(conn, FakeMarket(), now=lambda: now)
+    daemon.run(deps, web=False, scheduler_factory=FakeScheduler, lock_path=tmp_path / "l.lock")
+    rows = conn.execute("SELECT status, error FROM agent_calls ORDER BY id").fetchall()
+    assert [r["status"] for r in rows] == ["error", "running"] and "stale" in rows[0]["error"]
+
+
+def test_reflect_body_continues_after_market_error(conn, monkeypatch):
+    from trader.orchestrator import reflect as reflect_mod
+    from trader.orchestrator.session import PipelineError
+
+    calls = []
+
+    def fake_run_reflect(settings, c, accounts, *, market, **kw):
+        calls.append(market)
+        if market == "KR":
+            raise PipelineError("세션 상한")
+        return type("R", (), {"ok": True, "error": None, "session_id": "s", "fake": True})()
+
+    monkeypatch.setattr(reflect_mod, "pending", lambda c, market: [1])
+    monkeypatch.setattr(reflect_mod, "run_reflect", fake_run_reflect)
+    sent = []
+    deps = _deps(conn, FakeMarket(), now=lambda: datetime(2026, 10, 8, 7, 0, tzinfo=UTC))
+    deps.notifier = type("N", (), {"send": lambda self, t, **k: sent.append(t) or True})()
+    r = daemon._reflect_body(deps)
+    assert calls == ["KR", "US"] and len(r["errors"]) == 1 and "KR" in r["errors"][0]
+    assert any("reflect 실패" in m for m in sent)

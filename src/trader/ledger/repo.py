@@ -591,3 +591,14 @@ def decide_approval(
     )
     conn.commit()
     return cur.rowcount == 1
+
+
+def close_stale_running(conn: sqlite3.Connection, *, older_than_iso: str) -> int:
+    """older_than 이전에 시작해 아직 running 인 agent_calls 를 error 로 닫는다(재기동 정리)."""
+    cur = conn.execute(
+        "UPDATE agent_calls SET status='error', error='stale: 데몬 재기동으로 정리' "
+        "WHERE status='running' AND created_at < ?",
+        (older_than_iso,),
+    )
+    conn.commit()
+    return cur.rowcount

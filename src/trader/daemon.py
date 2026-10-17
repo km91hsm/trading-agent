@@ -16,7 +16,7 @@ import sqlite3
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime, time
+from datetime import UTC, date, datetime, time, timedelta
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -96,37 +96,68 @@ def market_date(market: str, now: datetime | date) -> date:
     return now
 
 
-# NYSE 휴장일 2026~2027 (정적 달력; KIS 해외 휴장 API 미확인). 토·일 겹침은 대체 휴일로 반영.
-US_HOLIDAYS: frozenset[date] = frozenset(
-    {
-        date(2026, 1, 1),
-        date(2026, 1, 19),
-        date(2026, 2, 16),
-        date(2026, 4, 3),
-        date(2026, 5, 25),
-        date(2026, 6, 19),
-        date(2026, 7, 3),
-        date(2026, 9, 7),
-        date(2026, 11, 26),
-        date(2026, 12, 25),
-        date(2027, 1, 1),
-        date(2027, 1, 18),
-        date(2027, 2, 15),
-        date(2027, 3, 26),
-        date(2027, 5, 31),
-        date(2027, 6, 18),
-        date(2027, 7, 5),
-        date(2027, 9, 6),
-        date(2027, 11, 25),
-        date(2027, 12, 24),
-    }
-)
+def _easter(year: int) -> date:
+    """부활절(그레고리력, Anonymous 알고리즘)."""
+    a, b, c = year % 19, year // 100, year % 100
+    d, e = b // 4, b % 4
+    f = (b + 8) // 25
+    g = (b - f + 1) // 3
+    h = (19 * a + b - d - g + 15) % 30
+    i, k = c // 4, c % 4
+    m_ = (32 + 2 * e + 2 * i - h - k) % 7
+    n = (a + 11 * h + 22 * m_) // 451
+    month = (h + m_ - 7 * n + 114) // 31
+    day = (h + m_ - 7 * n + 114) % 31 + 1
+    return date(year, month, day)
+
+
+def _nth_weekday(year: int, month: int, weekday: int, n: int) -> date:
+    first = date(year, month, 1)
+    offset = (weekday - first.weekday()) % 7
+    return first + timedelta(days=offset + 7 * (n - 1))
+
+
+def _last_weekday(year: int, month: int, weekday: int) -> date:
+    d = date(year + (month == 12), (month % 12) + 1, 1) - timedelta(days=1)
+    return d - timedelta(days=(d.weekday() - weekday) % 7)
+
+
+def _observed(d: date, *, saturday_to_friday: bool = True) -> date | None:
+    """토요일 → 금요일(신정은 예외: NYSE 는 전년 12/31 을 쉬지 않음), 일요일 → 월요일."""
+    if d.weekday() == 5:
+        return d - timedelta(days=1) if saturday_to_friday else None
+    if d.weekday() == 6:
+        return d + timedelta(days=1)
+    return d
+
+
+def us_holidays(year: int) -> frozenset[date]:
+    """NYSE 정규 휴장일 규칙 계산(국가 애도일 등 임시 휴장은 제외)."""
+    fixed = [
+        (_observed(date(year, 1, 1), saturday_to_friday=False)),  # 신정
+        _nth_weekday(year, 1, 0, 3),  # 마틴 루서 킹
+        _nth_weekday(year, 2, 0, 3),  # 대통령의 날
+        _easter(year) - timedelta(days=2),  # 성금요일
+        _last_weekday(year, 5, 0),  # 현충일
+        _observed(date(year, 6, 19)),  # 준틴스
+        _observed(date(year, 7, 4)),  # 독립기념일
+        _nth_weekday(year, 9, 0, 1),  # 노동절
+        _nth_weekday(year, 11, 3, 4),  # 추수감사절
+        _observed(date(year, 12, 25)),  # 성탄절
+    ]
+    return frozenset(d for d in fixed if d is not None and d.year == year)
+
+
+def is_us_holiday(d: date) -> bool:
+    return d in us_holidays(d.year)
+
+
 
 
 def should_skip(
     market: str, today: datetime | date, market_client: Any | None, conn: sqlite3.Connection | None
 ) -> str | None:
-    """paused·주말(시장 현지 날짜)·KR 휴장일(KIS)·US 휴장일(정적 NYSE 달력 US_HOLIDAYS)."""
+    """paused·주말(시장 현지 날짜)·KR 휴장일(KIS)·US 휴장일(NYSE 규칙 계산 us_holidays)."""
     if conn is not None and control.is_paused(conn):
         return "일시정지"
     local = market_date(market, today)
@@ -134,7 +165,7 @@ def should_skip(
         return "주말"
     today = local
     if market == "US":
-        return "휴장일" if today in US_HOLIDAYS else None
+        return "휴장일" if is_us_holiday(today) else None
     if market == "KR" and market_client is not None:
         try:
             if market_client.is_holiday(today):
@@ -507,24 +538,32 @@ def _reflect_body(deps: DaemonDeps) -> dict:
     try:
         matured = outcomes.mature(conn, state=deps.state, today=_today(deps))
         sessions = 0
+        errors: list[str] = []
         for market in deps.settings.markets:
             if not pending(conn, market=market):
                 continue
-            res = run_reflect(
-                deps.settings,
-                conn,
-                deps.accounts,
-                market=market,
-                date=_today(deps),
-                state=deps.state,
-                now=deps.now,
-                dry_run=True,
-                brokers=deps.brokers,
-                notifier=deps.notifier,
-            )
+            try:
+                res = run_reflect(
+                    deps.settings,
+                    conn,
+                    deps.accounts,
+                    market=market,
+                    date=_today(deps),
+                    state=deps.state,
+                    now=deps.now,
+                    dry_run=True,
+                    brokers=deps.brokers,
+                    notifier=deps.notifier,
+                )
+            except Exception as e:  # noqa: BLE001 - 한 시장의 실패가 다른 시장을 막지 않는다
+                logger.exception("reflect 실패 %s", market)
+                errors.append(f"{market}: {type(e).__name__}: {e}")
+                deps.notifier.send(f"[reflect 실패] {market}: {e}")
+                continue
             if res.session_id or res.fake:
                 sessions += 1
             if not res.ok:
+                errors.append(f"{market}: {res.error}")
                 deps.notifier.send(f"[reflect 실패] {market}: {res.error}")
         pr = store.promote_and_prune(conn, now=deps.now(), settings=deps.settings.memory)
     finally:
@@ -533,6 +572,7 @@ def _reflect_body(deps: DaemonDeps) -> dict:
         "features": features_n,
         "matured": len(matured),
         "sessions": sessions,
+        "errors": errors,
         "pruned": pr["deleted"],
     }
 
@@ -625,6 +665,25 @@ def _start_web(app: Any, host: str, port: int) -> threading.Thread:
     return t
 
 
+STALE_SESSION_AGE = timedelta(hours=1)
+
+
+def _close_stale_sessions(deps: DaemonDeps) -> int:
+    """이전 데몬이 SIGKILL 로 죽으면 agent_calls 에 running 행이 남아 세션 상한에 집계된다."""
+    from trader.ledger import repo
+
+    conn = deps.conn_factory()
+    try:
+        n = repo.close_stale_running(
+            conn, older_than_iso=(deps.now() - STALE_SESSION_AGE).isoformat()
+        )
+    finally:
+        conn.close()
+    if n:
+        logger.warning("stale running 세션 %d건을 error 로 정리", n)
+    return n
+
+
 def run(
     deps: DaemonDeps,
     *,
@@ -638,6 +697,7 @@ def run(
     if not lock.acquire():
         return {"ok": False, "error": "잠금 실패: 데몬이 이미 실행 중"}
     try:
+        _close_stale_sessions(deps)
         if scheduler_factory is None:
             from apscheduler.schedulers.blocking import BlockingScheduler
 
