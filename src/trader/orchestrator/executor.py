@@ -74,6 +74,19 @@ def effective_mode(conn: sqlite3.Connection, account: AccountConfig) -> tuple[Mo
     return mode, None
 
 
+def _update_breaker(conn, account: AccountConfig, market: str, today: date, nav: Decimal) -> None:
+    """모의 계좌 NAV(최근 30일 + 오늘)로 메모리 서킷브레이커를 갱신한다 (스펙 §6.5)."""
+    from trader.config import MemorySettings
+    from trader.memory import store
+
+    try:
+        series = repo.nav_history(conn, account.id, market, days=30)
+        series = [s for s in series if s[0] != today.isoformat()] + [(today.isoformat(), nav)]
+        store.circuit_breaker(conn, nav_series=series, vix_change=None, settings=MemorySettings())
+    except Exception as e:  # noqa: BLE001 - 브레이커 갱신 실패는 판정을 막지 않는다
+        logger.warning("서킷브레이커 갱신 실패 %s: %s", account.id, e)
+
+
 def build_portfolio(
     conn: sqlite3.Connection, broker: Any, account: AccountConfig, market: str, today: date
 ) -> rules.Portfolio:
@@ -83,6 +96,8 @@ def build_portfolio(
     nav = cash.total + sum((p.eval_amount for p in positions.values()), Decimal(0))
     prev = repo.latest_nav_before(conn, account.id, today, market=market)
     today_pnl = float(nav / prev - 1) if prev else 0.0
+    if account.env == "paper":
+        _update_breaker(conn, account, market, today, nav)
     repo.snapshot_positions(
         conn,
         account_id=account.id,

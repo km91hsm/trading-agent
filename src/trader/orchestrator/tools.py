@@ -150,9 +150,44 @@ def trader_context(
         "costs_bp": ROUND_TRIP_COST_BP[market],
         "portfolio": _portfolio_context(ctx, market),
         "quant": quant,
-        "memory": [],
+        **_memory_context(ctx, inputs, market),
         "calibration": calibration,
     }
+
+
+def _memory_context(ctx: ToolContext, inputs: dict, market: Market) -> dict:
+    """{memory: [...상위 k 요약], memory_status: {warmup, breaker}}. 원장이 없으면 빈 목록."""
+    if ctx.conn is None:
+        return {"memory": [], "memory_status": {"warmup": True, "breaker": None}}
+    from trader.memory import store
+    from trader.memory import vector as vec
+    from trader.ml import quant_report
+
+    try:
+        ticker = str((inputs.get("meta") or {}).get("ticker") or "")
+        row = quant_report.latest_row(ticker, market, ctx.state) if ticker else None
+        qv = vec.situation_vector(row or {}, market)
+        r = store.retrieve(
+            ctx.conn, vector=qv, now=ctx.now(), settings=ctx.settings.memory, market=market
+        )
+    except Exception as e:  # noqa: BLE001 - 메모리는 선택 입력
+        logger.warning("메모리 검색 실패: %s", e)
+        return {"memory": [], "memory_status": {"warmup": True, "breaker": None, "error": str(e)}}
+    entries = [
+        {
+            "id": e["id"],
+            "ticker": e["ticker"],
+            "decided_at": e["decided_at"],
+            "situation_summary": e["situation_summary"],
+            "decision": e["decision"],
+            "realized_return": e["realized_return"],
+            "alpha_vs_benchmark": e["alpha_vs_benchmark"],
+            "lesson": (e.get("reflection") or {}).get("lesson") if e.get("reflection") else None,
+            "score": e["score"],
+        }
+        for e in r["entries"]
+    ]
+    return {"memory": entries, "memory_status": {"warmup": r["warmup"], "breaker": r["breaker"]}}
 
 
 def ensure_calibration(ctx: ToolContext, *, ticker: str, market: Market, date: date) -> dict | None:
@@ -710,6 +745,7 @@ def submit_decision(
         dry_run=ctx.dry_run,
     )
     logger.info("결정 저장 %s %s: %s (계좌 %d)", market, ticker, decision.action, len(executions))
+    memory_entry_id = _record_memory(ctx, decision, market, date)
     return {
         "ok": True,
         "path": str(path),
@@ -717,7 +753,42 @@ def submit_decision(
         "action": decision.action,
         "dry_run": ctx.dry_run,
         "executions": executions,
+        "memory_entry_id": memory_entry_id,
     }
+
+
+def _record_memory(
+    ctx: ToolContext, decision: schemas.Decision, market: Market, date: date
+) -> int | None:
+    """결정 1건을 메모리 엔트리로 기록한다 (decision_id 멱등). 실패해도 결정 제출을 막지 않는다."""
+    if ctx.conn is None:
+        return None
+    try:
+        from trader.memory import store
+        from trader.ml import quant_report
+
+        decision_id = repo.decision_id(ctx.conn, date, market, decision.ticker)
+        if decision_id is None:
+            return None
+        paper = next(
+            (a.id for a in ctx.accounts if a.env == "paper"),
+            ctx.accounts[0].id if ctx.accounts else "",
+        )
+        row = quant_report.latest_row(decision.ticker, market, ctx.state)
+        return store.record_decision(
+            ctx.conn,
+            decision_id=decision_id,
+            ticker=decision.ticker,
+            market=market,
+            account_id=paper,
+            decided_at=ctx.now().isoformat(),
+            decision=decision.model_dump(),
+            row=row,
+            horizon_days=decision.horizon_days,
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("메모리 기록 실패 %s %s: %s", market, decision.ticker, e)
+        return None
 
 
 def _quote_price(inputs: dict) -> Decimal | None:

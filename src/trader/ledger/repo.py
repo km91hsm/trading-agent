@@ -495,6 +495,22 @@ def snapshot_positions(
     conn.commit()
 
 
+def nav_history(
+    conn: sqlite3.Connection, account_id: str, market: str, *, days: int = 30
+) -> list[tuple[str, Decimal]]:
+    """최근 days 일의 (날짜, NAV) 오름차순 (날짜별 최신 스냅샷)."""
+    rows = conn.execute(
+        "SELECT date, nav FROM positions_snapshot WHERE account_id=? AND market=? "
+        "AND nav IS NOT NULL ORDER BY date, id",
+        (account_id, market),
+    ).fetchall()
+    by_date: dict[str, Decimal] = {}
+    for r in rows:
+        by_date[r["date"]] = _dec(r["nav"])
+    dates = sorted(by_date)[-days:]
+    return [(d, by_date[d]) for d in dates]
+
+
 def latest_nav_before(
     conn: sqlite3.Connection, account_id: str, d: date, market: str | None = None
 ) -> Decimal | None:
