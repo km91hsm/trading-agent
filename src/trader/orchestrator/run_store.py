@@ -17,7 +17,10 @@ from trader.platform import paths
 def run_dir(d: date, market: Market, ticker: str, state: Path | None = None) -> Path:
     """종목별 실행 디렉터리를 만들고 반환한다."""
     base = state if state is not None else paths.state_dir()
-    p = base / "runs" / d.isoformat() / market / ticker
+    root = (base / "runs").resolve()
+    p = (root / d.isoformat() / market / ticker).resolve()
+    if root not in p.parents:
+        raise ValueError(f"실행 디렉터리가 state/runs 밖을 가리킵니다: {market}/{ticker}")
     p.mkdir(parents=True, exist_ok=True)
     return p
 
@@ -33,7 +36,9 @@ def write_checkpoint(dir: Path, name: str, data: dict) -> Path:
 
 def read_checkpoint(dir: Path, name: str) -> dict | None:
     """체크포인트를 읽는다. 없으면 None."""
-    path = dir / f"{name}.json"
+    path = (dir / f"{name}.json").resolve()
+    if dir.resolve() != path.parent:
+        raise ValueError(f"체크포인트 이름이 디렉터리 밖을 가리킵니다: {name}")
     if not path.exists():
         return None
     return json.loads(path.read_text(encoding="utf-8"))

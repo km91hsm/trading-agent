@@ -55,10 +55,33 @@ def _today_calls(conn: sqlite3.Connection, now: datetime) -> tuple[int, float]:
     start = start_kst.astimezone(UTC).isoformat()
     row = conn.execute(
         "SELECT COUNT(*) AS n, COALESCE(SUM(cost_usd), 0) AS c FROM agent_calls "
-        "WHERE created_at >= ?",
+        "WHERE created_at >= ? AND COALESCE(model, '') != 'fake'",
         (start,),
     ).fetchone()
     return int(row["n"]), float(row["c"])
+
+
+def _recent_decisions(runs_dir: Path, limit: int = 3) -> list[str]:
+    """state/runs 에서 최근 30_decision.json 을 수정시각 순으로 읽어 한 줄씩 만든다."""
+    import json
+
+    if not runs_dir.exists():
+        return []
+    files = sorted(
+        runs_dir.glob("*/*/*/30_decision.json"), key=lambda p: p.stat().st_mtime, reverse=True
+    )[:limit]
+    out: list[str] = []
+    for f in files:
+        try:
+            data = json.loads(f.read_text(encoding="utf-8")).get("data", {})
+        except (OSError, ValueError):
+            continue
+        date_s, market, ticker = f.parts[-4], f.parts[-3], f.parts[-2]
+        out.append(
+            f"{date_s} {market} {ticker}: {data.get('action')} "
+            f"w={data.get('target_weight')} conf={data.get('confidence')}"
+        )
+    return out
 
 
 def build_status(
@@ -96,6 +119,10 @@ def build_status(
         lines.append("아직 실행 기록 없음")
     n, cost = _today_calls(conn, now)
     lines += ["", "## 오늘 LLM 호출", f"- {n}건, ${cost:.2f}"]
+    decisions = _recent_decisions(paths.state_dir() / "runs", limit=3)
+    if decisions:
+        lines += ["", "## 최근 결정"]
+        lines += [f"- {d}" for d in decisions]
     lines += ["", "## 구현 진행도"]
     lines += [f"- {t}: {d}/{n}" for t, (d, n) in todo_progress(todo_path).items()]
     lines += ["", "## 다음 할 일"]

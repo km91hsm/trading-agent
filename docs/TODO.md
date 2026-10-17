@@ -35,17 +35,24 @@
 - [ ] 사용자 확인 대기: DART 점검 종료 후 `collect`·`features backfill --years 3` 재실행으로 재무비율 적재
 
 ## Phase 3 에이전트
-- [ ] fundamental 입력 확장: DART 3개년 추세 + 최근 분기 재무, CFS 없으면 OFS 폴백, `inputs.SCHEMA_VERSION` 2 (Phase 2 이연, 스펙 §3.1)
-- [ ] `tool` CLI 4개 (collect·checkpoint·submit-decision·status) + 전제조건 검증
-- [ ] 출력 스키마 (AnalystReport·DebateTurn·Decision·CallMeta)
-- [ ] `.claude/agents/` md 8개 (orchestrator·analyst×4·researcher×2·trader)
-- [ ] 오케스트레이터 세션 실행 (`session.py`: 실제 `claude --help` 플래그만, 예산·호출 집계, agent_calls)
-- [ ] 수렴 감시·research_summary 병합
-- [ ] 체크포인트 재개, anonymize
-- [ ] FAKE_CLAUDE 스텁 + `analyze --dry-run`
-- [ ] 완료 기준: `FAKE_CLAUDE=1 analyze --ticker 005930 --dry-run` → 30_decision.json, 중간 파일 삭제 후 해당 단계만 재실행
-- [ ] 완료 기준(실기): 실제 `claude -p` 1회로 서브에이전트 호출·도구 제한 동작 확인
+- [x] fundamental 입력 확장: DART 3개년 추세 + 최근 분기 재무, CFS 없으면 OFS 폴백, `inputs.SCHEMA_VERSION` 2 (Phase 2 이연, 스펙 §3.1)
+- [x] `tool` CLI 4개 (collect·checkpoint·submit-decision·status) + 전제조건 검증
+- [x] 출력 스키마 (AnalystReport·DebateTurn·Decision·CallMeta)
+- [x] `.claude/agents/` md 8개 (orchestrator·analyst×4·researcher×2·trader)
+- [x] 오케스트레이터 세션 실행 (`session.py`: 실제 `claude --help` 플래그만, 예산·호출 집계, agent_calls)
+- [x] 수렴 감시·research_summary 병합
+- [x] 체크포인트 재개, anonymize (익명화는 모듈만; 세션 적용은 Phase 6 에서 `settings.anonymize` 와 연결)
+- [x] FAKE_CLAUDE 스텁 + `analyze --dry-run`
+- [x] 완료 기준: `FAKE_CLAUDE=1 analyze --ticker 005930 --dry-run` → 30_decision.json, 중간 파일 삭제 후 해당 단계만 재실행 (2026-10-09 확인)
+- [x] 완료 기준(실기): 실제 `claude -p` 1회로 서브에이전트 호출·도구 제한 동작 확인 (2026-10-09, 2회: 1차 $1.58 에서 절 출력 잘림 발견 → 압축 후 2차 $1.89/4분 23초, 애널리스트 4·토론 2라운드·요약·HOLD 결정, 스키마 거부→재제출 동작 확인)
+- [x] HTML 엔티티(`&lt;` 등, Claude Code 가 서브에이전트 출력을 이스케이프)를 도구 저장 시 복원 (2026-10-09 리뷰 반영)
+- [x] 세션 `duration_ms` 를 파이썬 측 측정값으로, running 행 선기록 (2026-10-09 리뷰 반영)
+- [ ] 체크포인트 `call.model` 이 LLM 쓰기에선 None → `tool checkpoint write --model` 또는 agents.json 에서 역추적 (Phase 3 이연)
+- [ ] 세션 cwd 를 저장소 밖(tempfile)으로 옮겨 상위 CLAUDE.md 자동 탐색 가정 제거 (Phase 3 이연)
+- [x] 리서처·트레이더 입력을 파이썬이 조립하는 `tool checkpoint bundle`(24KB 바이트 한도) 추가. 실기 3차($1.80)에서 전문 전달이 예산 $2 를 소진해 중단 → 예산 $5 + bundle 로 4차($0.71, 재개 경로)에서 트레이더 묶음 17.8KB 전달·결정 확인 (2026-10-09)
+- [ ] 실기(사용자 확인 대기): 처음부터 끝까지 bundle 경로로 1회 실행해 리서처 라운드 0·1 묶음이 Agent 프롬프트에 전문으로 들어가는지 세션 기록으로 확인 (`uv run trader analyze --ticker 005930 --dry-run`, 체크포인트 비운 뒤, 약 $2.5)
 - [ ] 완료 기준: Windows 에서 FAKE_CLAUDE dry-run 동일 동작 (사용자 확인 대기)
+- [ ] 사용자 확인 대기(Windows): `claude.cmd` 가 다줄 9KB `--append-system-prompt` 를 cmd.exe 재해석 없이 받는지 실제 `claude -p` 1회. 깨지면 `claude.exe` 우선 또는 `--agent` 파일 전달로 전환
 
 ## Phase 4 리스크·계좌별 실행
 - [ ] rules·stance·costs (TDD)

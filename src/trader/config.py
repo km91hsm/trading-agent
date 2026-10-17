@@ -42,7 +42,7 @@ class RiskLimits(BaseModel):
 class LlmSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    budget_usd: float = 2.0
+    budget_usd: float = 5.0
     timeout_s: int = 600
     max_parallel: int = 4
     daily_session_cap: int = 12

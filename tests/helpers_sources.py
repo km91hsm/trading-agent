@@ -156,5 +156,12 @@ class FakeDart:
     def shares(self, corp_code, year, reprt_code="11011"):
         return 100
 
+    def financial_history(self, corp_code, asof):
+        if self.fail:
+            raise RuntimeError("DART down")
+        fin = self.financials(corp_code, 2025)
+        years = {y: dict(fin) for y in (2023, 2024, 2025)}
+        return {"years": years, "latest_quarter": {"reprt_code": "11012", "year": 2026, **fin}}
+
     def disclosures(self, corp_code, asof, days=30):
         return [{"title": "공시", "rcept_dt": "2026-10-07", "url": "https://dart.fss.or.kr/x"}]
