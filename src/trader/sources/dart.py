@@ -16,10 +16,12 @@ from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import httpx
 
 logger = logging.getLogger("trader.sources")
+_KST = ZoneInfo("Asia/Seoul")
 
 BASE = "https://opendart.fss.or.kr/api"
 CACHE_DAYS = 7
@@ -224,7 +226,7 @@ class DartClient:
 
     def disclosures(self, corp_code: str, asof: datetime, days: int = 30) -> list[dict]:
         """최근 days 일 공시. 접수일이 asof 이후인 항목은 제외 (룩어헤드 방지)."""
-        asof_date = asof.astimezone(UTC).date()
+        asof_date = asof.astimezone(_KST).date()  # DART 접수일은 KST
         bgn = asof_date - timedelta(days=days)
         data = self._get_json(
             "list.json",

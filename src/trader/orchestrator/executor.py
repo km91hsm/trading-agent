@@ -44,6 +44,25 @@ class ExecContext:
     notifier: Notifier = field(default_factory=NullNotifier)
     state: Path | None = None
     now: Callable[[], datetime] = field(default=lambda: datetime.now(UTC))
+    holiday_fn: Callable[[date], bool] | None = None  # 보유 거래일 계산용 (KIS 휴장일, 캐시)
+
+
+def _holidays_between(
+    fn: Callable[[date], bool] | None, start: date | None, end: date
+) -> set[date]:
+    if fn is None or start is None or start >= end:
+        return set()
+    out: set[date] = set()
+    d = start
+    while d < end:
+        d += timedelta(days=1)
+        if d.weekday() < 5:
+            try:
+                if fn(d):
+                    out.add(d)
+            except Exception:  # noqa: BLE001 - 휴장일 조회 실패는 개장일로 본다
+                pass
+    return out
 
 
 def effective_mode(conn: sqlite3.Connection, account: AccountConfig) -> tuple[Mode, str | None]:
@@ -110,10 +129,19 @@ def execute(
     price: Decimal,
     exchange: str | None = None,
     dry_run: bool = True,
+    is_stop_loss: bool = False,
+    decision_id: int | None = None,
 ) -> list[dict]:
-    """계좌마다 판정·기록·(모드별) 주문. 계좌 하나의 실패가 다른 계좌를 막지 않는다."""
+    """계좌마다 판정·기록·(모드별) 주문. 계좌 하나의 실패가 다른 계좌를 막지 않는다.
+
+    is_stop_loss 면 보유기간·주 2회 규칙을 면제하고 approve 계좌도 승인 없이 즉시 낸다(사후 통보).
+    """
     d = run_dir(date, market, decision.ticker, ctx.state)
-    decision_id = repo.decision_id(ctx.conn, date, market, decision.ticker)
+    if decision_id is None:
+        decision_id = repo.decision_id(ctx.conn, date, market, decision.ticker)
+    # 손절은 오늘 분석의 40_/50_ 체크포인트를 덮어쓰지 않도록 별도 이름을 쓴다
+    risk_stage = "45_stop_loss" if is_stop_loss else "40_risk_check"
+    order_stage = "55_order_sl" if is_stop_loss else "50_order"
     paused = control.is_paused(ctx.conn)
     results: list[dict] = []
     for account in ctx.accounts:
@@ -134,6 +162,10 @@ def execute(
                 market=market,
                 price=price,
                 today=date,
+                is_stop_loss=is_stop_loss,
+                holidays=_holidays_between(
+                    ctx.holiday_fn, portfolio.held_since.get(decision.ticker), date
+                ),
             )
         except (KisApiError, ValueError) as e:
             verdict = rules.RiskVerdict(
@@ -146,7 +178,7 @@ def execute(
         if (
             verdict.approved
             and decision_id is not None
-            and repo.has_open_order_or_approval(ctx.conn, decision_id, account.id)
+            and repo.has_open_order_or_approval(ctx.conn, decision_id, account.id, verdict.side)
         ):
             verdict = verdict.model_copy(
                 update={
@@ -172,7 +204,7 @@ def execute(
             "order": None,
             "approval_id": None,
         }
-        write_checkpoint(d, f"40_risk_check_{account.id}", _wrap(verdict.model_dump(mode="json")))
+        write_checkpoint(d, f"{risk_stage}_{account.id}", _wrap(verdict.model_dump(mode="json")))
         if decision_id is not None:
             repo.insert_risk_check(
                 ctx.conn,
@@ -194,10 +226,12 @@ def execute(
             price=verdict.price,
             exchange=exchange,
         )
-        if mode == "approve":
+        if mode == "approve" and not is_stop_loss:
             entry["approval_id"] = _request_approval(ctx, account, decision_id, request, verdict)
         else:
-            entry["order"] = _place(ctx, d, account, broker, decision_id, request, mode, price)
+            entry["order"] = _place(
+                ctx, d, account, broker, decision_id, request, mode, price, order_stage=order_stage
+            )
         results.append(entry)
     return results
 
@@ -236,6 +270,7 @@ def _place(
     request: OrderRequest,
     mode: Mode,
     quote_price: Decimal | None = None,
+    order_stage: str = "50_order",
 ) -> dict:
     try:
         result = broker.place_order(request)
@@ -273,7 +308,7 @@ def _place(
         "mode": mode,
         "status": status,
     }
-    write_checkpoint(d, f"50_order_{account.id}", _wrap(payload))
+    write_checkpoint(d, f"{order_stage}_{account.id}", _wrap(payload))
     head = "[주문]" if result.accepted else "[주문 실패]"
     ctx.notifier.send(
         f"{head} {account.id} {request.side} {request.ticker} {request.qty}주 "

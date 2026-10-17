@@ -144,3 +144,65 @@ def test_source_failure_recorded(respx_mock):
         sleep=lambda s: None,
     )
     assert out["posts"] == [] and out["sources"]["clien"].startswith("ConnectError")
+
+
+# --- Phase 6 보강 ------------------------------------------------------------------
+
+
+def test_keyword_ascii_word_boundary():
+    from trader.sources.community import _matches
+
+    assert _matches("Is F stock a buy?", ("F",)) is True
+    assert _matches("Turn OFF the lights", ("F",)) is False
+    assert _matches("$AAPL earnings", ("AAPL",)) is True
+    assert _matches("삼성전자우 분석", ("삼성전자",)) is True  # 한글은 부분 일치 유지
+
+
+def test_reddit_oauth_when_keys_present(respx_mock):
+    import httpx
+
+    from trader.sources.community import Reddit
+
+    token = respx_mock.post("https://www.reddit.com/api/v1/access_token").mock(
+        return_value=httpx.Response(200, json={"access_token": "tok", "token_type": "bearer"})
+    )
+    listing = respx_mock.get(url__startswith="https://oauth.reddit.com/r/stocks/new").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "data": {
+                    "children": [
+                        {
+                            "data": {
+                                "title": "AAPL to the moon",
+                                "selftext": "body",
+                                "author": "u1",
+                                "created_utc": 1791000000,
+                                "permalink": "/r/stocks/comments/x/",
+                            }
+                        },
+                        {
+                            "data": {
+                                "title": "unrelated",
+                                "selftext": "",
+                                "author": "u2",
+                                "created_utc": 1791000000,
+                                "permalink": "/r/stocks/comments/y/",
+                            }
+                        },
+                    ]
+                }
+            },
+        )
+    )
+    r = Reddit(httpx.Client(), auth=("cid", "csec", "me"), sleep=lambda s: None)
+    posts = r.fetch("stocks", keywords=("AAPL",), max_posts=10)
+    assert token.called and listing.called
+    assert len(posts) == 1 and posts[0]["url"] == "https://www.reddit.com/r/stocks/comments/x/"
+    assert posts[0]["posted_at"].endswith("+00:00")
+    req = token.calls[0].request
+    assert (
+        req.headers["authorization"].startswith("Basic ")
+        and "(by /u/me)" in req.headers["user-agent"]
+    )
+    assert listing.calls[0].request.headers["authorization"] == "Bearer tok"

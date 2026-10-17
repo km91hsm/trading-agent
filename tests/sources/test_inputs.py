@@ -344,6 +344,98 @@ def test_phase6_placeholders_not_in_errors(project):
         secrets=Secrets(),
         deps=deps(),
     )
-    for key in ("short_interest", "trends", "manual_inputs"):
-        assert d["sentiment"][key]["error"] == "phase6"
-    assert not any("phase6" in e for e in d["errors"])
+    expected = {"short_interest": "phase6", "trends": "phase8", "manual_inputs": "no manual input"}
+    for key, reason in expected.items():
+        assert d["sentiment"][key]["error"] == reason
+    assert not any("phase" in e or "manual" in e for e in d["errors"])
+
+
+# --- Phase 6 보강 ------------------------------------------------------------------
+
+
+def test_future_asof_rejected(project):
+    with pytest.raises(ConfigError, match="미래"):
+        collect_and_save(
+            ticker="005930",
+            market="KR",
+            exchange=None,
+            asof=T0 + timedelta(hours=25),
+            cfg=cfg(),
+            secrets=Secrets(),
+            deps=deps(),
+        )
+
+
+def test_events_and_channel_sections_present(project):
+    d = build_inputs(
+        ticker="005930",
+        market="KR",
+        exchange=None,
+        asof=T0,
+        cfg=cfg(),
+        secrets=Secrets(),
+        deps=deps(),
+    )
+    ev = d["news_macro"]["events"]
+    assert ev["error"] is None and isinstance(ev["data"]["recent"], list)
+    assert ev["data"]["recent"][0]["title"] == "공시" and ev["data"]["upcoming"] == []
+    assert d["sentiment"]["manual_inputs"]["error"] == "no manual input"
+    assert d["errors"] == []
+
+
+def test_manual_inputs_section_reads_file(project):
+    md = project / "state" / "manual_inputs"
+    md.mkdir()
+    (md / "005930.md").write_text("관찰 메모", encoding="utf-8")
+    d = build_inputs(
+        ticker="005930",
+        market="KR",
+        exchange=None,
+        asof=T0,
+        cfg=cfg(),
+        secrets=Secrets(),
+        deps=deps(),
+    )
+    assert d["sentiment"]["manual_inputs"]["data"]["text"] == "관찰 메모"
+
+
+def test_channels_collected_into_community_sources(project, monkeypatch):
+    import httpx as _httpx
+
+    c = SourcesConfig.model_validate(
+        {
+            "edgar": {"user_agent": "trader test@example.com"},
+            "news": {"enabled": False},
+            "macro": {"enabled": False},
+            "community": {"enabled": True, "reddit": False, "clien": False},
+            "channels": {"youtube": ["UCabc"], "telegram": ["chan"]},
+        }
+    )
+    from trader.sources import community as community_mod
+
+    monkeypatch.setattr(
+        community_mod,
+        "collect_channels",
+        lambda channels, **kw: {
+            "sources": {
+                "youtube/UCabc": [{"title": "t", "source": "youtube/UCabc", "posted_at": None}],
+                "telegram/chan": [],
+            },
+            "errors": {"telegram/chan": "HTTP 500"},
+        },
+    )
+    d = build_inputs(
+        ticker="005930",
+        market="KR",
+        exchange=None,
+        asof=T0,
+        cfg=c,
+        secrets=Secrets(),
+        deps=deps(http=_httpx.Client()),
+    )
+    comm = d["sentiment"]["community"]["data"]
+    assert (
+        comm["sources"]["youtube/UCabc"] == "ok" and comm["sources"]["telegram/chan"] == "HTTP 500"
+    )
+    assert any(p["source"] == "youtube/UCabc" for p in comm["posts"])
+    assert "sentiment.community.telegram/chan: HTTP 500" in d["errors"]

@@ -1,0 +1,17 @@
+{
+  "rt_cd": "0", "msg_cd": "KIOK0510", "msg1": "조회가 완료되었습니다",
+  "ctx_area_fk100": "", "ctx_area_nk100": "",
+  "output1": [
+    {"ord_dt": "20261009", "ord_gno_brno": "91252", "odno": "0000117057", "orgn_odno": "",
+     "ord_dvsn_name": "지정가", "sll_buy_dvsn_cd": "02", "sll_buy_dvsn_cd_name": "현금매수",
+     "pdno": "005930", "prdt_name": "삼성전자", "ord_qty": "3", "ord_unpr": "71000",
+     "ord_tmd": "100512", "tot_ccld_qty": "3", "avg_prvs": "70900", "tot_ccld_amt": "212700",
+     "rmn_qty": "0", "cncl_yn": "N"},
+    {"ord_dt": "20261009", "ord_gno_brno": "91252", "odno": "0000117058", "orgn_odno": "",
+     "ord_dvsn_name": "지정가", "sll_buy_dvsn_cd": "01", "sll_buy_dvsn_cd_name": "현금매도",
+     "pdno": "000660", "prdt_name": "SK하이닉스", "ord_qty": "2", "ord_unpr": "150000",
+     "ord_tmd": "110000", "tot_ccld_qty": "0", "avg_prvs": "0", "tot_ccld_amt": "0",
+     "rmn_qty": "2", "cncl_yn": "N"}
+  ],
+  "output2": {"tot_ord_qty": "5", "tot_ccld_qty": "3", "tot_ccld_amt": "212700"}
+}

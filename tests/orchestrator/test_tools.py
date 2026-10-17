@@ -175,7 +175,11 @@ def test_checkpoint_read_section(ctx, project):
     r = tools.checkpoint_read(
         ctx, ticker="005930", market="KR", date=D, stage="00_inputs", section="trader_context"
     )
-    assert r["ok"] and r["data"]["costs_bp"] == 30 and r["data"]["portfolio"] is None
+    assert (
+        r["ok"]
+        and r["data"]["costs_bp"] == 30
+        and r["data"]["portfolio"]["paper-main"]["positions"] == []
+    )
     assert r["data"]["risk_limits"]["max_position_pct"] == 0.25
 
 
@@ -363,7 +367,10 @@ def test_bundle_trader_has_reports_summary_context_within_limit(ctx, project):
     b = r["data"]
     assert len(b["reports"]) == 4 and b["research_summary"]["preferred"] in ("round0", "final")
     assert "round0" in b["research_summary"] and "final" in b["research_summary"]
-    assert b["context"]["costs_bp"] == 30 and b["context"]["portfolio"] is None
+    assert (
+        b["context"]["costs_bp"] == 30
+        and b["context"]["portfolio"]["paper-main"]["positions"] == []
+    )
     assert len(json.dumps(b, ensure_ascii=False).encode("utf-8")) < 24_000
     assert "note" not in b  # 실기 크기에서는 손실 축약 없이 들어가야 한다
     assert "evidence" not in b["reports"][0]  # 트레이더 묶음은 evidence 를 뺀다
@@ -583,3 +590,83 @@ def test_cli_tool_error_is_json_exit1(project):
     assert r.exit_code == 1
     out = json.loads(r.stdout)
     assert out["ok"] is False and "전제조건" in out["error"]
+
+
+# --- Phase 6 이연 소항목 ---------------------------------------------------------------
+
+
+def test_trader_bundle_includes_portfolio_per_account(ctx, project):
+    from decimal import Decimal
+
+    from trader.ledger import repo
+
+    _inputs(project)
+    for role in ("technical", "fundamental"):
+        tools.checkpoint_write(
+            ctx,
+            ticker="005930",
+            market="KR",
+            date=D,
+            stage=f"10_analyst_{role}",
+            payload=ok_report(role=role),
+            agent="a",
+        )
+    for side in ("bull", "bear"):
+        tools.checkpoint_write(
+            ctx,
+            ticker="005930",
+            market="KR",
+            date=D,
+            stage=f"20_debate_r0_{side}",
+            payload=ok_turn(side),
+            agent="r",
+        )
+    tools.checkpoint_summarize(ctx, ticker="005930", market="KR", date=D)
+    repo.snapshot_positions(
+        ctx.conn,
+        account_id="paper-main",
+        d=D,
+        market="KR",
+        nav=Decimal("1000000"),
+        cash=Decimal("500000"),
+        positions=[
+            {
+                "ticker": "005930",
+                "market": "KR",
+                "qty": 5,
+                "avg_price": "70000",
+                "current_price": "71500",
+                "eval_amount": "357500",
+            }
+        ],
+    )
+    r = tools.checkpoint_bundle(ctx, ticker="005930", market="KR", date=D, kind="trader")
+    pf = r["data"]["context"]["portfolio"]
+    assert pf["paper-main"]["nav"] == "1000000" and pf["paper-main"]["positions"][0]["qty"] == 5
+    assert pf["paper-main"]["mode"] == "auto" and pf["real-main"]["positions"] == []
+
+
+def test_checkpoint_write_records_model(ctx, project):
+    _inputs(project)
+    r = tools.checkpoint_write(
+        ctx,
+        ticker="005930",
+        market="KR",
+        date=D,
+        stage="10_analyst_technical",
+        payload=ok_report(),
+        agent="analyst-technical",
+        model="haiku",
+    )
+    assert r["ok"]
+    saved = read_checkpoint(run_dir(D, "KR", "005930"), "10_analyst_technical")
+    assert saved["call"]["model"] == "haiku"
+
+
+def test_validate_ids_rejects_dots():
+    import pytest
+
+    for bad in (".", "..", "..."):
+        with pytest.raises(tools.ToolInputError):
+            tools._validate_ids(bad, "KR")
+    tools._validate_ids("BRK.B", "US")  # 점이 섞인 정상 티커는 허용

@@ -18,6 +18,7 @@ import time
 import xml.etree.ElementTree as ET
 from collections.abc import Callable, Iterable
 from datetime import UTC, datetime
+from typing import Any
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -65,8 +66,18 @@ def _kst_to_iso(s: str, fmt: str) -> str | None:
 
 
 def _matches(title: str, keywords: Iterable[str]) -> bool:
+    """키워드 일치. ASCII 티커(짧은 영문)는 단어 경계로, 한글 종목명은 부분 일치로 본다."""
     low = title.lower()
-    return any(k and k.lower() in low for k in keywords)
+    for k in keywords:
+        if not k:
+            continue
+        kl = k.lower()
+        if kl.isascii():
+            if re.search(rf"(?<![a-z0-9]){re.escape(kl)}(?![a-z0-9])", low):
+                return True
+        elif kl in low:
+            return True
+    return False
 
 
 class _Source:
@@ -96,9 +107,74 @@ class _Source:
 
 
 class Reddit(_Source):
+    """auth=(client_id, secret, user) 가 있으면 공식 OAuth API(client_credentials), 없으면 RSS."""
+
     name = "reddit"
 
+    def __init__(
+        self, http: httpx.Client, *, auth: tuple[str, str, str] | None = None, **kw
+    ) -> None:
+        super().__init__(http, **kw)
+        self._auth = auth
+        self._token: str | None = None
+
+    def _ua(self) -> str:
+        user = self._auth[2] if self._auth else "unknown"
+        return f"macos:trader:0.1 (by /u/{user})"
+
+    def _bearer(self) -> str:
+        assert self._auth is not None
+        if self._token is None:
+            resp = self._http.post(
+                "https://www.reddit.com/api/v1/access_token",
+                data={"grant_type": "client_credentials"},
+                auth=(self._auth[0], self._auth[1]),
+                headers={"User-Agent": self._ua()},
+                timeout=10,
+            )
+            resp.raise_for_status()
+            self._token = str(resp.json().get("access_token") or "")
+            if not self._token:
+                raise RuntimeError("Reddit 토큰 응답에 access_token 이 없습니다")
+        return self._token
+
+    def _fetch_oauth(
+        self, subreddit: str, *, keywords: Iterable[str], max_posts: int
+    ) -> list[dict]:
+        resp = self._http.get(
+            f"https://oauth.reddit.com/r/{subreddit}/new",
+            params={"limit": 100},
+            headers={"Authorization": f"Bearer {self._bearer()}", "User-Agent": self._ua()},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        received = self._now().isoformat()
+        out: list[dict] = []
+        for child in (resp.json().get("data") or {}).get("children") or []:
+            d = child.get("data") or {}
+            title = _strip(d.get("title"))
+            if not _matches(title, keywords):
+                continue
+            created = d.get("created_utc")
+            posted = datetime.fromtimestamp(float(created), tz=UTC).isoformat() if created else None
+            out.append(
+                {
+                    "title": title,
+                    "body": _strip(d.get("selftext"))[:500],
+                    "author": _strip(d.get("author")),
+                    "posted_at": posted,
+                    "url": "https://www.reddit.com" + str(d.get("permalink") or ""),
+                    "received_at": received,
+                    "source": f"reddit/r/{subreddit}",
+                }
+            )
+            if len(out) >= max_posts:
+                break
+        return out
+
     def fetch(self, subreddit: str, *, keywords: Iterable[str], max_posts: int = 50) -> list[dict]:
+        if self._auth:
+            return self._fetch_oauth(subreddit, keywords=keywords, max_posts=max_posts)
         resp = self._get(f"https://www.reddit.com/r/{subreddit}/new/.rss?limit=100")
         root = ET.fromstring(resp.content)
         received = self._now().isoformat()
@@ -254,8 +330,13 @@ def collect_community(
     http: httpx.Client | None = None,
     now: Callable[[], datetime] = _utc_now,
     sleep: Callable[[float], None] | None = None,
+    reddit_auth: tuple[str, str, str] | None = None,
+    channels: Any | None = None,
 ) -> dict:
-    """{"posts": [...], "sources": {소스: "ok"|오류|"not available for KR/US"}}."""
+    """{"posts": [...], "sources": {소스: "ok"|오류|"not available for KR/US"}}.
+
+    channels(ChannelsCfg)가 있으면 YouTube·텔레그램 채널도 같은 posts 에 합친다.
+    """
     http = http or httpx.Client(timeout=10)
     keywords = tuple(k for k in (name, ticker) if k)
     posts: list[dict] = []
@@ -272,7 +353,7 @@ def collect_community(
 
     if cfg.reddit:
         if market == "US":
-            r = Reddit(http, **kw)
+            r = Reddit(http, auth=reddit_auth, **kw)
             for sub in ("stocks", "wallstreetbets"):
                 run(
                     f"reddit/{sub}",
@@ -303,7 +384,43 @@ def collect_community(
             lambda: d.fetch("stockus", keywords=keywords, max_posts=cfg.max_posts),
         )
 
+    if channels is not None and (channels.youtube or channels.telegram):
+        ch = collect_channels(channels, keywords=keywords, asof=asof, http=http, now=now)
+        for label, items in ch["sources"].items():
+            posts.extend(items)
+            sources[label] = "ok"
+        for label, err in ch["errors"].items():
+            sources[label] = err
+
     cutoff = asof.astimezone(UTC).isoformat()
     kept = [p for p in posts if not (p.get("posted_at") and p["posted_at"] > cutoff)]
     kept.sort(key=lambda p: p.get("posted_at") or "", reverse=True)
     return {"posts": kept[: cfg.max_posts], "sources": sources}
+
+
+def collect_channels(
+    channels: Any,
+    *,
+    keywords: Iterable[str],
+    asof: datetime,
+    http: httpx.Client,
+    now: Callable[[], datetime] = _utc_now,
+) -> dict:
+    """YouTube·텔레그램 채널 수집을 한데 모은다 ({"sources": {...}, "errors": {...}})."""
+    from trader.sources.telegram_channel import TelegramChannelSource
+    from trader.sources.youtube import YouTubeSource
+
+    out = {"sources": {}, "errors": {}}
+    if channels.youtube:
+        r = YouTubeSource(
+            list(channels.youtube), http=http, max_videos=channels.max_videos, now=now
+        ).fetch(keywords=keywords, asof=asof)
+        out["sources"].update(r["sources"])
+        out["errors"].update(r["errors"])
+    if channels.telegram:
+        r = TelegramChannelSource(
+            list(channels.telegram), http=http, max_posts=channels.max_posts, now=now
+        ).fetch(keywords=keywords, asof=asof)
+        out["sources"].update(r["sources"])
+        out["errors"].update(r["errors"])
+    return out

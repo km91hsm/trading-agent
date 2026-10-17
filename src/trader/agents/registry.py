@@ -27,6 +27,7 @@ AGENTS: tuple[str, ...] = (
     "trader",
 )
 ORCHESTRATOR = "orchestrator"
+SCREEN_AGENTS: tuple[str, ...] = ("screener",)
 
 
 @dataclass
@@ -101,5 +102,6 @@ def orchestrator_prompt(settings: Settings, base: Path | None = None) -> str:
         "- AnalystReport 스키마: " + schemas.json_schema(schemas.AnalystReport) + "\n"
         "- DebateTurn 스키마: " + schemas.json_schema(schemas.DebateTurn) + "\n"
         "- Decision 스키마: " + schemas.json_schema(schemas.Decision) + "\n"
+        "- Screened 스키마(screen 모드): " + schemas.json_schema(schemas.Screened) + "\n"
     )
     return body + runtime

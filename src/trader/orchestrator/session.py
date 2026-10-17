@@ -15,9 +15,11 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -46,6 +48,9 @@ class SessionSpec:
     tickers: list[dict[str, Any]]  # [{"ticker": str, "exchange": str | None}]
     dry_run: bool = True
     asof: datetime | None = None  # tool collect 에 넘길 기준 시각 (없으면 세션 시작 시각)
+    kind: str = "analyze"  # analyze | screen | resume
+    candidates: list[dict[str, Any]] = field(default_factory=list)  # screen 모드 입력
+    trigger: dict[str, Any] | None = None  # resume 모드 입력 (Phase 6 monitor)
 
 
 @dataclass
@@ -104,16 +109,19 @@ def build_command(
 
 
 def _stdin_payload(spec: SessionSpec, asof: datetime) -> str:
-    return json.dumps(
-        {
-            "market": spec.market,
-            "date": spec.date.isoformat(),
-            "tickers": spec.tickers,
-            "dry_run": spec.dry_run,
-            "asof": asof.isoformat(),
-        },
-        ensure_ascii=False,
-    )
+    payload: dict[str, Any] = {
+        "kind": spec.kind,
+        "market": spec.market,
+        "date": spec.date.isoformat(),
+        "tickers": spec.tickers,
+        "dry_run": spec.dry_run,
+        "asof": asof.isoformat(),
+    }
+    if spec.kind == "screen":
+        payload["candidates"] = spec.candidates
+    if spec.kind == "resume":
+        payload["trigger"] = spec.trigger
+    return json.dumps(payload, ensure_ascii=False, default=str)
 
 
 def _parse_result(stdout: str) -> dict:
@@ -208,7 +216,8 @@ def run_session(
         raise PipelineError(
             f"오늘 세션 상한({settings.llm.daily_session_cap})에 도달해 세션을 띄우지 않습니다"
         )
-    run_id = db.start_run(conn, "analyze", spec.market) if conn is not None else None
+    run_kind = {"screen": "scan", "resume": "monitor"}.get(spec.kind, "analyze")
+    run_id = db.start_run(conn, run_kind, spec.market) if conn is not None else None
     started = now()
 
     def elapsed_ms() -> int:
@@ -218,6 +227,10 @@ def run_session(
         call_id = _start_call(conn, run_id, spec, session_id="fake", model=fake.FAKE_MODEL)
         written: list[str] = []
         try:
+            if spec.kind == "screen":
+                written += fake.run_fake_screen(
+                    ctx, market=spec.market, date=spec.date, candidates=spec.candidates
+                )
             for t in spec.tickers:
                 written += fake.run_fake_ticker(
                     ctx,
@@ -225,6 +238,7 @@ def run_session(
                     market=spec.market,
                     date=spec.date,
                     debate_rounds=settings.debate_rounds,
+                    trigger=spec.trigger,
                 )
         except (tools.ToolError, ValueError) as e:
             _finish_call(
@@ -259,12 +273,12 @@ def run_session(
 
     # 호출자가 경로를 넘기면(테스트·dry-run) 그대로 쓰고, 아니면 settings/PATH 에서 찾는다
     bin_path = bin_override if bin_override else claude_bin_mod.find_claude(settings.claude_bin)
-    base_state = state if state is not None else paths.state_dir()
-    cwd = base_state / "claude_cwd"
-    cwd.mkdir(parents=True, exist_ok=True)
+    # cwd 는 저장소 밖 임시 디렉터리: claude 가 상위 CLAUDE.md·settings 를 탐색하지 못하게 한다
+    cwd = Path(tempfile.mkdtemp(prefix="trader-claude-"))
     agents_file = cwd / "agents.json"
+    names = registry.SCREEN_AGENTS if spec.kind == "screen" else registry.AGENTS
     agents_file.write_text(
-        json.dumps(registry.agents_json(registry.AGENTS, settings, agents_dir), ensure_ascii=False),
+        json.dumps(registry.agents_json(names, settings, agents_dir), ensure_ascii=False),
         encoding="utf-8",
     )
     prompt = registry.orchestrator_prompt(settings, agents_dir)
@@ -310,7 +324,10 @@ def run_session(
             timeout=settings.llm.timeout_s,
         )
     except subprocess.TimeoutExpired:
+        shutil.rmtree(cwd, ignore_errors=True)
         return fail(f"세션 타임아웃 ({settings.llm.timeout_s}s)")
+    finally:
+        shutil.rmtree(cwd, ignore_errors=True)
     try:
         data = _parse_result(proc.stdout)
     except PipelineError as e:

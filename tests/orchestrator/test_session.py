@@ -102,6 +102,7 @@ def test_run_session_records_call_and_writes_agents_file(project, conn, accounts
     def runner(cmd, **kw):
         seen["cmd"] = cmd
         seen["kw"] = kw
+        seen["agents"] = json.loads((Path(kw["cwd"]) / "agents.json").read_text(encoding="utf-8"))
         return _ok_result()
 
     res = run_session(
@@ -123,11 +124,10 @@ def test_run_session_records_call_and_writes_agents_file(project, conn, accounts
     import sys
 
     assert seen["kw"]["env"]["PATH"].split(os.pathsep)[0] == str(Path(sys.executable).parent)
-    assert Path(seen["kw"]["cwd"]).name == "claude_cwd" and Path(seen["kw"]["cwd"]).is_dir()
+    assert Path(seen["kw"]["cwd"]).name.startswith("trader-claude-")  # 임시 cwd (세션 뒤 삭제)
     stdin = json.loads(seen["kw"]["input"])
     assert stdin["tickers"][0]["ticker"] == "005930" and stdin["dry_run"] is True
-    agents_file = Path(seen["cmd"][seen["cmd"].index("--agents") + 1])
-    agents = json.loads(agents_file.read_text(encoding="utf-8"))
+    agents = seen["agents"]
     assert set(agents) == set(AGENTS) and agents["trader"]["tools"] == []
     row = conn.execute("SELECT agent, status, cost_usd, session_id FROM agent_calls").fetchone()
     assert (row["agent"], row["status"], row["cost_usd"], row["session_id"]) == (
@@ -351,3 +351,33 @@ def test_fake_session_without_inputs_fails(project, conn, accounts, monkeypatch)
     monkeypatch.setenv("FAKE_CLAUDE", "1")
     res = run_session(spec(), Settings(), conn, accounts, agents_dir=REPO_AGENTS, now=lambda: T0)
     assert res.ok is False and "00_inputs" in res.error
+
+
+def test_session_cwd_is_temp_and_removed(project, conn, accounts, monkeypatch):
+    """세션 cwd 는 저장소 밖 임시 디렉터리이며 세션이 끝나면 지워진다 (상위 CLAUDE.md 탐색 차단)."""
+    import subprocess as _sp
+
+    _inputs()
+    seen = {}
+
+    def runner(cmd, **kw):
+        seen["cwd"] = Path(kw["cwd"])
+        seen["existed"] = seen["cwd"].is_dir() and (seen["cwd"] / "agents.json").is_file()
+        return _sp.CompletedProcess(
+            cmd,
+            0,
+            stdout='{"session_id": "s", "total_cost_usd": 0.1, "num_turns": 1, "result": "x"}',
+            stderr="",
+        )
+
+    res = run_session(
+        spec(),
+        Settings(),
+        conn,
+        accounts,
+        runner=runner,
+        claude_bin_path=Path("/x/claude"),
+        agents_dir=REPO_AGENTS,
+    )
+    assert res.ok and seen["existed"]
+    assert project not in seen["cwd"].parents and not seen["cwd"].exists()

@@ -172,3 +172,17 @@ def test_costs():
         )
         is None
     )
+
+
+def test_min_hold_skips_holidays():
+    # 10/6(월) 매수 → 10/9(목): 평일 3거래일이지만 10/8 이 휴장이면 2거래일
+    p = _portfolio(
+        positions={"005930": _pos("005930", qty=10)}, held_since={"005930": date(2026, 10, 6)}
+    )
+    v = _eval(ok_decision(action="SELL", target_weight=0.0), p)
+    assert v.approved
+    v = _eval(ok_decision(action="SELL", target_weight=0.0), p, holidays={date(2026, 10, 8)})
+    assert v.approved is False and any("보유" in r for r in v.reasons)
+    assert (
+        rules._trading_days_between(date(2026, 10, 6), date(2026, 10, 9), {date(2026, 10, 8)}) == 2
+    )

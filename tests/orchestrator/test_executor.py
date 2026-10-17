@@ -371,3 +371,43 @@ def test_paused_blocks_approve(ectx):
     assert repo.get_approval(ectx.conn, aid)["status"] == "pending"  # 요청은 살아 있다
     control.set_flag(ectx.conn, "paused", False)
     assert executor.approve(ectx, aid)["ok"]
+
+
+def test_executor_passes_holiday_fn_to_rules(ectx):
+    """보유 1거래일(10/8 매수) 인데 10/9 가 휴장이면 is_holiday 가 거래일 계산에 반영된다."""
+    from trader.broker.models import Position
+
+    pos = Position(
+        ticker="005930",
+        market="KR",
+        qty=10,
+        avg_price=Decimal("70000"),
+        current_price=Decimal("71500"),
+        eval_amount=Decimal("715000"),
+        pnl_pct=0.02,
+    )
+    ectx.brokers["paper-main"].positions = [pos]
+    dec_id = repo.ingest_checkpoint(
+        ectx.conn, D, "KR", "005930", "30_decision", {"data": ok_decision()}
+    )
+    repo.insert_order(
+        ectx.conn,
+        decision_id=dec_id,
+        account_id="paper-main",
+        ticker="005930",
+        market="KR",
+        side="BUY",
+        qty=10,
+        order_type="LIMIT",
+        price=Decimal("70000"),
+        status="accepted",
+        order_no="0",
+        message="",
+        mode="auto",
+        created_at="2026-10-05T01:00:00+00:00",
+    )
+    # 10/5(월) 매수 → 10/9: 평일 4일 → 통과. 10/6·10/7·10/8 휴장이면 1일 → 거부
+    ectx.holiday_fn = lambda d: d in {date(2026, 10, 6), date(2026, 10, 7), date(2026, 10, 8)}
+    r = _run(ectx, ok_decision(action="SELL", target_weight=0.0))
+    p = next(x for x in r if x["account_id"] == "paper-main")
+    assert p["approved"] is False and any("보유" in s for s in p["reasons"])

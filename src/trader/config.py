@@ -7,13 +7,14 @@ yaml 모델은 전부 extra="forbid" 라 yaml 키를 추가하면 모델도 같�
 from __future__ import annotations
 
 import os
+import re
 from decimal import Decimal
 from pathlib import Path
 from typing import Literal
 
 import yaml
 from dotenv import dotenv_values
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from trader.platform import paths
 
@@ -143,6 +144,8 @@ class ChannelsCfg(BaseModel):
 
     youtube: list[str] = Field(default_factory=list)
     telegram: list[str] = Field(default_factory=list)
+    max_videos: int = Field(default=3, ge=1, le=20)
+    max_posts: int = Field(default=30, ge=1, le=200)
 
 
 class KisCfg(BaseModel):
@@ -206,6 +209,9 @@ class Secrets(BaseModel):
     FRED_API_KEY: str | None = None
     ECOS_API_KEY: str | None = None
     WEB_TOKEN: str | None = None
+    REDDIT_CLIENT_ID: str | None = None
+    REDDIT_CLIENT_SECRET: str | None = None
+    REDDIT_USER: str | None = None
 
 
 # --- 로더 -------------------------------------------------------------------
@@ -244,6 +250,117 @@ def _validate(model, data: dict, name: str):
         return model.model_validate(data)
     except ValidationError as e:
         raise ConfigError(f"{name} 검증 실패: {_describe(e)}") from e
+
+
+# --- schedule.yaml (Phase 6 데몬) ---------------------------------------------
+
+_HM_RE = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
+WEEKDAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+
+
+def _check_hm(value: str) -> str:
+    if not _HM_RE.match(value):
+        raise ValueError(f"시각은 HH:MM 형식이어야 합니다: {value!r}")
+    return value
+
+
+def _hm(value: str) -> tuple[int, int]:
+    h, m = value.split(":")
+    return int(h), int(m)
+
+
+class MonitorWindow(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    start: str
+    end: str
+    interval_s: int = Field(default=60, ge=5, le=3600)
+
+    @field_validator("start", "end")
+    @classmethod
+    def _v(cls, v: str) -> str:
+        return _check_hm(v)
+
+    def start_hm(self) -> tuple[int, int]:
+        return _hm(self.start)
+
+    def end_hm(self) -> tuple[int, int]:
+        return _hm(self.end)
+
+
+class MarketSchedule(BaseModel):
+    """시장별 시각. tz 는 그 시장의 시간대(기본 KST; US 는 America/New_York 권장)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    scan: str
+    analyze: str
+    monitor: MonitorWindow
+    tz: str = "Asia/Seoul"
+
+    @field_validator("tz")
+    @classmethod
+    def _tz(cls, v: str) -> str:
+        from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+        try:
+            ZoneInfo(v)
+        except (ZoneInfoNotFoundError, ValueError):
+            raise ValueError(f"알 수 없는 시간대: {v!r}") from None
+        return v
+
+    @field_validator("scan", "analyze")
+    @classmethod
+    def _v(cls, v: str) -> str:
+        return _check_hm(v)
+
+    def scan_hm(self) -> tuple[int, int]:
+        return _hm(self.scan)
+
+    def analyze_hm(self) -> tuple[int, int]:
+        return _hm(self.analyze)
+
+
+class WeeklyJob(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    weekday: str
+    time: str
+
+    @field_validator("weekday")
+    @classmethod
+    def _w(cls, v: str) -> str:
+        if v not in WEEKDAYS:
+            raise ValueError(f"요일은 {WEEKDAYS} 중 하나여야 합니다: {v!r}")
+        return v
+
+    @field_validator("time")
+    @classmethod
+    def _t(cls, v: str) -> str:
+        return _check_hm(v)
+
+
+class ScheduleConfig(BaseModel):
+    """config/schedule.yaml (KST). 데몬이 잡을 등록할 때 읽는다."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kr: MarketSchedule
+    us: MarketSchedule
+    reflect: str
+    ml_train: WeeklyJob
+
+    @field_validator("reflect")
+    @classmethod
+    def _r(cls, v: str) -> str:
+        return _check_hm(v)
+
+
+def load_schedule(path: Path | None = None) -> ScheduleConfig:
+    p = path or paths.config_dir() / "schedule.yaml"
+    if not p.exists():
+        raise ConfigError(f"스케줄 파일이 없습니다: {p}")
+    return _validate(ScheduleConfig, _read_yaml(p), p.name)
 
 
 def load_settings(path: Path | None = None) -> Settings:

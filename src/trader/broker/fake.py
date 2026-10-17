@@ -7,7 +7,16 @@ from datetime import UTC, date, datetime
 from decimal import Decimal
 
 from trader.broker.errors import KisApiError
-from trader.broker.models import Candle, Cash, Market, OrderRequest, OrderResult, Position, Quote
+from trader.broker.models import (
+    Candle,
+    Cash,
+    Fill,
+    Market,
+    OrderRequest,
+    OrderResult,
+    Position,
+    Quote,
+)
 from trader.config import AccountConfig
 
 
@@ -74,11 +83,13 @@ class FakeBroker:
         positions: list[Position] | None = None,
         cash: dict[Market, Cash] | None = None,
         fail: set[str] | None = None,
+        fills: dict[tuple[Market, date], list[Fill]] | None = None,
     ) -> None:
         self.account = account
         self.positions = positions or []
         self.cash = cash or {}
         self.fail = fail or set()
+        self.fills = fills or {}
         self.calls: list[str] = []
         self.orders: list[OrderRequest] = []
         self.cancelled: list[str] = []
@@ -97,6 +108,10 @@ class FakeBroker:
         if market not in self.cash:
             raise KisApiError("FAKE", f"현금 정보 없음: {market}")
         return self.cash[market]
+
+    def get_fills(self, market: Market, d: date) -> list[Fill]:
+        self._record("get_fills")
+        return list(self.fills.get((market, d), []))
 
     def place_order(self, request: OrderRequest) -> OrderResult:
         self._record("place_order")

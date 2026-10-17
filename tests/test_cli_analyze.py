@@ -1,4 +1,6 @@
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pytest
 import respx
@@ -12,7 +14,10 @@ from trader.ledger import db
 from trader.orchestrator.session import SessionResult
 from trader.sources.inputs import InputDeps
 
-ASOF = "2026-10-09T06:00:00+00:00"
+_ASOF_DT = datetime.now(UTC) - timedelta(hours=1)  # 24시간 창 안의 과거 시각
+ASOF = _ASOF_DT.isoformat()
+DAY = _ASOF_DT.astimezone(ZoneInfo("Asia/Seoul")).date()
+DAY_S = DAY.isoformat()
 REPO_AGENTS = Path(__file__).resolve().parents[1] / ".claude" / "agents"
 
 
@@ -68,7 +73,7 @@ def test_cli_analyze_fake_creates_decision(quiet_project, monkeypatch):
     r = _run(["--ticker", "005930", "--asof", ASOF, "--dry-run"])
     assert r.exit_code == 0, r.stdout
     assert "결정: HOLD" in r.stdout and "30_decision.json" in r.stdout and "FAKE" in r.stdout
-    d = quiet_project / "state" / "runs" / "2026-10-09" / "KR" / "005930"
+    d = quiet_project / "state" / "runs" / DAY_S / "KR" / "005930"
     assert (d / "30_decision.json").exists() and (d / "00_inputs.json").exists()
     conn = db.connect()
     assert conn.execute("SELECT status FROM runs").fetchone()["status"] == "ok"
@@ -78,7 +83,7 @@ def test_cli_analyze_fake_creates_decision(quiet_project, monkeypatch):
 def test_rerun_only_missing_stages(quiet_project, monkeypatch):
     monkeypatch.setenv("FAKE_CLAUDE", "1")
     assert _run(["--ticker", "005930", "--asof", ASOF, "--dry-run"]).exit_code == 0
-    d = quiet_project / "state" / "runs" / "2026-10-09" / "KR" / "005930"
+    d = quiet_project / "state" / "runs" / DAY_S / "KR" / "005930"
     (d / "20_debate_r1_bear.json").unlink()
     (d / "30_decision.json").unlink()
     r = _run(["--ticker", "005930", "--asof", ASOF, "--dry-run"])
@@ -88,14 +93,13 @@ def test_rerun_only_missing_stages(quiet_project, monkeypatch):
 
 def test_cli_analyze_without_dry_run_executes_via_fake_broker(quiet_project, monkeypatch):
     """--dry-run 없이 FAKE 세션: 판정이 dry_run=False 로 기록되고 실전(off)은 주문 기록이 없다."""
-    from datetime import date
 
     from trader.orchestrator.run_store import read_checkpoint, run_dir
 
     monkeypatch.setenv("FAKE_CLAUDE", "1")
     r = _run(["--ticker", "005930", "--asof", ASOF])
     assert r.exit_code == 0, r.stdout
-    d = run_dir(date(2026, 10, 9), "KR", "005930")
+    d = run_dir(DAY, "KR", "005930")
     rc = read_checkpoint(d, "40_risk_check_paper-main")
     assert rc is not None and rc["data"]["dry_run"] is False
     assert rc["data"]["approved"] is False and "HOLD" in rc["data"]["reasons"][0]  # FAKE 는 HOLD
@@ -103,14 +107,13 @@ def test_cli_analyze_without_dry_run_executes_via_fake_broker(quiet_project, mon
 
 
 def test_cli_analyze_dry_run_writes_verdict_without_order(quiet_project, monkeypatch):
-    from datetime import date
 
     from trader.orchestrator.run_store import read_checkpoint, run_dir
 
     monkeypatch.setenv("FAKE_CLAUDE", "1")
     r = _run(["--ticker", "005930", "--asof", ASOF, "--dry-run"])
     assert r.exit_code == 0, r.stdout
-    d = run_dir(date(2026, 10, 9), "KR", "005930")
+    d = run_dir(DAY, "KR", "005930")
     assert read_checkpoint(d, "40_risk_check_paper-main")["data"]["dry_run"] is True
     assert read_checkpoint(d, "50_order_paper-main") is None
 

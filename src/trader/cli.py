@@ -17,7 +17,7 @@ from trader.broker.kis_auth import KisAuth
 from trader.broker.kis_client import KisClient
 from trader.broker.kis_market import KisMarket
 from trader.logging_setup import configure
-from trader.notify.telegram import make_notifier, make_receiver, parse_command
+from trader.notify.telegram import make_notifier, make_receiver
 from trader.orchestrator.session import run_session
 from trader.platform import paths
 from trader.platform.claude_bin import ClaudeNotFound
@@ -299,6 +299,13 @@ def collect(
         if when.tzinfo is None:
             when = when.replace(tzinfo=UTC)
         deps = _build_input_deps(secrets, cfg)
+        from trader.orchestrator.run_store import read_checkpoint as _rc
+        from trader.orchestrator.run_store import run_dir as _rd
+
+        existed = (
+            not force
+            and _rc(_rd(when.astimezone(_KST).date(), market, ticker), "00_inputs") is not None  # type: ignore[arg-type]
+        )
         path = collect_and_save(
             ticker=ticker,
             market=market,
@@ -313,7 +320,10 @@ def collect(
     except (config.ConfigError, paths.ProjectRootNotFound, ValueError) as e:
         typer.echo(f"오류: {e}", err=True)
         raise typer.Exit(code=1) from e
-    typer.echo(f"저장: {path}")
+    if existed:
+        typer.echo(f"건너뜀(이미 존재, --force 로 덮어씀): {path}")
+    else:
+        typer.echo(f"저장: {path}")
     for e in errors:
         typer.echo(f"  - {e}")
     typer.echo(f"오류 절 {len(errors)}건")
@@ -506,6 +516,10 @@ def _tool_ctx():
     dry_run = os.environ.get("TRADER_DRY_RUN", "1") != "0"
     # dry_run 도 잔고로 판정은 한다(주문·승인 요청만 생략). 브로커 생성은 네트워크를 쓰지 않는다.
     brokers = {b.account.id: b for b in _build_brokers(secrets, accounts)}
+    try:
+        holiday_fn = _build_market(secrets).is_holiday  # 7일 캐시, 보유 거래일 계산용
+    except Exception:  # noqa: BLE001 - 실전 앱키가 없으면 휴장일 없이 평일 수로 계산
+        holiday_fn = None
     return ToolContext(
         settings=config.load_settings(),
         accounts=accounts,
@@ -513,6 +527,7 @@ def _tool_ctx():
         brokers=brokers,
         notifier=make_notifier(secrets),
         dry_run=dry_run,
+        holiday_fn=holiday_fn,
     )
 
 
@@ -623,11 +638,13 @@ def tool_checkpoint_write(
     stage: str = typer.Option(..., "--stage"),
     agent: str | None = typer.Option(None, "--agent"),
     json_text: str | None = typer.Option(None, "--json", help="페이로드 JSON (없으면 stdin)"),
+    model: str | None = typer.Option(None, "--model", help="서브에이전트 모델명 (call.model 기록)"),
 ) -> None:
     from trader.orchestrator import tools
 
     _tool_run(
         tools.checkpoint_write,
+        model=model,
         ticker=ticker,
         market=market,
         date=date,
@@ -677,6 +694,7 @@ def tool_submit_decision(
     market: str = typer.Option(..., "--market"),
     date: str = typer.Option(..., "--date"),
     json_text: str | None = typer.Option(None, "--json", help="Decision JSON (없으면 stdin)"),
+    stage: str | None = typer.Option(None, "--stage", help="재평가면 31_decision_r<n>"),
 ) -> None:
     from trader.orchestrator import tools
 
@@ -686,6 +704,7 @@ def tool_submit_decision(
         market=market,
         date=date,
         payload=_payload_arg(json_text),
+        stage=stage,
     )
 
 
@@ -789,9 +808,22 @@ def approvals_reject(approval_id: int = typer.Argument(..., help="승인 요청 
 @telegram_app.command("poll")
 def telegram_poll() -> None:
     """getUpdates 1회: /approve <id>·/reject <id>·/status 를 처리하고 오프셋을 저장한다."""
-    from trader.control import control
-    from trader.ledger import repo
-    from trader.orchestrator import executor
+    _telegram_run(interval=0, max_iterations=1)
+
+
+@telegram_app.command("loop")
+def telegram_loop(
+    interval: int = typer.Option(30, "--interval", help="폴링 주기(초)"),
+    max_iterations: int | None = typer.Option(None, "--max-iterations", hidden=True),
+) -> None:
+    """텔레그램 명령을 주기적으로 처리한다 (데몬 밖에서 단독 실행용)."""
+    _telegram_run(interval=interval, max_iterations=max_iterations)
+
+
+def _telegram_run(*, interval: int, max_iterations: int | None) -> None:
+    import time
+
+    from trader.notify.commands import poll_once
 
     try:
         ectx, secrets = _exec_ctx()
@@ -803,43 +835,115 @@ def telegram_poll() -> None:
         ectx.conn.close()
         typer.echo("오류: 텔레그램 토큰·chat_id 가 없습니다", err=True)
         raise typer.Exit(code=1)
+    n = 0
     try:
-        offset = control.get_flag(ectx.conn, "telegram_offset")
-        updates = receiver.poll(offset)
-        executor.expire_approvals(ectx)
-        handled = 0
-        for u in updates:
-            cmd = parse_command(u.text)
-            if cmd is None:
-                continue
-            name, arg = cmd
-            handled += 1
-            if name == "status":
-                pending = repo.pending_approvals(ectx.conn)
-                modes = ", ".join(
-                    f"{a.id}={control.get_account_mode(ectx.conn, a)}" for a in ectx.accounts
-                )
-                body = "\n".join(_approval_line(a) for a in pending) or "없음"
-                ectx.notifier.send(f"[상태] 계좌 모드: {modes}\n미승인 주문:\n{body}")
-                typer.echo(f"status → 미승인 {len(pending)}건")
-                continue
-            if arg is None or not arg.isdigit():
-                ectx.notifier.send(f"사용법: /{name} <승인 id>")
-                continue
-            r = (
-                executor.approve(ectx, int(arg))
-                if name == "approve"
-                else executor.reject(ectx, int(arg))
-            )
-            msg = f"{name} #{arg} → {'ok' if r['ok'] else r.get('error') or '실패'}"
-            typer.echo(msg)
-            if not r["ok"]:
-                ectx.notifier.send(f"[{name} 실패] {r.get('error') or r.get('order')}")
-        if updates:
-            control.set_flag(ectx.conn, "telegram_offset", max(u.update_id for u in updates) + 1)
-        typer.echo(f"수신 {len(updates)}건, 명령 {handled}건")
+        while True:
+            poll_once(ectx, receiver, echo=typer.echo)
+            n += 1
+            if max_iterations is not None and n >= max_iterations:
+                break
+            time.sleep(interval)
     finally:
         ectx.conn.close()
+
+
+@app.command("daemon")
+def daemon_cmd(
+    no_web: bool = typer.Option(False, "--no-web", help="웹 서버를 띄우지 않음"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="세션·monitor 를 dry_run 으로"),
+) -> None:
+    """스케줄 데몬: schedule.yaml 대로 scan/analyze/monitor·텔레그램·체결 동기화 + web (§10.1)."""
+    from trader import daemon as daemon_mod
+    from trader.ledger import db
+
+    try:
+        configure(paths.state_dir())
+        settings = config.load_settings()
+        schedule = config.load_schedule()
+        accounts = config.load_accounts()
+        secrets = config.load_secrets()
+        universe = config.load_universe()
+        sources_cfg = config.load_sources()
+    except (config.ConfigError, paths.ProjectRootNotFound) as e:
+        typer.echo(f"오류: {e}", err=True)
+        raise typer.Exit(code=1) from e
+    try:
+        market_client = _build_market(secrets)
+    except Exception as e:  # noqa: BLE001
+        logging.getLogger("trader.daemon").warning(
+            "시세 클라이언트 없음(휴장일·monitor 비활성): %s", e
+        )
+        market_client = None
+    conn = db.connect()
+    db.init_schema(conn)
+    conn.close()
+
+    def web_app():
+        from trader.web.app import create_app
+
+        return create_app(_web_deps())
+
+    deps = daemon_mod.DaemonDeps(
+        settings=settings,
+        schedule=schedule,
+        accounts=accounts,
+        brokers={b.account.id: b for b in _build_brokers(secrets, accounts)},
+        market_client=market_client,
+        conn_factory=db.connect,
+        notifier=make_notifier(secrets),
+        receiver=make_receiver(secrets),
+        secrets=secrets,
+        universe=universe,
+        sources_cfg=sources_cfg,
+        input_deps=_build_input_deps(secrets, sources_cfg),
+        web_app_factory=web_app,
+        dry_run=dry_run,
+    )
+    r = daemon_mod.run(deps, web=not no_web)
+    if not r.get("ok"):
+        typer.echo(f"오류: {r.get('error')}", err=True)
+        raise typer.Exit(code=1)
+    typer.echo("데몬 종료")
+
+
+# --- 체결 동기화 (Phase 6) ------------------------------------------------------
+
+fills_app = typer.Typer(help="체결 조회로 fills 를 적재하고 주문 상태를 갱신한다")
+app.add_typer(fills_app, name="fills")
+
+
+@fills_app.command("sync")
+def fills_sync(
+    account: str | None = typer.Option(None, "--account", help="특정 계좌 id 만"),
+    date: str | None = typer.Option(None, "--date", help="YYYY-MM-DD (기본 KST 오늘)"),
+) -> None:
+    """계좌별 체결을 원장에 적재한다 (멱등)."""
+    from datetime import date as _date
+
+    from trader.ledger import db
+    from trader.orchestrator.fills import sync_fills
+
+    try:
+        configure(paths.state_dir())
+        secrets = config.load_secrets()
+        accounts = config.load_accounts()
+        d = _date.fromisoformat(date) if date else datetime.now(_KST).date()
+    except (config.ConfigError, paths.ProjectRootNotFound, ValueError) as e:
+        typer.echo(f"오류: {e}", err=True)
+        raise typer.Exit(code=1) from e
+    if account:
+        accounts = [a for a in accounts if a.id == account]
+    conn = db.connect()
+    db.init_schema(conn)
+    try:
+        for b in _build_brokers(secrets, accounts):
+            r = sync_fills(conn, b, b.account, d)
+            typer.echo(
+                f"{r['account_id']} {r['date']}: 체결 {r['inserted']}건 적재, "
+                f"주문 {r['orders_updated']}건 갱신"
+            )
+    finally:
+        conn.close()
 
 
 # --- 런타임 제어 (control 테이블) -----------------------------------------------
@@ -997,6 +1101,170 @@ def web(
         port=port or deps.settings.web.port,
         log_level="info",
     )
+
+
+@tool_app.command("submit-screen")
+def tool_submit_screen(
+    market: str = typer.Option(..., "--market"),
+    date: str = typer.Option(..., "--date"),
+    json_text: str | None = typer.Option(None, "--json", help="Screened JSON (없으면 stdin)"),
+) -> None:
+    from trader.orchestrator import tools
+
+    _tool_run(tools.submit_screen, market=market, date=date, payload=_payload_arg(json_text))
+
+
+@app.command("scan")
+def scan(
+    market: str = typer.Option("KR", "--market", help="KR 또는 US"),
+    asof: str | None = typer.Option(None, "--asof", help="기준 시각 ISO8601 (기본: 현재 UTC)"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="screener 세션 없이 정량 상위만"),
+) -> None:
+    """정량 필터 → screener 세션 → 오늘 분석 대상 목록 (_scan.json, stdout JSON)."""
+    import json
+
+    from trader.ledger import db
+    from trader.orchestrator import tools
+    from trader.orchestrator.run_store import write_checkpoint
+    from trader.orchestrator.session import PipelineError
+    from trader.scan import quant, screener
+
+    try:
+        configure(paths.state_dir())
+        if market not in ("KR", "US"):
+            raise config.ConfigError(f"시장은 KR 또는 US 여야 합니다: {market}")
+        settings = config.load_settings()
+        accounts = config.load_accounts()
+        secrets = config.load_secrets()
+        universe = config.load_universe()
+        when = datetime.fromisoformat(asof) if asof else datetime.now(UTC)
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=UTC)
+        day = when.astimezone(_KST).date()
+        cands = quant.candidates(universe, market)  # type: ignore[arg-type]
+        conn = db.connect()
+        db.init_schema(conn)
+        try:
+            cap_hit = dry_run or tools.sessions_today(conn, when) >= settings.llm.daily_session_cap
+            brokers = {b.account.id: b for b in _build_brokers(secrets, accounts)}
+            r = screener.run_screen(
+                settings,
+                conn,
+                accounts,
+                market=market,
+                date=day,
+                candidates=cands,
+                cap_hit=cap_hit,
+                brokers=brokers,
+                watch=list(universe.watch),
+                asof=when,
+            )
+        finally:
+            conn.close()
+        out = {
+            "market": market,
+            "date": day.isoformat(),
+            "candidates": cands,
+            "picks": r["picks"],
+            "analyze_targets": r["analyze_targets"],
+            "session": r["session"],
+            "cap_hit": cap_hit,
+        }
+        write_checkpoint(screener.market_dir(day, market), "_scan", out)
+    except (config.ConfigError, paths.ProjectRootNotFound, PipelineError, ValueError) as e:
+        typer.echo(f"오류: {e}", err=True)
+        raise typer.Exit(code=1) from e
+    typer.echo(json.dumps(out, ensure_ascii=False, default=str))
+
+
+@app.command("monitor")
+def monitor_cmd(
+    market: str = typer.Option("KR", "--market", help="KR 또는 US"),
+    once: bool = typer.Option(False, "--once", help="1회만 점검하고 종료"),
+    interval: int = typer.Option(60, "--interval", help="반복 주기(초)"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="손절 주문·재평가 주문 없이 기록만"),
+    max_iterations: int | None = typer.Option(None, "--max-iterations", hidden=True),
+) -> None:
+    """보유종목 장중 점검: 손절 즉시 매도, 트리거 → 재평가 세션 (스펙 §5.2)."""
+    import json
+    import time
+
+    from trader.ledger import db
+    from trader.orchestrator import monitor as monitor_mod
+    from trader.orchestrator.session import run_session
+
+    try:
+        configure(paths.state_dir())
+        if market not in ("KR", "US"):
+            raise config.ConfigError(f"시장은 KR 또는 US 여야 합니다: {market}")
+        settings = config.load_settings()
+        accounts = config.load_accounts()
+        secrets = config.load_secrets()
+        universe = config.load_universe()
+        market_client = _build_market(secrets)
+    except (config.ConfigError, paths.ProjectRootNotFound) as e:
+        typer.echo(f"오류: {e}", err=True)
+        raise typer.Exit(code=1) from e
+    except Exception as e:  # noqa: BLE001 - 시세 클라이언트 없이는 monitor 를 돌릴 수 없다
+        typer.echo(f"오류: 시세 클라이언트 생성 실패: {e}", err=True)
+        raise typer.Exit(code=1) from e
+    conn = db.connect()
+    db.init_schema(conn)
+    ctx = monitor_mod.MonitorContext(
+        settings=settings,
+        accounts=accounts,
+        conn=conn,
+        brokers={b.account.id: b for b in _build_brokers(secrets, accounts)},
+        market_client=market_client,
+        notifier=make_notifier(secrets),
+        session_runner=run_session,
+        dry_run=dry_run,
+        exchanges={u.symbol: u.exchange for u in universe.us},
+    )
+    n = 0
+    try:
+        while True:
+            today = datetime.now(_KST).date()
+            r = monitor_mod.monitor_once(ctx, market=market, today=today)
+            typer.echo(
+                json.dumps({"market": market, "date": today.isoformat(), **r}, ensure_ascii=False)
+            )
+            n += 1
+            if once or (max_iterations is not None and n >= max_iterations):
+                break
+            time.sleep(interval)
+    finally:
+        conn.close()
+
+
+@app.command("install")
+def install_cmd(
+    dry_run: bool = typer.Option(False, "--dry-run", help="파일을 쓰지 않고 내용·명령만 출력"),
+    uninstall: bool = typer.Option(False, "--uninstall", help="등록 해제"),
+) -> None:
+    """로그온 시 데몬 자동 시작 등록 (macOS launchd / Windows 작업 스케줄러)."""
+    from trader.platform import installer
+
+    try:
+        if uninstall:
+            r = installer.uninstall()
+            typer.echo(f"해제: {r['path']} ({' '.join(r['command'])})")
+            return
+        from trader.platform.claude_bin import find_claude
+
+        extra = []
+        try:
+            extra.append(find_claude(config.load_settings().claude_bin).parent)
+        except Exception as e:  # noqa: BLE001 - claude 가 없으면 PATH 에 넣지 않고 경고만
+            logging.getLogger("trader.daemon").warning("claude 실행파일을 찾지 못함: %s", e)
+        r = installer.install(dry_run=dry_run, extra_paths=extra)
+    except config.ConfigError as e:
+        typer.echo(f"오류: {e}", err=True)
+        raise typer.Exit(code=1) from e
+    typer.echo(("[dry-run] " if dry_run else "") + f"파일: {r['path']}")
+    typer.echo("명령: " + " ".join(r["command"]))
+    if dry_run:
+        typer.echo(r["content"])
 
 
 @app.command("notify-test")

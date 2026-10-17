@@ -59,6 +59,11 @@ _TR: dict[str, tuple[str, str, str | None]] = {
     ),
     "DOM_ORDER_BUY": ("/uapi/domestic-stock/v1/trading/order-cash", "TTTC0012U", "VTTC0012U"),
     "DOM_ORDER_SELL": ("/uapi/domestic-stock/v1/trading/order-cash", "TTTC0011U", "VTTC0011U"),
+    "DOM_CCLD": (  # 일별 주문체결 (3개월 이내)
+        "/uapi/domestic-stock/v1/trading/inquire-daily-ccld",
+        "TTTC0081R",
+        "VTTC0081R",
+    ),
     "DOM_ORDER_CANCEL": (
         "/uapi/domestic-stock/v1/trading/order-rvsecncl",
         "TTTC0013U",
@@ -95,6 +100,11 @@ _TR: dict[str, tuple[str, str, str | None]] = {
     ),
     "OVS_ORDER_BUY_US": ("/uapi/overseas-stock/v1/trading/order", "TTTT1002U", "VTTT1002U"),
     "OVS_ORDER_SELL_US": ("/uapi/overseas-stock/v1/trading/order", "TTTT1006U", "VTTT1006U"),
+    "OVS_CCLD_US": (  # 해외 주문체결 내역
+        "/uapi/overseas-stock/v1/trading/inquire-ccnl",
+        "TTTS3035R",
+        "VTTS3035R",
+    ),
     "OVS_ORDER_CANCEL_US": (
         "/uapi/overseas-stock/v1/trading/order-rvsecncl",
         "TTTT1004U",

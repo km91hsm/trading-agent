@@ -1,0 +1,14 @@
+{
+  "rt_cd": "0", "msg_cd": "KIOK0510", "msg1": "조회가 완료되었습니다",
+  "ctx_area_fk200": "", "ctx_area_nk200": "",
+  "output": [
+    {"ord_dt": "20261008", "ord_gno_brno": "01790", "odno": "0030038931", "orgn_odno": "",
+     "sll_buy_dvsn_cd": "02", "sll_buy_dvsn_cd_name": "매수", "pdno": "AAPL", "prdt_name": "APPLE",
+     "ft_ord_qty": "1", "ft_ord_unpr3": "200.5000", "ft_ccld_qty": "1", "ft_ccld_unpr3": "200.4500",
+     "ft_ccld_amt3": "200.45", "ovrs_excg_cd": "NASD", "ord_tmd": "093101", "nccs_qty": "0"},
+    {"ord_dt": "20261008", "ord_gno_brno": "01790", "odno": "0030038932", "orgn_odno": "",
+     "sll_buy_dvsn_cd": "01", "sll_buy_dvsn_cd_name": "매도", "pdno": "MSFT", "prdt_name": "MICROSOFT",
+     "ft_ord_qty": "1", "ft_ord_unpr3": "500.0000", "ft_ccld_qty": "0", "ft_ccld_unpr3": "0",
+     "ft_ccld_amt3": "0", "ovrs_excg_cd": "NASD", "ord_tmd": "093500", "nccs_qty": "1"}
+  ]
+}

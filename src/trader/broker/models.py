@@ -104,6 +104,20 @@ class OrderRequest(BaseModel):
     exchange: str | None
 
 
+class Fill(BaseModel):
+    """체결 1건 (체결 조회 응답). filled_at 은 UTC."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    order_no: str
+    ticker: str
+    market: Market
+    side: Literal["BUY", "SELL"]
+    qty: int
+    price: Decimal
+    filled_at: datetime
+
+
 class OrderResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

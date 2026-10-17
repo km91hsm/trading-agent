@@ -17,6 +17,7 @@ from trader.ledger.db import now_iso
 
 _KST = ZoneInfo("Asia/Seoul")
 _ANALYST_RE = re.compile(r"^10_analyst_([a-z_]+)$")
+_DECISION_RE = re.compile(r"^(30_decision|31_decision_r\d+)$")
 _DEBATE_RE = re.compile(r"^20_debate_r(\d+)_(bull|bear)$")
 
 
@@ -95,7 +96,7 @@ def ingest_checkpoint(
                 (d.isoformat(), market, ticker, m.group(2), int(m.group(1))),
             ).fetchone()["id"]
         )
-    if stage == "30_decision":
+    if _DECISION_RE.match(stage):
         conn.execute(
             "INSERT INTO decisions(date, market, ticker, action, target_weight, confidence, "
             "session_id, json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
@@ -216,29 +217,139 @@ def insert_fill(
     qty: int,
     price: Decimal,
     filled_at: str | None = None,
+) -> int | None:
+    """체결 1건 적재. 같은 (계좌, 주문, 시각, 수량, 가격) 은 무시하고 None (재동기화 멱등)."""
+    cur = conn.execute(
+        "INSERT OR IGNORE INTO fills(order_id, account_id, qty, price, filled_at) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (order_id, account_id, qty, str(price), filled_at or now_iso()),
+    )
+    conn.commit()
+    return int(cur.lastrowid) if cur.rowcount == 1 else None
+
+
+# --- 트리거 (Phase 6 monitor) ------------------------------------------------------
+
+
+def insert_trigger(
+    conn: sqlite3.Connection,
+    *,
+    market: str,
+    ticker: str,
+    kind: str,
+    detail: dict,
+    price: Decimal | None,
+    decision_id: int | None,
+    account_id: str | None = None,
 ) -> int:
     cur = conn.execute(
-        "INSERT INTO fills(order_id, account_id, qty, price, filled_at) VALUES (?, ?, ?, ?, ?)",
-        (order_id, account_id, qty, str(price), filled_at or now_iso()),
+        "INSERT INTO triggers(account_id, market, ticker, kind, detail, price, decision_id, "
+        "created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            account_id,
+            market,
+            ticker,
+            kind,
+            json.dumps(detail, ensure_ascii=False, default=str),
+            str(price) if price is not None else None,
+            decision_id,
+            now_iso(),
+        ),
     )
     conn.commit()
     return int(cur.lastrowid)
 
 
-def has_open_order_or_approval(conn: sqlite3.Connection, decision_id: int, account_id: str) -> bool:
-    """같은 결정·계좌에 살아 있는 주문(실패·거부·취소 제외)이나 pending 승인이 있으면 True."""
+def mark_trigger_handled(
+    conn: sqlite3.Connection,
+    trigger_id: int,
+    session_id: str | None,
+    *,
+    handled_at: str | None = None,
+) -> None:
+    conn.execute(
+        "UPDATE triggers SET handled_at=?, session_id=? WHERE id=?",
+        (handled_at or now_iso(), session_id, trigger_id),
+    )
+    conn.commit()
+
+
+def last_trigger_handled_at(conn: sqlite3.Connection, market: str, ticker: str) -> datetime | None:
+    """해당 종목의 마지막 재평가 시각 (30분 1회 제한용)."""
     row = conn.execute(
-        "SELECT 1 FROM orders WHERE decision_id=? AND account_id=? "
-        "AND status NOT IN ('rejected','cancelled','failed') LIMIT 1",
-        (decision_id, account_id),
+        "SELECT MAX(handled_at) AS t FROM triggers WHERE market=? AND ticker=? "
+        "AND handled_at IS NOT NULL",
+        (market, ticker),
     ).fetchone()
-    if row:
+    return datetime.fromisoformat(row["t"]) if row and row["t"] else None
+
+
+def has_open_order_or_approval(
+    conn: sqlite3.Connection, decision_id: int, account_id: str, side: str | None = None
+) -> bool:
+    """같은 결정·계좌(·방향)에 살아 있는 주문(실패·거부·취소 제외)이나 pending 승인이 있으면 True.
+
+    재평가(31_decision_r<n>)는 같은 decisions 행을 갱신하므로 방향이 다르면(BUY 뒤 SELL) 허용한다.
+    """
+    sql = (
+        "SELECT 1 FROM orders WHERE decision_id=? AND account_id=? "
+        "AND status NOT IN ('rejected','cancelled','failed')"
+    )
+    args: list = [decision_id, account_id]
+    if side:
+        sql += " AND side=?"
+        args.append(side)
+    if conn.execute(sql + " LIMIT 1", args).fetchone():
         return True
+    sql = "SELECT 1 FROM approvals WHERE decision_id=? AND account_id=? AND status='pending'"
+    args = [decision_id, account_id]
+    if side:
+        sql += " AND json_extract(order_json, '$.side')=?"
+        args.append(side)
+    return conn.execute(sql + " LIMIT 1", args).fetchone() is not None
+
+
+def has_open_order_today(
+    conn: sqlite3.Connection, account_id: str, ticker: str, side: str, d: date
+) -> bool:
+    """오늘 같은 계좌·종목·방향의 살아 있는 주문이 있으면 True (손절 반복 발주 방지)."""
+    lo, hi = _kst_day_bounds(d)
     row = conn.execute(
-        "SELECT 1 FROM approvals WHERE decision_id=? AND account_id=? AND status='pending' LIMIT 1",
-        (decision_id, account_id),
+        "SELECT 1 FROM orders WHERE account_id=? AND ticker=? AND side=? "
+        "AND status NOT IN ('rejected','cancelled','failed') "
+        "AND created_at >= ? AND created_at < ? LIMIT 1",
+        (account_id, ticker, side, lo, hi),
     ).fetchone()
     return row is not None
+
+
+def unhandled_trigger_id(
+    conn: sqlite3.Connection, market: str, ticker: str, kind: str
+) -> int | None:
+    """같은 종목·종류의 미처리 트리거 id (있으면 다시 쌓지 않고 그 행을 재평가에 연결한다)."""
+    row = conn.execute(
+        "SELECT id FROM triggers WHERE market=? AND ticker=? AND kind=? AND handled_at IS NULL "
+        "ORDER BY id LIMIT 1",
+        (market, ticker, kind),
+    ).fetchone()
+    return int(row["id"]) if row else None
+
+
+def has_unhandled_trigger(conn: sqlite3.Connection, market: str, ticker: str, kind: str) -> bool:
+    return unhandled_trigger_id(conn, market, ticker, kind) is not None
+
+
+def latest_decision(conn: sqlite3.Connection, market: str, ticker: str) -> dict | None:
+    """종목의 가장 최근 결정 행 (json → data). monitor 가 손절선·익절·무효화 조건을 읽는다."""
+    row = conn.execute(
+        "SELECT * FROM decisions WHERE market=? AND ticker=? ORDER BY date DESC, id DESC LIMIT 1",
+        (market, ticker),
+    ).fetchone()
+    if row is None:
+        return None
+    d = dict(row)
+    d["data"] = json.loads(d.pop("json"))
+    return d
 
 
 def today_buy_tickers(conn: sqlite3.Connection, account_id: str, d: date) -> set[str]:
