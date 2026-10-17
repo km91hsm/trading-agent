@@ -1,4 +1,4 @@
-# 시스템 상태 (생성: 2026-10-17 17:57 KST)
+# 시스템 상태 (생성: 2026-10-18 05:53 KST)
 
 ## 실행 제어
 - 일시정지: 아니오
@@ -8,8 +8,8 @@
 ## 계좌
 | id | env | 모드 | 시장 | 성향 |
 |---|---|---|---|---|
-| paper-main | paper | auto | KR,US | normal |
-| real-main | real | off | KR,US | normal |
+| paper-main | paper | auto | KR,US | KR normal, US normal |
+| real-main | real | off | KR,US | KR normal, US normal |
 
 ## 마지막 실행
 - analyze KR 2026-10-17T07:16:55.300801+00:00 → ok
@@ -47,7 +47,7 @@
 - Phase 2 수집: 8/10
 - Phase 3 에이전트: 15/18
 - Phase 4 리스크·계좌별 실행: 8/11
-- Phase 5 웹 UI: 9/10
+- Phase 5 웹 UI: 10/12
 - Phase 6 scan·monitor·데몬: 19/23
 - Phase 7 ML 1단계: 10/14
 - Phase 8 학습·평가·보정: 8/10

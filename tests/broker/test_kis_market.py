@@ -241,3 +241,42 @@ def test_fake_market_minutes():
     fm = FakeMarket(minutes={"005930": c})
     assert [x.time for x in fm.get_minute_kr("005930", count=2)] == ["090300", "090400"]
     assert fm.get_minute_us("AAPL", "NAS") == [] and fm.calls == ["get_minute_kr", "get_minute_us"]
+
+
+def test_minute_kr_caps_pages_on_abnormal_responses(market, respx_mock):
+    """매 페이지가 30건이지만 새 봉이 1건뿐인 비정상 응답이면 호출 수를 상한에서 멈춘다."""
+    base = _hhmm_range("153000", 29)  # 매번 반복되는 29건
+
+    def reply(request):
+        k = len(route.calls)
+        new = _hhmm_range("150000", 1 + k)[-1]  # 호출마다 1분씩 더 이른 새 봉 1건
+        return httpx.Response(200, json=_minute_payload([*base, new]))
+
+    route = respx_mock.get(REAL + DOM_MINUTE).mock(side_effect=reply)
+    candles = market.get_minute_kr("005930", count=390)
+    assert len(route.calls) == market.MINUTE_MAX_PAGES < 390
+    assert len(candles) == 29 + market.MINUTE_MAX_PAGES
+
+
+def test_minute_kr_drops_rows_without_time(market, respx_mock):
+    payload = _minute_payload(["153000", "", "152800"])
+    respx_mock.get(REAL + DOM_MINUTE).mock(return_value=httpx.Response(200, json=payload))
+    candles = market.get_minute_kr("005930")
+    assert [c.time for c in candles] == ["152800", "153000"]
+
+
+def test_minute_kr_drops_previous_day_rows_and_stops(market, respx_mock):
+    """개장 전 시각으로 페이징하면 KIS 가 전일 봉을 섞어 준다. 당일 봉만 남기고 멈춘다."""
+    first = _minute_payload(_hhmm_range("093000", 30))  # 093000..090100
+    mixed = {
+        **_minute_payload(["090000"]),
+        "output2": _minute_payload(["090000"])["output2"]
+        + _minute_payload(_hhmm_range("153000", 29), d="20261007")["output2"],
+    }
+    route = respx_mock.get(REAL + DOM_MINUTE).mock(
+        side_effect=[httpx.Response(200, json=first), httpx.Response(200, json=mixed)]
+    )
+    candles = market.get_minute_kr("005930", count=390)
+    assert len(route.calls) == 2
+    assert {c.date for c in candles} == {date(2026, 10, 8)}
+    assert len(candles) == 31 and candles[0].time == "090000"
