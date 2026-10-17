@@ -54,3 +54,29 @@ def test_env_splits_pnl_across_same_date_and_horizon():
     env5.reset()
     _, r, *_ = env5.step(0.25)
     assert r == pytest.approx(0.025 / 5)
+
+
+def test_env_turnover_and_position_are_per_ticker_and_scaled():
+    import pandas as pd
+
+    df = _steps([0.0, 0.0, 0.0])
+    df["ticker"] = ["A", "B", "A"]
+    df["date"] = [pd.Timestamp("2025-01-02")] * 3  # 같은 날 A·B·A(두 번째 A 는 다음 결정)
+    env = SizingEnv(df, max_weight=0.25, drawdown_penalty=0.0, cost_bp=100)
+    env.reset()
+    obs, r1, *_ = env.step(0.25)  # A: Δw 0.25, 비용 0.01·0.25/3(스케일)
+    assert r1 == pytest.approx(-0.01 * 0.25 / 3) and obs[14] == 0.0  # 다음은 B, B 의 직전 비중 0
+    obs, r2, *_ = env.step(0.25)  # B: 직전 비중은 B 의 0 → 비용 다시 발생
+    assert r2 == pytest.approx(-0.01 * 0.25 / 3) and obs[14] == pytest.approx(0.25)  # 다음 A
+    _, r3, *_ = env.step(0.25)  # A: 직전 A 비중 0.25 → 회전 0
+    assert r3 == pytest.approx(0.0)
+
+
+def test_env_uses_per_row_horizon_column():
+    df = _steps([0.10, 0.10])
+    df["horizon_days"] = [1, 5]
+    env = SizingEnv(df, max_weight=0.25, drawdown_penalty=0.0, cost_bp=0, horizon_days=1)
+    env.reset()
+    _, r1, *_ = env.step(0.25)
+    _, r2, *_ = env.step(0.25)
+    assert r1 == pytest.approx(0.025) and r2 == pytest.approx(0.025 / 5)

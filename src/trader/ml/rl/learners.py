@@ -43,22 +43,37 @@ def _episode_reward(env: SizingEnv, policy: Policy) -> float:
     return total
 
 
+def obs_stats(steps: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
+    """학습 스텝 관측 14열의 평균·표준편차(0 이면 1). 뒤 2차원(비중·드로다운)은 0·1 로 둔다."""
+    m = np.asarray([list(o) for o in steps["obs"]], dtype="float64")
+    mean = np.zeros(OBS_SIZE)
+    std = np.ones(OBS_SIZE)
+    mean[: m.shape[1]] = m.mean(axis=0)
+    sd = m.std(axis=0)
+    std[: m.shape[1]] = np.where(sd > 1e-9, sd, 1.0)
+    return mean, std
+
+
 def fit_cem(steps: pd.DataFrame, cfg: RlSizerCfg, *, seed: int) -> LinearPolicy:
-    """모집단 cem_population 개의 theta 를 뽑아 보상 합 상위 10% 의 평균·표준편차로 갱신."""
+    """모집단 cem_population 개의 theta 를 뽑아 보상 합 상위 10% 의 평균·표준편차로 갱신.
+    관측은 열별 z-score 로 표준화해 원시 스케일(atr_pct 0.01~0.05 등)이 탐색을 막지 않게 한다."""
     rng = np.random.default_rng(seed)
     env = _env(steps, cfg)
+    o_mean, o_std = obs_stats(steps)
     dim = OBS_SIZE + 1
     mean, std = np.zeros(dim), np.ones(dim)
     n_elite = max(1, int(cfg.cem_population * CEM_ELITE_FRAC))
+
+    def policy(th: np.ndarray) -> LinearPolicy:
+        return LinearPolicy(th, cfg.max_weight, mean=o_mean, std=o_std)
+
     for _ in range(cfg.cem_iterations):
         pop = rng.normal(mean, std, size=(cfg.cem_population, dim))
-        scores = np.array(
-            [_episode_reward(env, LinearPolicy(th, cfg.max_weight)) for th in pop]
-        )
+        scores = np.array([_episode_reward(env, policy(th)) for th in pop])
         elite = pop[np.argsort(scores)[::-1][:n_elite]]
         mean = elite.mean(axis=0)
         std = np.maximum(elite.std(axis=0), CEM_MIN_STD)
-    return LinearPolicy(theta=mean, max_weight=cfg.max_weight)
+    return policy(mean)
 
 
 class PpoPolicy:

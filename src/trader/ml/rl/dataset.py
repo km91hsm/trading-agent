@@ -18,6 +18,7 @@ from trader.ml import dataset
 
 OBS_COLUMNS: tuple[str, ...] = (*vector.DIMS, "confidence", "llm_weight")
 STEP_COLUMNS = ["date", "ticker", "obs", "fwd_return", "source"]
+MEMORY_COLUMNS = [*STEP_COLUMNS, "horizon_days"]  # 결정별 horizon (엠바고·보상 정규화용)
 
 
 def _empty() -> pd.DataFrame:
@@ -31,7 +32,8 @@ def _naive_utc(iso: str) -> pd.Timestamp:
 
 def _memory_steps(conn: sqlite3.Connection, market: str | None) -> pd.DataFrame:
     sql = (
-        "SELECT decided_at, ticker, situation_vector, decision, price_return FROM memory_entries "
+        "SELECT decided_at, ticker, situation_vector, decision, price_return, horizon_days "
+        "FROM memory_entries "
         "WHERE price_return IS NOT NULL"
     )
     args: list = []
@@ -52,9 +54,10 @@ def _memory_steps(conn: sqlite3.Connection, market: str | None) -> pd.DataFrame:
                 "obs": [*vec, conf, w],
                 "fwd_return": float(r["price_return"]),
                 "source": "memory",
+                "horizon_days": int(r["horizon_days"] or 1),
             }
         )
-    return pd.DataFrame(out, columns=STEP_COLUMNS) if out else _empty()
+    return pd.DataFrame(out, columns=MEMORY_COLUMNS) if out else _empty()
 
 
 def _feature_steps(state: Path | None, market: str | None, horizon_days: int) -> pd.DataFrame:
@@ -88,7 +91,7 @@ def build_steps(
     horizon_days: int,
     min_memory_steps: int,
 ) -> pd.DataFrame:
-    """열 `date, ticker, obs(list 14), fwd_return, source`, (date, ticker) 오름차순."""
+    """열 `date, ticker, obs(14), fwd_return, source[, horizon_days]`, (date, ticker) 오름차순."""
     mem = _memory_steps(conn, market)
     steps = mem if len(mem) >= min_memory_steps else _feature_steps(state, market, horizon_days)
     if steps.empty:

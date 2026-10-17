@@ -58,3 +58,33 @@ def test_ppo_policy_roundtrips_joblib(tmp_path):
     back = joblib.load(tmp_path / "p.joblib")
     obs = np.zeros(OBS_SIZE)
     assert back.act(obs) == pytest.approx(pol.act(obs)) and 0 <= back.act(obs) <= 0.25
+
+
+def _two_ticker_steps(n_days=60):
+    """하루 2종목: 저변동(atr 0.01)=+2%, 고변동(atr 0.05)=−2%. 저변동에서 크게 가야 이득."""
+    rows = []
+    for d in trading_days(n_days):
+        rows.append((d, "LOW", [0.0] * 4 + [0.01] + [0.0] * 9, 0.02))
+        rows.append((d, "HIGH", [0.0] * 4 + [0.05] + [0.0] * 9, -0.02))
+    return pd.DataFrame(
+        {
+            "date": pd.to_datetime([r[0] for r in rows]),
+            "ticker": [r[1] for r in rows],
+            "obs": [r[2] for r in rows],
+            "fwd_return": [r[3] for r in rows],
+            "source": "features",
+        }
+    )
+
+
+def test_cem_learns_to_size_by_volatility():
+    cfg = RlSizerCfg(cem_iterations=15, cem_population=48, cost_bp=30, horizon_days=5)
+    steps = _two_ticker_steps()
+    pol = fit_cem(steps, cfg, seed=0)
+    low = np.zeros(OBS_SIZE)
+    low[4] = 0.01
+    high = np.zeros(OBS_SIZE)
+    high[4] = 0.05
+    assert pol.act(low) > pol.act(high) + 0.05
+    env = SizingEnv(steps, max_weight=0.25, drawdown_penalty=1.0, cost_bp=30, horizon_days=5)
+    assert evaluate(env, pol)["return"] > evaluate(env, FixedPolicy(0.10))["return"]

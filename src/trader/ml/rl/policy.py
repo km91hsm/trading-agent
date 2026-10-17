@@ -46,14 +46,22 @@ class VolTargetPolicy:
 
 @dataclass(frozen=True)
 class LinearPolicy:
-    """max_weight · sigmoid(theta[:-1]·obs + theta[-1]). theta 길이 = OBS_SIZE + 1."""
+    """max_weight · sigmoid(theta[:-1]·z + theta[-1]), z = (obs − mean)/std, |theta| = OBS_SIZE+1.
+
+    mean·std 는 학습 스텝의 열별 통계(없으면 0·1)로, 정책이 들고 다니므로 서빙 쪽 변환이 따로 없다.
+    """
 
     theta: np.ndarray
     max_weight: float
+    mean: np.ndarray | None = None
+    std: np.ndarray | None = None
 
     def act(self, obs: np.ndarray) -> float:
         th = np.asarray(self.theta, dtype="float64")
-        z = float(th[:-1] @ np.asarray(obs, dtype="float64")[:OBS_SIZE] + th[-1])
+        x = np.asarray(obs, dtype="float64")[:OBS_SIZE]
+        if self.mean is not None and self.std is not None:
+            x = (x - self.mean) / self.std
+        z = float(th[:-1] @ x + th[-1])
         return float(self.max_weight / (1.0 + np.exp(-z)))
 
 

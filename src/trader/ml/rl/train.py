@@ -99,10 +99,14 @@ def train_sizer(
     }
     if len(steps) < rl.min_steps:
         return base | {"promote_reason": f"데이터 부족: 스텝 {len(steps)} (최소 {rl.min_steps})"}
+    # 메모리 스텝은 결정별 horizon 으로 결과가 계산되므로 엠바고 간격은 그 최댓값을 쓴다
+    max_h = cfg.label.horizon_days
+    if "horizon_days" in steps.columns:
+        max_h = max(max_h, int(steps["horizon_days"].max()))
     folds = walkforward.folds(
         steps["date"],
         n_folds=cfg.train.walk_forward_folds,
-        horizon_days=cfg.label.horizon_days,
+        horizon_days=max_h,
         embargo_days=cfg.label.embargo_days,
     )
     if not folds:
@@ -152,6 +156,11 @@ def train_sizer(
         "seeds": rl.seeds,
         "backend": backend_used,
         "horizon_days": cfg.label.horizon_days,
+        "embargo_horizon_days": max_h,
+        "obs_definitions": {
+            "position_weight": "학습: 같은 종목의 직전 행동 비중 / 서빙: 계좌의 실제 보유 비중",
+            "drawdown": "학습: 에피소드 NAV 피크 대비 / 서빙: 최근 30일 스냅샷 피크 대비",
+        },
         "train_range": [dates.min().isoformat(), dates.max().isoformat()],
         "folds": fold_rows,
         "summary": summary,

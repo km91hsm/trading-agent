@@ -139,3 +139,4 @@
 - [ ] 완료 기준(사용자 확인 대기): 8주 워크포워드 비교 리포트 — 모의 운영 8주 뒤 `uv run trader rl train` → `rl report --account paper-main --weeks 8` 로 RL vs 고정·LLM 비교, 승격은 `rl promote <버전>` 수동(그 뒤 `ml.yaml rl_sizer.enabled: true`, 처음엔 `mode: shadow`)
 - [ ] 사용자 확인 대기: PPO 백엔드 — `uv sync --extra rl`(torch 휠 필요, 이 머신은 x86_64 Python 이라 설치가 안 될 수 있음) 후 `ml.yaml rl_sizer.backend: ppo` 로 `rl train`
 - [ ] Phase 9 이연: 멀티 종목 동시 포트폴리오 환경, RL 실험 전용 페이지, 피처 스토어 날짜별 parquet 전체 읽기(학습·섀도 관측마다 수 초)
+- [ ] 리뷰 Minor 이연(Phase 9): `rl train --seeds` 가 pydantic 범위(1~10) 검증을 우회, `rl_shadow.applied` 가 게이트 전 기록(거부돼도 applied=1)·재평가(`31_decision_r<n>`) 는 첫 행 유지, 메모리 스텝이 SELL/TRIM/HOLD 결정도 매수 비중으로 취급(LLM 기준선 불리), `/api/rl/report?market=` 미검증, `ml/models/__init__` docstring 의 "rl_sizer 는 Phase 9" 문구·`ml.yaml` horizon_days 주석, `uv.lock` 에 torch 계열 항목(extra 전용) — 학습 drawdown(에피소드 피크) 과 서빙 drawdown(30일 스냅샷 피크) 정의 차이는 메타 `obs_definitions` 에 명시만 함

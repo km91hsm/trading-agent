@@ -233,6 +233,7 @@ def execute(
         ctx.rl_sizer is not None
         and decision_id is not None
         and not is_stop_loss
+        and not dry_run  # dry-run·FAKE 세션의 제안은 실험 집계를 오염시킨다
         and decision.action in ("BUY", "ADD")
     )
     for account in ctx.accounts:

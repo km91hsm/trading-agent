@@ -526,3 +526,9 @@ def test_hold_and_sell_skip_rl(ectx):
     ectx.rl_sizer = _sizer("apply")
     _run(ectx, ok_decision(action="HOLD"))
     assert _shadow_rows(ectx) == []
+
+
+def test_dry_run_does_not_record_shadow(ectx):
+    ectx.rl_sizer = _sizer("shadow")
+    _run(ectx, dry_run=True)
+    assert _shadow_rows(ectx) == []

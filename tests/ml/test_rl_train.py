@@ -66,3 +66,29 @@ def test_train_default_fit_is_cem_and_loadable(project, conn):
     assert r["backend"] == "cem"
     pol, meta = registry.load("rl_sizer", r["version"])
     assert 0 <= pol.act(np.zeros(OBS_SIZE)) <= 0.25 and meta["obs_columns"][-1] == "llm_weight"
+
+
+def test_memory_source_folds_use_max_decision_horizon(project, conn, monkeypatch):
+    import pandas as pd
+    from helpers_ml import trading_days
+
+    from trader.ml.rl import train as rl_train
+
+    days = trading_days(400)
+    steps = pd.DataFrame(
+        {
+            "date": pd.to_datetime(days),
+            "ticker": "A",
+            "obs": [[0.0] * 14] * 400,
+            "fwd_return": [0.01] * 400,
+            "source": "memory",
+            "horizon_days": [10] * 400,
+        }
+    )
+    monkeypatch.setattr(rl_train, "build_steps", lambda *a, **k: steps)
+    r = train_sizer(MlConfig(), conn, now=lambda: NOW, fit_fn=_fake_fit)
+    assert r["folds"]
+    for f in r["folds"]:
+        walkforward.check_no_leak(
+            days, f["train_end"], f["test_start"], horizon_days=10, embargo_days=5
+        )

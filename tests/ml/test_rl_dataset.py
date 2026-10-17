@@ -29,3 +29,9 @@ def test_steps_prefer_memory_when_enough(project, conn):
 def test_steps_empty_when_no_data(project, conn):
     df = rl_dataset.build_steps(conn, None, market=None, horizon_days=5, min_memory_steps=200)
     assert df.empty and list(df.columns) == ["date", "ticker", "obs", "fwd_return", "source"]
+
+
+def test_memory_steps_carry_horizon_days(project, conn):
+    seed_matured(conn, 12, hit_rate=0.5)
+    df = rl_dataset.build_steps(conn, None, market="KR", horizon_days=5, min_memory_steps=10)
+    assert "horizon_days" in df.columns and set(df["horizon_days"]) == {5}
