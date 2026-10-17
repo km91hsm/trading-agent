@@ -140,14 +140,22 @@ class KisMarket:
 
     MINUTE_PAGE = 30  # KIS 국내 분봉은 기준 시각부터 과거 30건만 준다
     MINUTE_OPEN = "090000"
+    MINUTE_MAX_PAGES = 20  # 정규장 390분 = 13페이지. 비정상 응답이 와도 호출 수는 여기서 멈춘다
 
     def get_minute_kr(self, ticker: str, *, count: int = 30) -> list[Candle]:
         """당일 분봉. KIS 는 기준 시각부터 과거 30건만 주므로 count 만큼 1분 전 시각으로
-        역방향 페이징한다(새 봉 없음·30 미만·09:00 도달이면 중단). 시간 오름차순."""
+        역방향 페이징한다(새 봉 없음·30 미만·09:00 도달·페이지 상한이면 중단). 시간 오름차순.
+
+        체결 시각이 빈 행은 버리고, 개장 전 시각으로 내려가 전일 봉이 섞여 오면 첫 페이지의
+        날짜(당일)만 남기고 멈춘다.
+        """
         hour = self._now().astimezone(_KST).strftime("%H%M%S")
-        seen: set[tuple[date, str]] = set()
+        seen: set[str] = set()
         candles: list[Candle] = []
-        while len(candles) < count:
+        day: date | None = None
+        for _ in range(self.MINUTE_MAX_PAGES):
+            if len(candles) >= count:
+                break
             data = self._client.get(
                 path("DOM_MINUTE"),
                 "DOM_MINUTE",
@@ -167,22 +175,27 @@ class KisMarket:
                     low=_dec(r.get("stck_lwpr")),
                     close=_dec(r.get("stck_prpr")),
                     volume=_int(r.get("cntg_vol")),
-                    time=str(r.get("stck_cntg_hour", "")),
+                    time=str(r["stck_cntg_hour"]),
                 )
                 for r in _rows(data.get("output2"))
-                if r.get("stck_bsop_date")
+                if r.get("stck_bsop_date") and r.get("stck_cntg_hour")
             ]
-            fresh = [c for c in page if (c.date, c.time or "") not in seen]
-            seen.update((c.date, c.time or "") for c in fresh)
-            candles.extend(fresh)
-            if not fresh or len(page) < self.MINUTE_PAGE:
+            if not page:
                 break
-            earliest = min(c.time or "" for c in page)
+            if day is None:
+                day = max(c.date for c in page)
+            today = [c for c in page if c.date == day]
+            fresh = [c for c in today if c.time not in seen]
+            seen.update(c.time for c in fresh)
+            candles.extend(fresh)
+            if not fresh or len(today) < self.MINUTE_PAGE:
+                break  # 전일 봉이 섞였거나 당일 봉이 바닥났다
+            earliest = min(c.time for c in today)
             if earliest <= self.MINUTE_OPEN:
                 break
             t = datetime.strptime(earliest, "%H%M%S") - timedelta(minutes=1)
             hour = t.strftime("%H%M%S")
-        ordered = sorted(candles, key=lambda c: (c.date, c.time or ""))
+        ordered = sorted(candles, key=lambda c: c.time)
         return ordered[-count:]
 
     def get_minute_us(self, symbol: str, exchange: str, *, count: int = 120) -> list[Candle]:
