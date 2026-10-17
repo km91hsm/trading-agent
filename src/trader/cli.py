@@ -1400,7 +1400,7 @@ def _rl_version_exists(version: str) -> bool:
 @rl_app.command("train")
 def rl_train(
     market: str | None = typer.Option(None, "--market", help="KR|US (기본 전체)"),
-    seeds: int | None = typer.Option(None, "--seeds", help="시드 수 (기본 ml.yaml)"),
+    seeds: int | None = typer.Option(None, "--seeds", min=1, max=10, help="시드 수 (기본 ml.yaml)"),
 ) -> None:
     """스텝 데이터로 사이저를 워크포워드×시드 학습·기준선 비교·저장한다 (자동 승격 없음)."""
     import json

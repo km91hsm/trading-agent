@@ -35,3 +35,12 @@ def test_memory_steps_carry_horizon_days(project, conn):
     seed_matured(conn, 12, hit_rate=0.5)
     df = rl_dataset.build_steps(conn, None, market="KR", horizon_days=5, min_memory_steps=10)
     assert "horizon_days" in df.columns and set(df["horizon_days"]) == {5}
+
+
+def test_memory_steps_only_buy_add(project, conn):
+    from datetime import date
+
+    seed_matured(conn, 6, action="HOLD")
+    seed_matured(conn, 6, action="BUY", start=date(2026, 3, 1))
+    df = rl_dataset.build_steps(conn, None, market="KR", horizon_days=5, min_memory_steps=1)
+    assert len(df) == 6 and set(df["source"]) == {"memory"}

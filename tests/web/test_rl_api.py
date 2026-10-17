@@ -17,3 +17,8 @@ def test_rl_experiments_and_shadow_endpoints(client, conn):
     assert client.get("/api/rl/shadow?account_id=nope").status_code == 400
     assert client.get("/api/rl/shadow?account_id=paper-main").json() == {"rows": []}
     assert client.get("/api/rl/report?account_id=paper-main").json()["shadow"]["n"] == 0
+
+
+def test_rl_report_rejects_bad_market(client):
+    assert client.get("/api/rl/report?account_id=paper-main&market=XX").status_code == 400
+    assert client.get("/api/rl/report?account_id=paper-main&market=KR").status_code == 200

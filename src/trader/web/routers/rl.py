@@ -9,7 +9,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 
 from trader.ml import registry
 from trader.ml.rl import report, shadow
-from trader.web.routers._common import deps_of, require_account
+from trader.web.routers._common import deps_of, require_account, require_market
 
 router = APIRouter(prefix="/rl", tags=["rl"])
 _VERSION_RE = re.compile(r"^\d{8}_\d{6}$")
@@ -53,6 +53,8 @@ def comparison(
     weeks: int = Query(8, ge=1, le=52),
 ) -> dict:
     acct = require_account(request, account_id)
+    if market is not None:
+        market = require_market(market, acct)
     deps = deps_of(request)
     with closing(deps.conn_factory()) as conn:
         return report.comparison(conn, deps.state, account_id=acct.id, market=market, weeks=weeks)
