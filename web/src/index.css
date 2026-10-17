@@ -1,0 +1,22 @@
+:root { color-scheme: dark; font-family: -apple-system, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif; font-size: 14px; }
+body { margin: 0; background: #0f1218; color: #e6e6e6; }
+main { padding: 16px 24px; max-width: 1400px; }
+h1 { font-size: 20px; margin: 8px 0 12px; } h2 { font-size: 15px; margin: 18px 0 6px; color: #bbb; } h3 { margin: 6px 0; }
+.nav { display: flex; gap: 12px; align-items: center; padding: 8px 24px; background: #161a22; border-bottom: 1px solid #262c38; }
+.nav a { color: #aab; text-decoration: none; padding: 4px 6px; border-radius: 4px; } .nav a.active { color: #fff; background: #2a3140; }
+.brand { font-weight: 700; color: #f5a524; margin-right: 8px; } .spacer { flex: 1; }
+.badge { background: #2a3140; padding: 2px 8px; border-radius: 10px; font-size: 12px; } .badge.warn { background: #7a2e2e; } .badge.ok { background: #1f5b3a; } .badge.muted { color: #888; }
+.cards { display: flex; gap: 12px; flex-wrap: wrap; } .card { background: #161a22; border: 1px solid #262c38; border-radius: 8px; padding: 12px 14px; min-width: 260px; }
+.card.real { border-color: #7a2e2e; } .card small { color: #888; font-weight: normal; }
+table { border-collapse: collapse; width: 100%; margin: 4px 0 8px; } th, td { text-align: left; padding: 4px 8px; border-bottom: 1px solid #262c38; font-size: 13px; }
+tr.failed td, tr.rejected td { color: #e5484d; } tr.sel td { background: #2a3140; } tbody tr { cursor: default; }
+.row { display: flex; gap: 10px; align-items: center; margin: 6px 0; } .row.wrap { flex-wrap: wrap; }
+.split { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+label { display: inline-flex; gap: 6px; align-items: center; } select, input { background: #0f1218; color: #eee; border: 1px solid #3a4150; padding: 4px 6px; border-radius: 4px; }
+button { background: #2a3140; color: #eee; border: 1px solid #3a4150; padding: 4px 10px; border-radius: 4px; cursor: pointer; } button:disabled { opacity: .4; cursor: not-allowed; }
+button.sel { background: #3b4a6b; } button.chip { font-size: 12px; } button.danger { background: #5b2323; }
+.muted { color: #888; } .error { color: #ff8080; background: #2a1a1a; padding: 6px 10px; border-radius: 4px; margin: 6px 0; }
+.leaf { padding-left: 2px; } .indent { padding-left: 16px; } .k { color: #9cdcfe; } .v.string { color: #ce9178; } .v.number { color: #b5cea8; } .v.boolean { color: #569cd6; }
+details summary { cursor: pointer; } .viewer { background: #161a22; padding: 10px; border-radius: 6px; margin-top: 8px; }
+.debate ul { margin: 4px 0 8px 18px; } .chart { width: 100%; min-height: 460px; } pre.status { background: #161a22; padding: 10px; overflow: auto; max-height: 420px; font-size: 12px; }
+ul.inline { display: flex; gap: 14px; list-style: none; padding: 0; }

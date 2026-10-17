@@ -114,6 +114,7 @@ def execute(
     """계좌마다 판정·기록·(모드별) 주문. 계좌 하나의 실패가 다른 계좌를 막지 않는다."""
     d = run_dir(date, market, decision.ticker, ctx.state)
     decision_id = repo.decision_id(ctx.conn, date, market, decision.ticker)
+    paused = control.is_paused(ctx.conn)
     results: list[dict] = []
     for account in ctx.accounts:
         if market not in account.markets:
@@ -154,6 +155,8 @@ def execute(
                     "reasons": verdict.reasons + ["이미 이 결정에 대한 주문/승인 요청이 존재"],
                 }
             )
+        if paused and verdict.approved:
+            note = (note + "; " if note else "") + "일시정지 중: 판정만 기록, 주문·승인 요청 없음"
         verdict = verdict.model_copy(
             update={"mode": mode, "note": note, "stance": st, "dry_run": dry_run}
         )
@@ -179,7 +182,7 @@ def execute(
                 adjusted_qty=verdict.adjusted_qty,
                 reasons=verdict.reasons,
             )
-        if not verdict.approved or mode == "off" or dry_run:
+        if not verdict.approved or mode == "off" or dry_run or paused:
             results.append(entry)
             continue
         request = OrderRequest(
@@ -310,6 +313,8 @@ def approve(ctx: ExecContext, approval_id: int) -> dict:
     a, err = _take_pending(ctx, approval_id)
     if a is None:
         return {"ok": False, "error": err}
+    if control.is_paused(ctx.conn):
+        return {"ok": False, "error": "일시정지 중이라 승인을 실행하지 않음 (요청은 pending 유지)"}
     account = next((x for x in ctx.accounts if x.id == a["account_id"]), None)
     if account is None:
         return {"ok": False, "error": f"계좌 {a['account_id']} 가 설정에 없음"}

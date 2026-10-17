@@ -5,6 +5,7 @@ description = "LLM 멀티 에이전트 + ML 주식 자동매매 (KIS)"
 requires-python = ">=3.12"
 dependencies = [
     "beautifulsoup4>=4.15.0",
+    "fastapi>=0.143.0",
     "httpx>=0.28.1",
     "pandas>=3.0.6",
     "pyarrow>=25.0.1",
@@ -13,6 +14,7 @@ dependencies = [
     "pyyaml>=6.0.3",
     "typer>=0.27.3",
     "tzdata>=2026.5",
+    "uvicorn[standard]>=0.54.0",
 ]
 
 [project.scripts]
@@ -33,6 +35,9 @@ build-backend = "hatchling.build"
 packages = ["src/trader"]
 
 [tool.pytest.ini_options]
+filterwarnings = [
+    "ignore:Using `httpx` with `starlette.testclient` is deprecated",
+]
 testpaths = ["tests"]
 
 [tool.ruff]

@@ -46,3 +46,22 @@ def make_account(id: str, env: str, mode: str, markets: list[str] | None = None)
     from trader.config import AccountConfig
 
     return AccountConfig(id=id, env=env, cano="00000000", markets=markets or ["KR"], mode=mode)
+
+
+# --- 웹 API (Phase 5). tests/web/conftest.py 를 두면 루트 `conftest` 모듈과 이름이 겹친다 ---
+
+
+@pytest.fixture
+def deps(project, conn):
+    from helpers_web import make_deps
+
+    return make_deps(project)
+
+
+@pytest.fixture
+def client(deps):
+    from fastapi.testclient import TestClient
+
+    from trader.web.app import create_app
+
+    return TestClient(create_app(deps))

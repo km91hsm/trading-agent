@@ -68,12 +68,15 @@
 - [ ] 리뷰 Minor 이연: approvals.decision_id 0 기록, metrics 30일 창의 UTC/KST 하루 오차, telegram_offset 이 타 chat 메시지로 전진 안 함, KR limit_price 호가단위·범위 검증, 승인 시점 게이트 재평가 (Phase 5~6 에서 해당 모듈 손댈 때)
 
 ## Phase 5 웹 UI
-- [ ] FastAPI 라우터 (accounts·portfolio·runs·orders·charts·ml·control·system) + SSE + bearer 토큰
-- [ ] React 앱: 전체 대시보드·계좌 상세·계좌 비교
-- [ ] 오늘의 실행·리포트(토론) 뷰어
-- [ ] 주문/승인·차트(Lightweight Charts, 마커)·데이터 탐색 (웹 승인은 Phase 4 의 `approvals` 행·`executor.approve` 를 그대로 쓴다)
-- [ ] 설정/제어 페이지
-- [ ] 완료 기준: 계좌 전환, 산출물 열람, 웹 승인 주문, 차트 마커, 모의 주문이 실전 뷰에 안 섞임, 토큰 없는 제어 401
+- [x] FastAPI 라우터 (accounts·portfolio·runs·orders·charts·ml(자리)·control·system) + SSE(`/api/events`, 원장 카운터 폴링) + bearer 토큰 (`WEB_TOKEN` 미설정이면 제어 API 401)
+- [x] React 앱(Vite 8 + React 19 + TS, `web/`): 전체 대시보드·계좌 상세·계좌 비교
+- [x] 오늘의 실행·리포트(토론) 뷰어 (체크포인트 JSON 트리, 토론은 논거·반박 분리)
+- [x] 주문/승인·차트(Lightweight Charts 5, 결정·주문 마커)·데이터 탐색(00_inputs; 피처 parquet 는 Phase 7) (웹 승인은 Phase 4 의 `approvals` 행·`executor.approve` 를 그대로 쓴다)
+- [x] 설정/제어 페이지 (토큰 저장·일시정지·계좌 모드, 실전 auto 는 LIVE 확인)
+- [x] 완료 기준: 계좌 전환, 산출물 열람, 웹 승인 주문, 차트 마커, 모의 주문이 실전 뷰에 안 섞임, 토큰 없는 제어 401 (2026-10-09 확인: TestClient 27개 — 계좌 분리·401·승인 2회 409·실전 auto confirm·경로 탈출; Vitest 5개; 브라우저 실기 — 대시보드·오늘의 실행(000660 토론 뷰)·차트(005930 KIS 일봉)·계좌·주문 페이지 렌더, 틀린 토큰으로 일시정지 → "토큰이 필요합니다" 표시. 웹 승인 주문 실기는 Phase 4 의 승인 실기(사용자 확인 대기)와 함께)
+- [ ] 사용자 확인 대기: `secrets/.env` 에 `WEB_TOKEN` 설정 후 `uv run trader web` → 설정 페이지에 토큰 입력 → 일시정지/재개가 반영되는지, 승인 요청이 있을 때 주문/승인 페이지에서 승인 → 주문 접수 확인
+- [ ] 리뷰 Minor 이연(Phase 5): `_validate_ids` 가 `.`·`..` 티커를 허용(경로 탈출은 없음), `list_decisions` 30일 창 UTC/KST 하루 오차, `favicon` 미지정
+- [ ] Phase 5 이연: SSE 를 트리거·데몬 이벤트 푸시로(Phase 6), 관심종목 제어(Phase 6), 차트 지표 오버레이·분봉(Phase 6), ML 페이지 실데이터(Phase 7), 성과 페이지(Phase 8)
 
 ## Phase 6 scan·monitor·데몬
 - [ ] 정량 스크리너 + screener 세션 (haiku)
