@@ -165,3 +165,91 @@ def test_query_bounds_on_limits_and_days(client):
     assert client.get("/api/decisions?days=1000000000").status_code == 422
     assert client.get("/api/calls?days=0").status_code == 422
     assert client.get("/api/runs?limit=0").status_code == 422
+
+
+# --- 분봉 차트 -----------------------------------------------------------------
+
+
+def _order(conn, dec_id, created_at, account_id="paper-main"):
+    repo.insert_order(
+        conn,
+        decision_id=dec_id,
+        account_id=account_id,
+        ticker="005930",
+        market="KR",
+        side="BUY",
+        qty=1,
+        order_type="LIMIT",
+        price=Decimal("71000"),
+        status="accepted",
+        order_no="1",
+        message="",
+        mode="auto",
+        created_at=created_at,
+    )
+
+
+def test_minute_chart_epoch_and_markers_same_day_only(client, conn):
+    from datetime import UTC, datetime
+
+    dec_id = repo.ingest_checkpoint(conn, D, "KR", "005930", "30_decision", {"data": ok_decision()})
+    _order(conn, dec_id, "2026-10-09T00:02:30+00:00")  # 09:02 KST 오늘
+    _order(conn, dec_id, "2026-10-08T00:02:30+00:00")  # 어제 → 제외
+    conn.execute(
+        "INSERT INTO triggers(account_id, market, ticker, kind, detail, created_at) "
+        "VALUES (?,?,?,?,?,?)",
+        ("paper-main", "KR", "005930", "take_profit", "+7%", "2026-10-09T00:03:10+00:00"),
+    )
+    conn.commit()
+    r = client.get("/api/charts/minute?ticker=005930&market=KR&count=5").json()
+    assert r["interval"] == "1m" and r["tz"] == "Asia/Seoul" and r["session_date"] == "2026-10-09"
+    t0 = int(datetime(2026, 10, 9, 0, 0, tzinfo=UTC).timestamp())
+    assert [c["time"] for c in r["candles"]] == [t0 + 60 * i for i in range(5)]
+    assert isinstance(r["candles"][0]["close"], str)
+    assert [(m["kind"], m["time"]) for m in r["markers"]] == [
+        ("order", t0 + 120),
+        ("trigger", t0 + 180),
+    ]
+    assert "트리거 take_profit" in r["markers"][1]["text"]
+    assert all(m["kind"] != "decision" for m in r["markers"])
+
+
+def test_minute_chart_account_filter_orders_only(client, conn):
+    dec_id = repo.ingest_checkpoint(conn, D, "KR", "005930", "30_decision", {"data": ok_decision()})
+    _order(conn, dec_id, "2026-10-09T00:02:30+00:00")
+    r = client.get("/api/charts/minute?ticker=005930&market=KR&account_id=real-main").json()
+    assert all(m["kind"] != "order" for m in r["markers"])
+
+
+def test_minute_chart_us_epoch_uses_new_york(client):
+    from datetime import UTC, datetime
+
+    r = client.get("/api/charts/minute?ticker=AAPL&market=US&exchange=NAS&count=2").json()
+    # 가짜 분봉 5개(09:00~09:04) 중 최신 2개 → 첫 봉 09:03 뉴욕(EDT, UTC−4) = 13:03Z
+    assert r["tz"] == "America/New_York"
+    assert r["candles"][0]["time"] == int(datetime(2026, 10, 9, 13, 3, tzinfo=UTC).timestamp())
+
+
+def test_minute_chart_empty_candles_ok(client):
+    r = client.get("/api/charts/minute?ticker=000660&market=KR")
+    assert r.status_code == 200 and r.json()["candles"] == [] and r.json()["markers"] == []
+    assert r.json()["session_date"] is None
+
+
+def test_minute_chart_bounds(client, project):
+    assert client.get("/api/charts/minute?ticker=005930&market=KR&count=0").status_code == 422
+    assert client.get("/api/charts/minute?ticker=005930&market=KR&count=391").status_code == 422
+    assert (
+        client.get("/api/charts/minute?ticker=005930&market=KR&account_id=ghost").status_code == 400
+    )
+    assert client.get("/api/charts/minute?ticker=AAPL&market=US").status_code == 400
+    assert client.get("/api/charts/minute?ticker=../x&market=KR").status_code == 400
+    c = TestClient(create_app(make_deps(project, market=False)))
+    assert c.get("/api/charts/minute?ticker=005930&market=KR").status_code == 503
+
+
+def test_minute_chart_cache_and_count_passthrough(client, deps):
+    before = len(deps.market.calls)
+    assert client.get("/api/charts/minute?ticker=005930&market=KR&count=3").status_code == 200
+    assert client.get("/api/charts/minute?ticker=005930&market=KR&count=3").status_code == 200
+    assert deps.market.calls[before:] == ["get_minute_kr"]  # 60초 캐시
