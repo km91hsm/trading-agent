@@ -112,3 +112,18 @@ def test_targets_include_positions_and_dedupe(project, conn, monkeypatch):
     )
     ids = [t["ticker"] for t in r["analyze_targets"]]
     assert ids.count("000001") == 1 and "000007" in ids and len(ids) == 6
+
+
+def test_watch_targets_are_scoped_to_market(project, conn):
+    r = screener.run_screen(
+        Settings(),
+        conn,
+        _accounts(),
+        market="US",
+        date=D,
+        candidates=[],
+        cap_hit=True,
+        now=lambda: NOW,
+        watch=["005930", "AAPL", "KR:000660", "US:MSFT"],
+    )
+    assert [t["ticker"] for t in r["analyze_targets"]] == ["AAPL", "MSFT"]

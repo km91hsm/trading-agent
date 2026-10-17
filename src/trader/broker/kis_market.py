@@ -396,9 +396,10 @@ class KisMarket:
         )
         for r in _rows(resp.get("output")):
             days[str(r["bass_dt"])] = str(r.get("opnd_yn", "N")).upper() == "Y"
-        cache.write_text(
-            json.dumps({"fetched_at": now.isoformat(), "days": days}), encoding="utf-8"
-        )
+        if days:  # 빈 응답을 7일 캐시하면 그 달 휴장일을 전부 개장일로 보게 된다
+            cache.write_text(
+                json.dumps({"fetched_at": now.isoformat(), "days": days}), encoding="utf-8"
+            )
         return days
 
     def is_holiday(self, d: date) -> bool:

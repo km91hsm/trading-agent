@@ -7,21 +7,23 @@ from __future__ import annotations
 
 import logging
 import sqlite3
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
 from trader.broker.models import Fill
-from trader.config import AccountConfig
+from trader.config import MARKET_TZ, AccountConfig
 from trader.ledger import repo
 
 logger = logging.getLogger("trader.fills")
 
 
 def _order_id_for(conn: sqlite3.Connection, account_id: str, f: Fill) -> int:
+    # KIS 주문번호(ODNO)는 날마다 다시 시작하므로 종목·방향까지 같아야 같은 주문으로 본다
     row = conn.execute(
-        "SELECT id FROM orders WHERE account_id=? AND order_no=? ORDER BY id DESC LIMIT 1",
-        (account_id, f.order_no),
+        "SELECT id FROM orders WHERE account_id=? AND order_no=? AND ticker=? AND side=? "
+        "ORDER BY id DESC LIMIT 1",
+        (account_id, f.order_no, f.ticker, f.side),
     ).fetchone()
     if row:
         return int(row["id"])
@@ -56,14 +58,27 @@ def _refresh_status(conn: sqlite3.Connection, order_id: int) -> bool:
     return True
 
 
-def sync_fills(conn: sqlite3.Connection, broker: Any, account: AccountConfig, d: date) -> dict:
-    """계좌의 시장별 체결을 적재한다. 같은 체결은 두 번 들어가지 않는다 (fills 유니크 인덱스)."""
+def _day_for(market: str, d: date | datetime) -> date:
+    """datetime 이면 그 시장 현지 날짜(KIS 체결 조회의 주문일자는 현지 기준), date 면 그대로."""
+    if isinstance(d, datetime):
+        return d.astimezone(MARKET_TZ[market]).date()
+    return d
+
+
+def sync_fills(
+    conn: sqlite3.Connection, broker: Any, account: AccountConfig, d: date | datetime
+) -> dict:
+    """계좌의 시장별 체결을 적재한다. 같은 체결은 두 번 들어가지 않는다 (fills 유니크 인덱스).
+
+    d 가 datetime 이면 시장마다 현지 날짜로 조회한다 (US 는 ET: 07:10 KST 동기화는 전날 ET).
+    """
     inserted = 0
     replaced = 0
     updated: set[int] = set()
+    days = {m: _day_for(m, d) for m in account.markets}
     for market in account.markets:
         try:
-            fills = broker.get_fills(market, d)
+            fills = broker.get_fills(market, days[market])
         except Exception as e:  # noqa: BLE001 - 한 시장 실패가 다른 시장을 막지 않는다
             logger.warning("체결 조회 실패 %s %s: %s", account.id, market, e)
             continue
@@ -94,7 +109,11 @@ def sync_fills(conn: sqlite3.Connection, broker: Any, account: AccountConfig, d:
                 updated.add(oid)
     return {
         "account_id": account.id,
-        "date": d.isoformat(),
+        "date": (
+            {m: day.isoformat() for m, day in days.items()}
+            if isinstance(d, datetime)
+            else d.isoformat()
+        ),
         "inserted": inserted - replaced,
         "updated": replaced,
         "orders_updated": len(updated),

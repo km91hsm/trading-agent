@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from trader.config import AccountConfig, ScheduleConfig, Settings
+from trader.config import MARKET_TZ, AccountConfig, ScheduleConfig, Settings
 from trader.control import control
 from trader.ledger import db
 from trader.notify.telegram import Notifier, NullNotifier
@@ -86,9 +86,6 @@ def in_window(now_t: time, start: str, end: str) -> bool:
     return now_t >= s or now_t <= e
 
 
-MARKET_TZ = {"KR": ZoneInfo("Asia/Seoul"), "US": ZoneInfo("America/New_York")}
-
-
 def market_date(market: str, now: datetime | date) -> date:
     """시장 현지 날짜 (주말 판정용). date 를 주면 그대로 쓴다."""
     if isinstance(now, datetime):
@@ -150,8 +147,6 @@ def us_holidays(year: int) -> frozenset[date]:
 
 def is_us_holiday(d: date) -> bool:
     return d in us_holidays(d.year)
-
-
 
 
 def should_skip(
@@ -516,7 +511,8 @@ def _fills_body(deps: DaemonDeps) -> dict:
         for a in deps.accounts:
             b = deps.brokers.get(a.id)
             if b is not None:
-                out[a.id] = sync_fills(conn, b, a, _today(deps))
+                # US 체결은 ET 날짜로 조회해야 한다 (07:10 KST 는 전날 ET) → 시장별 현지 날짜
+                out[a.id] = sync_fills(conn, b, a, deps.now())
     finally:
         conn.close()
     return out

@@ -255,3 +255,11 @@ def test_minute_chart_cache_and_count_passthrough(client, deps):
     assert client.get("/api/charts/minute?ticker=005930&market=KR&count=3").status_code == 200
     assert client.get("/api/charts/minute?ticker=005930&market=KR&count=3").status_code == 200
     assert deps.market.calls[before:] == ["get_minute_kr"]  # 60초 캐시
+
+
+def test_chart_cache_prunes_expired_entries():
+    from trader.web.routers import charts as charts_mod
+
+    cache: dict = {("KR", "a"): (0.0, []), ("KR", "b"): (10_000.0, [])}
+    charts_mod._remember(cache, ("KR", "c"), [], ttl=1.0, now=10_000.5)
+    assert set(cache) == {("KR", "b"), ("KR", "c")}

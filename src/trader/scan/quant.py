@@ -15,6 +15,7 @@ import numpy as np
 import pandas as pd
 
 from trader.config import Universe
+from trader.control.control import split_market
 from trader.ml import features
 
 logger = logging.getLogger("trader.scan")
@@ -110,8 +111,12 @@ def candidates(
     else:
         ids = [(u.symbol, u.exchange) for u in universe.us]
     for w in [*universe.watch, *(watch_extra or [])]:
-        if all(w != t for t, _ in ids):
-            ids.append((w, None))
+        # 관심종목은 `KR:`/`US:` 접두사 또는 코드 형식(6자리 숫자=KR)으로 시장을 가린다
+        wm, wt = split_market(str(w).strip().upper())
+        if wm != market:
+            continue
+        if all(wt != t for t, _ in ids):
+            ids.append((wt, None))
     ids = [(t, e) for t, e in ids if t not in excl]
     exch = dict(ids)
     df = latest_features(market, state=state)

@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from trader.config import AccountConfig, Settings
+from trader.control.control import split_market
 from trader.orchestrator import session as session_mod
 from trader.orchestrator.run_store import read_checkpoint
 from trader.platform import paths
@@ -89,7 +90,9 @@ def run_screen(
         except Exception as e:  # noqa: BLE001 - 보유 조회 실패는 후보만으로 진행
             logger.warning("보유종목 조회 실패 %s: %s", a.id, e)
     for w in watch or []:
-        add(w, exch.get(w))
+        wm, wt = split_market(str(w).strip().upper())
+        if wm == market:  # 다른 시장의 관심종목은 이 시장 분석 대상이 아니다
+            add(wt, exch.get(wt))
     return {
         "picks": picks,
         "analyze_targets": targets,

@@ -944,7 +944,9 @@ app.add_typer(fills_app, name="fills")
 @fills_app.command("sync")
 def fills_sync(
     account: str | None = typer.Option(None, "--account", help="특정 계좌 id 만"),
-    date: str | None = typer.Option(None, "--date", help="YYYY-MM-DD (기본 KST 오늘)"),
+    date: str | None = typer.Option(
+        None, "--date", help="YYYY-MM-DD (기본: 시장별 현지 오늘 — US 는 뉴욕 날짜)"
+    ),
 ) -> None:
     """계좌별 체결을 원장에 적재한다 (멱등)."""
     from datetime import date as _date
@@ -956,7 +958,7 @@ def fills_sync(
         configure(paths.state_dir())
         secrets = config.load_secrets()
         accounts = config.load_accounts()
-        d = _date.fromisoformat(date) if date else datetime.now(_KST).date()
+        d = _date.fromisoformat(date) if date else datetime.now(UTC)
     except (config.ConfigError, paths.ProjectRootNotFound, ValueError) as e:
         typer.echo(f"오류: {e}", err=True)
         raise typer.Exit(code=1) from e
@@ -967,8 +969,11 @@ def fills_sync(
     try:
         for b in _build_brokers(secrets, accounts):
             r = sync_fills(conn, b, b.account, d)
+            when = r["date"]
+            if isinstance(when, dict):
+                when = " ".join(f"{m}:{v}" for m, v in when.items())
             typer.echo(
-                f"{r['account_id']} {r['date']}: 체결 {r['inserted']}건 적재, "
+                f"{r['account_id']} {when}: 체결 {r['inserted']}건 적재, "
                 f"주문 {r['orders_updated']}건 갱신"
             )
     finally:

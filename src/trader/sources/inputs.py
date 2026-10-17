@@ -243,7 +243,8 @@ def _events(fundamental: dict, asof: datetime, now) -> Section:
         since = (asof - timedelta(days=7)).date().isoformat()
         recent = []
         for it in items:
-            d = str(it.get("date") or it.get("filed") or "")[:10]
+            # DART disclosures() 는 rcept_dt, EDGAR 는 filed 를 준다
+            d = str(it.get("date") or it.get("rcept_dt") or it.get("filed") or "")[:10]
             if d and d < since:
                 continue
             title = str(it.get("title") or "")

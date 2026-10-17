@@ -97,3 +97,40 @@ def test_sync_cumulative_fill_updates_not_duplicates(conn):
         conn.execute("SELECT status FROM orders WHERE id=?", (oid,)).fetchone()["status"]
         == "filled"
     )
+
+
+def test_sync_fills_datetime_uses_market_local_date(conn):
+    """07:10 KST(=전날 18:10 ET) 동기화: US 는 ET 날짜(전날), KR 은 KST 날짜로 조회해야 한다."""
+    acct = make_account("paper-main", "paper", "auto", ["KR", "US"])
+    us = Fill(
+        order_no="U1",
+        ticker="AAPL",
+        market="US",
+        side="BUY",
+        qty=1,
+        price=Decimal("200"),
+        filled_at=datetime(2026, 10, 8, 14, 0, tzinfo=UTC),
+    )
+    broker = FakeBroker(
+        acct,
+        fills={("KR", date(2026, 10, 9)): [_fill("K1")], ("US", date(2026, 10, 8)): [us]},
+    )
+    now = datetime(2026, 10, 8, 22, 10, tzinfo=UTC)  # 2026-10-09 07:10 KST, 2026-10-08 18:10 ET
+    r = fills_mod.sync_fills(conn, broker, acct, now)
+    assert r["inserted"] == 2
+    assert r["date"] == {"KR": "2026-10-09", "US": "2026-10-08"}
+
+
+def test_order_no_match_requires_same_ticker_and_side(conn):
+    """KIS 주문번호는 날마다 다시 시작하므로 종목·방향이 다른 옛 주문에 체결을 붙이지 않는다."""
+    acct = make_account("paper-main", "paper", "auto")
+    old = _order(conn, "0000000012", qty=3)  # 005930 BUY
+    broker = FakeBroker(
+        acct, fills={("KR", D): [_fill("0000000012", ticker="000660", side="SELL", qty=2)]}
+    )
+    fills_mod.sync_fills(conn, broker, acct, D)
+    assert conn.execute("SELECT status FROM orders WHERE id=?", (old,)).fetchone()["status"] == (
+        "accepted"
+    )
+    ext = conn.execute("SELECT * FROM orders WHERE ticker='000660'").fetchone()
+    assert ext["mode"] == "external" and ext["side"] == "SELL" and ext["status"] == "filled"

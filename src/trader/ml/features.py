@@ -156,23 +156,26 @@ def latest_rows(
     if asof is not None:
         files = [f for f in files if f.stem <= asof.isoformat()]
     want = set(tickers) if tickers else None
-    seen: dict[str, pd.Series] = {}
+    seen: set[str] = set()
+    parts: list[pd.DataFrame] = []
     for f in files[:max_files]:
         # 이전 Phase 에 쓰인 파일은 뒤에 추가된 열이 없을 수 있다 → NaN 으로 맞춘다
         part = _coerce(pd.read_parquet(f).reindex(columns=list(FEATURE_COLUMNS)))
         if market:
             part = part[part["market"] == market]
-        for _, row in part.iterrows():
-            t = str(row["ticker"])
-            if t in seen or (want is not None and t not in want):
-                continue
-            seen[t] = row
-        if want is not None and want <= set(seen):
+        tick = part["ticker"].astype(str)
+        mask = ~tick.isin(seen)
+        if want is not None:
+            mask &= tick.isin(want)
+        part = part[mask].drop_duplicates(subset="ticker", keep="first")
+        if not part.empty:
+            parts.append(part)
+            seen.update(part["ticker"].astype(str))
+        if want is not None and want <= seen:
             break
-    if not seen:
+    if not parts:
         return pd.DataFrame(columns=FEATURE_COLUMNS)
-    out = pd.DataFrame(list(seen.values())).reset_index(drop=True)
-    # 행 단위 재조립은 nullable 열을 object 로 바꾸므로 피처 스토어 dtype 계약으로 되돌린다
+    out = pd.concat(parts, ignore_index=True)
     return _coerce(out.sort_values("ticker").reset_index(drop=True))
 
 

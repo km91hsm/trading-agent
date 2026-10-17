@@ -336,8 +336,9 @@ def run_session(
             timeout=settings.llm.timeout_s,
         )
     except subprocess.TimeoutExpired:
-        shutil.rmtree(cwd, ignore_errors=True)
         return fail(f"세션 타임아웃 ({settings.llm.timeout_s}s)")
+    except OSError as e:  # 실행파일 없음·권한 등: running 행을 남기지 않고 오류로 닫는다
+        return fail(f"세션 기동 실패: {type(e).__name__}: {e}")
     finally:
         shutil.rmtree(cwd, ignore_errors=True)
     try:

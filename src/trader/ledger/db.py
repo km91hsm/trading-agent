@@ -169,6 +169,28 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
             )""",
         ],
     ),
+    (
+        8,  # 리뷰(성능): 리스크 규칙·모니터·웹 조회가 매번 거르는 열에 인덱스 (스키마 변경 없음)
+        [
+            "CREATE INDEX IF NOT EXISTS ix_orders_account_created "
+            "ON orders(account_id, created_at)",
+            "CREATE INDEX IF NOT EXISTS ix_orders_decision_account "
+            "ON orders(decision_id, account_id)",
+            "CREATE INDEX IF NOT EXISTS ix_orders_market_ticker ON orders(market, ticker)",
+            "CREATE INDEX IF NOT EXISTS ix_risk_checks_decision ON risk_checks(decision_id)",
+            "CREATE INDEX IF NOT EXISTS ix_risk_checks_account ON risk_checks(account_id, id)",
+            "CREATE INDEX IF NOT EXISTS ix_approvals_status ON approvals(status)",
+            "CREATE INDEX IF NOT EXISTS ix_approvals_account ON approvals(account_id, status)",
+            "CREATE INDEX IF NOT EXISTS ix_triggers_market_ticker ON triggers(market, ticker)",
+            "CREATE INDEX IF NOT EXISTS ix_agent_calls_created ON agent_calls(created_at)",
+            "CREATE INDEX IF NOT EXISTS ix_decisions_market_ticker "
+            "ON decisions(market, ticker, date)",
+            "CREATE INDEX IF NOT EXISTS ix_positions_account_market_date "
+            "ON positions_snapshot(account_id, market, date)",
+            "CREATE INDEX IF NOT EXISTS ix_fills_order ON fills(order_id)",
+            "CREATE INDEX IF NOT EXISTS ix_memory_outcome ON memory_entries(outcome_at, market)",
+        ],
+    ),
 ]
 
 

@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo
 from fastapi import APIRouter, HTTPException, Query, Request
 
 from trader.broker.errors import KisApiError
+from trader.config import MARKET_TZ
 from trader.orchestrator import tools
 from trader.web.routers._common import KST, deps_of, require_market
 
@@ -21,11 +22,25 @@ router = APIRouter(prefix="/charts", tags=["charts"])
 
 CACHE_TTL_S = 300.0
 MINUTE_CACHE_TTL_S = 60.0
-MARKET_TZ = {"KR": KST, "US": ZoneInfo("America/New_York")}
 _candle_cache: dict[
     tuple, tuple[float, list[dict]]
 ] = {}  # (market, ticker, exchange, days, kst일) → (저장 시각, 봉)
 _minute_cache: dict[tuple, tuple[float, list[dict]]] = {}  # (market, ticker, exchange, count)
+
+
+def _remember(
+    cache: dict[tuple, tuple[float, list[dict]]],
+    key: tuple,
+    value: list[dict],
+    *,
+    ttl: float,
+    now: float | None = None,
+) -> None:
+    """저장하면서 만료된 항목을 지운다 (일봉 캐시 키에 KST 날짜가 들어가 날마다 늘어난다)."""
+    t = time.monotonic() if now is None else now
+    for k in [k for k, (saved, _) in cache.items() if t - saved >= ttl]:
+        del cache[k]
+    cache[key] = (t, value)
 
 
 def _validate(
@@ -90,7 +105,7 @@ def charts(
             }
             for c in candles
         ]
-        _candle_cache[key] = (time.monotonic(), out_candles)
+        _remember(_candle_cache, key, out_candles, ttl=CACHE_TTL_S)
     markers: list[dict] = []
     with closing(deps.conn_factory()) as conn:
         for r in conn.execute(
@@ -163,7 +178,7 @@ def minute_chart(
             }
             for c in candles
         ]
-        _minute_cache[key] = (time.monotonic(), out_candles)
+        _remember(_minute_cache, key, out_candles, ttl=MINUTE_CACHE_TTL_S)
     session_date = out_candles[-1]["date"] if out_candles else None
     markers: list[dict] = []
     if session_date:

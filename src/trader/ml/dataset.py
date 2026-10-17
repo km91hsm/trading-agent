@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+from datetime import date
 from pathlib import Path
 
 import numpy as np
@@ -18,10 +19,24 @@ TARGET_COLUMNS = ("fwd_return", "label")
 NON_FEATURE_COLUMNS = ("date", "ticker", "market", "close", "volume", *TARGET_COLUMNS)
 
 
-def load_all(state: Path | None = None, *, market: str | None = None) -> pd.DataFrame:
-    """모든 parquet 을 합쳐 (ticker, date) 로 정렬. date 는 datetime64."""
+def load_all(
+    state: Path | None = None,
+    *,
+    market: str | None = None,
+    since: date | None = None,
+    until: date | None = None,
+) -> pd.DataFrame:
+    """parquet 을 합쳐 (ticker, date) 로 정렬. date 는 datetime64.
+
+    since/until 을 주면 파일명(`<date>.parquet`)으로 그 창의 파일만 읽는다 (성과·만기 계산처럼
+    일부 구간만 필요한 호출이 전체 스토어를 읽지 않도록). 학습은 전체를 읽는다.
+    """
     fdir = features._features_dir(state)
     files = sorted(fdir.glob("*.parquet")) if fdir.exists() else []
+    if since is not None:
+        files = [f for f in files if f.stem >= since.isoformat()]
+    if until is not None:
+        files = [f for f in files if f.stem <= until.isoformat()]
     if not files:
         return pd.DataFrame(columns=features.FEATURE_COLUMNS)
     df = pd.concat([pd.read_parquet(f) for f in files], ignore_index=True)

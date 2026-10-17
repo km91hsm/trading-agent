@@ -1,3 +1,6 @@
+import pathlib
+from datetime import date
+
 import pandas as pd
 from helpers_ml import synthetic_features
 
@@ -50,3 +53,22 @@ def test_load_all_concatenates_and_sorts(project):
     assert str(out["date"].dtype).startswith("datetime64")
     assert dataset.load_all(market="US").empty
     assert dataset.load_all(state=project / "nowhere").empty
+
+
+def test_load_all_date_window_reads_only_matching_files(project, monkeypatch):
+    features.write_rows(synthetic_features(1, 6, signal=False))
+    files = sorted(features._features_dir(None).glob("*.parquet"))
+    assert len(files) == 6
+    read: list[str] = []
+    real = pd.read_parquet
+
+    def spy(path, *a, **k):
+        read.append(pathlib.Path(path).stem)
+        return real(path, *a, **k)
+
+    monkeypatch.setattr(pd, "read_parquet", spy)
+    since, until = files[1].stem, files[3].stem
+    out = dataset.load_all(since=date.fromisoformat(since), until=date.fromisoformat(until))
+    assert sorted(read) == [f.stem for f in files[1:4]]
+    assert out["date"].min().date().isoformat() == since
+    assert out["date"].max().date().isoformat() == until

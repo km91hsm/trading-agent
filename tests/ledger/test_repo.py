@@ -140,7 +140,8 @@ def test_realized_pnl_5d_and_held_since(conn):
         filled_at="2026-10-08T01:00:00+00:00",
     )
     assert repo.realized_pnl_5d(conn, "paper-main", D) == Decimal("-20")
-    assert repo.held_since(conn, "paper-main") == {"005930": date(2026, 10, 1)}
+    # 전량 매도로 보유가 0 이 되면 보유 시작일도 사라진다 (재진입 때 최소 보유기간이 다시 적용)
+    assert repo.held_since(conn, "paper-main") == {}
 
 
 def test_positions_snapshot_and_risk_check(conn):
@@ -356,3 +357,109 @@ def test_v4_triggers_and_fill_dedupe(conn):
     assert isinstance(repo.last_trigger_handled_at(conn, "KR", "005930"), datetime)
     row = conn.execute("SELECT kind, detail, session_id FROM triggers").fetchone()
     assert row["kind"] == "move_7pct" and '"pct"' in row["detail"] and row["session_id"] == "sess-1"
+
+
+def _order(conn, *, side, qty, created_at, order_no, status="accepted", ticker="005930"):
+    return repo.insert_order(
+        conn,
+        decision_id=None,
+        account_id="paper-main",
+        ticker=ticker,
+        market="KR",
+        side=side,
+        qty=qty,
+        order_type="LIMIT",
+        price=Decimal("100"),
+        status=status,
+        order_no=order_no,
+        message="",
+        mode="auto",
+        created_at=created_at,
+    )
+
+
+def test_held_since_resets_after_full_exit_and_reentry(conn):
+    b1 = _order(conn, side="BUY", qty=2, created_at="2026-10-01T01:00:00+00:00", order_no="1")
+    repo.insert_fill(
+        conn,
+        order_id=b1,
+        account_id="paper-main",
+        qty=2,
+        price=Decimal("100"),
+        filled_at="2026-10-01T01:00:00+00:00",
+    )
+    s1 = _order(conn, side="SELL", qty=2, created_at="2026-10-05T01:00:00+00:00", order_no="2")
+    repo.insert_fill(
+        conn,
+        order_id=s1,
+        account_id="paper-main",
+        qty=2,
+        price=Decimal("110"),
+        filled_at="2026-10-05T01:00:00+00:00",
+    )
+    assert repo.held_since(conn, "paper-main") == {}
+    b2 = _order(conn, side="BUY", qty=3, created_at="2026-10-12T01:00:00+00:00", order_no="3")
+    repo.insert_fill(
+        conn,
+        order_id=b2,
+        account_id="paper-main",
+        qty=3,
+        price=Decimal("100"),
+        filled_at="2026-10-12T01:00:00+00:00",
+    )
+    assert repo.held_since(conn, "paper-main") == {"005930": date(2026, 10, 12)}
+    # 일부 매도는 보유 시작일을 바꾸지 않는다
+    s2 = _order(conn, side="SELL", qty=1, created_at="2026-10-13T01:00:00+00:00", order_no="4")
+    repo.insert_fill(
+        conn,
+        order_id=s2,
+        account_id="paper-main",
+        qty=1,
+        price=Decimal("100"),
+        filled_at="2026-10-13T01:00:00+00:00",
+    )
+    assert repo.held_since(conn, "paper-main") == {"005930": date(2026, 10, 12)}
+
+
+def test_held_since_order_fallback_resets_on_accepted_sell(conn):
+    _order(conn, side="BUY", qty=1, created_at="2026-10-02T01:00:00+00:00", order_no="1")
+    _order(conn, side="SELL", qty=1, created_at="2026-10-06T01:00:00+00:00", order_no="2")
+    assert repo.held_since(conn, "paper-main") == {}
+    _order(conn, side="BUY", qty=1, created_at="2026-10-07T01:00:00+00:00", order_no="3")
+    _order(
+        conn,
+        side="SELL",
+        qty=1,
+        created_at="2026-10-08T01:00:00+00:00",
+        order_no="4",
+        status="rejected",
+    )  # 거부된 매도는 보유를 줄이지 않는다
+    assert repo.held_since(conn, "paper-main") == {"005930": date(2026, 10, 7)}
+
+
+def test_has_open_order_today_uses_market_local_day(conn):
+    # 23:30 KST 10-08 = 10:30 ET 10-08 에 낸 US 손절 매도
+    _order(
+        conn,
+        side="SELL",
+        qty=1,
+        created_at="2026-10-08T14:30:00+00:00",
+        order_no="1",
+        ticker="AAPL",
+    )
+    conn.execute("UPDATE orders SET market='US'")
+    conn.commit()
+    # KST 기준 다음 날(00:30 KST 10-09) 점검: KST 창으로는 놓치지만 ET 현지 날짜 창으로는 보인다
+    assert repo.has_open_order_today(conn, "paper-main", "AAPL", "SELL", date(2026, 10, 9)) is False
+    assert (
+        repo.has_open_order_today(
+            conn, "paper-main", "AAPL", "SELL", date(2026, 10, 8), market="US"
+        )
+        is True
+    )
+    assert (
+        repo.has_open_order_today(
+            conn, "paper-main", "AAPL", "SELL", date(2026, 10, 9), market="US"
+        )
+        is False
+    )
