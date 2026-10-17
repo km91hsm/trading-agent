@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
@@ -1450,6 +1450,62 @@ def calibration_build() -> None:
     typer.echo(
         json.dumps(r or {"active": False, "min_decisions": cfg.min_decisions}, ensure_ascii=False)
     )
+
+
+@app.command("backtest")
+def backtest_cmd(
+    since: str = typer.Option(..., "--since", help="컷오프 날짜(YYYY-MM-DD). 이후 결정만 집계"),
+    market: str | None = typer.Option(None, "--market", help="KR 또는 US (없으면 전체)"),
+) -> None:
+    """컷오프 이후 결정의 적중률·평균 수익·알파를 메모리 결과/피처 스토어 종가로 집계한다."""
+    import json
+
+    from trader import backtest
+    from trader.ledger import db
+
+    try:
+        configure(paths.state_dir())
+        cutoff = date.fromisoformat(since)
+    except (ValueError, paths.ProjectRootNotFound) as e:
+        typer.echo(f"오류: {e}", err=True)
+        raise typer.Exit(code=1) from e
+    conn = db.connect()
+    db.init_schema(conn)
+    try:
+        r = backtest.simple_backtest(conn, paths.state_dir(), since=cutoff, market=market)
+    finally:
+        conn.close()
+    typer.echo(json.dumps(r, ensure_ascii=False))
+
+
+@app.command("readiness")
+def readiness_cmd() -> None:
+    """실전 전환 준비도 점검(읽기 전용). 모드는 바꾸지 않는다 — docs/runbook-live-transition.md."""
+    import json
+
+    from trader import readiness
+    from trader.ledger import db
+
+    try:
+        configure(paths.state_dir())
+        settings = config.load_settings()
+        accounts = config.load_accounts()
+    except (config.ConfigError, paths.ProjectRootNotFound) as e:
+        typer.echo(f"오류: {e}", err=True)
+        raise typer.Exit(code=1) from e
+    conn = db.connect()
+    db.init_schema(conn)
+    try:
+        r = readiness.check(
+            conn,
+            accounts=accounts,
+            settings=settings,
+            state=paths.state_dir(),
+            today=datetime.now(_KST).date(),
+        )
+    finally:
+        conn.close()
+    typer.echo(json.dumps(r, ensure_ascii=False))
 
 
 @app.command("notify-test")

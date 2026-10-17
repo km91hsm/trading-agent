@@ -122,7 +122,7 @@
 - [ ] calibration 모델 (결정 60건 미만이면 비활성)
 - [ ] 성과 페이지 (수익률·MDD·Sortino·벤치마크·비용 민감도·회전율·결정 분포·수렴율)
 - [ ] 간이 백테스트 (컷오프 이후만)
-- [ ] 실전 approve 전환 절차 (사용자 수동)
+- [ ] 실전 approve 전환 절차 (사용자 수동): `docs/runbook-live-transition.md` + `trader readiness`(읽기 전용) + `trader backtest --since`
 - [ ] 완료 기준: 모의 4주 이상 성과 리포트, 보정 모델 활성, 사용자 판단으로 실전 approve
 
 ## Phase 9 RL 사이징(실험)

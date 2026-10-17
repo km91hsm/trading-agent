@@ -1,0 +1,127 @@
+"""실전 전환 준비도 점검 (스펙 §11 Phase 8 완료 기준). 읽기 전용: 모드를 바꾸지 않는다.
+
+항목: 모의 운영일(analyze ok 날짜 수) ≥ 20, 28일 runs 오류율 ≤ 10%, 주문 실패율 ≤ 10%,
+30일 수익률 ≥ 1/N 벤치마크, MDD ≥ −10%, 보정 활성(정보), 만료된 미결 승인 0건.
+"""
+
+from __future__ import annotations
+
+import sqlite3
+from datetime import UTC, date, datetime, time, timedelta
+from pathlib import Path
+from zoneinfo import ZoneInfo
+
+from trader.config import AccountConfig, Settings
+from trader.ledger import performance
+from trader.memory import store
+
+_KST = ZoneInfo("Asia/Seoul")
+MIN_PAPER_DAYS = 20
+MAX_ERROR_RATE = 0.10
+MAX_FAILED_RATE = 0.10
+MIN_MDD = -0.10
+WINDOW_DAYS = 28
+DEFAULT_MIN_DECISIONS = 60
+
+
+def _item(key: str, ok: bool, value, threshold, note: str = "") -> dict:
+    return {"key": key, "ok": bool(ok), "value": value, "threshold": threshold, "note": note}
+
+
+def _paper_days(conn: sqlite3.Connection) -> int:
+    rows = conn.execute(
+        "SELECT started_at FROM runs WHERE kind='analyze' AND status='ok'"
+    ).fetchall()
+    days = set()
+    for r in rows:
+        try:
+            days.add(datetime.fromisoformat(r["started_at"]).astimezone(_KST).date())
+        except ValueError:
+            continue
+    return len(days)
+
+
+def _rate(conn: sqlite3.Connection, table: str, col: str, bad: tuple, since_iso: str) -> float:
+    marks = ",".join("?" * len(bad))
+    row = conn.execute(
+        f"SELECT COUNT(*) AS n, SUM(CASE WHEN status IN ({marks}) THEN 1 ELSE 0 END) AS b "
+        f"FROM {table} WHERE {col} >= ?",
+        (*bad, since_iso),
+    ).fetchone()
+    return (row["b"] or 0) / row["n"] if row["n"] else 0.0
+
+
+def _min_decisions() -> int:
+    try:
+        from trader import config
+
+        return int(config.load_ml().models.calibration.min_decisions)
+    except Exception:  # noqa: BLE001 - ml.yaml 없거나 깨져도 점검은 진행
+        return DEFAULT_MIN_DECISIONS
+
+
+def check(
+    conn: sqlite3.Connection,
+    *,
+    accounts: list[AccountConfig],
+    settings: Settings,
+    state: Path | None,
+    today: date,
+) -> dict:
+    now = datetime.combine(today, time.max, UTC)
+    since_iso = (now - timedelta(days=WINDOW_DAYS)).isoformat()
+    items: list[dict] = []
+
+    n_days = _paper_days(conn)
+    items.append(_item("paper_days", n_days >= MIN_PAPER_DAYS, n_days, MIN_PAPER_DAYS))
+    er = _rate(conn, "runs", "started_at", ("error",), since_iso)
+    items.append(_item("run_error_rate", er <= MAX_ERROR_RATE, round(er, 4), MAX_ERROR_RATE))
+    fr = _rate(conn, "orders", "created_at", ("failed", "rejected"), since_iso)
+    items.append(_item("order_failed_rate", fr <= MAX_FAILED_RATE, round(fr, 4), MAX_FAILED_RATE))
+
+    excess: list[float] = []
+    mdds: list[float] = []
+    notes: list[str] = []
+    for a in accounts:
+        if a.env != "paper":
+            continue
+        for m in a.markets:
+            series = performance.nav_series(conn, a.id, m, days=30)
+            met = performance.metrics_of(series)
+            if met["return"] is None:
+                continue
+            start, end = date.fromisoformat(met["start"]), date.fromisoformat(met["end"])
+            bench = performance.benchmarks(state, m, start, end)["one_over_n"]["return"]
+            if bench is None:
+                notes.append(f"{a.id}/{m}: 벤치마크 없음(피처 스토어 종가 없음) → 0 대비")
+                bench = 0.0
+            excess.append(round(met["return"] - bench, 6))
+            mdds.append(met["mdd"])
+            notes.append(f"{a.id}/{m}: 수익률 {met['return']:+.2%} vs 1/N {bench:+.2%}")
+    if excess:
+        items.append(
+            _item("return_vs_benchmark", min(excess) >= 0, min(excess), 0.0, "; ".join(notes))
+        )
+        items.append(_item("mdd", min(mdds) >= MIN_MDD, min(mdds), MIN_MDD))
+    else:
+        items.append(_item("return_vs_benchmark", False, None, 0.0, "NAV 스냅샷 2일 이상 필요"))
+        items.append(_item("mdd", False, None, MIN_MDD, "NAV 스냅샷 2일 이상 필요"))
+
+    min_dec = _min_decisions()
+    matured = store.matured_count(conn)
+    items.append(
+        _item(
+            "calibration_active",
+            True,
+            matured >= min_dec,
+            min_dec,
+            f"정보: 만기 결정 {matured}건 (활성 기준 {min_dec})",
+        )
+    )
+    stale = conn.execute(
+        "SELECT COUNT(*) FROM approvals WHERE status='pending' AND expires_at < ?",
+        (now.isoformat(),),
+    ).fetchone()[0]
+    items.append(_item("stale_approvals", stale == 0, int(stale), 0))
+
+    return {"today": today.isoformat(), "ok": all(i["ok"] for i in items), "items": items}
