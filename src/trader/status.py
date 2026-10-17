@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 
 from trader.config import AccountConfig, Settings
 from trader.control.control import get_account_mode, is_paused
+from trader.ledger import metrics
 from trader.platform import paths
 
 MAX_CHARS = 8000
@@ -102,11 +103,15 @@ def build_status(
         f"- 하루 세션 상한: {settings.llm.daily_session_cap}",
         "",
         "## 계좌",
-        "| id | env | 모드 | 시장 |",
-        "|---|---|---|---|",
+        "| id | env | 모드 | 시장 | 성향 |",
+        "|---|---|---|---|---|",
     ]
+    today = now.astimezone(_KST).date()
     for a in accounts:
-        lines.append(f"| {a.id} | {a.env} | {get_account_mode(conn, a)} | {','.join(a.markets)} |")
+        st = metrics.account_stance(conn, a.id, today)
+        lines.append(
+            f"| {a.id} | {a.env} | {get_account_mode(conn, a)} | {','.join(a.markets)} | {st} |"
+        )
     lines += ["", "## 마지막 실행"]
     rows = conn.execute(
         "SELECT kind, market, started_at, status FROM runs ORDER BY id DESC LIMIT 5"
@@ -123,6 +128,26 @@ def build_status(
     if decisions:
         lines += ["", "## 최근 결정"]
         lines += [f"- {d}" for d in decisions]
+    dist = metrics.decision_distribution(conn, days=30, now=now)
+    lines += ["", "## 결정 분포(30일)"]
+    if dist:
+        lines.append("- " + ", ".join(f"{k} {v}" for k, v in dist.items()))
+        conv = metrics.convergence_rate(conn, days=30, now=now)
+        if conv is not None:
+            lines.append(f"- 토론 수렴율: {conv:.0%}")
+    else:
+        lines.append("- 결정 없음")
+    pending = metrics.pending_approvals(conn)
+    lines += ["", "## 미승인 주문"]
+    if pending:
+        for p in pending:
+            o = p["order"]
+            lines.append(
+                f"- #{p['id']} {p['account_id']} {o.get('side')} {o.get('ticker')} "
+                f"{o.get('qty')}주 @{o.get('price') or '시장가'} 만료 {p['expires_at']}"
+            )
+    else:
+        lines.append("- 없음")
     lines += ["", "## 구현 진행도"]
     lines += [f"- {t}: {d}/{n}" for t, (d, n) in todo_progress(todo_path).items()]
     lines += ["", "## 다음 할 일"]

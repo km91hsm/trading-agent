@@ -15,6 +15,7 @@ import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -23,6 +24,8 @@ from pydantic import ValidationError
 
 from trader.agents import schemas
 from trader.config import AccountConfig, Market, Settings
+from trader.ledger import repo
+from trader.notify.telegram import NullNotifier
 from trader.orchestrator import summary as summary_mod
 from trader.orchestrator.run_store import (
     list_checkpoints,
@@ -99,6 +102,10 @@ class ToolContext:
     conn: sqlite3.Connection | None = None
     state: Path | None = None
     now: Callable[[], datetime] = field(default=lambda: datetime.now(UTC))
+    # Phase 4: submit-decision 이 계좌별 실행에 쓴다. 기본은 dry_run(주문·승인 요청 없음).
+    brokers: dict[str, Any] = field(default_factory=dict)
+    notifier: Any = None
+    dry_run: bool = True
 
 
 def _dir(ctx: ToolContext, ticker: str, market: Market, d: date) -> Path:
@@ -508,6 +515,16 @@ def submit_decision(
 ) -> dict:
     d = _dir(ctx, ticker, market, date)
     stages = list_checkpoints(d)
+    if "30_decision" in stages:
+        # 같은 날 재제출(세션 재시도·재실행)은 기존 결정을 돌려주고 실행을 반복하지 않는다 (멱등)
+        existing = read_checkpoint(d, "30_decision") or {}
+        return {
+            "ok": True,
+            "already": True,
+            "path": str(d / "30_decision.json"),
+            "action": (existing.get("data") or {}).get("action"),
+            "message": "30_decision 이 이미 있어 기존 결정을 유지함",
+        }
     reports = [s for s in stages if _ANALYST_RE.match(s)]
     missing: list[str] = []
     if len(reports) < MIN_REPORTS:
@@ -525,25 +542,64 @@ def submit_decision(
         return {"ok": False, "error": f"스키마 검증 실패(30_decision): {msgs}"}
     if decision.ticker != ticker:
         return {"ok": False, "error": f"ticker 불일치: {decision.ticker} ≠ {ticker}"}
+    inputs = read_checkpoint(d, "00_inputs") or {}
+    price = _quote_price(inputs)
+    if price is None:
+        return {
+            "ok": False,
+            "error": "00_inputs 의 technical.quote 에 현재가가 없어 판정할 수 없음",
+        }
     path = write_checkpoint(d, "30_decision", _wrap(decision.model_dump(), _call(agent, call_meta)))
-    # Phase 4 전까지 리스크 게이트·주문은 자리만 둔다 (결정은 1회, 판정은 계좌마다).
-    for a in ctx.accounts:
-        if market in a.markets:
-            write_checkpoint(
-                d,
-                f"40_risk_check_{a.id}",
-                _wrap(
-                    {
-                        "account_id": a.id,
-                        "approved": None,
-                        "adjusted_qty": None,
-                        "reason": "phase4",
-                    },
-                    None,
-                ),
-            )
-    logger.info("결정 저장 %s %s: %s", market, ticker, decision.action)
-    return {"ok": True, "path": str(path), "action": decision.action, "risk": "phase4"}
+    _ingest_run(ctx, d, date, market, ticker)
+    # 리스크 게이트·계좌별 실행 (결정은 1회, 판정·주문은 계좌마다). 주문은 executor 안에서만.
+    from trader.orchestrator import executor
+
+    if ctx.conn is None:
+        return {"ok": False, "error": "원장 연결이 없어 계좌별 실행을 할 수 없음"}
+    ectx = executor.ExecContext(
+        settings=ctx.settings,
+        accounts=ctx.accounts,
+        conn=ctx.conn,
+        brokers=ctx.brokers,
+        notifier=ctx.notifier or NullNotifier(),
+        state=ctx.state,
+        now=ctx.now,
+    )
+    executions = executor.execute(
+        ectx,
+        decision,
+        date=date,
+        market=market,
+        price=price,
+        exchange=(inputs.get("meta") or {}).get("exchange"),
+        dry_run=ctx.dry_run,
+    )
+    logger.info("결정 저장 %s %s: %s (계좌 %d)", market, ticker, decision.action, len(executions))
+    return {
+        "ok": True,
+        "path": str(path),
+        "action": decision.action,
+        "dry_run": ctx.dry_run,
+        "executions": executions,
+    }
+
+
+def _quote_price(inputs: dict) -> Decimal | None:
+    try:
+        raw = inputs["technical"]["quote"]["data"]["price"]
+        return Decimal(str(raw))
+    except (KeyError, TypeError, InvalidOperation):
+        return None
+
+
+def _ingest_run(ctx: ToolContext, d: Path, date: date, market: Market, ticker: str) -> None:
+    """리포트·토론·결정 체크포인트를 원장 테이블에 멱등 적재한다 (메트릭·UI 용)."""
+    if ctx.conn is None:
+        return
+    for stage in list_checkpoints(d):
+        cp = read_checkpoint(d, stage)
+        if isinstance(cp, dict):
+            repo.ingest_checkpoint(ctx.conn, date, market, ticker, stage, cp)
 
 
 # --- status -----------------------------------------------------------------

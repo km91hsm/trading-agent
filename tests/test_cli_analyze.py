@@ -86,10 +86,33 @@ def test_rerun_only_missing_stages(quiet_project, monkeypatch):
     assert "새로 쓴 단계: 20_debate_r1_bear, 25_research_summary, 30_decision" in r.stdout
 
 
-def test_cli_analyze_without_dry_run_notes_phase4(quiet_project, monkeypatch):
+def test_cli_analyze_without_dry_run_executes_via_fake_broker(quiet_project, monkeypatch):
+    """--dry-run 없이 FAKE 세션: 판정이 dry_run=False 로 기록되고 실전(off)은 주문 기록이 없다."""
+    from datetime import date
+
+    from trader.orchestrator.run_store import read_checkpoint, run_dir
+
     monkeypatch.setenv("FAKE_CLAUDE", "1")
     r = _run(["--ticker", "005930", "--asof", ASOF])
-    assert r.exit_code == 0 and "Phase 4" in r.stdout
+    assert r.exit_code == 0, r.stdout
+    d = run_dir(date(2026, 10, 9), "KR", "005930")
+    rc = read_checkpoint(d, "40_risk_check_paper-main")
+    assert rc is not None and rc["data"]["dry_run"] is False
+    assert rc["data"]["approved"] is False and "HOLD" in rc["data"]["reasons"][0]  # FAKE 는 HOLD
+    assert read_checkpoint(d, "50_order_real-main") is None
+
+
+def test_cli_analyze_dry_run_writes_verdict_without_order(quiet_project, monkeypatch):
+    from datetime import date
+
+    from trader.orchestrator.run_store import read_checkpoint, run_dir
+
+    monkeypatch.setenv("FAKE_CLAUDE", "1")
+    r = _run(["--ticker", "005930", "--asof", ASOF, "--dry-run"])
+    assert r.exit_code == 0, r.stdout
+    d = run_dir(date(2026, 10, 9), "KR", "005930")
+    assert read_checkpoint(d, "40_risk_check_paper-main")["data"]["dry_run"] is True
+    assert read_checkpoint(d, "50_order_paper-main") is None
 
 
 def test_cli_analyze_skip_collect_without_inputs_fails(quiet_project, monkeypatch):

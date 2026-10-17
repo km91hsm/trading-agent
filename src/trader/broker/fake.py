@@ -80,6 +80,8 @@ class FakeBroker:
         self.cash = cash or {}
         self.fail = fail or set()
         self.calls: list[str] = []
+        self.orders: list[OrderRequest] = []
+        self.cancelled: list[str] = []
 
     def _record(self, name: str) -> None:
         self.calls.append(name)
@@ -96,8 +98,14 @@ class FakeBroker:
             raise KisApiError("FAKE", f"현금 정보 없음: {market}")
         return self.cash[market]
 
-    def place_order(self, request: OrderRequest | None) -> OrderResult:
-        raise NotImplementedError("주문은 Phase 4 에서 구현합니다")
+    def place_order(self, request: OrderRequest) -> OrderResult:
+        self._record("place_order")
+        self.orders.append(request)
+        return OrderResult(
+            order_no=f"FAKE-{len(self.orders)}", accepted=True, message="가짜 접수", org_no="00000"
+        )
 
-    def cancel_order(self, order_no: str) -> OrderResult:
-        raise NotImplementedError("주문 취소는 Phase 4 에서 구현합니다")
+    def cancel_order(self, order_no: str, *, market: Market = "KR", **_: object) -> OrderResult:
+        self._record("cancel_order")
+        self.cancelled.append(order_no)
+        return OrderResult(order_no=order_no, accepted=True, message="가짜 취소")

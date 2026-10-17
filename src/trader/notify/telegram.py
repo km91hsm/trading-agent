@@ -1,4 +1,4 @@
-"""텔레그램 발신. 토큰·chat_id 가 없으면 NullNotifier(항상 성공).
+"""텔레그램 발신·수신. 토큰·chat_id 가 없으면 NullNotifier(항상 성공)·수신기 None.
 
 토큰이 URL 에 들어가므로 URL·예외 메시지를 로그에 남기지 않는다.
 """
@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import html
 import logging
+import re
+from dataclasses import dataclass
 from typing import Protocol
 
 import httpx
@@ -90,3 +92,65 @@ def make_notifier(secrets: Secrets, *, http: httpx.Client | None = None) -> Noti
     if secrets.TELEGRAM_BOT_TOKEN and secrets.TELEGRAM_CHAT_ID:
         return TelegramNotifier(secrets.TELEGRAM_BOT_TOKEN, secrets.TELEGRAM_CHAT_ID, http=http)
     return NullNotifier()
+
+
+# --- 수신 (승인 명령, Phase 4) ------------------------------------------------------
+
+_COMMAND_RE = re.compile(r"^/(approve|reject|status)(?:@\w+)?(?:\s+(\S+))?\s*$")
+
+
+@dataclass
+class Update:
+    update_id: int
+    text: str
+    chat_id: str
+
+
+def parse_command(text: str) -> tuple[str, str | None] | None:
+    """`/approve <id>`·`/reject <id>`·`/status` 만 명령으로 인식한다 (그 외는 None)."""
+    m = _COMMAND_RE.match(text.strip())
+    if not m:
+        return None
+    return m.group(1), m.group(2)
+
+
+class TelegramReceiver:
+    """getUpdates 1회 폴링. 설정된 chat_id 의 메시지 텍스트만 돌려준다."""
+
+    def __init__(self, token: str, chat_id: str, *, http: httpx.Client | None = None) -> None:
+        _quiet_httpx()
+        self._url = f"https://api.telegram.org/bot{token}/getUpdates"
+        self._chat_id = str(chat_id)
+        self._http = http or httpx.Client(timeout=15)
+
+    def poll(self, offset: int | None = None) -> list[Update]:
+        params: dict[str, str] = {"timeout": "0", "allowed_updates": '["message"]'}
+        if offset is not None:
+            params["offset"] = str(offset)
+        try:
+            resp = self._http.get(self._url, params=params)
+        except httpx.HTTPError as e:
+            logger.warning("텔레그램 수신 실패: %s", type(e).__name__)
+            return []
+        if resp.status_code != 200:
+            logger.warning("텔레그램 수신 거부: HTTP %s", resp.status_code)
+            return []
+        try:
+            body = resp.json()
+        except ValueError:
+            return []
+        out: list[Update] = []
+        for item in body.get("result") or []:
+            msg = item.get("message") or {}
+            chat = str((msg.get("chat") or {}).get("id", ""))
+            text = msg.get("text")
+            if chat != self._chat_id or not isinstance(text, str):
+                continue
+            out.append(Update(update_id=int(item["update_id"]), text=text, chat_id=chat))
+        return out
+
+
+def make_receiver(secrets: Secrets, *, http: httpx.Client | None = None) -> TelegramReceiver | None:
+    if secrets.TELEGRAM_BOT_TOKEN and secrets.TELEGRAM_CHAT_ID:
+        return TelegramReceiver(secrets.TELEGRAM_BOT_TOKEN, secrets.TELEGRAM_CHAT_ID, http=http)
+    return None

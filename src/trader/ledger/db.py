@@ -55,6 +55,70 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
             )""",
         ],
     ),
+    (
+        2,  # Phase 4: 결정·판정·주문·체결·포지션·승인 (스펙 §6.3)
+        [
+            """CREATE TABLE IF NOT EXISTS analyst_reports (
+                id INTEGER PRIMARY KEY,
+                date TEXT NOT NULL, market TEXT NOT NULL, ticker TEXT NOT NULL,
+                role TEXT NOT NULL, signal TEXT, score REAL, confidence REAL,
+                json TEXT NOT NULL, created_at TEXT NOT NULL,
+                UNIQUE(date, market, ticker, role)
+            )""",
+            """CREATE TABLE IF NOT EXISTS debate_turns (
+                id INTEGER PRIMARY KEY,
+                date TEXT NOT NULL, market TEXT NOT NULL, ticker TEXT NOT NULL,
+                side TEXT NOT NULL, round INTEGER NOT NULL, stance TEXT, conviction REAL,
+                json TEXT NOT NULL, created_at TEXT NOT NULL,
+                UNIQUE(date, market, ticker, side, round)
+            )""",
+            """CREATE TABLE IF NOT EXISTS decisions (
+                id INTEGER PRIMARY KEY,
+                date TEXT NOT NULL, market TEXT NOT NULL, ticker TEXT NOT NULL,
+                action TEXT NOT NULL, target_weight REAL, confidence REAL, session_id TEXT,
+                json TEXT NOT NULL, created_at TEXT NOT NULL,
+                UNIQUE(date, market, ticker)
+            )""",
+            """CREATE TABLE IF NOT EXISTS risk_checks (
+                id INTEGER PRIMARY KEY,
+                decision_id INTEGER NOT NULL, account_id TEXT NOT NULL,
+                approved INTEGER NOT NULL, adjusted_qty INTEGER, reasons TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )""",
+            """CREATE TABLE IF NOT EXISTS orders (
+                id INTEGER PRIMARY KEY,
+                decision_id INTEGER, account_id TEXT NOT NULL, ticker TEXT NOT NULL,
+                market TEXT NOT NULL, side TEXT NOT NULL, qty INTEGER NOT NULL,
+                order_type TEXT NOT NULL, price TEXT, status TEXT NOT NULL, order_no TEXT,
+                message TEXT, mode TEXT NOT NULL, created_at TEXT NOT NULL
+            )""",
+            """CREATE TABLE IF NOT EXISTS fills (
+                id INTEGER PRIMARY KEY,
+                order_id INTEGER NOT NULL, account_id TEXT NOT NULL,
+                qty INTEGER NOT NULL, price TEXT NOT NULL, filled_at TEXT NOT NULL
+            )""",
+            """CREATE TABLE IF NOT EXISTS positions_snapshot (
+                id INTEGER PRIMARY KEY,
+                account_id TEXT NOT NULL, date TEXT NOT NULL, ticker TEXT NOT NULL,
+                market TEXT, qty INTEGER NOT NULL, avg_price TEXT, current_price TEXT,
+                eval_amount TEXT, nav TEXT, cash TEXT, created_at TEXT NOT NULL,
+                UNIQUE(account_id, date, ticker)
+            )""",
+            """CREATE TABLE IF NOT EXISTS approvals (
+                id INTEGER PRIMARY KEY,
+                decision_id INTEGER NOT NULL, account_id TEXT NOT NULL,
+                order_json TEXT NOT NULL, status TEXT NOT NULL,
+                requested_at TEXT NOT NULL, expires_at TEXT NOT NULL, decided_at TEXT
+            )""",
+        ],
+    ),
+    (
+        3,  # Phase 4 리뷰: 시장가 주문 금액(amount), KR 취소용 org_no, _CASH 스냅샷의 market
+        [
+            "ALTER TABLE orders ADD COLUMN amount TEXT",
+            "ALTER TABLE orders ADD COLUMN org_no TEXT",
+        ],
+    ),
 ]
 
 

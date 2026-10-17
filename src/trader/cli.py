@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import logging
+import os
 import sys
 from datetime import UTC, datetime
+from decimal import Decimal
 from zoneinfo import ZoneInfo
 
 import typer
@@ -15,7 +17,7 @@ from trader.broker.kis_auth import KisAuth
 from trader.broker.kis_client import KisClient
 from trader.broker.kis_market import KisMarket
 from trader.logging_setup import configure
-from trader.notify.telegram import make_notifier
+from trader.notify.telegram import make_notifier, make_receiver, parse_command
 from trader.orchestrator.session import run_session
 from trader.platform import paths
 from trader.platform.claude_bin import ClaudeNotFound
@@ -61,6 +63,26 @@ def _build_client(secrets: config.Secrets, env: config.Env) -> KisClient:
 def _build_market(secrets: config.Secrets) -> KisMarket:
     """시세 클라이언트 (실전 env 전용)."""
     return KisMarket(_build_client(secrets, "real"))
+
+
+def _session_brokers(
+    secrets: config.Secrets, accounts: list[config.AccountConfig], *, dry_run: bool
+) -> dict:
+    """세션용 브로커 맵. FAKE 모드만 가짜 브로커(현금 1천만원/1만달러)를 준다."""
+    from trader.orchestrator.session import is_fake
+
+    if is_fake():
+        from decimal import Decimal
+
+        from trader.broker.fake import FakeBroker
+        from trader.broker.models import Cash
+
+        cash = {
+            "KR": Cash(currency="KRW", available=Decimal("10000000"), total=Decimal("10000000")),
+            "US": Cash(currency="USD", available=Decimal("10000"), total=Decimal("10000")),
+        }
+        return {a.id: FakeBroker(a, cash=cash) for a in accounts}
+    return {}  # 실제 세션은 tool 서브프로세스가 _tool_ctx 로 자기 브로커를 만든다
 
 
 def _build_brokers(
@@ -165,6 +187,77 @@ def kis_ping(
     typer.echo(f"실패 {failures}건")
     if failures:
         raise typer.Exit(code=1)
+
+
+def _tick_size_kr(price: Decimal) -> Decimal:
+    """KRX 호가단위 (2023-01 개편 기준)."""
+    for limit, tick in (
+        (2000, 1),
+        (5000, 5),
+        (20000, 10),
+        (50000, 50),
+        (200000, 100),
+        (500000, 500),
+    ):
+        if price < limit:
+            return Decimal(tick)
+    return Decimal(1000)
+
+
+@kis_app.command("order-test")
+def kis_order_test(
+    account: str = typer.Option(..., "--account", help="모의 계좌 id (실전 거부)"),
+    ticker: str = typer.Option("005930", "--ticker", help="KR 종목코드"),
+) -> None:
+    """Phase 4 실기 전용: 모의 계좌에 현재가 10% 아래 1주 지정가 매수 → 즉시 취소 (원장 미기록)."""
+    try:
+        configure(paths.state_dir())
+        secrets = config.load_secrets()
+        accounts = config.load_accounts()
+    except (config.ConfigError, paths.ProjectRootNotFound) as e:
+        typer.echo(f"오류: {e}", err=True)
+        raise typer.Exit(code=1) from e
+    acct = next((a for a in accounts if a.id == account), None)
+    if acct is None:
+        typer.echo(f"오류: 계좌 id 를 찾을 수 없습니다: {account}", err=True)
+        raise typer.Exit(code=1)
+    if acct.env != "paper":
+        typer.echo("오류: order-test 는 모의(paper) 계좌에서만 실행합니다", err=True)
+        raise typer.Exit(code=1)
+    broker = next((b for b in _build_brokers(secrets, [acct]) if b.account.id == acct.id), None)
+    if broker is None:
+        typer.echo("오류: 모의 앱키가 없어 브로커를 만들지 못했습니다", err=True)
+        raise typer.Exit(code=1)
+    from trader.broker.models import OrderRequest
+
+    try:
+        price = _build_market(secrets).get_price_kr(ticker).price
+        tick = _tick_size_kr(price)
+        limit = (price * Decimal("0.9") // tick) * tick
+        req = OrderRequest(
+            ticker=ticker,
+            market="KR",
+            side="BUY",
+            qty=1,
+            order_type="LIMIT",
+            price=limit,
+            exchange=None,
+        )
+        res = broker.place_order(req)
+        typer.echo(
+            f"접수: {ticker} 1주 @{limit} (현재가 {price}) 주문번호 {res.order_no} {res.message}"
+        )
+    except Exception as e:  # noqa: BLE001 - 실기 점검은 모든 실패를 보고한다
+        typer.echo(f"주문 실패: {type(e).__name__}: {e}")
+        raise typer.Exit(code=1) from e
+    try:
+        cres = broker.cancel_order(res.order_no or "", market="KR", org_no=res.org_no)
+        typer.echo(f"취소: 주문번호 {cres.order_no} {cres.message}")
+    except Exception as e:  # noqa: BLE001
+        typer.echo(
+            f"취소 실패(미체결 주문이 남아 있을 수 있음, HTS/앱에서 확인): {type(e).__name__}: {e}"
+        )
+        raise typer.Exit(code=1) from e
 
 
 def _build_input_deps(secrets: config.Secrets, cfg: config.SourcesConfig) -> InputDeps:
@@ -299,7 +392,7 @@ def analyze(
     market: str = typer.Option("KR", "--market", help="KR 또는 US"),
     exchange: str | None = typer.Option(None, "--exchange", help="미국 거래소 코드 (NAS/NYS/AMS)"),
     asof: str | None = typer.Option(None, "--asof", help="기준 시각 ISO8601 (기본: 현재 UTC)"),
-    dry_run: bool = typer.Option(False, "--dry-run", help="결정까지만 (Phase 3 는 항상 동일)"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="판정·기록까지만, 주문·승인 요청 없음"),
     skip_collect: bool = typer.Option(False, "--skip-collect", help="00_inputs 수집 생략"),
 ) -> None:
     """오케스트레이터 세션을 띄워 종목 하나를 분석하고 30_decision.json 을 만든다."""
@@ -337,8 +430,6 @@ def analyze(
                 secrets=secrets,
                 deps=_build_input_deps(secrets, cfg),
             )
-        if not dry_run:
-            typer.echo("안내: Phase 4 전까지는 --dry-run 과 동일하게 결정에서 멈춥니다.")
         conn = db.connect()
         db.init_schema(conn)
         try:
@@ -347,12 +438,14 @@ def analyze(
                     market=market,
                     date=day,
                     tickers=[{"ticker": ticker, "exchange": exchange}],
-                    dry_run=True,
+                    dry_run=dry_run,
                     asof=when,
                 ),
                 settings,
                 conn,
                 accounts,
+                brokers=_session_brokers(secrets, accounts, dry_run=dry_run),
+                notifier=make_notifier(secrets),
             )
         finally:
             conn.close()
@@ -407,7 +500,20 @@ def _tool_ctx():
     ]  # stdout 은 JSON 전용이므로 콘솔 핸들러 제거
     conn = db.connect()
     db.init_schema(conn)
-    return ToolContext(settings=config.load_settings(), accounts=config.load_accounts(), conn=conn)
+    secrets = config.load_secrets()
+    accounts = config.load_accounts()
+    # 세션이 env 로 넘긴 값. 없으면 안전하게 dry_run(주문·승인 요청 없음).
+    dry_run = os.environ.get("TRADER_DRY_RUN", "1") != "0"
+    # dry_run 도 잔고로 판정은 한다(주문·승인 요청만 생략). 브로커 생성은 네트워크를 쓰지 않는다.
+    brokers = {b.account.id: b for b in _build_brokers(secrets, accounts)}
+    return ToolContext(
+        settings=config.load_settings(),
+        accounts=accounts,
+        conn=conn,
+        brokers=brokers,
+        notifier=make_notifier(secrets),
+        dry_run=dry_run,
+    )
 
 
 def _emit(result: dict) -> None:
@@ -581,6 +687,253 @@ def tool_submit_decision(
         date=date,
         payload=_payload_arg(json_text),
     )
+
+
+# --- 승인 (Phase 4) ------------------------------------------------------------
+
+approvals_app = typer.Typer(help="approve 모드 계좌의 승인 요청 조회·승인·거부")
+app.add_typer(approvals_app, name="approvals")
+telegram_app = typer.Typer(help="텔레그램 수신 (승인 명령 1회 폴링)")
+app.add_typer(telegram_app, name="telegram")
+
+
+def _exec_ctx():
+    """CLI 용 ExecContext. 브로커는 앱키가 있는 계좌만 (없으면 승인 시 실패로 기록)."""
+    from trader.ledger import db
+    from trader.orchestrator.executor import ExecContext
+
+    configure(paths.state_dir())
+    secrets = config.load_secrets()
+    accounts = config.load_accounts()
+    conn = db.connect()
+    db.init_schema(conn)
+    return ExecContext(
+        settings=config.load_settings(),
+        accounts=accounts,
+        conn=conn,
+        brokers={b.account.id: b for b in _build_brokers(secrets, accounts)},
+        notifier=make_notifier(secrets),
+    ), secrets
+
+
+def _approval_line(a: dict) -> str:
+    o = a["order"]
+    return (
+        f"#{a['id']} {a['account_id']} {o.get('side')} {o.get('ticker')} {o.get('qty')}주 "
+        f"@{o.get('price') or '시장가'} 만료 {a['expires_at']}"
+    )
+
+
+@approvals_app.command("list")
+def approvals_list() -> None:
+    """미처리 승인 요청 목록 (만료분은 expired 로 정리)."""
+    from trader.ledger import repo
+    from trader.orchestrator import executor
+
+    try:
+        ectx, _ = _exec_ctx()
+    except (config.ConfigError, paths.ProjectRootNotFound) as e:
+        typer.echo(f"오류: {e}", err=True)
+        raise typer.Exit(code=1) from e
+    try:
+        expired = executor.expire_approvals(ectx)
+        pending = repo.pending_approvals(ectx.conn)
+    finally:
+        ectx.conn.close()
+    if expired:
+        typer.echo(f"만료 처리: {', '.join(f'#{i}' for i in expired)}")
+    if not pending:
+        typer.echo("미승인 주문 없음")
+    for a in pending:
+        typer.echo(_approval_line(a))
+
+
+def _decide(approval_id: int, action: str) -> None:
+    from trader.orchestrator import executor
+
+    try:
+        ectx, _ = _exec_ctx()
+    except (config.ConfigError, paths.ProjectRootNotFound) as e:
+        typer.echo(f"오류: {e}", err=True)
+        raise typer.Exit(code=1) from e
+    try:
+        r = (
+            executor.approve(ectx, approval_id)
+            if action == "approve"
+            else executor.reject(ectx, approval_id)
+        )
+    finally:
+        ectx.conn.close()
+    if not r["ok"]:
+        typer.echo(f"실패: {r.get('error') or r.get('order')}", err=True)
+        raise typer.Exit(code=1)
+    if action == "approve":
+        o = r["order"]
+        typer.echo(f"승인 #{approval_id} → 주문 접수번호 {o.get('order_no')} {o.get('message')}")
+    else:
+        typer.echo(f"거부 #{approval_id}")
+
+
+@approvals_app.command("approve")
+def approvals_approve(approval_id: int = typer.Argument(..., help="승인 요청 id")) -> None:
+    """승인 요청을 주문으로 실행한다 (30분 만료, 1회만)."""
+    _decide(approval_id, "approve")
+
+
+@approvals_app.command("reject")
+def approvals_reject(approval_id: int = typer.Argument(..., help="승인 요청 id")) -> None:
+    """승인 요청을 거부한다."""
+    _decide(approval_id, "reject")
+
+
+@telegram_app.command("poll")
+def telegram_poll() -> None:
+    """getUpdates 1회: /approve <id>·/reject <id>·/status 를 처리하고 오프셋을 저장한다."""
+    from trader.control import control
+    from trader.ledger import repo
+    from trader.orchestrator import executor
+
+    try:
+        ectx, secrets = _exec_ctx()
+    except (config.ConfigError, paths.ProjectRootNotFound) as e:
+        typer.echo(f"오류: {e}", err=True)
+        raise typer.Exit(code=1) from e
+    receiver = make_receiver(secrets)
+    if receiver is None:
+        ectx.conn.close()
+        typer.echo("오류: 텔레그램 토큰·chat_id 가 없습니다", err=True)
+        raise typer.Exit(code=1)
+    try:
+        offset = control.get_flag(ectx.conn, "telegram_offset")
+        updates = receiver.poll(offset)
+        executor.expire_approvals(ectx)
+        handled = 0
+        for u in updates:
+            cmd = parse_command(u.text)
+            if cmd is None:
+                continue
+            name, arg = cmd
+            handled += 1
+            if name == "status":
+                pending = repo.pending_approvals(ectx.conn)
+                modes = ", ".join(
+                    f"{a.id}={control.get_account_mode(ectx.conn, a)}" for a in ectx.accounts
+                )
+                body = "\n".join(_approval_line(a) for a in pending) or "없음"
+                ectx.notifier.send(f"[상태] 계좌 모드: {modes}\n미승인 주문:\n{body}")
+                typer.echo(f"status → 미승인 {len(pending)}건")
+                continue
+            if arg is None or not arg.isdigit():
+                ectx.notifier.send(f"사용법: /{name} <승인 id>")
+                continue
+            r = (
+                executor.approve(ectx, int(arg))
+                if name == "approve"
+                else executor.reject(ectx, int(arg))
+            )
+            msg = f"{name} #{arg} → {'ok' if r['ok'] else r.get('error') or '실패'}"
+            typer.echo(msg)
+            if not r["ok"]:
+                ectx.notifier.send(f"[{name} 실패] {r.get('error') or r.get('order')}")
+        if updates:
+            control.set_flag(ectx.conn, "telegram_offset", max(u.update_id for u in updates) + 1)
+        typer.echo(f"수신 {len(updates)}건, 명령 {handled}건")
+    finally:
+        ectx.conn.close()
+
+
+# --- 런타임 제어 (control 테이블) -----------------------------------------------
+
+control_app = typer.Typer(help="일시정지·계좌 모드 (SQLite control 테이블, yaml 보다 우선)")
+app.add_typer(control_app, name="control")
+
+
+def _control_conn():
+    from trader.ledger import db
+
+    configure(paths.state_dir())
+    accounts = config.load_accounts()
+    conn = db.connect()
+    db.init_schema(conn)
+    return conn, accounts
+
+
+@control_app.command("show")
+def control_show() -> None:
+    """일시정지 여부와 계좌별 실효 모드를 보여준다."""
+    from trader.control import control
+
+    try:
+        conn, accounts = _control_conn()
+    except (config.ConfigError, paths.ProjectRootNotFound) as e:
+        typer.echo(f"오류: {e}", err=True)
+        raise typer.Exit(code=1) from e
+    try:
+        typer.echo(f"일시정지: {'예' if control.is_paused(conn) else '아니오'}")
+        for a in accounts:
+            mode = control.get_account_mode(conn, a)
+            src = "control" if control.get_flag(conn, f"mode:{a.id}") is not None else "yaml"
+            typer.echo(f"{a.id} ({a.env}): {mode} [{src}]")
+    finally:
+        conn.close()
+
+
+@control_app.command("mode")
+def control_mode(
+    account: str = typer.Argument(..., help="계좌 id"),
+    mode: str = typer.Argument(..., help="auto | approve | off"),
+    confirm: str | None = typer.Option(None, "--confirm", help="실전 auto 전환 확인 문자열(LIVE)"),
+) -> None:
+    """계좌 실행 모드를 바꾼다. 실전 auto 는 --confirm LIVE 가 있어야 하며 확인 기록을 남긴다."""
+    from trader.control import control
+
+    try:
+        conn, accounts = _control_conn()
+    except (config.ConfigError, paths.ProjectRootNotFound) as e:
+        typer.echo(f"오류: {e}", err=True)
+        raise typer.Exit(code=1) from e
+    try:
+        acct = next((a for a in accounts if a.id == account), None)
+        if acct is None:
+            typer.echo(f"오류: 계좌 id 를 찾을 수 없습니다: {account}", err=True)
+            raise typer.Exit(code=1)
+        try:
+            control.set_account_mode(conn, acct, mode, confirm=confirm)
+        except control.ConfirmationRequired as e:
+            typer.echo(f"오류: {e}", err=True)
+            raise typer.Exit(code=1) from e
+        except ValueError as e:
+            typer.echo(f"오류: {e}", err=True)
+            raise typer.Exit(code=1) from e
+        typer.echo(f"{account}: {mode}")
+    finally:
+        conn.close()
+
+
+@control_app.command("pause")
+def control_pause() -> None:
+    """paused 플래그를 켠다 (Phase 6 데몬이 확인)."""
+    from trader.control import control
+
+    conn, _ = _control_conn()
+    try:
+        control.set_flag(conn, "paused", True)
+    finally:
+        conn.close()
+    typer.echo("일시정지: 예")
+
+
+@control_app.command("resume")
+def control_resume() -> None:
+    """paused 플래그를 끈다."""
+    from trader.control import control
+
+    conn, _ = _control_conn()
+    try:
+        control.set_flag(conn, "paused", False)
+    finally:
+        conn.close()
+    typer.echo("일시정지: 아니오")
 
 
 @app.command("notify-test")

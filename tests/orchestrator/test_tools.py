@@ -1,5 +1,6 @@
 import json
 from datetime import date
+from decimal import Decimal
 
 import pytest
 from helpers_agents import ok_decision, ok_report, ok_turn
@@ -417,12 +418,57 @@ def test_submit_requires_reports_and_summary(ctx, project):
         )
     assert tools.checkpoint_summarize(ctx, ticker="005930", market="KR", date=D)["ok"]
     r = tools.submit_decision(ctx, ticker="005930", market="KR", date=D, payload=ok_decision())
-    assert r["ok"] is True and r["risk"] == "phase4"
+    assert r["ok"] is True and len(r["executions"]) == 2
     assert read_checkpoint(run_dir(D, "KR", "005930"), "30_decision")["data"]["action"] == "BUY"
     rc = read_checkpoint(run_dir(D, "KR", "005930"), "40_risk_check_paper-main")
-    assert rc["data"]["approved"] is None and rc["data"]["reason"] == "phase4"
+    assert isinstance(rc["data"]["approved"], bool) and rc["data"]["dry_run"] is True
     assert read_checkpoint(run_dir(D, "KR", "005930"), "40_risk_check_real-main") is not None
     assert read_checkpoint(run_dir(D, "US", "005930"), "40_risk_check_x") is None
+    # 결정·리포트·토론이 원장에 적재된다
+    assert ctx.conn.execute("SELECT COUNT(*) FROM decisions").fetchone()[0] == 1
+    assert ctx.conn.execute("SELECT COUNT(*) FROM analyst_reports").fetchone()[0] == 2
+    assert ctx.conn.execute("SELECT COUNT(*) FROM debate_turns").fetchone()[0] == 2
+
+
+def test_submit_decision_runs_executor(ctx, project):
+    """ctx.dry_run=False + 브로커가 있으면 submit-decision 이 모의 auto 계좌에 주문한다."""
+    from trader.broker.fake import FakeBroker
+    from trader.broker.models import Cash
+
+    _inputs(project)
+    for role in ("technical", "fundamental"):
+        tools.checkpoint_write(
+            ctx,
+            ticker="005930",
+            market="KR",
+            date=D,
+            stage=f"10_analyst_{role}",
+            payload=ok_report(role=role),
+            agent="a",
+        )
+    for side in ("bull", "bear"):
+        tools.checkpoint_write(
+            ctx,
+            ticker="005930",
+            market="KR",
+            date=D,
+            stage=f"20_debate_r0_{side}",
+            payload=ok_turn(side),
+            agent="r",
+        )
+    tools.checkpoint_summarize(ctx, ticker="005930", market="KR", date=D)
+    cash = {"KR": Cash(currency="KRW", available=Decimal("10000000"), total=Decimal("10000000"))}
+    ctx.brokers = {a.id: FakeBroker(a, cash=cash) for a in ctx.accounts}
+    ctx.dry_run = False
+    r = tools.submit_decision(ctx, ticker="005930", market="KR", date=D, payload=ok_decision())
+    assert r["ok"] and r["executions"][0]["order"]["accepted"]
+    assert len(ctx.brokers["paper-main"].orders) == 1  # 가격은 00_inputs quote 71500 → 13주
+    assert ctx.brokers["paper-main"].orders[0].qty == 13
+    assert ctx.brokers["real-main"].orders == []
+    # 같은 날 재제출은 기존 결정을 돌려주고 다시 실행하지 않는다 (리뷰 C1)
+    r2 = tools.submit_decision(ctx, ticker="005930", market="KR", date=D, payload=ok_decision())
+    assert r2["ok"] and r2.get("already") is True
+    assert len(ctx.brokers["paper-main"].orders) == 1
 
 
 def test_submit_rejects_invalid_decision(ctx, project):

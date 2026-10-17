@@ -41,7 +41,13 @@
       "Bash(more secrets/.env*)",
       "Bash(more ./secrets/.env*)",
       "Bash(python -m trader kis order *)",
-      "Bash(uv run trader kis order *)"
+      "Bash(uv run trader kis order *)",
+      "Bash(python -m trader kis order-test*)",
+      "Bash(uv run trader kis order-test*)",
+      "Bash(python -m trader approvals approve *)",
+      "Bash(uv run trader approvals approve *)",
+      "Bash(python -m trader telegram poll*)",
+      "Bash(uv run trader telegram poll*)"
     ]
   }
 }

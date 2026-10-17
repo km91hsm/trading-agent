@@ -8,6 +8,7 @@ from trader import cli
 from trader.broker.fake import FakeBroker, FakeMarket
 from trader.broker.models import Cash
 from trader.cli import app
+from trader.ledger import db
 from trader.notify.telegram import NullNotifier
 
 
@@ -135,3 +136,57 @@ def test_build_brokers_skips_env_without_keys(project):
     ]
     brokers = cli._build_brokers(secrets, accounts)
     assert [b.account.id for b in brokers] == ["paper-main"]
+
+
+def test_kis_order_test_paper_places_and_cancels(project, monkeypatch):
+    _accounts(project)
+    market, brokers = _fakes()
+    built = {}
+
+    def _brokers(secrets, accounts):
+        bs = brokers(secrets, accounts)
+        built.update({b.account.id: b for b in bs})
+        return bs
+
+    monkeypatch.setattr(cli, "_build_market", lambda s: market)
+    monkeypatch.setattr(cli, "_build_brokers", _brokers)
+    r = CliRunner().invoke(app, ["kis", "order-test", "--account", "paper-main"])
+    assert r.exit_code == 0, r.stdout
+    b = built["paper-main"]
+    assert len(b.orders) == 1 and b.orders[0].qty == 1 and b.orders[0].order_type == "LIMIT"
+    assert b.orders[0].price == Decimal("64300")  # 71500 × 0.9 = 64350 → 호가단위 100 내림
+    assert b.cancelled == ["FAKE-1"]
+    assert "접수" in r.stdout and "취소" in r.stdout
+    conn = db.connect()
+    db.init_schema(conn)
+    assert conn.execute("SELECT COUNT(*) FROM orders").fetchone()[0] == 0  # 원장에 남기지 않음
+    conn.close()
+
+
+def test_kis_order_test_refuses_real(project, monkeypatch):
+    _accounts(project)
+    market, brokers = _fakes()
+    monkeypatch.setattr(cli, "_build_market", lambda s: market)
+    monkeypatch.setattr(cli, "_build_brokers", brokers)
+    r = CliRunner().invoke(app, ["kis", "order-test", "--account", "real-main"])
+    assert r.exit_code == 1 and "모의" in (r.stdout + (r.stderr or ""))
+
+
+def test_kis_order_test_cancels_even_if_cancel_fails(project, monkeypatch):
+    _accounts(project)
+    market, brokers = _fakes(broker_fail=("cancel_order",))
+    monkeypatch.setattr(cli, "_build_market", lambda s: market)
+    monkeypatch.setattr(cli, "_build_brokers", brokers)
+    r = CliRunner().invoke(app, ["kis", "order-test", "--account", "paper-main"])
+    assert r.exit_code == 1 and "취소 실패" in r.stdout
+
+
+def test_tool_ctx_builds_brokers_even_in_dry_run(project, monkeypatch):
+    """dry_run 은 주문만 막고 판정은 실제 잔고로 한다 (리뷰 I5)."""
+    _accounts(project)
+    market, brokers = _fakes()
+    monkeypatch.setattr(cli, "_build_brokers", brokers)
+    monkeypatch.delenv("TRADER_DRY_RUN", raising=False)
+    ctx = cli._tool_ctx()
+    ctx.conn.close()
+    assert ctx.dry_run is True and set(ctx.brokers) == {"paper-main", "real-main"}

@@ -53,5 +53,3 @@ def test_fake_broker():
     assert b.get_cash("KR").currency == "KRW"
     with pytest.raises(KisApiError):
         b.get_cash("US")  # 설정 안 된 시장은 실패
-    with pytest.raises(NotImplementedError):
-        b.place_order(None)

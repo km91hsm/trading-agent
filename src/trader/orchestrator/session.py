@@ -187,12 +187,23 @@ def run_session(
     agents_dir: Path | None = None,
     state: Path | None = None,
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
+    brokers: dict[str, Any] | None = None,
+    notifier: Any = None,
 ) -> SessionResult:
     """오케스트레이터 세션 1회. 실패해도 체크포인트는 그대로 남아 재실행 시 이어간다."""
     if settings.anonymize:
         raise ConfigError("settings.anonymize=true 는 Phase 6 전까지 지원하지 않습니다")
     bin_override = claude_bin if claude_bin is not None else claude_bin_path
-    ctx = tools.ToolContext(settings=settings, accounts=accounts, conn=conn, state=state, now=now)
+    ctx = tools.ToolContext(
+        settings=settings,
+        accounts=accounts,
+        conn=conn,
+        state=state,
+        now=now,
+        brokers=brokers or {},
+        notifier=notifier,
+        dry_run=spec.dry_run,
+    )
     if tools.sessions_today(conn, now()) >= settings.llm.daily_session_cap:
         raise PipelineError(
             f"오늘 세션 상한({settings.llm.daily_session_cap})에 도달해 세션을 띄우지 않습니다"
@@ -264,6 +275,8 @@ def run_session(
     env = {
         **os.environ,
         "CLAUDE_CODE_RETRY_WATCHDOG": "1",
+        # tool 서브프로세스가 상속한다. "0" 일 때만 실제 주문·승인 요청 (LLM 인자에 의존하지 않음)
+        "TRADER_DRY_RUN": "1" if spec.dry_run else "0",
         "TRADER_HOME": str(paths.project_root()),
         "PATH": venv_bin + os.pathsep + os.environ.get("PATH", ""),
     }
