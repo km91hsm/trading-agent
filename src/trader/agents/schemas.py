@@ -85,6 +85,25 @@ class Decision(BaseModel):
     memory_ids_used: list[str] = Field(default_factory=list)
 
 
+class QuantReport(BaseModel):
+    """05_quant: 승격된 퀀트 모델의 5거래일 수익률 3분류 확률 (파이썬 생성, 스펙 §9.1)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    ticker: str
+    asof: str
+    role: Literal["quant"] = "quant"
+    model: str
+    p_up: float = Field(ge=0, le=1)
+    p_flat: float = Field(ge=0, le=1)
+    p_down: float = Field(ge=0, le=1)
+    signal: Signal
+    horizon_days: int = Field(ge=1)
+    features_used: list[str]
+    data_gaps: list[str] = Field(default_factory=list)
+    feature_date: str | None = None
+
+
 class Pick(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -117,6 +136,7 @@ _STAGE_PATTERNS: list[tuple[re.Pattern[str], type[BaseModel]]] = [
     (re.compile(r"^10_analyst_[a-z_]+$"), AnalystReport),
     (re.compile(r"^20_debate_r\d+_(bull|bear)$"), DebateTurn),
     (re.compile(r"^30_decision$"), Decision),
+    (re.compile(r"^05_quant$"), QuantReport),
 ]
 
 

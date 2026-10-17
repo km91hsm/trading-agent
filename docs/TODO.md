@@ -103,14 +103,18 @@
 - [ ] 리뷰 Minor 이연(Phase 6): SIGTERM 중 실행 중인 claude 세션은 launchd SIGKILL 로 `agent_calls` running 행이 남아 상한에 집계됨(기동 시 stale running 정리), `pid_alive` 가 PermissionError 를 생존으로 봄, quant 가 NaN 피처 행을 z=0 으로 통과시킴, `latest_features` 가 parquet 전부를 읽음
 
 ## Phase 7 ML 1단계
-- [ ] features/dataset/labels (라벨 엠바고)
-- [ ] 피처 스토어 news_count·community_count 집계, US 연도별 비율(EDGAR), 동종업 중앙값 대비 비율 (Phase 2 이연)
-- [ ] quant 모델 + ranker (LightGBM)
-- [ ] 워크포워드 비중첩 평가 + 라벨 누출 역검증 테스트
-- [ ] registry
-- [ ] 05_quant.json 투입, scan 랭킹
-- [ ] UI ML 페이지
-- [ ] 완료 기준: 승격 기준 통과 모델이 파이프라인 반영, UI 에서 성능·피처 중요도 확인
+- [x] `ml.yaml` 로더(`MlConfig`), `ml/dataset`(적재·5거래일 3분류 라벨·피처 열), 라벨 엠바고
+- [x] 피처 스토어 news_count·community_count 집계(같은 날 00_inputs 에서) (Phase 2 이연). US 연도별 비율(EDGAR 과거 연도)·동종업 중앙값 대비 비율은 데이터 없음 → Phase 8
+- [x] quant 모델(GBDT 3분류: `lightgbm` import 가능하면 LGBM, 아니면 sklearn HistGradientBoosting) + ranker(P(up)·0.6 + 정량·0.4)
+- [x] 워크포워드 비중첩 폴드(`ml/walkforward`, 엠바고 gap 검사) + 라벨 누출 역검증(라벨 섞기 → 우연 수준, 타깃 열 피처 금지)
+- [x] registry(`state/models/quant/<버전>/model.joblib+meta.json`, 승격 플래그)
+- [x] 05_quant.json 투입(`tool collect`·`analyze`·데몬 뒤 `tools.ensure_quant`, 트레이더 `context.quant`), scan ML 랭킹(`ml_model` 표시)
+- [x] UI ML 페이지(모델 목록·폴드 성능·permutation 중요도) + `/api/ml/models[/{version}]` + `trader ml train|models|promote` + 데몬 `ml_train` 잡 + STATUS "ML 모델" 절
+- [x] 완료 기준(실기 2026-10-17): `uv run trader ml train --market KR` → 4,940행·6폴드 정확도 0.315 / 기준선 0.465 / 알파 −0.003 → **미승격**(승격 규칙: 정확도 > 기준선 ∧ ≥ 0.40 ∧ 알파 > 0 ∧ 폴드별 up 예측 ≥ 5건. 잡음 데이터 4 seed 전부 미승격 테스트 확인. 파이프라인은 ML 없이 돈다). 합성 신호 데이터에서는 승격·05_quant·랭킹 전부 테스트로 확인. UI 성능·중요도는 `/api/ml/models` 응답으로 확인
+- [ ] 사용자 확인 대기: LightGBM 을 쓰려면 `brew install libomp` → `uv sync --extra lightgbm` → `config/ml.yaml` 의 `models.quant.backend: lightgbm`(기본은 플랫폼 동일 동작을 위해 `sklearn`)
+- [ ] Phase 7 이연(리뷰): 절대 가격 수준 피처(sma·bb·atr·macd 원값)를 close 대비 비율로 정규화해야 종목 간 일반화가 된다 — 실기 정확도가 기준선 아래인 주원인 추정 → Phase 8 에서 `indicators` 파생 열 추가 후 재학습. 중요도는 마지막 폴드 홀드아웃 기준(in-sample 아님). `features snapshot` 을 데몬 잡으로 매일 돌리는 일정도 Phase 8(현재 수동)
+- [ ] 사용자 확인 대기: 3년 백필(`uv run trader features backfill --years 3`, DART 정상 시) 후 `ml train` 재실행 — 1년·20종목으로는 기준선을 못 넘음. 승격 전까지 05_quant·ML 랭킹은 비활성
+- [ ] Phase 7 이연: US 연도별 비율·동종업 비율·피처 행 탐색 UI·하이퍼파라미터 탐색(Phase 8)
 
 ## Phase 8 학습·평가·보정
 - [ ] memory 3층·엠바고·서킷브레이커

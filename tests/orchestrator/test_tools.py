@@ -670,3 +670,96 @@ def test_validate_ids_rejects_dots():
         with pytest.raises(tools.ToolInputError):
             tools._validate_ids(bad, "KR")
     tools._validate_ids("BRK.B", "US")  # 점이 섞인 정상 티커는 허용
+
+
+# --- Phase 7: 05_quant 투입 ---------------------------------------------------------------
+
+
+def _promote_quant(project):
+    from datetime import UTC, datetime
+
+    from helpers_ml import synthetic_features
+
+    from trader.ml import dataset, features, registry
+    from trader.ml.models import quant
+
+    df = dataset.make_labels(
+        synthetic_features(2, 120, signal=True), horizon_days=5, up=0.02, down=-0.02
+    )
+    cols = dataset.feature_columns(df)
+    X, y = dataset.split_xy(df, cols)
+    v = registry.save(
+        "quant",
+        quant.QuantModel(cols).fit(X, y),
+        {"features": cols, "label": {"horizon_days": 5}},
+        now=lambda: datetime(2026, 10, 17, tzinfo=UTC),
+    )
+    registry.promote("quant", v)
+    feats = synthetic_features(2, 120, signal=True)
+    feats["ticker"] = feats["ticker"].replace({"T00": "005930", "T01": "000660"})
+    features.write_rows(feats)
+    return v
+
+
+def test_ensure_quant_skips_without_promoted_model(ctx, project):
+    _inputs(project)
+    r = tools.ensure_quant(ctx, ticker="005930", market="KR", date=D)
+    assert r is None and read_checkpoint(run_dir(D, "KR", "005930"), "05_quant") is None
+
+
+def test_ensure_quant_writes_report_and_bundle_context(ctx, project):
+    _inputs(project)
+    v = _promote_quant(project)
+    r = tools.ensure_quant(ctx, ticker="005930", market="KR", date=D)
+    assert r["model"] == f"quant@{v}" and r["role"] == "quant"
+    cp = read_checkpoint(run_dir(D, "KR", "005930"), "05_quant")
+    assert cp["data"]["ticker"] == "005930" and cp["call"]["agent"] == "quant"
+    assert (
+        tools.ensure_quant(ctx, ticker="005930", market="KR", date=D)["model"] == f"quant@{v}"
+    )  # 멱등
+    for role in ("technical", "fundamental"):
+        tools.checkpoint_write(
+            ctx,
+            ticker="005930",
+            market="KR",
+            date=D,
+            stage=f"10_analyst_{role}",
+            payload=ok_report(role=role),
+            agent="a",
+        )
+    for side in ("bull", "bear"):
+        tools.checkpoint_write(
+            ctx,
+            ticker="005930",
+            market="KR",
+            date=D,
+            stage=f"20_debate_r0_{side}",
+            payload=ok_turn(side),
+            agent="r",
+        )
+    tools.checkpoint_summarize(ctx, ticker="005930", market="KR", date=D)
+    b = tools.checkpoint_bundle(ctx, ticker="005930", market="KR", date=D, kind="trader")
+    assert b["data"]["context"]["quant"]["p_up"] == cp["data"]["p_up"]
+    rd = tools.checkpoint_read(ctx, ticker="005930", market="KR", date=D, stage="05_quant")
+    assert rd["ok"] and rd["data"]["data"]["role"] == "quant"
+
+
+def test_ensure_quant_without_features_row_records_gap(ctx, project):
+    _inputs(project)
+    _promote_quant(project)
+    r = tools.ensure_quant(ctx, ticker="999999", market="KR", date=D)
+    assert r is None  # 피처 행이 없으면 05_quant 를 쓰지 않는다
+
+
+def test_ensure_quant_disabled_or_broken_never_raises(ctx, project):
+    import yaml
+
+    _inputs(project)
+    v = _promote_quant(project)
+    (project / "config" / "ml.yaml").write_text(
+        yaml.safe_dump({"models": {"quant": {"enabled": False}}}), encoding="utf-8"
+    )
+    assert tools.ensure_quant(ctx, ticker="005930", market="KR", date=D) is None
+    (project / "config" / "ml.yaml").unlink()
+    (project / "state" / "models" / "quant" / v / "model.joblib").write_bytes(b"garbage")
+    assert tools.ensure_quant(ctx, ticker="005930", market="KR", date=D) is None

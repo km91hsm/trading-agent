@@ -20,3 +20,4 @@ button.sel { background: #3b4a6b; } button.chip { font-size: 12px; } button.dang
 details summary { cursor: pointer; } .viewer { background: #161a22; padding: 10px; border-radius: 6px; margin-top: 8px; }
 .debate ul { margin: 4px 0 8px 18px; } .chart { width: 100%; min-height: 460px; } pre.status { background: #161a22; padding: 10px; overflow: auto; max-height: 420px; font-size: 12px; }
 ul.inline { display: flex; gap: 14px; list-style: none; padding: 0; }
+ul.bars { list-style: none; padding: 0; } ul.bars li { display: grid; grid-template-columns: 140px 1fr 70px; gap: 8px; align-items: center; margin: 3px 0; } ul.bars .bar { display: inline-block; height: 10px; background: #8b5cf6; border-radius: 3px; }

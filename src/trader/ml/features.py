@@ -13,6 +13,7 @@ from collections.abc import Callable
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
@@ -23,6 +24,7 @@ from trader.sources import indicators
 from trader.sources.dart import ANNUAL, basic_ratios
 
 logger = logging.getLogger("trader.ml")
+_KST = ZoneInfo("Asia/Seoul")
 
 RATIO_COLUMNS = {"op_margin": "영업이익률", "roe": "ROE", "debt_ratio": "부채비율"}
 FLOW_COLUMNS = ["flow_foreign_20d", "flow_inst_20d", "flow_indiv_20d"]
@@ -225,6 +227,33 @@ def backfill(
     return total
 
 
+def counts_from_inputs(
+    ticker: str, market: Market, asof: datetime, state: Path | None = None
+) -> tuple[int | None, int | None]:
+    """같은 KST 날짜의 00_inputs 에서 뉴스·커뮤니티 건수를 센다. 없으면 (None, None)."""
+    from trader.orchestrator.run_store import read_checkpoint
+    from trader.platform import paths
+
+    base = state if state is not None else paths.state_dir()
+    d = base / "runs" / asof.astimezone(_KST).date().isoformat() / market / ticker
+    inputs = read_checkpoint(d, "00_inputs") if d.is_dir() else None
+    if not inputs:
+        return None, None
+
+    def _count(section: Any, *keys: str) -> int | None:
+        data = (section or {}).get("data") if isinstance(section, dict) else None
+        if not isinstance(data, dict):
+            return None
+        for k in keys:
+            if isinstance(data.get(k), list):
+                return len(data[k])
+        return None
+
+    news = _count(((inputs.get("news_macro") or {}).get("news")), "items", "articles", "news")
+    posts = _count(((inputs.get("sentiment") or {}).get("community")), "posts")
+    return news, posts
+
+
 def snapshot(
     *,
     market_client: Any,
@@ -236,7 +265,7 @@ def snapshot(
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
     progress: Callable[[str], None] = lambda s: None,
 ) -> int:
-    """오늘 행(종목당 1행)을 저장한다. 뉴스·커뮤니티 건수는 Phase 7 에서 채운다."""
+    """오늘 행(종목당 1행)을 저장한다. 뉴스·커뮤니티 건수는 같은 날 00_inputs 에서 센다."""
     asof = asof or now()
     if now() - asof > MAX_PAST:
         raise ConfigError(
@@ -257,6 +286,7 @@ def snapshot(
             if market == "KR" and dart is not None:
                 by_year = _ratios_by_year_kr(dart, ticker, [_effective_fy(candles[-1].date)])
                 ratios = next(iter(by_year.values()), None)
+            news_count, community_count = counts_from_inputs(ticker, market, asof, state)
             rows.append(
                 snapshot_row(
                     ticker=ticker,
@@ -264,8 +294,8 @@ def snapshot(
                     candles=candles,
                     flows=flows,
                     ratios=ratios,
-                    news_count=None,
-                    community_count=None,
+                    news_count=news_count,
+                    community_count=community_count,
                 )
             )
             progress(f"{market} {ticker}: ok")

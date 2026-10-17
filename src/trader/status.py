@@ -85,6 +85,26 @@ def _recent_decisions(runs_dir: Path, limit: int = 3) -> list[str]:
     return out
 
 
+def _ml_lines() -> list[str]:
+    try:
+        from trader.ml import registry
+
+        metas = registry.list_models("quant")
+    except Exception as e:  # noqa: BLE001 - 레지스트리 문제가 STATUS 생성을 막지 않는다
+        return [f"- 조회 실패: {e}"]
+    if not metas:
+        return ["- 없음 (`uv run trader ml train` 으로 학습)"]
+    out = []
+    for m in metas[:3]:
+        met = m.get("metrics") or {}
+        out.append(
+            f"- quant {m.get('version')}: 정확도 {met.get('accuracy', '-')} / 기준선 "
+            f"{met.get('baseline', '-')} / 알파 {met.get('alpha', '-')} · "
+            f"{'승격' if m.get('promoted') else '미승격'}"
+        )
+    return out
+
+
 def build_status(
     conn: sqlite3.Connection,
     settings: Settings,
@@ -128,6 +148,7 @@ def build_status(
     if decisions:
         lines += ["", "## 최근 결정"]
         lines += [f"- {d}" for d in decisions]
+    lines += ["", "## ML 모델", *_ml_lines()]
     dist = metrics.decision_distribution(conn, days=30, now=now)
     lines += ["", "## 결정 분포(30일)"]
     if dist:

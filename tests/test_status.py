@@ -96,3 +96,31 @@ def test_build_status_truncates(conn, project):
 def test_write_status_default_path(project):
     out = status.write_status("안녕\n")
     assert out == project / "state" / "STATUS.md" and out.read_text(encoding="utf-8") == "안녕\n"
+
+
+def test_status_shows_ml_model(conn, project):
+    from datetime import UTC, datetime
+
+    from helpers_ml import synthetic_features
+
+    from trader.ml import dataset, registry
+    from trader.ml.models import quant
+
+    p = project / "docs" / "TODO.md"
+    p.write_text(TODO, encoding="utf-8")
+    text = status.build_status(conn, Settings(), [], p)
+    assert "## ML 모델" in text and "없음" in text
+    df = dataset.make_labels(
+        synthetic_features(2, 80, signal=False), horizon_days=5, up=0.02, down=-0.02
+    )
+    cols = dataset.feature_columns(df)
+    X, y = dataset.split_xy(df, cols)
+    v = registry.save(
+        "quant",
+        quant.QuantModel(cols).fit(X, y),
+        {"features": cols, "metrics": {"accuracy": 0.42, "alpha": 0.0}},
+        now=lambda: datetime(2026, 10, 17, tzinfo=UTC),
+    )
+    registry.promote("quant", v)
+    text = status.build_status(conn, Settings(), [], p)
+    assert f"quant {v}" in text and "0.42" in text and "승격" in text

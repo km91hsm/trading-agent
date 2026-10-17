@@ -147,7 +147,7 @@ def test_charts_us_requires_exchange_and_without_market_503(project, conn):
 
 def test_ml_placeholder(client):
     r = client.get("/api/ml/models").json()
-    assert r["models"] == [] and "Phase 7" in r["note"]
+    assert r["models"] == [] and r["active"] is None and "승격" in r["note"]
 
 
 def test_charts_days_bounds_and_cache(client, deps):
