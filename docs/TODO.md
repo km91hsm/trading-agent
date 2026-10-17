@@ -135,7 +135,7 @@
 - [x] 워크포워드 × 시드 3회 학습·기준선(고정 10%·LLM 비중·변동성 타깃) 비교 (`rl train`, 폴드·엠바고는 quant 와 동일). 백엔드는 `cem`(numpy, 기본) / `ppo`(stable-baselines3, `uv sync --extra rl`)
 - [x] 모의 계좌 한정 섀도/적용 (`ml.yaml rl_sizer.enabled` ∧ `rl promote` 수동 승격 → executor 가 **모의 계좌·BUY/ADD** 에만 `rl_shadow` 기록, `mode: apply` 면 target_weight 교체·게이트 상한은 그대로. 실전 계좌는 기록도 없음)
 - [x] UI 실험 로그 (ML 페이지 "RL 실험" 절, `/api/rl/experiments|shadow|report`, STATUS `rl_sizer` 줄, 데몬 ml_train 이 enabled 일 때 함께 학습, `rl report`)
-- [x] 실기(2026-10-17): `rl train --market KR --seeds 1`(피처 스토어, CEM) → `rl models`·`rl report` → `FAKE_CLAUDE=1 analyze --dry-run`(HOLD 라 `rl_shadow` 0행, 모드 불변) → `/api/rl/*` 200 → STATUS 줄
+- [x] 실기(2026-10-17): `rl train --market KR --seeds 1`(피처 스토어 4,940 스텝·6폴드, CEM) → 테스트 창 평균 수익 RL −0.13% / 고정 10% +0.33% / 변동성 타깃 +0.89%, 정책은 변동성에 반응(atr 1% → 비중 0.20, 5% → 0.006) → **미승격**(1시드·1년 데이터로는 기준선 미달, 승격은 수동) → `rl report` → `FAKE_CLAUDE=1 analyze --dry-run`(HOLD·dry-run 이라 `rl_shadow` 0행, 모드 불변) → `/api/rl/*` 200 → STATUS 줄. 리뷰 전 버전 `20261017_063439` 는 정규화 전 수치(수익 2673%)라 무시
 - [ ] 완료 기준(사용자 확인 대기): 8주 워크포워드 비교 리포트 — 모의 운영 8주 뒤 `uv run trader rl train` → `rl report --account paper-main --weeks 8` 로 RL vs 고정·LLM 비교, 승격은 `rl promote <버전>` 수동(그 뒤 `ml.yaml rl_sizer.enabled: true`, 처음엔 `mode: shadow`)
 - [ ] 사용자 확인 대기: PPO 백엔드 — `uv sync --extra rl`(torch 휠 필요, 이 머신은 x86_64 Python 이라 설치가 안 될 수 있음) 후 `ml.yaml rl_sizer.backend: ppo` 로 `rl train`
 - [ ] Phase 9 이연: 멀티 종목 동시 포트폴리오 환경, RL 실험 전용 페이지, 피처 스토어 날짜별 parquet 전체 읽기(학습·섀도 관측마다 수 초)
