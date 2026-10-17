@@ -119,13 +119,15 @@
 - [ ] Phase 7 이연: US 연도별 비율·동종업 비율·피처 행 탐색 UI·하이퍼파라미터 탐색(Phase 8)
 
 ## Phase 8 학습·평가·보정
-- [ ] memory 3층·엠바고·서킷브레이커
-- [ ] reflector md + `reflect` 명령
-- [ ] calibration 모델 (결정 60건 미만이면 비활성)
-- [ ] 성과 페이지 (수익률·MDD·Sortino·벤치마크·비용 민감도·회전율·결정 분포·수렴율)
-- [ ] 간이 백테스트 (컷오프 이후만)
-- [ ] 실전 approve 전환 절차 (사용자 수동): `docs/runbook-live-transition.md` + `trader readiness`(읽기 전용) + `trader backtest --since`
-- [ ] 완료 기준: 모의 4주 이상 성과 리포트, 보정 모델 활성, 사용자 판단으로 실전 approve
+- [x] memory 3층·엠바고·서킷브레이커 (`memory_entries` v5, 12차원 상황 벡터, 반감기 14/90/365, 워밍업 50, `control.memory_breaker`)
+- [x] reflector md + `reflect` 명령 (`outcomes.mature` → reflector 세션 `kind=reflect` → `_reflect.json`·`reflection`, 데몬 잡)
+- [x] calibration 모델 (결정 60건 미만이면 비활성, `35_calibration` 은 활성일 때만 생성, `calibration build`)
+- [x] 성과 페이지 (수익률·MDD·Sortino·벤치마크 1/N·B&H·퀀트·비용 민감도·회전율·결정 분포·수렴율) + `GET /api/performance` + STATUS "성과(30일)"
+- [x] 간이 백테스트 (컷오프 이후만, `backtest --since`)
+- [x] 실전 approve 전환 절차 (사용자 수동): `docs/runbook-live-transition.md` + `trader readiness`(읽기 전용) + `trader backtest --since`
+- [x] 실기: `FAKE_CLAUDE=1 analyze --ticker 000660 --dry-run` → `memory_entries` 1행(워밍업·`35_calibration` 없음), `reflect --dry-run` 0건, `backtest --since 2026-10-01` n=0, `readiness` 불합격 항목 표시·모드 불변, `/api/performance` 200 (2026-10-17 확인)
+- [ ] 완료 기준(사용자 확인 대기): 모의 4주 이상 성과 리포트(웹 `/performance`·`trader readiness` 통과), 보정 모델 활성(만기 결정 60건), 사용자 판단으로 실전 approve(`docs/runbook-live-transition.md`)
+- [ ] 사용자 확인 대기: 파생 비율 피처 반영 재학습 — `features backfill --years 3` → `ml train` 으로 기준선 초과 여부 확인
 
 ## Phase 9 RL 사이징(실험)
 - [ ] gym env (상태·행동·드로다운 페널티)
