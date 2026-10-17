@@ -113,3 +113,11 @@ def test_report_account_filter_and_empty(conn, project):
     assert r["metrics"]["return"] == pytest.approx(0.10) and "decision_distribution" in r
     assert r["account_id"] == "paper-main" and r["benchmarks"]["one_over_n"]["return"] is not None
     assert "cost_sensitivity" in r and "turnover" in r and r["convergence_rate"] is None
+
+
+def test_one_over_n_is_universe_and_bh_is_held(project):
+    _store({"A": [100] * 5 + [110] * 20, "B": [100] * 5 + [90] * 20, "C": [100] * 25})
+    b = performance.benchmarks(None, "KR", DAYS[0], DAYS[10], tickers=["A"])
+    assert b["one_over_n"]["return"] == pytest.approx(0.0)  # A·B·C 등가중(유니버스)
+    assert b["buy_and_hold"]["return"] == pytest.approx(0.10)  # 보유 A 만
+    assert b["benchmark_universe"] == ["A", "B", "C"]

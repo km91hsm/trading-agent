@@ -261,6 +261,9 @@ class DaemonDeps:
     web_app_factory: Callable[[], Any] | None = None
     dry_run: bool = False
     session_runner: Callable[..., Any] | None = None  # 테스트 주입용 (기본 run_session)
+    snapshot_fn: Callable[[list[str]], int] | None = (
+        None  # reflect 전 피처 스냅샷(시장 목록 → 행 수)
+    )
 
 
 def _today(deps: DaemonDeps) -> date:
@@ -493,6 +496,13 @@ def _reflect_body(deps: DaemonDeps) -> dict:
     from trader.memory import outcomes, store
     from trader.orchestrator.reflect import pending, run_reflect
 
+    features_n: int | None = None
+    if deps.snapshot_fn is not None:
+        try:
+            features_n = int(deps.snapshot_fn(list(deps.settings.markets)))
+        except Exception as e:  # noqa: BLE001 - 스냅샷 실패는 통보하고 반성은 계속
+            logger.warning("피처 스냅샷 실패: %s", e)
+            deps.notifier.send(f"[피처 스냅샷 실패] {e} — 만기 결과가 채워지지 않을 수 있음")
     conn = deps.conn_factory()
     try:
         matured = outcomes.mature(conn, state=deps.state, today=_today(deps))
@@ -519,7 +529,12 @@ def _reflect_body(deps: DaemonDeps) -> dict:
         pr = store.promote_and_prune(conn, now=deps.now(), settings=deps.settings.memory)
     finally:
         conn.close()
-    return {"matured": len(matured), "sessions": sessions, "pruned": pr["deleted"]}
+    return {
+        "features": features_n,
+        "matured": len(matured),
+        "sessions": sessions,
+        "pruned": pr["deleted"],
+    }
 
 
 def _ml_train_body(deps: DaemonDeps) -> dict:

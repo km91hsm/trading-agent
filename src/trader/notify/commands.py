@@ -1,6 +1,6 @@
 """텔레그램 명령 (/approve /reject /status /pause /resume /mode /watch). CLI·데몬 공용.
 
-실전 계좌 auto 전환은 텔레그램으로 받지 않는다 (CLI `control mode --confirm LIVE` 만)."""
+실전 계좌 모드는 텔레그램으로 off(하향)만 바꿀 수 있다. 상향은 CLI `control mode` 만."""
 
 from __future__ import annotations
 
@@ -37,10 +37,10 @@ def _control_command(ectx: Any, name: str, arg: str | None) -> str:
         acct = next((a for a in ectx.accounts if a.id == acct_id), None)
         if acct is None:
             return f"알 수 없는 계좌: {acct_id}"
-        if acct.env == "real" and mode == "auto":
+        if acct.env == "real" and mode != "off":
             return (
-                "거부: 실전 auto 전환은 텔레그램으로 받지 않습니다. "
-                "CLI `trader control mode real-main auto --confirm LIVE` 로만 가능"
+                f"거부: 실전 계좌 {acct.id} 는 텔레그램으로 off(비상 정지)만 가능합니다. "
+                "상향은 CLI `trader control mode <계좌> approve|auto --confirm LIVE` 로만"
             )
         try:
             control.set_account_mode(conn, acct, mode)

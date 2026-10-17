@@ -92,9 +92,10 @@ def benchmarks(
     tickers: list[str] | None = None,
     quant_top: list[str] | None = None,
 ) -> dict:
-    """1/N(등가중 일별 리밸런스)·B&H(시작일 등가중 보유)·quant(승격 모델 상위, 없으면 None).
+    """1/N(유니버스 등가중 일별 리밸런스)·B&H(tickers 또는 유니버스 시작일 등가중 보유)·quant.
 
     각 항목 {return, series: [{time, value(시작=1.0)}]}. 종가가 없으면 return None·series [].
+    benchmark_universe 는 1/N 에 들어간 종목 목록이다.
     """
     table = _close_table(state, market, start, end)
     empty = {"return": None, "series": []}
@@ -120,11 +121,12 @@ def benchmarks(
             "series": _series_from_growth(growth),
         }
 
-    cols = tickers if tickers else (list(table.columns) if not table.empty else [])
+    universe = [str(c) for c in table.columns] if not table.empty else []
     return {
-        "one_over_n": strategy(cols, rebalance=True),
-        "buy_and_hold": strategy(cols, rebalance=False),
+        "one_over_n": strategy(universe, rebalance=True),
+        "buy_and_hold": strategy(tickers or universe, rebalance=False),
         "quant": strategy(quant_top, rebalance=True) if quant_top else None,
+        "benchmark_universe": universe,
     }
 
 

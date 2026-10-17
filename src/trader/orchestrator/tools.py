@@ -155,6 +155,19 @@ def trader_context(
     }
 
 
+def _record_vix(conn, inputs: dict) -> None:
+    """00_inputs 의 news_macro.macro.vix(FRED 최신 관측)를 기록한다 (VIX 급등 브레이커 입력)."""
+    from trader.memory import store
+
+    try:
+        vix = ((inputs.get("news_macro") or {}).get("macro") or {}).get("vix") or {}
+        data = vix.get("data") or {}
+        if data.get("value") is not None and data.get("date"):
+            store.record_vix(conn, value=float(data["value"]), date=str(data["date"]))
+    except Exception as e:  # noqa: BLE001 - VIX 기록 실패는 메모리 검색을 막지 않는다
+        logger.warning("VIX 기록 실패: %s", e)
+
+
 def _memory_context(ctx: ToolContext, inputs: dict, market: Market) -> dict:
     """{memory: [...상위 k 요약], memory_status: {warmup, breaker}}. 원장이 없으면 빈 목록."""
     if ctx.conn is None:
@@ -164,6 +177,7 @@ def _memory_context(ctx: ToolContext, inputs: dict, market: Market) -> dict:
     from trader.ml import quant_report
 
     try:
+        _record_vix(ctx.conn, inputs)
         ticker = str((inputs.get("meta") or {}).get("ticker") or "")
         row = quant_report.latest_row(ticker, market, ctx.state) if ticker else None
         qv = vec.situation_vector(row or {}, market)
@@ -205,7 +219,7 @@ def ensure_calibration(ctx: ToolContext, *, ticker: str, market: Market, date: d
         return existing.get("data")
     try:
         cfg = load_ml().models.calibration
-        if not cfg.enabled and cfg.min_decisions <= 0:
+        if not cfg.enabled:
             return None
         row = quant_report.latest_row(ticker, market, ctx.state)
         qv = vec.situation_vector(row, market) if row else None

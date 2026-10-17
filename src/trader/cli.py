@@ -857,6 +857,24 @@ def _telegram_run(*, interval: int, max_iterations: int | None) -> None:
         ectx.conn.close()
 
 
+def _daemon_snapshot_fn(secrets: config.Secrets, universe, market_client):
+    """데몬 reflect 잡 앞에서 매일 피처 스냅샷을 찍는 함수 (시세 클라이언트 없으면 None)."""
+    if market_client is None:
+        return None
+    from trader.ml import features
+
+    def run(markets: list[str]) -> int:
+        return features.snapshot(
+            market_client=market_client,
+            dart=_build_dart(secrets),
+            universe=universe,
+            markets=markets,  # type: ignore[arg-type]
+            progress=lambda s: None,
+        )
+
+    return run
+
+
 @app.command("daemon")
 def daemon_cmd(
     no_web: bool = typer.Option(False, "--no-web", help="웹 서버를 띄우지 않음"),
@@ -908,6 +926,7 @@ def daemon_cmd(
         input_deps=_build_input_deps(secrets, sources_cfg),
         web_app_factory=web_app,
         dry_run=dry_run,
+        snapshot_fn=_daemon_snapshot_fn(secrets, universe, market_client),
     )
     r = daemon_mod.run(deps, web=not no_web)
     if not r.get("ok"):

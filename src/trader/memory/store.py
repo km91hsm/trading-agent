@@ -19,7 +19,14 @@ TIERS = ("short", "mid", "long")
 BIG_RETURN = 0.05
 PRUNE_AGE_DAYS = 90
 PRUNE_IMPORTANCE = 0.2
-BREAKER_KEY = "memory_breaker"
+BREAKER_KEY = "memory_breaker"  # 시장별 키: memory_breaker:<market>
+VIX_KEY = "vix_last"
+
+
+def _breaker_key(market: str | None) -> str:
+    return f"{BREAKER_KEY}:{market}" if market else BREAKER_KEY
+
+
 W_RECENCY, W_RELEVANCE, W_IMPORTANCE = 0.4, 0.4, 0.2
 
 
@@ -91,8 +98,9 @@ def fill_outcome(
     realized_return: float,
     alpha: float,
     outcome_at: str,
+    price_return: float | None = None,
 ) -> None:
-    """결과 채움. |실현수익| ≥ 5% 면 한 층 승격하고 importance 를 올린다."""
+    """결과 채움(실현수익은 결정 방향 기준, price_return 은 원시 가격수익). |실현| ≥ 5% 승격."""
     e = get_entry(conn, entry_id)
     if e is None:
         return
@@ -103,8 +111,16 @@ def fill_outcome(
         importance = min(1.0, importance + 0.3)
     conn.execute(
         "UPDATE memory_entries SET realized_return=?, alpha_vs_benchmark=?, outcome_at=?, tier=?, "
-        "importance=? WHERE id=?",
-        (float(realized_return), float(alpha), outcome_at, tier, importance, entry_id),
+        "importance=?, price_return=? WHERE id=?",
+        (
+            float(realized_return),
+            float(alpha),
+            outcome_at,
+            tier,
+            importance,
+            None if price_return is None else float(price_return),
+            entry_id,
+        ),
     )
     conn.commit()
 
@@ -134,9 +150,51 @@ def matured_count(conn: sqlite3.Connection) -> int:
     )
 
 
-def breaker_state(conn: sqlite3.Connection) -> dict | None:
-    b = control.get_flag(conn, BREAKER_KEY)
-    return b if isinstance(b, dict) and b.get("active") else None
+def breaker_state(conn: sqlite3.Connection, market: str | None = None) -> dict | None:
+    """시장별 브레이커(시장 없는 전역 플래그는 모든 시장에 적용). None 이면 켜진 것 아무거나."""
+
+    def active(key: str) -> dict | None:
+        b = control.get_flag(conn, key)
+        return b if isinstance(b, dict) and b.get("active") else None
+
+    if market:
+        return active(_breaker_key(market)) or active(BREAKER_KEY)
+    keys = [BREAKER_KEY] + [
+        str(r["key"])
+        for r in conn.execute(
+            "SELECT key FROM control WHERE key LIKE ?", (f"{BREAKER_KEY}:%",)
+        ).fetchall()
+    ]
+    return next((b for k in keys if (b := active(k))), None)
+
+
+def record_vix(conn: sqlite3.Connection, *, value: float, date: str) -> float | None:
+    """VIX 관측(날짜·값)을 기록하고 직전 다른 날짜 대비 변화율을 돌려준다 (없으면 None)."""
+    last = control.get_flag(conn, VIX_KEY) or {}
+    if last.get("date") == date:
+        prev_date, prev_value = last.get("prev_date"), last.get("prev_value")
+    else:
+        prev_date, prev_value = last.get("date"), last.get("value")
+    change = None
+    if prev_value:
+        change = float(value) / float(prev_value) - 1
+    control.set_flag(
+        conn,
+        VIX_KEY,
+        {
+            "date": date,
+            "value": float(value),
+            "prev_date": prev_date,
+            "prev_value": prev_value,
+            "change": change,
+        },
+    )
+    return change
+
+
+def latest_vix_change(conn: sqlite3.Connection) -> float | None:
+    last = control.get_flag(conn, VIX_KEY) or {}
+    return last.get("change")
 
 
 def retrieve(
@@ -150,7 +208,7 @@ def retrieve(
 ) -> dict:
     """{entries, warmup, breaker}. 만기 전(outcome 없음) 제외, 워밍업·브레이커면 빈 목록."""
     k = k or settings.top_k
-    breaker = breaker_state(conn)
+    breaker = breaker_state(conn, market)
     if breaker:
         return {"entries": [], "warmup": False, "breaker": breaker}
     if matured_count(conn) < settings.warmup:
@@ -213,8 +271,9 @@ def circuit_breaker(
     nav_series: list[tuple[str, Decimal]],
     vix_change: float | None,
     settings: MemorySettings,
+    market: str | None = None,
 ) -> dict | None:
-    """드로다운 ≤ drawdown_stop_pct 또는 VIX 급등이면 플래그를 켜고 사유를 돌려준다."""
+    """드로다운 ≤ drawdown_stop_pct 또는 VIX 급등이면 그 시장의 플래그를 켜고 사유를 돌려준다."""
     reason = None
     if nav_series:
         peak = max(Decimal(str(v)) for _, v in nav_series)
@@ -227,7 +286,7 @@ def circuit_breaker(
         reason = f"VIX 급등 {vix_change:+.0%} ≥ {settings.vix_spike_pct:.0%}"
     if reason:
         state = {"active": True, "reason": reason, "at": now_iso()}
-        control.set_flag(conn, BREAKER_KEY, state)
+        control.set_flag(conn, _breaker_key(market), state)
         return state
-    control.set_flag(conn, BREAKER_KEY, {"active": False, "reason": None, "at": now_iso()})
+    control.set_flag(conn, _breaker_key(market), {"active": False, "reason": None, "at": now_iso()})
     return None

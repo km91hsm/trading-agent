@@ -39,7 +39,8 @@ def _price_sign(entry_realized: float, action: str) -> int:
 def signal_hits(conn: sqlite3.Connection) -> pd.DataFrame:
     rows = []
     for e in conn.execute(
-        "SELECT id, ticker, market, decided_at, decision, realized_return, situation_vector "
+        "SELECT id, ticker, market, decided_at, decision, realized_return, price_return, "
+        "situation_vector "
         "FROM memory_entries WHERE outcome_at IS NOT NULL"
     ).fetchall():
         try:
@@ -47,7 +48,10 @@ def signal_hits(conn: sqlite3.Connection) -> pd.DataFrame:
         except ValueError:
             continue
         action = str((json.loads(e["decision"] or "{}") or {}).get("action") or "HOLD").upper()
-        realized_sign = _price_sign(float(e["realized_return"] or 0.0), action)
+        if e["price_return"] is not None:
+            realized_sign = _price_sign(float(e["price_return"]), "BUY")
+        else:
+            realized_sign = _price_sign(float(e["realized_return"] or 0.0), action)
         vector = json.loads(e["situation_vector"] or "[]")
         for a in conn.execute(
             "SELECT role, signal FROM analyst_reports WHERE date=? AND market=? AND ticker=?",

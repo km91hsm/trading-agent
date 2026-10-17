@@ -354,3 +354,27 @@ def test_us_holiday_skipped(conn):
     assert daemon.should_skip("US", date(2026, 12, 24), None, conn) is None
     assert daemon.should_skip("KR", date(2026, 12, 25), None, conn) is None  # KR 은 KIS 조회
     assert len(daemon.US_HOLIDAYS) == 20
+
+
+def test_reflect_job_snapshots_features_first(conn):
+    calls = []
+    deps = _deps(conn, FakeMarket(), now=lambda: datetime(2026, 10, 8, 7, 0, tzinfo=UTC))
+    deps.snapshot_fn = lambda markets: calls.append(list(markets)) or 3
+    r = daemon._reflect_body(deps)
+    assert calls == [["KR", "US"]] and r["features"] == 3
+
+    class Sent:
+        msgs = []
+
+        def send(self, text, *, escape=True):
+            self.msgs.append(text)
+            return True
+
+    deps.notifier = Sent()
+
+    def boom(markets):
+        raise RuntimeError("KIS 장애")
+
+    deps.snapshot_fn = boom
+    r = daemon._reflect_body(deps)  # 스냅샷 실패는 통보하고 반성은 계속
+    assert r["features"] is None and any("피처 스냅샷 실패" in m for m in Sent.msgs)

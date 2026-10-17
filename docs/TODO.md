@@ -114,7 +114,7 @@
 - [x] 완료 기준(실기 2026-10-17): `uv run trader ml train --market KR` → 4,940행·6폴드 정확도 0.315 / 기준선 0.465 / 알파 −0.003 → **미승격**(승격 규칙: 정확도 > 기준선 ∧ ≥ 0.40 ∧ 알파 > 0 ∧ 폴드별 up 예측 ≥ 5건. 잡음 데이터 4 seed 전부 미승격 테스트 확인. 파이프라인은 ML 없이 돈다). 합성 신호 데이터에서는 승격·05_quant·랭킹 전부 테스트로 확인. UI 성능·중요도는 `/api/ml/models` 응답으로 확인
 - [ ] 사용자 확인 대기: LightGBM 을 쓰려면 `brew install libomp` → `uv sync --extra lightgbm` → `config/ml.yaml` 의 `models.quant.backend: lightgbm`(기본은 플랫폼 동일 동작을 위해 `sklearn`)
 - [x] Phase 7 이연(리뷰, Phase 8 회수): close 대비 비율 피처 `sma_5/20/60_rel·bb_pos·atr_pct·macd_hist_rel` 추가(옛 parquet 행은 NaN → `features backfill` 재실행 후 `ml train`). 중요도는 마지막 폴드 홀드아웃 기준
-- [ ] Phase 7 이연: `features snapshot` 데몬 잡(현재 수동), 재학습은 사용자 실기(`features backfill --years 3` → `ml train`)
+- [x] Phase 7 이연: `features snapshot` 은 데몬 reflect 잡 앞에서 매일 실행(`DaemonDeps.snapshot_fn`, 실패는 통보). 재학습은 사용자 실기(`features backfill --years 3` → `ml train`)
 - [ ] 사용자 확인 대기: 3년 백필(`uv run trader features backfill --years 3`, DART 정상 시) 후 `ml train` 재실행 — 1년·20종목으로는 기준선을 못 넘음. 승격 전까지 05_quant·ML 랭킹은 비활성
 - [ ] Phase 7 이연: US 연도별 비율·동종업 비율·피처 행 탐색 UI·하이퍼파라미터 탐색(Phase 8)
 
@@ -128,6 +128,7 @@
 - [x] 실기: `FAKE_CLAUDE=1 analyze --ticker 000660 --dry-run` → `memory_entries` 1행(워밍업·`35_calibration` 없음), `reflect --dry-run` 0건, `backtest --since 2026-10-01` n=0, `readiness` 불합격 항목 표시·모드 불변, `/api/performance` 200 (2026-10-17 확인)
 - [ ] 완료 기준(사용자 확인 대기): 모의 4주 이상 성과 리포트(웹 `/performance`·`trader readiness` 통과), 보정 모델 활성(만기 결정 60건), 사용자 판단으로 실전 approve(`docs/runbook-live-transition.md`)
 - [ ] 사용자 확인 대기: 파생 비율 피처 반영 재학습 — `features backfill --years 3` → `ml train` 으로 기준선 초과 여부 확인
+- [ ] 리뷰 Minor 이연(Phase 8): `tool` 컨텍스트 `now` 를 stdin asof 로(`decided_at` 과 run date 불일치), 상황 벡터는 run date 이하 피처 행으로, `cost_sensitivity` 미체결 주문 포함·UTC/KST 하루 오차, `nav_history(days)` 는 스냅샷 개수 기준, `outcomes.mature(today)` 미사용, 백테스트 HOLD 적중 정의, `/watch add` 인자 없을 때 사용법, 관심종목 시장 구분 없음, `submit_reflection` 디렉터리 직접 생성, `calibration_runs` 종목마다 1행 누적, 메모리 차원 `sma_5_rel` 과 피처 열 부호 반대, `record_decision(decision_id=None)` 멱등 깨짐, reflect 잡 `PipelineError` 시 남은 시장 건너뜀, `run_error_rate` 분모에 interval 잡 성공분 없음(보수적)
 
 ## Phase 9 RL 사이징(실험)
 - [ ] gym env (상태·행동·드로다운 페널티)

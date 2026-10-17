@@ -2,6 +2,8 @@ import json
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
+import pytest
+
 from trader.config import MemorySettings, Settings
 from trader.control import control
 from trader.ledger import db
@@ -76,11 +78,47 @@ def test_record_decision_idempotent(conn):
 def test_retrieve_excludes_unmatured(conn):
     for i in range(1, 51):
         _entry(conn, i)
-    _entry(conn, 99, matured=False)
+    # 미만기 엔트리를 가장 최근·최고 importance 로 두어 엠바고 필터가 없으면 반드시 1위가 되게 한다
+    _entry(conn, 99, matured=False, decided_at=NOW, importance=1.0)
     r = store.retrieve(conn, vector=VEC, now=NOW, settings=SET)
     assert r["warmup"] is False and r["breaker"] is None
     assert all(e["outcome_at"] for e in r["entries"]) and len(r["entries"]) == 5
     assert all(e["ticker"] != "T099" for e in r["entries"])
+    everything = store.retrieve(conn, vector=VEC, now=NOW, settings=SET, k=100)["entries"]
+    assert len(everything) == 50 and all(e["ticker"] != "T099" for e in everything)
+
+
+def test_breaker_is_per_market(conn):
+    for i in range(1, 51):
+        _entry(conn, i)
+    nav_kr = [("2026-10-01", Decimal(100)), ("2026-10-02", Decimal(88))]
+    assert store.circuit_breaker(
+        conn, nav_series=nav_kr, vix_change=None, settings=SET, market="KR"
+    )
+    nav_us = [("2026-10-01", Decimal(100)), ("2026-10-02", Decimal(101))]
+    assert (
+        store.circuit_breaker(conn, nav_series=nav_us, vix_change=None, settings=SET, market="US")
+        is None
+    )
+    # US 판정이 KR 브레이커를 해제하지 않는다
+    kr = store.retrieve(conn, vector=VEC, now=NOW, settings=SET, market="KR")
+    assert kr["entries"] == [] and kr["breaker"]["active"]
+    us = store.retrieve(conn, vector=VEC, now=NOW, settings=SET, market="US")
+    assert us["breaker"] is None
+    assert store.breaker_state(conn, "KR") and store.breaker_state(conn, "US") is None
+
+
+def test_vix_change_recorded_and_trips_breaker(conn):
+    assert store.record_vix(conn, value=20.0, date="2026-10-15") is None
+    assert (
+        store.record_vix(conn, value=20.0, date="2026-10-15") is None
+    )  # 같은 날 재기록은 변화 없음
+    assert store.record_vix(conn, value=27.0, date="2026-10-16") == pytest.approx(0.35)
+    assert store.latest_vix_change(conn) == pytest.approx(0.35)
+    st = store.circuit_breaker(
+        conn, nav_series=[], vix_change=store.latest_vix_change(conn), settings=SET, market="KR"
+    )
+    assert st and "VIX" in st["reason"]
 
 
 def test_warmup_blocks_retrieval(conn):

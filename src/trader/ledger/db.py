@@ -152,6 +152,10 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
             )""",
         ],
     ),
+    (
+        6,  # Phase 8 리뷰: 원시 가격수익(HOLD 도 신호 채점 가능)
+        ["ALTER TABLE memory_entries ADD COLUMN price_return REAL"],
+    ),
 ]
 
 

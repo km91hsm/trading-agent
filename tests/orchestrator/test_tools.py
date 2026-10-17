@@ -896,3 +896,31 @@ def test_submit_decision_records_memory_entry_and_ids_used(ctx, project):
     r2 = tools.submit_decision(ctx, ticker="005930", market="KR", date=D, payload=ok_decision())
     assert r2.get("already") is True
     assert ctx.conn.execute("SELECT COUNT(*) FROM memory_entries").fetchone()[0] == 1
+
+
+def test_ensure_calibration_respects_enabled_flag(ctx, project):
+    from helpers_memory import seed_matured
+
+    _inputs(project)
+    seed_matured(ctx.conn, 60)
+    (project / "config" / "ml.yaml").write_text(
+        "models:\n  calibration: {enabled: false, min_decisions: 60}\n", encoding="utf-8"
+    )
+    assert tools.ensure_calibration(ctx, ticker="005930", market="KR", date=D) is None
+    assert read_checkpoint(run_dir(D, "KR", "005930"), "35_calibration") is None
+
+
+def test_memory_context_records_vix_change(ctx):
+    from trader.memory import store
+
+    def inputs(value, day):
+        return {
+            "meta": {"ticker": "005930"},
+            "news_macro": {"macro": {"vix": {"data": {"value": value, "date": day}}}},
+        }
+
+    tools._memory_context(ctx, inputs(20.0, "2026-10-15"), "KR")
+    tools._memory_context(ctx, inputs(27.0, "2026-10-16"), "KR")
+    assert store.latest_vix_change(ctx.conn) == pytest.approx(0.35)
+    tools._memory_context(ctx, {"meta": {"ticker": "005930"}}, "KR")  # macro 없음 → 유지
+    assert store.latest_vix_change(ctx.conn) == pytest.approx(0.35)

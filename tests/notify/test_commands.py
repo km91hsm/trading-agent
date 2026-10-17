@@ -69,4 +69,8 @@ def test_real_auto_via_telegram_rejected(conn):
     assert control.get_account_mode(conn, ctx.accounts[1]) == "off"
     assert "거부" in sent.msgs[-1] and "control mode" in sent.msgs[-1]
     commands.poll_once(ctx, Recv(["/mode real-main approve"]))
-    assert control.get_account_mode(conn, ctx.accounts[1]) == "approve"
+    assert control.get_account_mode(conn, ctx.accounts[1]) == "off"
+    assert "거부" in sent.msgs[-1]
+    control.set_account_mode(conn, ctx.accounts[1], "approve")
+    commands.poll_once(ctx, Recv(["/mode real-main off"]))  # 비상 정지(하향)만 허용
+    assert control.get_account_mode(conn, ctx.accounts[1]) == "off"

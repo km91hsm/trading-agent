@@ -421,7 +421,7 @@ class RankerCfg(BaseModel):
 class CalibrationCfg(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    enabled: bool = False
+    enabled: bool = True
     min_decisions: int = 60
 
 

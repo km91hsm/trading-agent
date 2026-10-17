@@ -17,15 +17,20 @@ from trader.ledger import db, repo
 TODAY = date(2026, 10, 17)
 
 
-def _runs(conn, n_ok: int, n_err: int = 0, kind="analyze"):
+def _runs(conn, n_ok: int, n_err: int = 0, kind="analyze", model="claude-opus"):
     for i in range(n_ok + n_err):
         d = TODAY - timedelta(days=i + 1)
         started = datetime(d.year, d.month, d.day, 1, tzinfo=UTC).isoformat()
         status = "ok" if i < n_ok else "error"
-        conn.execute(
+        cur = conn.execute(
             "INSERT INTO runs(kind, market, started_at, finished_at, status) "
             "VALUES (?, 'KR', ?, ?, ?)",
             (kind, started, started, status),
+        )
+        conn.execute(
+            "INSERT INTO agent_calls(run_id, agent, model, status, created_at) "
+            "VALUES (?, 'orchestrator', ?, ?, ?)",
+            (cur.lastrowid, model, status, started),
         )
     conn.commit()
 
@@ -125,3 +130,29 @@ def test_cli_backtest_and_readiness(project):
     assert r.exit_code == 0, r.stdout
     out = json.loads(r.stdout.strip().splitlines()[-1])
     assert out["ok"] is False and any(i["key"] == "paper_days" for i in out["items"])
+
+
+def test_paper_days_excludes_fake_sessions(project, conn):
+    accounts = [make_account("paper-main", "paper", "auto")]
+    _runs(conn, 25, model="fake")
+    r = readiness.check(
+        conn, accounts=accounts, settings=Settings(), state=project / "state", today=TODAY
+    )
+    assert next(i for i in r["items"] if i["key"] == "paper_days")["value"] == 0
+
+
+def test_stale_approvals_ignores_unexpired(project, conn):
+    accounts = [make_account("paper-main", "paper", "auto")]
+    far = (datetime.now(UTC) + timedelta(minutes=20)).isoformat()  # 오늘 안에 만료되지만 아직 유효
+    repo.create_approval(
+        conn, decision_id=1, account_id="paper-main", order={}, requested_at=far, expires_at=far
+    )
+    r = readiness.check(
+        conn,
+        accounts=accounts,
+        settings=Settings(),
+        state=project / "state",
+        today=datetime.now(UTC).date(),
+    )
+    item = next(i for i in r["items"] if i["key"] == "stale_approvals")
+    assert item["ok"] and item["value"] == 0

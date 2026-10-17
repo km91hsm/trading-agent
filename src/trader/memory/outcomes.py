@@ -84,7 +84,12 @@ def mature(conn, *, state: Path | None, today: date, horizon_default: int = 5) -
         alpha = realized - bench
         outcome_at = datetime.now(UTC).isoformat()
         store.fill_outcome(
-            conn, int(r["id"]), realized_return=realized, alpha=alpha, outcome_at=outcome_at
+            conn,
+            int(r["id"]),
+            realized_return=realized,
+            alpha=alpha,
+            outcome_at=outcome_at,
+            price_return=ret,
         )
         out.append(
             {

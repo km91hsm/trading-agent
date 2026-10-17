@@ -1,5 +1,6 @@
 from datetime import UTC, datetime
 
+import pytest
 from helpers_memory import seed_matured
 
 from trader.calibration import model
@@ -61,3 +62,13 @@ def test_calibration_active_at_60(conn):
     ).fetchone()
     assert row["active"] == 1 and row["n_decisions"] == 60
     assert MlConfig().models.calibration.min_decisions == 60
+
+
+def test_signal_hits_uses_price_return_for_hold(conn):
+    """HOLD 결정은 실현수익이 0 이지만 가격 방향(price_return)으로 신호를 채점한다."""
+    seed_matured(conn, 10, action="HOLD", hit_rate=1.0)
+    df = model.signal_hits(conn)
+    assert len(df) == 40 and (df["realized_sign"] == 1).all()
+    rates = model.hit_rates(df, query_vector=None)
+    assert rates["technical"]["hit_rate"] == pytest.approx(1.0)
+    assert rates["sentiment"]["hit_rate"] == pytest.approx(0.0)  # SELL 신호는 빗나감

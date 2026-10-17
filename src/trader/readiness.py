@@ -1,6 +1,6 @@
 """실전 전환 준비도 점검 (스펙 §11 Phase 8 완료 기준). 읽기 전용: 모드를 바꾸지 않는다.
 
-항목: 모의 운영일(analyze ok 날짜 수) ≥ 20, 28일 runs 오류율 ≤ 10%, 주문 실패율 ≤ 10%,
+항목: 모의 운영일(FAKE 제외 analyze ok 날짜 수) ≥ 20, 28일 runs 오류율 ≤ 10%, 주문 실패율 ≤ 10%,
 30일 수익률 ≥ 1/N 벤치마크, MDD ≥ −10%, 보정 활성(정보), 만료된 미결 승인 0건.
 """
 
@@ -30,7 +30,9 @@ def _item(key: str, ok: bool, value, threshold, note: str = "") -> dict:
 
 def _paper_days(conn: sqlite3.Connection) -> int:
     rows = conn.execute(
-        "SELECT started_at FROM runs WHERE kind='analyze' AND status='ok'"
+        "SELECT r.started_at FROM runs r WHERE r.kind='analyze' AND r.status='ok' AND EXISTS ("
+        "SELECT 1 FROM agent_calls a WHERE a.run_id=r.id AND a.agent='orchestrator' "
+        "AND a.model IS NOT NULL AND a.model != 'fake')"
     ).fetchall()
     days = set()
     for r in rows:
@@ -68,7 +70,8 @@ def check(
     state: Path | None,
     today: date,
 ) -> dict:
-    now = datetime.combine(today, time.max, UTC)
+    # 승인 만료는 실제 현재 시각(오늘 자정 이전) 기준: 아직 유효한 당일 승인은 stale 이 아니다
+    now = min(datetime.now(UTC), datetime.combine(today, time.max, UTC))
     since_iso = (now - timedelta(days=WINDOW_DAYS)).isoformat()
     items: list[dict] = []
 

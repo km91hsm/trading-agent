@@ -16,8 +16,8 @@ uv run trader readiness
 
 | key | 기준 | 비고 |
 |---|---|---|
-| paper_days | ≥ 20 | `runs` 의 analyze ok 날짜 수(KST) |
-| run_error_rate | ≤ 10% | 최근 28일 runs |
+| paper_days | ≥ 20 | `runs` 의 analyze ok 날짜 수(KST), FAKE 세션 제외 |
+| run_error_rate | ≤ 10% | 최근 28일 runs (monitor·텔레그램 같은 interval 잡은 오류일 때만 기록되므로 보수적) |
 | order_failed_rate | ≤ 10% | 최근 28일 orders(failed·rejected) |
 | return_vs_benchmark | ≥ 0 | 모의 30일 수익률 − 1/N 벤치마크(피처 스토어 종가). 벤치마크 없으면 0 대비 |
 | mdd | ≥ −10% | 모의 30일 최대 낙폭 |
@@ -31,6 +31,7 @@ uv run trader readiness
 uv run trader control mode real-main approve
 ```
 - 실전 리스크 한도는 `config/settings.yaml` 의 `risk` 절(모의와 동일 규칙)이고, 승인 요청은 30분 뒤 만료된다.
+- 텔레그램 `/mode real-main off` 는 비상 정지용으로 허용되지만 approve/auto 로 올리는 것은 CLI 만 받는다.
 - 1주 동안 매 주문을 텔레그램 `/approve <id>` 또는 웹 주문/승인 페이지에서 직접 승인한다.
   거부는 `/reject <id>`. 손절 매도는 approve 에서도 승인 없이 즉시 나간다(스펙 §6.2).
 - 매일 `uv run trader status` 의 미승인 주문·성과 절과 `state/logs/daemon.out` 을 확인한다.
