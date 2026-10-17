@@ -206,3 +206,28 @@ def test_reddit_oauth_when_keys_present(respx_mock):
         and "(by /u/me)" in req.headers["user-agent"]
     )
     assert listing.calls[0].request.headers["authorization"] == "Bearer tok"
+
+
+def test_collect_community_closes_self_made_client(respx_mock, monkeypatch):
+    respx_mock.get(url__startswith=REDDIT).mock(
+        return_value=httpx.Response(200, content=load_bytes("reddit_new.rss"))
+    )
+    made: list[httpx.Client] = []
+    real = httpx.Client
+
+    class Spy(real):
+        def __init__(self, *a, **k):
+            super().__init__(*a, **k)
+            made.append(self)
+
+    monkeypatch.setattr(httpx, "Client", Spy)
+    collect_community(
+        CommunityCfg(),
+        ticker="AAPL",
+        name="Apple",
+        market="US",
+        asof=T0,
+        now=lambda: T0,
+        sleep=lambda s: None,
+    )
+    assert len(made) == 1 and made[0].is_closed

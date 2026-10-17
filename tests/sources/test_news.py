@@ -126,3 +126,23 @@ def test_google_failure_is_recorded_not_raised(respx_mock):
         now=lambda: T0,
     )
     assert out["stock"] == [] and out["sources"]["google_rss"].startswith("ConnectError")
+
+
+def test_collect_news_closes_self_made_client(respx_mock, monkeypatch):
+    respx_mock.get(url__startswith=GOOGLE).mock(
+        return_value=httpx.Response(200, content=load_bytes("news_google.xml"))
+    )
+    made: list[httpx.Client] = []
+    real = httpx.Client
+
+    class Spy(real):
+        def __init__(self, *a, **k):
+            super().__init__(*a, **k)
+            made.append(self)
+
+    monkeypatch.setattr(httpx, "Client", Spy)
+    cfg = NewsCfg(enabled=True, google_rss=True, naver=False)
+    collect_news(
+        cfg, Secrets(), ticker="005930", name="삼성전자", market="KR", asof=T0, now=lambda: T0
+    )
+    assert len(made) == 1 and made[0].is_closed

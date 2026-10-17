@@ -9,8 +9,17 @@ from trader.ml import registry
 from trader.ml.rl import shadow
 
 NAME = "rl_sizer"
-MODEL_KEYS = ("version", "saved_at", "backend", "source", "steps", "seeds", "promoted",
-              "promote_reason", "summary")
+MODEL_KEYS = (
+    "version",
+    "saved_at",
+    "backend",
+    "source",
+    "steps",
+    "seeds",
+    "promoted",
+    "promote_reason",
+    "summary",
+)
 
 
 def model_summary(meta: dict) -> dict:

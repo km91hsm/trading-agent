@@ -13,7 +13,7 @@ from typing import Any
 import httpx
 
 from trader.config import MacroCfg, Secrets
-from trader.sources.base import Section, run_section, skipped_section
+from trader.sources.base import Section, owned_client, run_section, skipped_section
 
 logger = logging.getLogger("trader.sources")
 
@@ -114,32 +114,32 @@ def collect_macro(
     now: Callable[[], datetime] = _utc_now,
 ) -> dict[str, Section]:
     """항목별 Section. 키 없는 소스는 error "no api key", 꺼진 소스는 "disabled"."""
-    http = http or httpx.Client(timeout=10)
-    out: dict[str, Section] = {}
+    with owned_client(http, timeout=10) as http:
+        out: dict[str, Section] = {}
 
-    if market_client is None:
-        out["kospi"] = skipped_section("no market client", now=now)
-    else:
-        out["kospi"] = run_section(lambda: _index_payload(market_client), now=now)
-
-    fred = Fred(secrets.FRED_API_KEY, http) if secrets.FRED_API_KEY else None
-    for key, series in FRED_SERIES.items():
-        if not cfg.fred:
-            out[key] = skipped_section("disabled", now=now)
-        elif fred is None:
-            out[key] = skipped_section("no api key", now=now)
+        if market_client is None:
+            out["kospi"] = skipped_section("no market client", now=now)
         else:
-            out[key] = run_section(lambda s=series: fred.latest(s), now=now)
+            out["kospi"] = run_section(lambda: _index_payload(market_client), now=now)
 
-    ecos = Ecos(secrets.ECOS_API_KEY, http, now=now) if secrets.ECOS_API_KEY else None
-    for key, (stat, item) in ECOS_SERIES.items():
-        if not cfg.ecos:
-            out[key] = skipped_section("disabled", now=now)
-        elif ecos is None:
-            out[key] = skipped_section("no api key", now=now)
-        else:
-            out[key] = run_section(lambda s=stat, i=item: ecos.latest(s, i), now=now)
-    return out
+        fred = Fred(secrets.FRED_API_KEY, http) if secrets.FRED_API_KEY else None
+        for key, series in FRED_SERIES.items():
+            if not cfg.fred:
+                out[key] = skipped_section("disabled", now=now)
+            elif fred is None:
+                out[key] = skipped_section("no api key", now=now)
+            else:
+                out[key] = run_section(lambda s=series: fred.latest(s), now=now)
+
+        ecos = Ecos(secrets.ECOS_API_KEY, http, now=now) if secrets.ECOS_API_KEY else None
+        for key, (stat, item) in ECOS_SERIES.items():
+            if not cfg.ecos:
+                out[key] = skipped_section("disabled", now=now)
+            elif ecos is None:
+                out[key] = skipped_section("no api key", now=now)
+            else:
+                out[key] = run_section(lambda s=stat, i=item: ecos.latest(s, i), now=now)
+        return out
 
 
 def _index_payload(market_client: Any) -> dict[str, Any]:

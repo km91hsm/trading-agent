@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from collections.abc import Callable
+from contextlib import AbstractContextManager
 from datetime import UTC, datetime
 from typing import Any, TypedDict
+
+import httpx
 
 logger = logging.getLogger("trader.sources")
 
@@ -45,3 +49,12 @@ def run_section(
 def skipped_section(reason: str, *, now: Callable[[], datetime] = _utc_now) -> Section:
     """호출 없이 건너뛴 절."""
     return Section(data=None, received_at=now().isoformat(), error=reason)
+
+
+def owned_client(
+    http: httpx.Client | None, *, timeout: float
+) -> AbstractContextManager[httpx.Client]:
+    """주입된 클라이언트는 그대로 쓰고(호출자가 닫음), 없으면 새로 만들어 블록 끝에 닫는다."""
+    if http is not None:
+        return contextlib.nullcontext(http)
+    return httpx.Client(timeout=timeout)
