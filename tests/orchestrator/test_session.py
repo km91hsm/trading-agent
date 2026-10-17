@@ -381,3 +381,26 @@ def test_session_cwd_is_temp_and_removed(project, conn, accounts, monkeypatch):
     )
     assert res.ok and seen["existed"]
     assert project not in seen["cwd"].parents and not seen["cwd"].exists()
+
+
+def test_runner_oserror_is_recorded_not_left_running(project, conn, accounts, monkeypatch):
+    """claude 실행파일이 사라진 경우 등 OSError 도 running 행을 error 로 닫고 결과로 돌려준다."""
+    monkeypatch.delenv("FAKE_CLAUDE", raising=False)
+    _inputs()
+
+    def boom(cmd, **kw):
+        raise FileNotFoundError("claude 없음")
+
+    res = run_session(
+        spec(),
+        Settings(),
+        conn,
+        accounts,
+        runner=boom,
+        claude_bin=Path("/x/claude"),
+        agents_dir=REPO_AGENTS,
+        now=lambda: T0,
+    )
+    assert res.ok is False and "FileNotFoundError" in (res.error or "")
+    assert conn.execute("SELECT status FROM agent_calls").fetchone()["status"] == "error"
+    assert conn.execute("SELECT status FROM runs").fetchone()["status"] == "error"

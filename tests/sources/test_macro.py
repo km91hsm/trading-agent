@@ -109,3 +109,17 @@ def test_disabled_sources(respx_mock):
     )
     assert out["us10y"]["error"] == "disabled" and out["base_rate_kr"]["error"] == "disabled"
     assert out["kospi"]["error"] == "no market client"
+
+
+def test_collect_macro_closes_self_made_client(monkeypatch):
+    made: list[httpx.Client] = []
+    real = httpx.Client
+
+    class Spy(real):
+        def __init__(self, *a, **k):
+            super().__init__(*a, **k)
+            made.append(self)
+
+    monkeypatch.setattr(httpx, "Client", Spy)
+    collect_macro(MacroCfg(), Secrets(), market_client=None, asof=T0, now=lambda: T0)
+    assert len(made) == 1 and made[0].is_closed

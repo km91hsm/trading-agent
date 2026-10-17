@@ -35,7 +35,7 @@ _TICKER_RE = re.compile(r"^(?:(?:KR|US):)?[A-Z0-9.\-]{1,12}$")  # 선택적 시�
 _KR_CODE_RE = re.compile(r"^\d{6}$")
 
 
-def _split_market(item: str) -> tuple[str, str]:
+def split_market(item: str) -> tuple[str, str]:
     """`KR:005930` → ("KR", "005930"); 접두사가 없으면 6자리 숫자는 KR, 그 외 US."""
     if ":" in item:
         m, t = item.split(":", 1)
@@ -52,7 +52,7 @@ def get_watchlist(conn: sqlite3.Connection, market: str | None = None) -> list[s
     items = [str(t) for t in v] if isinstance(v, list) else []
     if market is None:
         return items
-    return [t for m, t in (_split_market(i) for i in items) if m == market]
+    return [t for m, t in (split_market(i) for i in items) if m == market]
 
 
 def set_watchlist(conn: sqlite3.Connection, tickers: list[str]) -> list[str]:
@@ -66,7 +66,7 @@ def set_watchlist(conn: sqlite3.Connection, tickers: list[str]) -> list[str]:
         u = str(t).strip().upper()
         if not _TICKER_RE.match(u):
             raise ValueError(f"잘못된 종목코드: {t}")
-        key = _split_market(u)
+        key = split_market(u)
         if key not in keys:
             keys.add(key)
             out.append(u)
@@ -77,11 +77,11 @@ def set_watchlist(conn: sqlite3.Connection, tickers: list[str]) -> list[str]:
 def remove_watch(conn: sqlite3.Connection, ticker: str) -> list[str]:
     """접두사 유무와 무관하게 같은 종목을 제거한다 (`000660` 으로 `KR:000660` 도 지움)."""
     u = str(ticker).strip().upper()
-    _, want = _split_market(u)
+    _, want = split_market(u)
     market = u.split(":", 1)[0] if ":" in u else None
     keep = []
     for item in get_watchlist(conn):
-        m, t = _split_market(item)
+        m, t = split_market(item)
         if t == want and (market is None or m == market):
             continue
         keep.append(item)

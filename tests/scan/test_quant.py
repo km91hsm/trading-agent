@@ -97,3 +97,12 @@ def test_score_drops_rows_with_nan_signal():
     df.loc[df["ticker"] == "T05", "roc_10"] = float("nan")
     out = quant.score(df)
     assert "T05" not in set(out["ticker"]) and out["score"].notna().all()
+
+
+def test_candidates_scope_watch_to_market(project):
+    """universe.watch 는 접두사·코드 형식으로 시장을 가려 다른 시장 후보에 섞이지 않는다."""
+    uni = Universe(kr=["005930"], us=[], watch=["000660", "AAPL", "US:MSFT", "KR:000270"])
+    kr = [c["ticker"] for c in quant.candidates(uni, "KR")]
+    us = [c["ticker"] for c in quant.candidates(uni, "US")]
+    assert kr == ["005930", "000660", "000270"]
+    assert us == ["AAPL", "MSFT"]

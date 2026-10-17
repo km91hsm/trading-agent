@@ -39,7 +39,7 @@ export function ChartPage() {
   const [market, setMarket] = useState<Market>("KR");
   const [exchange, setExchange] = useState("NAS");
   const [accountId, setAccountId] = useState("");
-  const [interval, setInterval] = useState<ChartInterval>("1d");
+  const [ival, setIval] = useState<ChartInterval>("1d"); // window.setInterval 을 가리지 않게 interval 이 아닌 이름
   const [q, setQ] = useState({ ticker: "005930", market: "KR" as Market, exchange: "NAS", accountId: "", interval: "1d" as ChartInterval });
   const [showSma, setShowSma] = useState(true);
   const box = useRef<HTMLDivElement>(null);
@@ -93,7 +93,7 @@ export function ChartPage() {
         className="row"
         onSubmit={(e) => {
           e.preventDefault();
-          setQ({ ticker: ticker.trim(), market, exchange, accountId, interval });
+          setQ({ ticker: ticker.trim(), market, exchange, accountId, interval: ival });
         }}
       >
         <label>
@@ -124,7 +124,7 @@ export function ChartPage() {
         </label>
         <label>
           간격
-          <select value={interval} onChange={(e) => setInterval(e.target.value as ChartInterval)}>
+          <select value={ival} onChange={(e) => setIval(e.target.value as ChartInterval)}>
             <option value="1d">일봉</option>
             <option value="1m">1분</option>
           </select>

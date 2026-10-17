@@ -25,6 +25,7 @@ import httpx
 from bs4 import BeautifulSoup
 
 from trader.config import CommunityCfg, Market
+from trader.sources.base import owned_client
 
 logger = logging.getLogger("trader.sources")
 
@@ -337,65 +338,66 @@ def collect_community(
 
     channels(ChannelsCfg)가 있으면 YouTube·텔레그램 채널도 같은 posts 에 합친다.
     """
-    http = http or httpx.Client(timeout=10)
-    keywords = tuple(k for k in (name, ticker) if k)
-    posts: list[dict] = []
-    sources: dict[str, str] = {}
-    kw = {"now": now, "sleep": sleep}
+    with owned_client(http, timeout=10) as http:
+        keywords = tuple(k for k in (name, ticker) if k)
+        posts: list[dict] = []
+        sources: dict[str, str] = {}
+        kw = {"now": now, "sleep": sleep}
 
-    def run(label: str, fn: Callable[[], list[dict]]) -> None:
-        try:
-            posts.extend(fn())
-            sources[label] = "ok"
-        except Exception as e:  # noqa: BLE001 - 소스 단위 격리
-            logger.warning("커뮤니티 수집 실패 %s: %s", label, type(e).__name__)
-            sources[label] = f"{type(e).__name__}: {e}"
+        def run(label: str, fn: Callable[[], list[dict]]) -> None:
+            try:
+                posts.extend(fn())
+                sources[label] = "ok"
+            except Exception as e:  # noqa: BLE001 - 소스 단위 격리
+                logger.warning("커뮤니티 수집 실패 %s: %s", label, type(e).__name__)
+                sources[label] = f"{type(e).__name__}: {e}"
 
-    if cfg.reddit:
-        if market == "US":
-            r = Reddit(http, auth=reddit_auth, **kw)
-            for sub in ("stocks", "wallstreetbets"):
+        if cfg.reddit:
+            if market == "US":
+                r = Reddit(http, auth=reddit_auth, **kw)
+                for sub in ("stocks", "wallstreetbets"):
+                    run(
+                        f"reddit/{sub}",
+                        lambda s=sub: r.fetch(s, keywords=keywords, max_posts=cfg.max_posts),
+                    )
+            else:
+                sources["reddit"] = "not available for KR"
+        if market == "KR":
+            if cfg.clien:
                 run(
-                    f"reddit/{sub}",
-                    lambda s=sub: r.fetch(s, keywords=keywords, max_posts=cfg.max_posts),
+                    "clien",
+                    lambda: Clien(http, **kw).fetch(keywords=keywords, max_posts=cfg.max_posts),
                 )
-        else:
-            sources["reddit"] = "not available for KR"
-    if market == "KR":
-        if cfg.clien:
-            run(
-                "clien", lambda: Clien(http, **kw).fetch(keywords=keywords, max_posts=cfg.max_posts)
-            )
-        if cfg.dcinside:
+            if cfg.dcinside:
+                d = DcInside(http, **kw)
+                run(
+                    "dcinside/kospi",
+                    lambda: d.fetch("kospi", keywords=keywords, max_posts=cfg.max_posts),
+                )
+            if cfg.fmkorea:
+                run(
+                    "fmkorea",
+                    lambda: FmKorea(http, **kw).fetch(keywords=keywords, max_posts=cfg.max_posts),
+                )
+        elif cfg.dcinside:
             d = DcInside(http, **kw)
             run(
-                "dcinside/kospi",
-                lambda: d.fetch("kospi", keywords=keywords, max_posts=cfg.max_posts),
+                "dcinside/stockus",
+                lambda: d.fetch("stockus", keywords=keywords, max_posts=cfg.max_posts),
             )
-        if cfg.fmkorea:
-            run(
-                "fmkorea",
-                lambda: FmKorea(http, **kw).fetch(keywords=keywords, max_posts=cfg.max_posts),
-            )
-    elif cfg.dcinside:
-        d = DcInside(http, **kw)
-        run(
-            "dcinside/stockus",
-            lambda: d.fetch("stockus", keywords=keywords, max_posts=cfg.max_posts),
-        )
 
-    if channels is not None and (channels.youtube or channels.telegram):
-        ch = collect_channels(channels, keywords=keywords, asof=asof, http=http, now=now)
-        for label, items in ch["sources"].items():
-            posts.extend(items)
-            sources[label] = "ok"
-        for label, err in ch["errors"].items():
-            sources[label] = err
+        if channels is not None and (channels.youtube or channels.telegram):
+            ch = collect_channels(channels, keywords=keywords, asof=asof, http=http, now=now)
+            for label, items in ch["sources"].items():
+                posts.extend(items)
+                sources[label] = "ok"
+            for label, err in ch["errors"].items():
+                sources[label] = err
 
-    cutoff = asof.astimezone(UTC).isoformat()
-    kept = [p for p in posts if not (p.get("posted_at") and p["posted_at"] > cutoff)]
-    kept.sort(key=lambda p: p.get("posted_at") or "", reverse=True)
-    return {"posts": kept[: cfg.max_posts], "sources": sources}
+        cutoff = asof.astimezone(UTC).isoformat()
+        kept = [p for p in posts if not (p.get("posted_at") and p["posted_at"] > cutoff)]
+        kept.sort(key=lambda p: p.get("posted_at") or "", reverse=True)
+        return {"posts": kept[: cfg.max_posts], "sources": sources}
 
 
 def collect_channels(

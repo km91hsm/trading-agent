@@ -77,9 +77,7 @@ def observe(
     if base is None:
         base = base_observation(state, ticker=ticker, market=market, decision=decision)
     held = portfolio.positions.get(ticker)
-    pos_w = (
-        float(held.eval_amount / portfolio.nav) if held and portfolio.nav > 0 else 0.0
-    )
+    pos_w = float(held.eval_amount / portfolio.nav) if held and portfolio.nav > 0 else 0.0
     navs = [Decimal(str(v)) for _, v in nav_hist]
     peak = max(navs) if navs else Decimal(0)
     dd = float(navs[-1] / peak - 1) if len(navs) >= 2 and peak > 0 else 0.0

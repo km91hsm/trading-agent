@@ -83,7 +83,10 @@ export function useLoad<T>(fn: () => Promise<T> | null, deps: unknown[]): Loaded
   useEffect(() => {
     const p = fn();
     if (!p) {
+      // 호출 조건이 빠지면(계좌 미선택 등) 이전 결과·오류를 모두 지운다
       setData(null);
+      setError(null);
+      setLoading(false);
       return;
     }
     let alive = true;

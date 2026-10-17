@@ -13,6 +13,7 @@ from decimal import Decimal
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from trader.config import MARKET_TZ
 from trader.ledger.db import now_iso
 
 _KST = ZoneInfo("Asia/Seoul")
@@ -22,7 +23,12 @@ _DEBATE_RE = re.compile(r"^20_debate_r(\d+)_(bull|bear)$")
 
 
 def _kst_day_bounds(d: date) -> tuple[str, str]:
-    start = datetime(d.year, d.month, d.day, tzinfo=_KST).astimezone(UTC)
+    return _day_bounds(d, _KST)
+
+
+def _day_bounds(d: date, tz: ZoneInfo) -> tuple[str, str]:
+    """tz 의 날짜 d 하루를 UTC ISO 경계 [start, end) 로."""
+    start = datetime(d.year, d.month, d.day, tzinfo=tz).astimezone(UTC)
     return start.isoformat(), (start + timedelta(days=1)).isoformat()
 
 
@@ -285,11 +291,17 @@ def last_trigger_handled_at(conn: sqlite3.Connection, market: str, ticker: str) 
 
 
 def has_open_order_or_approval(
-    conn: sqlite3.Connection, decision_id: int, account_id: str, side: str | None = None
+    conn: sqlite3.Connection,
+    decision_id: int,
+    account_id: str,
+    side: str | None = None,
+    *,
+    include_approvals: bool = True,
 ) -> bool:
     """같은 결정·계좌(·방향)에 살아 있는 주문(실패·거부·취소 제외)이나 pending 승인이 있으면 True.
 
     재평가(31_decision_r<n>)는 같은 decisions 행을 갱신하므로 방향이 다르면(BUY 뒤 SELL) 허용한다.
+    include_approvals=False 면 주문만 본다 (손절은 아직 승인되지 않은 요청에 막히지 않아야 한다).
     """
     sql = (
         "SELECT 1 FROM orders WHERE decision_id=? AND account_id=? "
@@ -301,6 +313,8 @@ def has_open_order_or_approval(
         args.append(side)
     if conn.execute(sql + " LIMIT 1", args).fetchone():
         return True
+    if not include_approvals:
+        return False
     sql = "SELECT 1 FROM approvals WHERE decision_id=? AND account_id=? AND status='pending'"
     args = [decision_id, account_id]
     if side:
@@ -310,10 +324,20 @@ def has_open_order_or_approval(
 
 
 def has_open_order_today(
-    conn: sqlite3.Connection, account_id: str, ticker: str, side: str, d: date
+    conn: sqlite3.Connection,
+    account_id: str,
+    ticker: str,
+    side: str,
+    d: date,
+    *,
+    market: str | None = None,
 ) -> bool:
-    """오늘 같은 계좌·종목·방향의 살아 있는 주문이 있으면 True (손절 반복 발주 방지)."""
-    lo, hi = _kst_day_bounds(d)
+    """오늘 같은 계좌·종목·방향의 살아 있는 주문이 있으면 True (손절 반복 발주 방지).
+
+    market 을 주면 d 를 그 시장의 현지 날짜로 보고 현지 하루 창을 쓴다 (US 모니터는 KST 자정을
+    넘겨 돌므로 KST 창으로는 23:30 KST 주문을 00:30 KST 에 놓친다).
+    """
+    lo, hi = _day_bounds(d, MARKET_TZ[market]) if market in MARKET_TZ else _kst_day_bounds(d)
     row = conn.execute(
         "SELECT 1 FROM orders WHERE account_id=? AND ticker=? AND side=? "
         "AND status NOT IN ('rejected','cancelled','failed') "
@@ -417,34 +441,75 @@ def realized_pnl_5d(
         sql += " AND o.market=?"
         args.append(market)
     sells = conn.execute(sql, args).fetchall()
+    if not sells:
+        return Decimal(0)
+    # 종목별 평균 매수가는 한 번만 구한다 (매도 체결마다 다시 조회하지 않음)
+    avg_buy: dict[str, Decimal] = {}
+    for b in conn.execute(
+        "SELECT o.ticker, SUM(f.qty) AS q, SUM(f.qty * CAST(f.price AS REAL)) AS amt "
+        "FROM fills f JOIN orders o ON o.id=f.order_id "
+        "WHERE f.account_id=? AND o.side='BUY' GROUP BY o.ticker",
+        (account_id,),
+    ).fetchall():
+        q = Decimal(b["q"] or 0)
+        avg_buy[b["ticker"]] = (Decimal(str(b["amt"])) / q) if q else Decimal(0)
     total = Decimal(0)
     for s in sells:
-        buys = conn.execute(
-            "SELECT f.qty, f.price FROM fills f JOIN orders o ON o.id=f.order_id "
-            "WHERE f.account_id=? AND o.side='BUY' AND o.ticker=?",
-            (account_id, s["ticker"]),
-        ).fetchall()
-        bq = sum(Decimal(b["qty"]) for b in buys)
-        avg = (sum(Decimal(b["qty"]) * _dec(b["price"]) for b in buys) / bq) if bq else Decimal(0)
+        avg = avg_buy.get(s["ticker"], Decimal(0))
         total += Decimal(s["qty"]) * (_dec(s["price"]) - avg)
     return total
 
 
+def _first_buy_of_current_lot(events: list[tuple[str, str, int]]) -> date | None:
+    """(시각, 방향, 수량) 시간순 이벤트에서 현재 보유 묶음의 첫 매수일. 보유가 0 이면 None.
+
+    전량 매도 뒤 다시 사면 그 매수일부터 센다 (최소 보유기간이 재진입에도 적용되도록)."""
+    qty = 0
+    since: date | None = None
+    for at, side, n in events:
+        if side == "BUY":
+            if qty <= 0:
+                since = datetime.fromisoformat(at).astimezone(_KST).date()
+                qty = 0
+            qty += int(n)
+        else:
+            qty -= int(n)
+            if qty <= 0:
+                qty, since = 0, None
+    return since if qty > 0 else None
+
+
 def held_since(conn: sqlite3.Connection, account_id: str) -> dict[str, date]:
-    """종목별 최초 매수일 (최소 보유기간용). 체결 기록이 없으면 접수된 매수 주문일로 대신한다."""
-    rows = conn.execute(
-        "SELECT o.ticker, MIN(f.filled_at) AS first FROM fills f JOIN orders o ON o.id=f.order_id "
-        "WHERE f.account_id=? AND o.side='BUY' GROUP BY o.ticker",
+    """종목별 현재 보유 묶음의 첫 매수일 (최소 보유기간용). 전량 매도 뒤 재매수면 그 날부터.
+
+    체결 기록이 있는 종목은 체결로, 없는 종목은 접수된 주문(매수 +, 매도 −)으로 계산한다.
+    보유가 0 인 종목은 돌려주지 않는다.
+    """
+    by_ticker: dict[str, list[tuple[str, str, int]]] = {}
+    for r in conn.execute(
+        "SELECT o.ticker, o.side, f.qty, f.filled_at FROM fills f JOIN orders o ON o.id=f.order_id "
+        "WHERE f.account_id=? ORDER BY f.filled_at, f.id",
         (account_id,),
-    ).fetchall()
-    out = {r["ticker"]: datetime.fromisoformat(r["first"]).astimezone(_KST).date() for r in rows}
-    rows = conn.execute(
-        "SELECT ticker, MIN(created_at) AS first FROM orders WHERE account_id=? AND side='BUY' "
-        "AND status='accepted' GROUP BY ticker",
+    ).fetchall():
+        by_ticker.setdefault(r["ticker"], []).append((r["filled_at"], r["side"], r["qty"]))
+    out: dict[str, date] = {}
+    for t, events in by_ticker.items():
+        since = _first_buy_of_current_lot(events)
+        if since is not None:
+            out[t] = since
+    fallback: dict[str, list[tuple[str, str, int]]] = {}
+    for r in conn.execute(
+        "SELECT ticker, side, qty, created_at FROM orders WHERE account_id=? "
+        "AND status NOT IN ('rejected','cancelled','failed') ORDER BY created_at, id",
         (account_id,),
-    ).fetchall()
-    for r in rows:
-        out.setdefault(r["ticker"], datetime.fromisoformat(r["first"]).astimezone(_KST).date())
+    ).fetchall():
+        if r["ticker"] in by_ticker:
+            continue  # 체결 기록이 있는 종목은 체결이 정본
+        fallback.setdefault(r["ticker"], []).append((r["created_at"], r["side"], r["qty"]))
+    for t, events in fallback.items():
+        since = _first_buy_of_current_lot(events)
+        if since is not None:
+            out[t] = since
     return out
 
 

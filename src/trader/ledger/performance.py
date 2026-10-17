@@ -16,7 +16,7 @@ import pandas as pd
 
 from trader.ledger import metrics as ledger_metrics
 from trader.ledger import repo
-from trader.ml import dataset
+from trader.ml import dataset, features
 
 _KST = ZoneInfo("Asia/Seoul")
 TRADING_DAYS = 252
@@ -68,7 +68,8 @@ metrics = metrics_of  # noqa: F811 - 모듈 공개 이름 (테스트·라우터�
 
 
 def _close_table(state: Path | None, market: str, start: date, end: date) -> pd.DataFrame:
-    df = dataset.load_all(state, market=market)
+    # 창 안의 날짜 파일만 읽는다 (성과 페이지는 원장 이벤트마다 다시 불린다)
+    df = dataset.load_all(state, market=market, since=start, until=end)
     if df.empty:
         return pd.DataFrame()
     df = df[["date", "ticker", "close"]].copy()
@@ -165,12 +166,12 @@ def _avg_nav(conn, account_id: str, market: str, start: date, end: date) -> Deci
     return sum(series, Decimal(0)) / len(series) if series else Decimal(0)
 
 
-def cost_sensitivity(
-    conn, account_id: str, market: str, start: date, end: date, bps=COST_BPS
-) -> dict[str, float]:
-    """거래금액 × bp 를 평균 NAV 대비 비율로 뺀 순효과 {bp: −비용률}."""
+def _traded_and_nav(conn, account_id: str, market: str, start: date, end: date):
     traded = _traded_amount(_orders_between(conn, account_id, market, start, end))
-    nav = _avg_nav(conn, account_id, market, start, end)
+    return traded, _avg_nav(conn, account_id, market, start, end)
+
+
+def _cost_sensitivity_of(traded: Decimal, nav: Decimal, bps=COST_BPS) -> dict[str, float]:
     out = {}
     for bp in bps:
         cost = traded * Decimal(bp) / Decimal(10_000)
@@ -178,10 +179,21 @@ def cost_sensitivity(
     return out
 
 
-def turnover(conn, account_id: str, market: str, start: date, end: date) -> float:
-    traded = _traded_amount(_orders_between(conn, account_id, market, start, end))
-    nav = _avg_nav(conn, account_id, market, start, end)
+def _turnover_of(traded: Decimal, nav: Decimal) -> float:
     return round(float(traded / nav), 6) if nav > 0 else 0.0
+
+
+def cost_sensitivity(
+    conn, account_id: str, market: str, start: date, end: date, bps=COST_BPS
+) -> dict[str, float]:
+    """거래금액 × bp 를 평균 NAV 대비 비율로 뺀 순효과 {bp: −비용률}."""
+    traded, nav = _traded_and_nav(conn, account_id, market, start, end)
+    return _cost_sensitivity_of(traded, nav, bps)
+
+
+def turnover(conn, account_id: str, market: str, start: date, end: date) -> float:
+    traded, nav = _traded_and_nav(conn, account_id, market, start, end)
+    return _turnover_of(traded, nav)
 
 
 def report(conn, state: Path | None, account_id: str, market: str, *, days: int = 30) -> dict:
@@ -205,16 +217,19 @@ def report(conn, state: Path | None, account_id: str, market: str, *, days: int 
 
         cur = ranker.current(state)
         if cur is not None:
-            latest = dataset.load_all(state, market=market)
+            # 종목별 최신 행은 latest_rows 로만 (전체 스토어를 읽지 않는다, 이연 회수 규칙)
+            latest = features.latest_rows(state, market, asof=end)
             if not latest.empty:
-                latest = latest.sort_values("date").groupby("ticker", as_index=False).tail(1)
                 ranked = cur[0](latest.reset_index(drop=True))
                 quant_top = list(ranked["ticker"].head(5))
     except Exception:  # noqa: BLE001 - 퀀트 벤치마크는 선택
         quant_top = None
-    from datetime import UTC, datetime
-
     now = datetime.now(UTC)
+    traded, avg_nav = (
+        _traded_and_nav(conn, account_id, market, start, end)
+        if series
+        else (Decimal(0), Decimal(0))
+    )
     return {
         "account_id": account_id,
         "market": market,
@@ -224,10 +239,8 @@ def report(conn, state: Path | None, account_id: str, market: str, *, days: int 
         "benchmarks": benchmarks(
             state, market, start, end, tickers=held or None, quant_top=quant_top
         ),
-        "cost_sensitivity": cost_sensitivity(conn, account_id, market, start, end)
-        if series
-        else {},
-        "turnover": turnover(conn, account_id, market, start, end) if series else 0.0,
+        "cost_sensitivity": _cost_sensitivity_of(traded, avg_nav) if series else {},
+        "turnover": _turnover_of(traded, avg_nav) if series else 0.0,
         "decision_distribution": ledger_metrics.decision_distribution(
             conn, days=days, now=now, market=market
         ),

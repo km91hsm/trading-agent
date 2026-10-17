@@ -17,6 +17,7 @@ from email.utils import parsedate_to_datetime
 import httpx
 
 from trader.config import Market, NewsCfg, Secrets
+from trader.sources.base import owned_client
 
 logger = logging.getLogger("trader.sources")
 
@@ -151,35 +152,37 @@ def collect_news(
     now: Callable[[], datetime] = _utc_now,
 ) -> dict:
     """{"stock": [...], "macro": [...], "sources": {소스: "ok"|오류}}. 소스 실패는 기록하고 계속."""
-    http = http or httpx.Client(timeout=10)
-    lang = "ko" if market == "KR" else "en"
-    stock_query = f"{name} OR {ticker}" if name and name != ticker else ticker
-    stock: list[dict] = []
-    macro: list[dict] = []
-    sources: dict[str, str] = {}
+    with owned_client(http, timeout=10) as http:
+        lang = "ko" if market == "KR" else "en"
+        stock_query = f"{name} OR {ticker}" if name and name != ticker else ticker
+        stock: list[dict] = []
+        macro: list[dict] = []
+        sources: dict[str, str] = {}
 
-    if cfg.google_rss:
-        g = GoogleNewsRss(http, now=now)
-        try:
-            stock += g.search(stock_query, lang=lang, max_items=cfg.max_items)
-            macro += g.search(MACRO_QUERIES[market], lang=lang, max_items=cfg.macro_items)
-            sources["google_rss"] = "ok"
-        except Exception as e:  # noqa: BLE001 - 소스 단위 격리
-            logger.warning("구글뉴스 수집 실패: %s", type(e).__name__)
-            sources["google_rss"] = f"{type(e).__name__}: {e}"
-    if cfg.naver and market == "KR":
-        if not (secrets.NAVER_CLIENT_ID and secrets.NAVER_CLIENT_SECRET):
-            sources["naver"] = "no api key"
-        else:
+        if cfg.google_rss:
+            g = GoogleNewsRss(http, now=now)
             try:
-                n = NaverNews(secrets.NAVER_CLIENT_ID, secrets.NAVER_CLIENT_SECRET, http, now=now)
-                stock += n.search(name or ticker, max_items=cfg.max_items)
-                sources["naver"] = "ok"
-            except Exception as e:  # noqa: BLE001
-                logger.warning("네이버 뉴스 수집 실패: %s", type(e).__name__)
-                sources["naver"] = f"{type(e).__name__}: {e}"
-    return {
-        "stock": _dedupe_and_filter(stock, asof)[: cfg.max_items],
-        "macro": _dedupe_and_filter(macro, asof)[: cfg.macro_items],
-        "sources": sources,
-    }
+                stock += g.search(stock_query, lang=lang, max_items=cfg.max_items)
+                macro += g.search(MACRO_QUERIES[market], lang=lang, max_items=cfg.macro_items)
+                sources["google_rss"] = "ok"
+            except Exception as e:  # noqa: BLE001 - 소스 단위 격리
+                logger.warning("구글뉴스 수집 실패: %s", type(e).__name__)
+                sources["google_rss"] = f"{type(e).__name__}: {e}"
+        if cfg.naver and market == "KR":
+            if not (secrets.NAVER_CLIENT_ID and secrets.NAVER_CLIENT_SECRET):
+                sources["naver"] = "no api key"
+            else:
+                try:
+                    n = NaverNews(
+                        secrets.NAVER_CLIENT_ID, secrets.NAVER_CLIENT_SECRET, http, now=now
+                    )
+                    stock += n.search(name or ticker, max_items=cfg.max_items)
+                    sources["naver"] = "ok"
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("네이버 뉴스 수집 실패: %s", type(e).__name__)
+                    sources["naver"] = f"{type(e).__name__}: {e}"
+        return {
+            "stock": _dedupe_and_filter(stock, asof)[: cfg.max_items],
+            "macro": _dedupe_and_filter(macro, asof)[: cfg.macro_items],
+            "sources": sources,
+        }

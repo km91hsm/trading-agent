@@ -93,3 +93,19 @@ def test_v7_creates_rl_shadow(conn):
     conn.execute(sql)
     with pytest.raises(sqlite3.IntegrityError):
         conn.execute(sql)
+
+
+def test_v8_adds_query_indexes(conn):
+    names = {r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='index'")}
+    assert {
+        "ix_orders_account_created",
+        "ix_orders_decision_account",
+        "ix_orders_market_ticker",
+        "ix_risk_checks_decision",
+        "ix_approvals_status",
+        "ix_triggers_market_ticker",
+        "ix_agent_calls_created",
+        "ix_decisions_market_ticker",
+        "ix_positions_account_market_date",
+        "ix_fills_order",
+    } <= names

@@ -33,6 +33,7 @@ logger = logging.getLogger("trader.executor")
 _KST = ZoneInfo("Asia/Seoul")
 
 APPROVAL_TTL = timedelta(minutes=30)
+QUOTE_PRICE_KEY = "quote_price"  # approvals.order_json 에 덧붙이는 요청 시 현재가
 
 
 @dataclass
@@ -303,11 +304,18 @@ def execute(
                 adjusted_qty=0,
                 reasons=[f"잔고 조회 실패로 판정 불가: {e}"],
             )
-        # 멱등: 같은 결정·계좌에 살아 있는 주문·승인 요청이 있으면 다시 내지 않는다 (재실행·재시도)
+        # 멱등: 같은 결정·계좌에 살아 있는 주문·승인 요청이 있으면 다시 내지 않는다 (재실행·재시도).
+        # 손절은 미승인 요청(pending)에 막히면 안 되므로 주문만 본다.
         if (
             verdict.approved
             and decision_id is not None
-            and repo.has_open_order_or_approval(ctx.conn, decision_id, account.id, verdict.side)
+            and repo.has_open_order_or_approval(
+                ctx.conn,
+                decision_id,
+                account.id,
+                verdict.side,
+                include_approvals=not is_stop_loss,
+            )
         ):
             verdict = verdict.model_copy(
                 update={
@@ -358,7 +366,9 @@ def execute(
             exchange=exchange,
         )
         if mode == "approve" and not is_stop_loss:
-            entry["approval_id"] = _request_approval(ctx, account, decision_id, request, verdict)
+            entry["approval_id"] = _request_approval(
+                ctx, account, decision_id, request, verdict, quote_price=price
+            )
         else:
             entry["order"] = _place(
                 ctx, d, account, broker, decision_id, request, mode, price, order_stage=order_stage
@@ -373,13 +383,20 @@ def _request_approval(
     decision_id: int | None,
     request: OrderRequest,
     verdict: rules.RiskVerdict,
+    *,
+    quote_price: Decimal | None = None,
 ) -> int:
+    """승인 요청 저장. 시장가는 금액을 모르므로 요청 시 현재가(quote_price)를 함께 남겨
+    승인 뒤 주문의 amount(가능금액 차감)로 쓴다. OrderRequest 복원 때는 이 키를 뺀다."""
     now = ctx.now()
+    order = request.model_dump(mode="json")
+    if quote_price is not None:
+        order[QUOTE_PRICE_KEY] = str(quote_price)
     aid = repo.create_approval(
         ctx.conn,
         decision_id=decision_id or 0,
         account_id=account.id,
-        order=request.model_dump(mode="json"),
+        order=order,
         requested_at=now.isoformat(),
         expires_at=(now + APPROVAL_TTL).isoformat(),
     )
@@ -484,7 +501,10 @@ def approve(ctx: ExecContext, approval_id: int) -> dict:
     account = next((x for x in ctx.accounts if x.id == a["account_id"]), None)
     if account is None:
         return {"ok": False, "error": f"계좌 {a['account_id']} 가 설정에 없음"}
-    request = OrderRequest.model_validate(a["order"])
+    order = dict(a["order"])
+    raw_quote = order.pop(QUOTE_PRICE_KEY, None)
+    quote_price = Decimal(str(raw_quote)) if raw_quote is not None else None
+    request = OrderRequest.model_validate(order)
     dec = repo.get_decision(ctx.conn, a["decision_id"]) if a["decision_id"] else None
     day = date.fromisoformat(dec["date"]) if dec else ctx.now().astimezone(_KST).date()
     d = run_dir(day, request.market, request.ticker, ctx.state)
@@ -499,7 +519,9 @@ def approve(ctx: ExecContext, approval_id: int) -> dict:
         ctx.conn, approval_id, "approved", decided_at=ctx.now().isoformat()
     ):
         return {"ok": False, "error": f"승인 요청 #{approval_id} 은 이미 다른 프로세스가 처리함"}
-    result = _place(ctx, d, account, broker, a["decision_id"] or None, request, "approve")
+    result = _place(
+        ctx, d, account, broker, a["decision_id"] or None, request, "approve", quote_price
+    )
     if not result["accepted"]:
         repo.decide_approval(ctx.conn, approval_id, "failed", expect="approved")
     return {"ok": bool(result["accepted"]), "approval_id": approval_id, "order": result}

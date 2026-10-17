@@ -541,3 +541,49 @@ def test_apply_mode_rejected_by_gate_not_marked_applied(ectx):
     assert by["paper-main"]["approved"] is False
     rows = _shadow_rows(ectx, "paper-main")
     assert len(rows) == 1 and rows[0]["applied"] == 0
+
+
+def test_stop_loss_not_blocked_by_pending_sell_approval(ectx):
+    """approve 계좌에 같은 결정의 SELL 승인 요청이 pending 이어도 손절은 즉시 나간다."""
+    from trader.broker.models import Position
+
+    pos = Position(
+        ticker="005930",
+        market="KR",
+        qty=10,
+        avg_price=Decimal("70000"),
+        current_price=Decimal("71500"),
+        eval_amount=Decimal("715000"),
+        pnl_pct=0.02,
+    )
+    ectx.brokers["paper-main"].positions = [pos]
+    control.set_account_mode(ectx.conn, ectx.accounts[0], "approve")
+    trim = ok_decision(action="TRIM", target_weight=0.0)
+    r = _run(ectx, trim)
+    assert next(x for x in r if x["account_id"] == "paper-main")["approval_id"] is not None
+    sl = Decision(**ok_decision(action="SELL", target_weight=0.0, order_type="MARKET"))
+    dec_id = repo.decision_id(ectx.conn, D, "KR", "005930")
+    r = executor.execute(
+        ectx,
+        sl,
+        date=D,
+        market="KR",
+        price=Decimal("60000"),
+        dry_run=False,
+        is_stop_loss=True,
+        decision_id=dec_id,
+    )
+    mine = next(x for x in r if x["account_id"] == "paper-main")
+    assert mine["approved"] and mine["order"]["accepted"]
+    assert len(ectx.brokers["paper-main"].orders) == 1
+
+
+def test_approved_market_order_records_amount_for_cash_deduction(ectx):
+    """승인 뒤 낸 KR 시장가 주문도 amount(요청 시 현재가 × 수량)를 남겨 가능금액 차감에 들어간다."""
+    control.set_account_mode(ectx.conn, ectx.accounts[0], "approve")
+    r = _run(ectx, ok_decision(order_type="MARKET", limit_price=None))
+    aid = next(x for x in r if x["account_id"] == "paper-main")["approval_id"]
+    assert executor.approve(ectx, aid)["ok"]
+    row = ectx.conn.execute("SELECT amount, price FROM orders").fetchone()
+    assert row["price"] is None and row["amount"] == str(Decimal(13) * PRICE)
+    assert repo.today_order_amount(ectx.conn, "paper-main", D, market="KR") == Decimal(13) * PRICE

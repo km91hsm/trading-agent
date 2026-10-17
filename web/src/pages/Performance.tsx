@@ -35,8 +35,12 @@ export function PerformancePage() {
   );
 
   useEffect(() => {
-    if (!box.current || !rep.data || rep.data.nav.length < 2) return;
-    chartRef.current?.remove();
+    if (!box.current || !rep.data || rep.data.nav.length < 2) {
+      // 계좌·시장을 바꿔 곡선을 그릴 수 없게 되면 이전 차트가 남지 않게 지운다
+      chartRef.current?.remove();
+      chartRef.current = null;
+      return;
+    }
     const chart = createChart(box.current, { height: 320, layout: { textColor: "#ddd", background: { color: "#161a22" } }, grid: { vertLines: { color: "#222" }, horzLines: { color: "#222" } } });
     chartRef.current = chart;
     const base = parseFloat(rep.data.nav[0].value) || 1;

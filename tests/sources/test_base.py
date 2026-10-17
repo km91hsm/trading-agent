@@ -28,3 +28,16 @@ def test_skipped_section_reason():
     s = base.skipped_section("phase6", now=lambda: T0)
     assert s["data"] is None and s["error"] == "phase6"
     assert {"disabled", "phase6", "not available for US"} <= set(base.SKIP_REASONS)
+
+
+def test_owned_client_keeps_injected_and_closes_created():
+    import httpx
+
+    injected = httpx.Client()
+    with base.owned_client(injected, timeout=1) as c:
+        assert c is injected
+    assert not injected.is_closed  # 주입된 클라이언트는 호출자의 것이라 닫지 않는다
+
+    with base.owned_client(None, timeout=1) as created:
+        assert isinstance(created, httpx.Client) and not created.is_closed
+    assert created.is_closed

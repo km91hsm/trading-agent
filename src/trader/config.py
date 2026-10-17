@@ -11,6 +11,7 @@ import re
 from decimal import Decimal
 from pathlib import Path
 from typing import Literal
+from zoneinfo import ZoneInfo
 
 import yaml
 from dotenv import dotenv_values
@@ -21,6 +22,8 @@ from trader.platform import paths
 Env = Literal["paper", "real"]
 Mode = Literal["auto", "approve", "off"]
 Market = Literal["KR", "US"]
+# 시장 현지 시간대 (주말·현지 날짜 판정, 분봉 시각, 체결 조회 날짜에 공통으로 쓴다)
+MARKET_TZ: dict[str, ZoneInfo] = {"KR": ZoneInfo("Asia/Seoul"), "US": ZoneInfo("America/New_York")}
 
 
 class ConfigError(Exception):

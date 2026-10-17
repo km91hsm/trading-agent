@@ -439,3 +439,22 @@ def test_channels_collected_into_community_sources(project, monkeypatch):
     )
     assert any(p["source"] == "youtube/UCabc" for p in comm["posts"])
     assert "sentiment.community.telegram/chan: HTTP 500" in d["errors"]
+
+
+def test_events_use_dart_rcept_dt_and_seven_day_window():
+    from trader.sources import inputs as inputs_mod
+
+    fundamental = {
+        "disclosures": {
+            "data": [
+                {"title": "실적 공시", "rcept_dt": "2026-10-07", "url": "u1"},
+                {"title": "오래된 공시", "rcept_dt": "2026-09-20", "url": "u2"},
+            ],
+            "received_at": T0.isoformat(),
+            "error": None,
+        }
+    }
+    ev = inputs_mod._events(fundamental, T0, lambda: T0)
+    recent = ev["data"]["recent"]
+    assert [r["title"] for r in recent] == ["실적 공시"]
+    assert recent[0]["date"] == "2026-10-07" and recent[0]["kind"] == "earnings"
