@@ -96,7 +96,9 @@ def make_notifier(secrets: Secrets, *, http: httpx.Client | None = None) -> Noti
 
 # --- 수신 (승인 명령, Phase 4) ------------------------------------------------------
 
-_COMMAND_RE = re.compile(r"^/(approve|reject|status)(?:@\w+)?(?:\s+(\S+))?\s*$")
+_COMMAND_RE = re.compile(
+    r"^/(approve|reject|status|pause|resume|mode|watch)(?:@\w+)?(?:\s+(.+?))?\s*$"
+)
 
 
 @dataclass
@@ -107,7 +109,7 @@ class Update:
 
 
 def parse_command(text: str) -> tuple[str, str | None] | None:
-    """`/approve <id>`·`/reject <id>`·`/status` 만 명령으로 인식한다 (그 외는 None)."""
+    """`/approve·/reject <id>`, `/status`, `/pause`, `/resume`, `/mode`, `/watch` 만 인식한다."""
     m = _COMMAND_RE.match(text.strip())
     if not m:
         return None

@@ -98,7 +98,8 @@
 - [ ] 완료 기준(사용자 확인 대기): 평일 자동 1주 무사고 — `uv run trader install` 로 등록 후 `state/logs/daemon.out` 과 `trader status` 로 매일 확인. 트리거→재평가→계좌별 주문은 보유 종목이 ±7%/익절선에 닿을 때 `triggers`·`31_decision_r*` 로 확인
 - [ ] 완료 기준(사용자 확인 대기, Windows): `uv run trader install` 후 로그온 시 작업 스케줄러에서 데몬 기동 확인, `uv run pytest`
 - [ ] 사용자 확인 대기: `config/sources.yaml` 의 `channels.youtube`(채널 ID)·`channels.telegram`(공개채널명) 입력 후 `uv run trader collect --ticker 005930 --force` 로 `sentiment.community.sources.youtube/*` 확인. Reddit OAuth 는 `secrets/.env` 에 `REDDIT_CLIENT_ID/SECRET/USER` 입력
-- [ ] Phase 6 이연: KRX 공매도·대차잔고·검색트렌드(Phase 8), UI 실시간 push·관심종목 제어·차트 지표 오버레이(Phase 8), 텔레그램 /pause /resume /mode 명령(Phase 8 선택), US 휴장일 건너뜀(KIS 해외 휴장 API 확인 후, Phase 8)
+- [x] Phase 6 이연(Phase 8 에서 회수): 텔레그램 `/pause /resume /mode <계좌> <모드> /watch add|remove|list`(실전 auto 는 거부), US 휴장일 정적 NYSE 달력 2026~2027(`daemon.US_HOLIDAYS`, KIS 해외 휴장 API 대신), 런타임 관심종목(`control.watchlist` → scan 후보·분석 대상)
+- [ ] Phase 6 이연(Phase 9 이후): KRX 공매도·대차잔고·검색트렌드, UI 실시간 push·관심종목 웹 제어·차트 지표 오버레이, US 휴장일 2028+ 달력 갱신
 - [ ] 사용자 확인 대기(실기): US 체결 조회(`fills sync`)의 날짜 기준(ET vs KST)·`_local_dt(ET)` 가정, `OVRS_EXCG_CD=NASD` 고정으로 NYS/AMS 체결이 조회되는지 — US 모의 체결 1건 뒤 `uv run trader fills sync --account paper-main --date <ET 날짜>` 로 확인
 - [ ] 리뷰 Minor 이연(Phase 6): SIGTERM 중 실행 중인 claude 세션은 launchd SIGKILL 로 `agent_calls` running 행이 남아 상한에 집계됨(기동 시 stale running 정리), `pid_alive` 가 PermissionError 를 생존으로 봄, quant 가 NaN 피처 행을 z=0 으로 통과시킴, `latest_features` 가 parquet 전부를 읽음
 
@@ -112,7 +113,8 @@
 - [x] UI ML 페이지(모델 목록·폴드 성능·permutation 중요도) + `/api/ml/models[/{version}]` + `trader ml train|models|promote` + 데몬 `ml_train` 잡 + STATUS "ML 모델" 절
 - [x] 완료 기준(실기 2026-10-17): `uv run trader ml train --market KR` → 4,940행·6폴드 정확도 0.315 / 기준선 0.465 / 알파 −0.003 → **미승격**(승격 규칙: 정확도 > 기준선 ∧ ≥ 0.40 ∧ 알파 > 0 ∧ 폴드별 up 예측 ≥ 5건. 잡음 데이터 4 seed 전부 미승격 테스트 확인. 파이프라인은 ML 없이 돈다). 합성 신호 데이터에서는 승격·05_quant·랭킹 전부 테스트로 확인. UI 성능·중요도는 `/api/ml/models` 응답으로 확인
 - [ ] 사용자 확인 대기: LightGBM 을 쓰려면 `brew install libomp` → `uv sync --extra lightgbm` → `config/ml.yaml` 의 `models.quant.backend: lightgbm`(기본은 플랫폼 동일 동작을 위해 `sklearn`)
-- [ ] Phase 7 이연(리뷰): 절대 가격 수준 피처(sma·bb·atr·macd 원값)를 close 대비 비율로 정규화해야 종목 간 일반화가 된다 — 실기 정확도가 기준선 아래인 주원인 추정 → Phase 8 에서 `indicators` 파생 열 추가 후 재학습. 중요도는 마지막 폴드 홀드아웃 기준(in-sample 아님). `features snapshot` 을 데몬 잡으로 매일 돌리는 일정도 Phase 8(현재 수동)
+- [x] Phase 7 이연(리뷰, Phase 8 회수): close 대비 비율 피처 `sma_5/20/60_rel·bb_pos·atr_pct·macd_hist_rel` 추가(옛 parquet 행은 NaN → `features backfill` 재실행 후 `ml train`). 중요도는 마지막 폴드 홀드아웃 기준
+- [ ] Phase 7 이연: `features snapshot` 데몬 잡(현재 수동), 재학습은 사용자 실기(`features backfill --years 3` → `ml train`)
 - [ ] 사용자 확인 대기: 3년 백필(`uv run trader features backfill --years 3`, DART 정상 시) 후 `ml train` 재실행 — 1년·20종목으로는 기준선을 못 넘음. 승격 전까지 05_quant·ML 랭킹은 비활성
 - [ ] Phase 7 이연: US 연도별 비율·동종업 비율·피처 행 탐색 UI·하이퍼파라미터 탐색(Phase 8)
 

@@ -28,6 +28,12 @@ COLUMNS = [
     "bb_mid",
     "bb_lower",
     "atr_14",
+    "sma_5_rel",
+    "sma_20_rel",
+    "sma_60_rel",
+    "bb_pos",
+    "atr_pct",
+    "macd_hist_rel",
     "roc_10",
     "vol_z_20",
     "high_52w_pos",
@@ -97,6 +103,14 @@ def indicator_frame(df: pd.DataFrame) -> pd.DataFrame:
         axis=1
     )
     out["atr_14"] = tr.rolling(14, min_periods=14).mean()
+    # 절대 가격 수준 지표의 close 대비 비율 (종목 간 일반화, Phase 8)
+    for n in (5, 20, 60):
+        out[f"sma_{n}_rel"] = close / out[f"sma_{n}"] - 1
+    out["bb_pos"] = (close - out["bb_lower"]) / (out["bb_upper"] - out["bb_lower"]).replace(
+        0, np.nan
+    )
+    out["atr_pct"] = out["atr_14"] / close
+    out["macd_hist_rel"] = out["macd_hist"] / close
     out["roc_10"] = close / close.shift(10) - 1
     vol_mean = vol.rolling(20, min_periods=20).mean()
     vol_std = vol.rolling(20, min_periods=20).std(ddof=0)

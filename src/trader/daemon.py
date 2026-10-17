@@ -96,16 +96,45 @@ def market_date(market: str, now: datetime | date) -> date:
     return now
 
 
+# NYSE 휴장일 2026~2027 (정적 달력; KIS 해외 휴장 API 미확인). 토·일 겹침은 대체 휴일로 반영.
+US_HOLIDAYS: frozenset[date] = frozenset(
+    {
+        date(2026, 1, 1),
+        date(2026, 1, 19),
+        date(2026, 2, 16),
+        date(2026, 4, 3),
+        date(2026, 5, 25),
+        date(2026, 6, 19),
+        date(2026, 7, 3),
+        date(2026, 9, 7),
+        date(2026, 11, 26),
+        date(2026, 12, 25),
+        date(2027, 1, 1),
+        date(2027, 1, 18),
+        date(2027, 2, 15),
+        date(2027, 3, 26),
+        date(2027, 5, 31),
+        date(2027, 6, 18),
+        date(2027, 7, 5),
+        date(2027, 9, 6),
+        date(2027, 11, 25),
+        date(2027, 12, 24),
+    }
+)
+
+
 def should_skip(
     market: str, today: datetime | date, market_client: Any | None, conn: sqlite3.Connection | None
 ) -> str | None:
-    """paused·주말(시장 현지 날짜)·KR 휴장일(KIS). US 휴장일은 Phase 8(KIS 해외 휴장 API 미확인)."""
+    """paused·주말(시장 현지 날짜)·KR 휴장일(KIS)·US 휴장일(정적 NYSE 달력 US_HOLIDAYS)."""
     if conn is not None and control.is_paused(conn):
         return "일시정지"
     local = market_date(market, today)
     if local.weekday() >= 5:
         return "주말"
     today = local
+    if market == "US":
+        return "휴장일" if today in US_HOLIDAYS else None
     if market == "KR" and market_client is not None:
         try:
             if market_client.is_holiday(today):
@@ -273,9 +302,16 @@ def _scan_body(deps: DaemonDeps, market: str) -> dict:
     from trader.ml import ranker
 
     ml = ranker.current(deps.state)
-    cands = quant.candidates(universe, market, state=deps.state, rank_fn=ml[0] if ml else None)
     conn = deps.conn_factory()
     try:
+        runtime_watch = control.get_watchlist(conn)
+        cands = quant.candidates(
+            universe,
+            market,
+            state=deps.state,
+            rank_fn=ml[0] if ml else None,
+            watch_extra=runtime_watch,
+        )
         cap_hit = tools.sessions_today(conn, deps.now()) >= deps.settings.llm.daily_session_cap
         r = screener.run_screen(
             deps.settings,
@@ -288,7 +324,7 @@ def _scan_body(deps: DaemonDeps, market: str) -> dict:
             state=deps.state,
             now=deps.now,
             brokers=deps.brokers,
-            watch=list(universe.watch),
+            watch=[*universe.watch, *runtime_watch],
             asof=deps.now(),
         )
     finally:

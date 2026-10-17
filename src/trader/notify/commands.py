@@ -1,4 +1,6 @@
-"""텔레그램 명령 처리 (/approve /reject /status). CLI `telegram poll|loop` 와 데몬이 같이 쓴다."""
+"""텔레그램 명령 (/approve /reject /status /pause /resume /mode /watch). CLI·데몬 공용.
+
+실전 계좌 auto 전환은 텔레그램으로 받지 않는다 (CLI `control mode --confirm LIVE` 만)."""
 
 from __future__ import annotations
 
@@ -17,6 +19,47 @@ def approval_line(a: dict) -> str:
         f"#{a['id']} {a['account_id']} {o.get('side')} {o.get('ticker')} {o.get('qty')}주 "
         f"@{o.get('price') or '시장가'} 만료 {a['expires_at']}"
     )
+
+
+def _control_command(ectx: Any, name: str, arg: str | None) -> str:
+    conn = ectx.conn
+    if name == "pause":
+        control.set_flag(conn, "paused", True)
+        return "[일시정지] 모든 계좌 주문 중단"
+    if name == "resume":
+        control.set_flag(conn, "paused", False)
+        return "[재개] 실행 중"
+    if name == "mode":
+        parts = (arg or "").split()
+        if len(parts) != 2:
+            return "사용법: /mode <계좌 id> <auto|approve|off>"
+        acct_id, mode = parts
+        acct = next((a for a in ectx.accounts if a.id == acct_id), None)
+        if acct is None:
+            return f"알 수 없는 계좌: {acct_id}"
+        if acct.env == "real" and mode == "auto":
+            return (
+                "거부: 실전 auto 전환은 텔레그램으로 받지 않습니다. "
+                "CLI `trader control mode real-main auto --confirm LIVE` 로만 가능"
+            )
+        try:
+            control.set_account_mode(conn, acct, mode)
+        except (ValueError, control.ConfirmationRequired) as e:
+            return f"거부: {e}"
+        return f"[모드] {acct.id} = {mode}"
+    parts = (arg or "").split()
+    sub = parts[0] if parts else "list"
+    current = control.get_watchlist(conn)
+    try:
+        if sub == "add" and len(parts) == 2:
+            current = control.set_watchlist(conn, [*current, parts[1]])
+        elif sub == "remove" and len(parts) == 2:
+            current = control.set_watchlist(conn, [t for t in current if t != parts[1].upper()])
+        elif sub != "list":
+            return "사용법: /watch add|remove <ticker> | /watch list"
+    except ValueError as e:
+        return f"거부: {e}"
+    return "[관심종목] " + (", ".join(current) or "없음")
 
 
 def poll_once(ectx: Any, receiver: Any, *, echo: Callable[[str], None] = lambda s: None) -> dict:
@@ -39,6 +82,10 @@ def poll_once(ectx: Any, receiver: Any, *, echo: Callable[[str], None] = lambda 
             paused = "일시정지" if control.is_paused(conn) else "실행 중"
             ectx.notifier.send(f"[상태] {paused} · 계좌 모드: {modes}\n미승인 주문:\n{body}")
             echo(f"status → 미승인 {len(pending)}건")
+            continue
+        if name in ("pause", "resume", "mode", "watch"):
+            ectx.notifier.send(_control_command(ectx, name, arg))
+            echo(f"{name} {arg or ''}".strip())
             continue
         if arg is None or not arg.isdigit():
             ectx.notifier.send(f"사용법: /{name} <승인 id>")

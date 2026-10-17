@@ -74,3 +74,21 @@ def test_high_52w_pos_and_bollinger():
 
 def test_empty_candles():
     assert indicators.latest([]) == {k: None for k in indicators.COLUMNS}
+
+
+def test_derived_ratio_columns():
+    """절대 가격 수준 지표를 close 대비 비율로 (Phase 7 이연): 종목 간 일반화용."""
+    df = indicators.indicator_frame(indicators.to_frame(candles(list(range(100, 400)))))
+    for c in ("sma_5_rel", "sma_20_rel", "sma_60_rel", "bb_pos", "atr_pct", "macd_hist_rel"):
+        assert c in indicators.COLUMNS and c in df.columns
+    last = df.iloc[-1]
+    assert last["sma_20_rel"] == pytest.approx(last["close"] / last["sma_20"] - 1)
+    assert last["sma_5_rel"] == pytest.approx(last["close"] / last["sma_5"] - 1)
+    assert last["bb_pos"] == pytest.approx(
+        (last["close"] - last["bb_lower"]) / (last["bb_upper"] - last["bb_lower"])
+    )
+    assert last["atr_pct"] == pytest.approx(last["atr_14"] / last["close"])
+    assert last["macd_hist_rel"] == pytest.approx(last["macd_hist"] / last["close"])
+    latest = indicators.latest(candles(list(range(100, 400))))
+    assert latest["sma_60_rel"] == pytest.approx(last["close"] / last["sma_60"] - 1)
+    assert indicators.latest(candles([10] * 5))["bb_pos"] is None

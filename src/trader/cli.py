@@ -1133,6 +1133,7 @@ def scan(
     """정량 필터 → screener 세션 → 오늘 분석 대상 목록 (_scan.json, stdout JSON)."""
     import json
 
+    from trader.control import control
     from trader.ledger import db
     from trader.orchestrator import tools
     from trader.orchestrator.run_store import write_checkpoint
@@ -1154,10 +1155,16 @@ def scan(
         from trader.ml import ranker
 
         ml = ranker.current()
-        cands = quant.candidates(universe, market, rank_fn=ml[0] if ml else None)  # type: ignore[arg-type]
         conn = db.connect()
         db.init_schema(conn)
         try:
+            watch = [*universe.watch, *control.get_watchlist(conn)]
+            cands = quant.candidates(
+                universe,
+                market,
+                rank_fn=ml[0] if ml else None,  # type: ignore[arg-type]
+                watch_extra=control.get_watchlist(conn),
+            )
             cap_hit = dry_run or tools.sessions_today(conn, when) >= settings.llm.daily_session_cap
             brokers = {b.account.id: b for b in _build_brokers(secrets, accounts)}
             r = screener.run_screen(
@@ -1169,7 +1176,7 @@ def scan(
                 candidates=cands,
                 cap_hit=cap_hit,
                 brokers=brokers,
-                watch=list(universe.watch),
+                watch=watch,
                 asof=when,
             )
         finally:

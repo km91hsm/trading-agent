@@ -343,3 +343,14 @@ def test_daemon_reflect_job_skips_when_nothing_matured(conn, monkeypatch):
     job = next(j for j in d.build_jobs(SCHED, Settings(), markets=["KR"]) if j.id == "reflect")
     r = d.job_body(deps, job)()
     assert r["matured"] == 0 and r["sessions"] == 0
+
+
+def test_us_holiday_skipped(conn):
+    """US 휴장일은 정적 NYSE 달력(2026~2027)으로 건너뛴다 (Phase 6 이연)."""
+    assert daemon.should_skip("US", date(2026, 12, 25), None, conn) == "휴장일"
+    assert daemon.should_skip("US", date(2026, 11, 26), None, conn) == "휴장일"
+    assert daemon.should_skip("US", date(2026, 7, 3), None, conn) == "휴장일"  # 7/4 토요일 대체
+    assert daemon.should_skip("US", date(2027, 6, 18), None, conn) == "휴장일"
+    assert daemon.should_skip("US", date(2026, 12, 24), None, conn) is None
+    assert daemon.should_skip("KR", date(2026, 12, 25), None, conn) is None  # KR 은 KIS 조회
+    assert len(daemon.US_HOLIDAYS) == 20
