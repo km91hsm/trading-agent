@@ -1362,6 +1362,65 @@ def ml_demote(
     typer.echo(f"승격 해제: quant {m['version']} ({reason})")
 
 
+@tool_app.command("submit-reflection")
+def tool_submit_reflection(
+    market: str = typer.Option(..., "--market"),
+    date: str = typer.Option(..., "--date"),
+    json_text: str | None = typer.Option(
+        None, "--json", help="Reflection 배열 JSON (없으면 stdin)"
+    ),
+) -> None:
+    from trader.orchestrator import tools
+
+    _tool_run(tools.submit_reflection, market=market, date=date, payload=_payload_arg(json_text))
+
+
+@app.command("reflect")
+def reflect_cmd(
+    market: str = typer.Option("KR", "--market", help="KR 또는 US"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="결과 채우기까지만 (세션 없음)"),
+) -> None:
+    """만기 결정의 결과를 채우고(피처 스토어 종가) reflector 세션으로 복기를 받는다 (스펙 §6.5)."""
+    from trader.ledger import db
+    from trader.memory import outcomes, store
+    from trader.orchestrator.reflect import pending, run_reflect
+    from trader.orchestrator.session import PipelineError
+
+    try:
+        configure(paths.state_dir())
+        if market not in ("KR", "US"):
+            raise config.ConfigError(f"시장은 KR 또는 US 여야 합니다: {market}")
+        settings = config.load_settings()
+        accounts = config.load_accounts()
+    except (config.ConfigError, paths.ProjectRootNotFound) as e:
+        typer.echo(f"오류: {e}", err=True)
+        raise typer.Exit(code=1) from e
+    conn = db.connect()
+    db.init_schema(conn)
+    try:
+        today = datetime.now(_KST).date()
+        matured = outcomes.mature(conn, state=None, today=today)
+        typer.echo(f"결과 채움 {len(matured)}건")
+        n_pending = len(pending(conn, market=market))
+        if dry_run:
+            typer.echo(f"대기 중 반성 {n_pending}건 (--dry-run: 세션 생략)")
+            return
+        res = run_reflect(settings, conn, accounts, market=market, date=today, dry_run=True)
+        if not res.ok:
+            typer.echo(f"세션 실패: {res.error}", err=True)
+            raise typer.Exit(code=1)
+        pr = store.promote_and_prune(conn, now=datetime.now(UTC), settings=settings.memory)
+        typer.echo(
+            f"반성 {n_pending}건 ({'FAKE' if res.fake else 'session=' + str(res.session_id)}), "
+            f"정리 {pr['deleted']}건 삭제"
+        )
+    except PipelineError as e:
+        typer.echo(f"오류: {e}", err=True)
+        raise typer.Exit(code=1) from e
+    finally:
+        conn.close()
+
+
 @app.command("notify-test")
 def notify_test() -> None:
     """텔레그램으로 테스트 메시지를 보낸다 (미설정이면 NullNotifier 로 성공)."""

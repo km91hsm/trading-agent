@@ -104,6 +104,36 @@ class QuantReport(BaseModel):
     feature_date: str | None = None
 
 
+ReviewVerdict = Literal["HIT", "MISS", "UNKNOWN"]
+DecisionVerdict = Literal["GOOD", "BAD", "NEUTRAL"]
+
+
+class SignalReview(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    verdict: ReviewVerdict
+    note: str = Field(default="", max_length=300)
+
+
+class DecisionReview(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    verdict: DecisionVerdict
+    note: str = Field(default="", max_length=500)
+
+
+class Reflection(BaseModel):
+    """reflector 출력 (스펙 §6.5 복기 2종: 신호→가격, 결정→손익)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    entry_id: int
+    signal_review: dict[str, SignalReview] = Field(default_factory=dict)
+    decision_review: DecisionReview
+    lesson: str | None = Field(default=None, max_length=300)
+    confidence: float = Field(ge=0, le=1)
+
+
 class Pick(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

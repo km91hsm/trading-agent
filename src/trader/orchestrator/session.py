@@ -48,8 +48,9 @@ class SessionSpec:
     tickers: list[dict[str, Any]]  # [{"ticker": str, "exchange": str | None}]
     dry_run: bool = True
     asof: datetime | None = None  # tool collect 에 넘길 기준 시각 (없으면 세션 시작 시각)
-    kind: str = "analyze"  # analyze | screen | resume
+    kind: str = "analyze"  # analyze | screen | resume | reflect
     candidates: list[dict[str, Any]] = field(default_factory=list)  # screen 모드 입력
+    entries: list[dict[str, Any]] = field(default_factory=list)  # reflect 모드 입력
     trigger: dict[str, Any] | None = None  # resume 모드 입력 (Phase 6 monitor)
 
 
@@ -121,6 +122,8 @@ def _stdin_payload(spec: SessionSpec, asof: datetime) -> str:
         payload["candidates"] = spec.candidates
     if spec.kind == "resume":
         payload["trigger"] = spec.trigger
+    if spec.kind == "reflect":
+        payload["entries"] = spec.entries
     return json.dumps(payload, ensure_ascii=False, default=str)
 
 
@@ -216,7 +219,9 @@ def run_session(
         raise PipelineError(
             f"오늘 세션 상한({settings.llm.daily_session_cap})에 도달해 세션을 띄우지 않습니다"
         )
-    run_kind = {"screen": "scan", "resume": "monitor"}.get(spec.kind, "analyze")
+    run_kind = {"screen": "scan", "resume": "monitor", "reflect": "reflect"}.get(
+        spec.kind, "analyze"
+    )
     run_id = db.start_run(conn, run_kind, spec.market) if conn is not None else None
     started = now()
 
@@ -230,6 +235,10 @@ def run_session(
             if spec.kind == "screen":
                 written += fake.run_fake_screen(
                     ctx, market=spec.market, date=spec.date, candidates=spec.candidates
+                )
+            if spec.kind == "reflect":
+                written += fake.run_fake_reflect(
+                    ctx, market=spec.market, date=spec.date, entries=spec.entries
                 )
             for t in spec.tickers:
                 written += fake.run_fake_ticker(
@@ -276,7 +285,10 @@ def run_session(
     # cwd 는 저장소 밖 임시 디렉터리: claude 가 상위 CLAUDE.md·settings 를 탐색하지 못하게 한다
     cwd = Path(tempfile.mkdtemp(prefix="trader-claude-"))
     agents_file = cwd / "agents.json"
-    names = registry.SCREEN_AGENTS if spec.kind == "screen" else registry.AGENTS
+    names = {
+        "screen": registry.SCREEN_AGENTS,
+        "reflect": registry.REFLECT_AGENTS,
+    }.get(spec.kind, registry.AGENTS)
     agents_file.write_text(
         json.dumps(registry.agents_json(names, settings, agents_dir), ensure_ascii=False),
         encoding="utf-8",

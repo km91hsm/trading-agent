@@ -334,3 +334,12 @@ def test_ml_train_body_wraps_exceptions(conn, monkeypatch):
     deps.notifier = type("N", (), {"send": lambda self, t, **k: sent.append(t) or True})()
     r = d._ml_train_body(deps)
     assert r["status"] == "error" and any("학습 폭발" in m for m in sent)
+
+
+def test_daemon_reflect_job_skips_when_nothing_matured(conn, monkeypatch):
+    from trader import daemon as d
+
+    deps = _deps(conn, FakeMarket(), now=lambda: datetime(2026, 10, 10, 8, 0, tzinfo=UTC))
+    job = next(j for j in d.build_jobs(SCHED, Settings(), markets=["KR"]) if j.id == "reflect")
+    r = d.job_body(deps, job)()
+    assert r["matured"] == 0 and r["sessions"] == 0

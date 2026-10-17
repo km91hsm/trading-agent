@@ -451,6 +451,40 @@ def _fills_body(deps: DaemonDeps) -> dict:
     return out
 
 
+def _reflect_body(deps: DaemonDeps) -> dict:
+    """장 마감 후: 만기 결정 결과 채우기 → 반성 대기가 있는 시장만 세션 → 메모리 정리."""
+    from trader.memory import outcomes, store
+    from trader.orchestrator.reflect import pending, run_reflect
+
+    conn = deps.conn_factory()
+    try:
+        matured = outcomes.mature(conn, state=deps.state, today=_today(deps))
+        sessions = 0
+        for market in deps.settings.markets:
+            if not pending(conn, market=market):
+                continue
+            res = run_reflect(
+                deps.settings,
+                conn,
+                deps.accounts,
+                market=market,
+                date=_today(deps),
+                state=deps.state,
+                now=deps.now,
+                dry_run=True,
+                brokers=deps.brokers,
+                notifier=deps.notifier,
+            )
+            if res.session_id or res.fake:
+                sessions += 1
+            if not res.ok:
+                deps.notifier.send(f"[reflect 실패] {market}: {res.error}")
+        pr = store.promote_and_prune(conn, now=deps.now(), settings=deps.settings.memory)
+    finally:
+        conn.close()
+    return {"matured": len(matured), "sessions": sessions, "pruned": pr["deleted"]}
+
+
 def _ml_train_body(deps: DaemonDeps) -> dict:
     from trader.config import load_ml
     from trader.ml import train as train_mod
@@ -492,7 +526,7 @@ def job_body(deps: DaemonDeps, job: Job) -> Callable[[], Any]:
     if job.kind == "fills_sync":
         return lambda: _fills_body(deps)
     if job.kind == "reflect":
-        return lambda: logger.info("reflect 는 Phase 8 에서 구현한다 (자리)")
+        return lambda: _reflect_body(deps)
     if job.kind == "ml_train":
         return lambda: _ml_train_body(deps)
     raise ValueError(f"알 수 없는 잡: {job.kind}")

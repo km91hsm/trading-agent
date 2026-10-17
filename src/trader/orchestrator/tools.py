@@ -724,6 +724,50 @@ def submit_screen(
     return {"ok": True, "path": str(path), "picks": [p.ticker for p in screened.picks]}
 
 
+# --- submit-reflection (Phase 8 reflect) ----------------------------------------
+
+
+def submit_reflection(
+    ctx: ToolContext,
+    *,
+    market: Market,
+    date: date,
+    payload: list | dict,
+    agent: str = "reflector",
+    call_meta: dict | None = None,
+) -> dict:
+    """Reflection 배열을 검증해 메모리에 저장하고 runs/<date>/<market>/_reflect.json 에 덧붙인다."""
+    from trader.memory import store
+
+    if ctx.conn is None:
+        return {"ok": False, "error": "원장 연결 없음"}
+    if market not in ("KR", "US"):
+        return {"ok": False, "error": f"market 은 KR 또는 US: {market!r}"}
+    items = payload if isinstance(payload, list) else [payload]
+    parsed: list[schemas.Reflection] = []
+    for i, item in enumerate(items):
+        try:
+            parsed.append(schemas.Reflection.model_validate(_unescape(item)))
+        except ValidationError as e:
+            msgs = "; ".join(
+                f"{'.'.join(str(x) for x in err['loc'])}: {err['msg']}" for err in e.errors()
+            )
+            return {"ok": False, "error": f"스키마 검증 실패(Reflection[{i}]): {msgs}"}
+    for r in parsed:
+        if store.get_entry(ctx.conn, r.entry_id) is None:
+            return {"ok": False, "error": f"메모리 엔트리 없음: {r.entry_id}"}
+    for r in parsed:
+        store.set_reflection(ctx.conn, r.entry_id, r.model_dump())
+    base = ctx.state if ctx.state is not None else paths.state_dir()
+    d = base / "runs" / date.isoformat() / market
+    d.mkdir(parents=True, exist_ok=True)
+    existing = read_checkpoint(d, "_reflect") or _wrap([], _call(agent, call_meta))
+    data = list(existing.get("data") or []) + [r.model_dump() for r in parsed]
+    write_checkpoint(d, "_reflect", _wrap(data, _call(agent, call_meta)))
+    logger.info("반성 저장 %s: %d건", market, len(parsed))
+    return {"ok": True, "saved": len(parsed), "entry_ids": [r.entry_id for r in parsed]}
+
+
 # --- status -----------------------------------------------------------------
 
 
