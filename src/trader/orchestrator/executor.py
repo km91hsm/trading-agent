@@ -45,6 +45,7 @@ class ExecContext:
     state: Path | None = None
     now: Callable[[], datetime] = field(default=lambda: datetime.now(UTC))
     holiday_fn: Callable[[date], bool] | None = None  # 보유 거래일 계산용 (KIS 휴장일, 캐시)
+    rl_sizer: Any | None = None  # ml.rl.shadow.Sizer (Phase 9, 모의 계좌·BUY/ADD 에만)
 
 
 def _holidays_between(
@@ -152,6 +153,57 @@ def _wrap(data: Any) -> dict:
     return {"schema_version": schemas.CHECKPOINT_SCHEMA_VERSION, "data": data, "call": None}
 
 
+def _rl_size(
+    ctx: ExecContext,
+    account: AccountConfig,
+    decision: Decision,
+    market: str,
+    decision_id: int,
+    portfolio: rules.Portfolio,
+    base: list[float] | None,
+) -> tuple[Decision, str | None, list[float] | None]:
+    """RL 사이저 섀도/적용 (모의 계좌·BUY/ADD 전용, 호출자가 조건을 건다).
+
+    반환: (판정에 넘길 결정, reasons 앞에 붙일 메모, 재사용할 base 관측). 실패는 경고 후 RL 없이.
+    """
+    from trader.ml.rl import shadow
+
+    sizer = ctx.rl_sizer
+    try:
+        if base is None:
+            base = shadow.base_observation(
+                ctx.state, ticker=decision.ticker, market=market, decision=decision
+            )
+        obs = shadow.observe(
+            ctx.state,
+            ticker=decision.ticker,
+            market=market,
+            decision=decision,
+            portfolio=portfolio,
+            nav_hist=repo.nav_history(ctx.conn, account.id, market, days=30),
+            base=base,
+        )
+        proposed = shadow.propose(sizer, obs)
+        applied = sizer.cfg.mode == "apply"
+        shadow.record(
+            ctx.conn,
+            decision_id=decision_id,
+            account_id=account.id,
+            model_version=sizer.version,
+            obs=obs,
+            llm_weight=decision.target_weight,
+            proposed_weight=proposed,
+            applied=applied,
+        )
+    except Exception as e:  # noqa: BLE001 - 실험 기능이 주문 판정을 막지 않는다
+        logger.warning("RL 사이저 건너뜀 %s %s: %s", account.id, decision.ticker, e)
+        return decision, None, base
+    if not applied:
+        return decision, None, base
+    note = f"RL 사이저 적용: {decision.target_weight:.2f} → {proposed:.2f} (v{sizer.version})"
+    return decision.model_copy(update={"target_weight": proposed}), note, base
+
+
 def execute(
     ctx: ExecContext,
     decision: Decision,
@@ -176,9 +228,17 @@ def execute(
     order_stage = "55_order_sl" if is_stop_loss else "50_order"
     paused = control.is_paused(ctx.conn)
     results: list[dict] = []
+    rl_base: list[float] | None = None
+    rl_eligible = (
+        ctx.rl_sizer is not None
+        and decision_id is not None
+        and not is_stop_loss
+        and decision.action in ("BUY", "ADD")
+    )
     for account in ctx.accounts:
         if market not in account.markets:
             continue
+        rl_note: str | None = None
         mode, note = effective_mode(ctx.conn, account)
         broker = ctx.brokers.get(account.id)
         st = stance_mod.decide(repo.realized_pnl_5d(ctx.conn, account.id, date, market=market))
@@ -188,8 +248,13 @@ def execute(
             portfolio = build_portfolio(
                 ctx.conn, broker, account, market, date, memory_settings=ctx.settings.memory
             )
+            sized = decision
+            if rl_eligible and account.env == "paper":
+                sized, rl_note, rl_base = _rl_size(
+                    ctx, account, decision, market, decision_id, portfolio, rl_base
+                )
             verdict = rules.evaluate(
-                decision,
+                sized,
                 portfolio,
                 limits=ctx.settings.risk,
                 stance=st,
@@ -221,6 +286,8 @@ def execute(
                     "reasons": verdict.reasons + ["이미 이 결정에 대한 주문/승인 요청이 존재"],
                 }
             )
+        if rl_note:
+            verdict = verdict.model_copy(update={"reasons": [rl_note, *verdict.reasons]})
         if paused and verdict.approved:
             note = (note + "; " if note else "") + "일시정지 중: 판정만 기록, 주문·승인 요청 없음"
         verdict = verdict.model_copy(
