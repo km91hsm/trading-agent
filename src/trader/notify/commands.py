@@ -54,7 +54,7 @@ def _control_command(ectx: Any, name: str, arg: str | None) -> str:
         if sub == "add" and len(parts) == 2:
             current = control.set_watchlist(conn, [*current, parts[1]])
         elif sub == "remove" and len(parts) == 2:
-            current = control.set_watchlist(conn, [t for t in current if t != parts[1].upper()])
+            current = control.remove_watch(conn, parts[1])
         elif sub != "list":
             return "사용법: /watch add|remove <ticker> | /watch list"
     except ValueError as e:

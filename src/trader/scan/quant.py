@@ -7,6 +7,7 @@ ML 랭킹(Phase 7)은 `rank_fn` 으로 끼운다.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from pathlib import Path
 
@@ -16,6 +17,7 @@ import pandas as pd
 from trader.config import Universe
 from trader.ml import features
 
+logger = logging.getLogger("trader.scan")
 TOP_N = 30
 TURNOVER_DROP_Q = 0.30
 VOLATILITY_DROP_Q = 0.90
@@ -55,6 +57,17 @@ def score(df: pd.DataFrame, *, top: int = TOP_N) -> pd.DataFrame:
         high = d["vol_ratio"] > cut
         keep &= ~high
     d = d[keep].copy()
+    # 신호 열이 NaN 인 행(지표 워밍업·결측)은 z=0 으로 통과시키지 않고 제외한다.
+    # 열 전체가 비어 있으면(아직 계산하지 않는 지표) 그 열은 보지 않는다.
+    signal_ok = pd.Series(True, index=d.index)
+    for c in ("roc_10", "high_52w_pos", "turnover"):
+        col = pd.to_numeric(d[c], errors="coerce")
+        if col.notna().any():
+            signal_ok &= col.notna()
+    dropped = int((~signal_ok).sum())
+    if dropped:
+        logger.info("정량 필터: 신호 결측 %d행 제외", dropped)
+    d = d[signal_ok].copy()
     if d.empty:
         return pd.DataFrame(columns=cols)
     z_roc = _z(d["roc_10"])
@@ -77,18 +90,8 @@ def score(df: pd.DataFrame, *, top: int = TOP_N) -> pd.DataFrame:
 
 
 def latest_features(market: str, *, state: Path | None = None) -> pd.DataFrame:
-    """피처 스토어의 종목별 최신 행."""
-    fdir = features._features_dir(state)
-    files = sorted(fdir.glob("*.parquet")) if fdir.exists() else []
-    if not files:
-        return pd.DataFrame()
-    frames = [pd.read_parquet(f) for f in files]
-    df = pd.concat(frames, ignore_index=True)
-    df = df[df["market"] == market]
-    if df.empty:
-        return df
-    df = df.sort_values("date").groupby("ticker", as_index=False).tail(1)
-    return df.reset_index(drop=True)
+    """피처 스토어의 종목별 최신 행 (최신 파일부터 부분 읽기)."""
+    return features.latest_rows(state, market)
 
 
 def candidates(

@@ -25,6 +25,15 @@ def run_dir(d: date, market: Market, ticker: str, state: Path | None = None) -> 
     return p
 
 
+def market_dir(d: date, market: Market, state: Path | None = None, *, create: bool = False) -> Path:
+    """`state/runs/<날짜>/<시장>/` (시장 단위 산출물 `_scan`·`_screen`·`_reflect` 자리)."""
+    base = state if state is not None else paths.state_dir()
+    p = base / "runs" / d.isoformat() / market
+    if create:
+        p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
 def write_checkpoint(dir: Path, name: str, data: dict) -> Path:
     """체크포인트를 pid 접미사 임시파일에 쓴 뒤 원자적으로 교체한다."""
     final = dir / f"{name}.json"

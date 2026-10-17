@@ -44,6 +44,8 @@ def _memory_steps(conn: sqlite3.Connection, market: str | None) -> pd.DataFrame:
     out = []
     for r in rows:
         dec = json.loads(r["decision"] or "{}")
+        if str(dec.get("action") or "").upper() not in ("BUY", "ADD"):
+            continue  # 사이저는 매수 비중만 다룬다: SELL/TRIM/HOLD 를 매수로 취급하지 않는다
         vec = [float(x) for x in json.loads(r["situation_vector"])]
         conf = float(dec.get("confidence") if dec.get("confidence") is not None else 0.5)
         w = float(dec.get("target_weight") or 0.0)

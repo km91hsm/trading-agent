@@ -71,3 +71,13 @@ def test_predict_aligns_feature_columns(project):
     row["extra"] = 9.9
     rep = quant_report.build(model, meta, row, ticker="X", asof=NOW.isoformat())
     assert cols[0] in rep["data_gaps"][0]
+
+
+def test_latest_row_respects_asof(project):
+    from datetime import date
+
+    features.write_rows(synthetic_features(1, 30, signal=False))
+    newest = quant_report.latest_row("T00", "KR")
+    capped = quant_report.latest_row("T00", "KR", asof=date(2025, 1, 10))
+    assert newest["date"] > capped["date"] and capped["date"] <= "2025-01-10"
+    assert quant_report.latest_row("T00", "KR", asof=date(2024, 1, 1)) is None

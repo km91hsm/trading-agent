@@ -191,3 +191,18 @@ def test_circuit_breaker_on_drawdown(conn):
     assert store.circuit_breaker(conn, nav_series=[], vix_change=0.35, settings=SET)[
         "reason"
     ].startswith("VIX")
+
+
+def test_record_decision_requires_decision_id(conn):
+    with pytest.raises(ValueError):
+        store.record_decision(
+            conn,
+            decision_id=None,
+            ticker="T",
+            market="KR",
+            account_id="p",
+            decided_at="2026-10-17T00:00:00+00:00",
+            decision={},
+            row=None,
+            horizon_days=5,
+        )

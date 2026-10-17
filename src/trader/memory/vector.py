@@ -11,8 +11,8 @@ DIMS = (
     "high_52w_pos",  # 0~1
     "atr_pct",  # ATR / close
     "macd_hist_rel",  # MACD 히스토그램 / close
-    "sma_5_rel",  # sma_5 / close − 1
-    "sma_20_rel",  # sma_20 / close − 1
+    "sma_5_rel",  # close / sma_5 − 1
+    "sma_20_rel",  # close / sma_20 − 1
     "flow_foreign_sign",  # 외국인 20일 순매수 부호 (−1/0/1)
     "news_log",  # log1p(뉴스 수) / 5 (캡 1)
     "community_log",  # log1p(커뮤니티 수) / 5 (캡 1)
@@ -43,11 +43,18 @@ def situation_vector(row: dict, market: str) -> list[float]:
             return 0.0
         return _clip(v / scale)
 
-    def ratio(key: str, minus_one: bool = False) -> float:
+    def ratio(key: str) -> float:
         v = _f(r.get(key))
         if v is None or close is None:
             return 0.0
-        return _clip(v / close - 1 if minus_one else v / close)
+        return _clip(v / close)
+
+    def rel_to(key: str) -> float:
+        """close / 이평 − 1 (지표 열 `sma_*_rel` 과 같은 부호: 이평 위면 양수)."""
+        v = _f(r.get(key))
+        if v is None or close is None or v <= 0:
+            return 0.0
+        return _clip(close / v - 1)
 
     rsi = _f(r.get("rsi_14"))
     flow = _f(r.get("flow_foreign_20d"))
@@ -60,8 +67,8 @@ def situation_vector(row: dict, market: str) -> list[float]:
         _clip(_f(r.get("high_52w_pos")) or 0.0, 0.0, 1.0),
         _clip(ratio("atr_14"), 0.0, 1.0),
         ratio("macd_hist"),
-        ratio("sma_5", minus_one=True),
-        ratio("sma_20", minus_one=True),
+        rel_to("sma_5"),
+        rel_to("sma_20"),
         0.0 if not flow else (1.0 if flow > 0 else -1.0),
         _clip(math.log1p(max(news, 0.0)) / 5, 0.0, 1.0) if news is not None else 0.0,
         _clip(math.log1p(max(comm, 0.0)) / 5, 0.0, 1.0) if comm is not None else 0.0,

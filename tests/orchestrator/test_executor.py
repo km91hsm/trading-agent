@@ -532,3 +532,12 @@ def test_dry_run_does_not_record_shadow(ectx):
     ectx.rl_sizer = _sizer("shadow")
     _run(ectx, dry_run=True)
     assert _shadow_rows(ectx) == []
+
+
+def test_apply_mode_rejected_by_gate_not_marked_applied(ectx):
+    ectx.rl_sizer = _sizer("apply", weight=0.05)
+    # 기대수익 < 왕복비용×2 로 게이트가 거부 → 제안은 기록되지만 applied=0
+    by = {r["account_id"]: r for r in _run(ectx, ok_decision(take_profit=71100.0))}
+    assert by["paper-main"]["approved"] is False
+    rows = _shadow_rows(ectx, "paper-main")
+    assert len(rows) == 1 and rows[0]["applied"] == 0

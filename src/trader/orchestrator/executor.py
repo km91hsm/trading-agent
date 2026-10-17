@@ -153,18 +153,26 @@ def _wrap(data: Any) -> dict:
     return {"schema_version": schemas.CHECKPOINT_SCHEMA_VERSION, "data": data, "call": None}
 
 
+@dataclass
+class _RlProposal:
+    obs: list[float]
+    proposed: float
+    apply: bool
+    note: str | None
+
+
 def _rl_size(
     ctx: ExecContext,
     account: AccountConfig,
     decision: Decision,
     market: str,
-    decision_id: int,
     portfolio: rules.Portfolio,
     base: list[float] | None,
-) -> tuple[Decision, str | None, list[float] | None]:
-    """RL 사이저 섀도/적용 (모의 계좌·BUY/ADD 전용, 호출자가 조건을 건다).
+) -> tuple[Decision, _RlProposal | None, list[float] | None]:
+    """RL 사이저 관측·제안 (모의 계좌·BUY/ADD 전용, 호출자가 조건을 건다).
 
-    반환: (판정에 넘길 결정, reasons 앞에 붙일 메모, 재사용할 base 관측). 실패는 경고 후 RL 없이.
+    반환: (판정에 넘길 결정, 제안, 재사용할 base 관측). 기록은 게이트 판정 뒤 `_rl_record` 가 한다.
+    실패는 경고 후 RL 없이 진행한다.
     """
     from trader.ml.rl import shadow
 
@@ -184,24 +192,45 @@ def _rl_size(
             base=base,
         )
         proposed = shadow.propose(sizer, obs)
-        applied = sizer.cfg.mode == "apply"
+    except Exception as e:  # noqa: BLE001 - 실험 기능이 주문 판정을 막지 않는다
+        logger.warning("RL 사이저 건너뜀 %s %s: %s", account.id, decision.ticker, e)
+        return decision, None, base
+    apply = sizer.cfg.mode == "apply"
+    if not apply:
+        return decision, _RlProposal(obs, proposed, False, None), base
+    note = f"RL 사이저 적용: {decision.target_weight:.2f} → {proposed:.2f} (v{sizer.version})"
+    sized = decision.model_copy(update={"target_weight": proposed})
+    return sized, _RlProposal(obs, proposed, True, note), base
+
+
+def _rl_record(
+    ctx: ExecContext,
+    account: AccountConfig,
+    decision: Decision,
+    decision_id: int,
+    prop: _RlProposal,
+    verdict: rules.RiskVerdict,
+) -> rules.RiskVerdict:
+    """게이트 판정 뒤 rl_shadow 기록. applied 는 apply 모드이면서 게이트가 승인했을 때만."""
+    from trader.ml.rl import shadow
+
+    applied = prop.apply and verdict.approved
+    try:
         shadow.record(
             ctx.conn,
             decision_id=decision_id,
             account_id=account.id,
-            model_version=sizer.version,
-            obs=obs,
+            model_version=ctx.rl_sizer.version,
+            obs=prop.obs,
             llm_weight=decision.target_weight,
-            proposed_weight=proposed,
+            proposed_weight=prop.proposed,
             applied=applied,
         )
-    except Exception as e:  # noqa: BLE001 - 실험 기능이 주문 판정을 막지 않는다
-        logger.warning("RL 사이저 건너뜀 %s %s: %s", account.id, decision.ticker, e)
-        return decision, None, base
-    if not applied:
-        return decision, None, base
-    note = f"RL 사이저 적용: {decision.target_weight:.2f} → {proposed:.2f} (v{sizer.version})"
-    return decision.model_copy(update={"target_weight": proposed}), note, base
+    except Exception as e:  # noqa: BLE001
+        logger.warning("RL 섀도 기록 실패 %s %s: %s", account.id, decision.ticker, e)
+    if prop.note:
+        return verdict.model_copy(update={"reasons": [prop.note, *verdict.reasons]})
+    return verdict
 
 
 def execute(
@@ -239,7 +268,7 @@ def execute(
     for account in ctx.accounts:
         if market not in account.markets:
             continue
-        rl_note: str | None = None
+        rl_prop: _RlProposal | None = None
         mode, note = effective_mode(ctx.conn, account)
         broker = ctx.brokers.get(account.id)
         st = stance_mod.decide(repo.realized_pnl_5d(ctx.conn, account.id, date, market=market))
@@ -251,8 +280,8 @@ def execute(
             )
             sized = decision
             if rl_eligible and account.env == "paper":
-                sized, rl_note, rl_base = _rl_size(
-                    ctx, account, decision, market, decision_id, portfolio, rl_base
+                sized, rl_prop, rl_base = _rl_size(
+                    ctx, account, decision, market, portfolio, rl_base
                 )
             verdict = rules.evaluate(
                 sized,
@@ -287,8 +316,8 @@ def execute(
                     "reasons": verdict.reasons + ["이미 이 결정에 대한 주문/승인 요청이 존재"],
                 }
             )
-        if rl_note:
-            verdict = verdict.model_copy(update={"reasons": [rl_note, *verdict.reasons]})
+        if rl_prop is not None and decision_id is not None:
+            verdict = _rl_record(ctx, account, decision, decision_id, rl_prop, verdict)
         if paused and verdict.approved:
             note = (note + "; " if note else "") + "일시정지 중: 판정만 기록, 주문·승인 요청 없음"
         verdict = verdict.model_copy(

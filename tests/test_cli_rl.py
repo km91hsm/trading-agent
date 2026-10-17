@@ -25,3 +25,8 @@ def test_rl_train_models_promote_demote(project, monkeypatch):
     assert runner.invoke(app, ["rl", "demote", v]).exit_code == 0
     assert registry.latest("rl_sizer") is None
     assert runner.invoke(app, ["rl", "promote", "19990101_000000"]).exit_code == 1
+
+
+def test_rl_train_seeds_range(project):
+    assert runner.invoke(app, ["rl", "train", "--seeds", "0"]).exit_code == 2
+    assert runner.invoke(app, ["rl", "train", "--seeds", "11"]).exit_code == 2

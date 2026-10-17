@@ -49,6 +49,8 @@ def record_decision(
     vector: list[float] | None = None,
 ) -> int:
     """결정 1건당 엔트리 1건 (decision_id UNIQUE, 멱등). importance 초기값 = confidence."""
+    if decision_id is None:
+        raise ValueError("memory_entries 는 decision_id 가 있어야 멱등이 성립합니다")
     existing = conn.execute(
         "SELECT id FROM memory_entries WHERE decision_id=?", (decision_id,)
     ).fetchone()

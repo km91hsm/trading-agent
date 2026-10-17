@@ -1177,12 +1177,12 @@ def scan(
         conn = db.connect()
         db.init_schema(conn)
         try:
-            watch = [*universe.watch, *control.get_watchlist(conn)]
+            watch = [*universe.watch, *control.get_watchlist(conn, market=market)]
             cands = quant.candidates(
                 universe,
                 market,
                 rank_fn=ml[0] if ml else None,  # type: ignore[arg-type]
-                watch_extra=control.get_watchlist(conn),
+                watch_extra=control.get_watchlist(conn, market=market),
             )
             cap_hit = dry_run or tools.sessions_today(conn, when) >= settings.llm.daily_session_cap
             brokers = {b.account.id: b for b in _build_brokers(secrets, accounts)}
@@ -1400,7 +1400,7 @@ def _rl_version_exists(version: str) -> bool:
 @rl_app.command("train")
 def rl_train(
     market: str | None = typer.Option(None, "--market", help="KR|US (기본 전체)"),
-    seeds: int | None = typer.Option(None, "--seeds", help="시드 수 (기본 ml.yaml)"),
+    seeds: int | None = typer.Option(None, "--seeds", min=1, max=10, help="시드 수 (기본 ml.yaml)"),
 ) -> None:
     """스텝 데이터로 사이저를 워크포워드×시드 학습·기준선 비교·저장한다 (자동 승격 없음)."""
     import json

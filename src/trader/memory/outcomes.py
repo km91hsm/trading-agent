@@ -34,9 +34,10 @@ def _close_table(state: Path | None, market: str) -> pd.DataFrame:
 
 
 def window_return(
-    table: pd.DataFrame, ticker: str, start: date, horizon: int
+    table: pd.DataFrame, ticker: str, start: date, horizon: int, *, end_before: date | None = None
 ) -> tuple[float, float] | None:
-    """(종목 수익, 1/N 벤치마크 수익): 시작일 이후 첫 거래일 → horizon 거래일 뒤. 없으면 None."""
+    """(종목 수익, 1/N 벤치마크 수익): 시작일 이후 첫 거래일 → horizon 거래일 뒤. 없으면 None.
+    end_before 가 있으면 만기 봉 날짜가 그 날 이후일 때 None(백필 데이터로 미래를 보지 않음)."""
     if table.empty or ticker not in table.columns:
         return None
     dates = list(table.index)
@@ -45,7 +46,7 @@ def window_return(
         return None
     i0 = starts[0]
     i1 = i0 + horizon
-    if i1 >= len(dates):
+    if i1 >= len(dates) or (end_before is not None and dates[i1] > end_before):
         return None
     c0, c1 = table.iloc[i0][ticker], table.iloc[i1][ticker]
     if pd.isna(c0) or pd.isna(c1) or float(c0) <= 0:
@@ -74,7 +75,7 @@ def mature(conn, *, state: Path | None, today: date, horizon_default: int = 5) -
         except ValueError:
             continue
         horizon = int(r["horizon_days"] or horizon_default)
-        res = window_return(tables[market], r["ticker"], decided, horizon)
+        res = window_return(tables[market], r["ticker"], decided, horizon, end_before=today)
         if res is None:
             continue
         ret, bench = res

@@ -33,7 +33,7 @@ def test_backtest_only_after_cutoff(project, conn):
     _store({"ZZZ": [100, 101, 102, 103, 104, 110, 111, 112, 113, 114]}, days)
     store.record_decision(
         conn,
-        decision_id=None,
+        decision_id=9001,
         ticker="ZZZ",
         market="KR",
         account_id="paper-main",
@@ -62,3 +62,15 @@ def test_backtest_hit_rate_and_alpha(project, conn):
         0.7
     )
     assert backtest.simple_backtest(conn, project / "state", since=date(2027, 1, 1))["n"] == 0
+
+
+def test_backtest_hold_hit_is_small_move(project, conn):
+    from helpers_memory import seed_matured as _sm
+
+    _sm(conn, 2, start=date(2026, 5, 4), action="HOLD")  # price_return ±0.03 → 밴드 밖
+    r = backtest.simple_backtest(conn, None, since=date(2026, 5, 1))
+    assert r["n"] == 2 and all(d["hit"] is False for d in r["decisions"])
+    conn.execute("UPDATE memory_entries SET price_return=0.01")
+    conn.commit()
+    r = backtest.simple_backtest(conn, None, since=date(2026, 5, 1))
+    assert all(d["hit"] is True for d in r["decisions"]) and "price_return" in r["decisions"][0]

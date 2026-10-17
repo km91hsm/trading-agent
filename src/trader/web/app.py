@@ -76,6 +76,7 @@ def create_app(deps: WebDeps) -> FastAPI:
         ml.router,
         performance.router,
         rl.router,
+        control.public_router,
         control.router,
         sse.router,
     )

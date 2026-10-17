@@ -1,9 +1,21 @@
 import { useEffect, useRef, useState } from "react";
-import { CandlestickSeries, createChart, createSeriesMarkers, type IChartApi, type SeriesMarker, type Time } from "lightweight-charts";
+import { CandlestickSeries, LineSeries, createChart, createSeriesMarkers, type IChartApi, type SeriesMarker, type Time } from "lightweight-charts";
 import { getJson } from "../api";
 import { ErrorBox } from "../components/Tables";
 import { useApp, useLoad } from "../hooks";
 import type { ChartData, Market } from "../types";
+
+/** 단순이동평균: 앞 n−1 개는 값 없음(선이 n 번째 봉부터 시작). */
+export function sma(closes: { time: Time; close: number }[], n: number): { time: Time; value: number }[] {
+  const out: { time: Time; value: number }[] = [];
+  let sum = 0;
+  for (let i = 0; i < closes.length; i++) {
+    sum += closes[i].close;
+    if (i >= n) sum -= closes[i - n].close;
+    if (i >= n - 1) out.push({ time: closes[i].time, value: sum / n });
+  }
+  return out;
+}
 
 export function ChartPage() {
   const { accounts } = useApp();
@@ -12,6 +24,7 @@ export function ChartPage() {
   const [exchange, setExchange] = useState("NAS");
   const [accountId, setAccountId] = useState("");
   const [q, setQ] = useState({ ticker: "005930", market: "KR" as Market, exchange: "NAS", accountId: "" });
+  const [showSma, setShowSma] = useState(true);
   const box = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const data = useLoad(() => {
@@ -36,12 +49,19 @@ export function ChartPage() {
       text: m.text,
     }));
     createSeriesMarkers(series, markers.sort((a, b) => String(a.time).localeCompare(String(b.time))));
+    if (showSma) {
+      const closes = data.data.candles.map((c) => ({ time: c.time as Time, close: +c.close }));
+      for (const [n, color] of [[20, "#f5a524"], [60, "#2fbf71"]] as const) {
+        const line = chart.addSeries(LineSeries, { color, lineWidth: 1, priceLineVisible: false, lastValueVisible: false });
+        line.setData(sma(closes, n));
+      }
+    }
     chart.timeScale().fitContent();
     return () => {
       chart.remove();
       chartRef.current = null;
     };
-  }, [data.data]);
+  }, [data.data, showSma]);
 
   return (
     <section>
@@ -79,11 +99,14 @@ export function ChartPage() {
             ))}
           </select>
         </label>
+        <label>
+          <input type="checkbox" checked={showSma} onChange={(e) => setShowSma(e.target.checked)} /> SMA 20/60
+        </label>
         <button type="submit">조회</button>
       </form>
       <ErrorBox error={data.error} />
       <div ref={box} className="chart" />
-      <p className="muted">● 결정 마커(보라) ▲▼ 주문 마커(주황). 일봉은 KIS 실전 시세.</p>
+      <p className="muted">● 결정 마커(보라) ▲▼ 주문 마커(주황). 선: SMA20(주황)·SMA60(초록). 일봉은 KIS 실전 시세.</p>
     </section>
   );
 }

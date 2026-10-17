@@ -4,6 +4,7 @@ import json
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
+import pytest
 from conftest import make_account
 from helpers_memory import seed_matured
 from typer.testing import CliRunner
@@ -156,3 +157,13 @@ def test_stale_approvals_ignores_unexpired(project, conn):
     )
     item = next(i for i in r["items"] if i["key"] == "stale_approvals")
     assert item["ok"] and item["value"] == 0
+
+
+def test_run_error_rate_ignores_interval_jobs(conn, project):
+    _runs(conn, 9, 1)  # cron 잡(analyze): ok 9 + error 1
+    _runs(conn, 0, 5, kind="monitor")  # interval 잡은 오류일 때만 기록 → 분모에서 제외
+    r = readiness.check(
+        conn, accounts=[], settings=Settings(), state=project / "state", today=TODAY
+    )
+    item = next(i for i in r["items"] if i["key"] == "run_error_rate")
+    assert item["value"] == pytest.approx(0.1)
