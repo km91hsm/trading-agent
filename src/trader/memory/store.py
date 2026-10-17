@@ -1,0 +1,233 @@
+"""메모리 저장소 (스펙 §6.5): 3층 반감기 검색, 승격·삭제, 엠바고, 워밍업, 서킷브레이커.
+
+검색 점수 = recency(2^(−age/half_life)) × 0.4 + relevance(코사인) × 0.4 + importance × 0.2.
+"""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+from datetime import UTC, datetime
+from decimal import Decimal
+
+from trader.config import MemorySettings
+from trader.control import control
+from trader.ledger.db import now_iso
+from trader.memory import vector as vec
+
+TIERS = ("short", "mid", "long")
+BIG_RETURN = 0.05
+PRUNE_AGE_DAYS = 90
+PRUNE_IMPORTANCE = 0.2
+BREAKER_KEY = "memory_breaker"
+W_RECENCY, W_RELEVANCE, W_IMPORTANCE = 0.4, 0.4, 0.2
+
+
+def _next_tier(tier: str) -> str:
+    i = TIERS.index(tier) if tier in TIERS else 0
+    return TIERS[min(i + 1, len(TIERS) - 1)]
+
+
+def record_decision(
+    conn: sqlite3.Connection,
+    *,
+    decision_id: int,
+    ticker: str,
+    market: str,
+    account_id: str,
+    decided_at: str,
+    decision: dict,
+    row: dict | None,
+    horizon_days: int,
+    vector: list[float] | None = None,
+) -> int:
+    """결정 1건당 엔트리 1건 (decision_id UNIQUE, 멱등). importance 초기값 = confidence."""
+    existing = conn.execute(
+        "SELECT id FROM memory_entries WHERE decision_id=?", (decision_id,)
+    ).fetchone()
+    if existing:
+        return int(existing["id"])
+    v = vector or vec.situation_vector(row or {}, market)
+    importance = float(decision.get("confidence") or 0.5)
+    cur = conn.execute(
+        "INSERT INTO memory_entries(ticker, market, account_id, decision_id, decided_at, "
+        "situation_vector, situation_summary, decision, horizon_days, tier, importance, "
+        "created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'short', ?, ?)",
+        (
+            ticker,
+            market,
+            account_id,
+            decision_id,
+            decided_at,
+            json.dumps(v),
+            vec.summary(row or {}, market),
+            json.dumps(decision, ensure_ascii=False, default=str),
+            horizon_days,
+            max(0.0, min(1.0, importance)),
+            now_iso(),
+        ),
+    )
+    conn.commit()
+    return int(cur.lastrowid)
+
+
+def get_entry(conn: sqlite3.Connection, entry_id: int) -> dict | None:
+    row = conn.execute("SELECT * FROM memory_entries WHERE id=?", (entry_id,)).fetchone()
+    return _hydrate(row) if row else None
+
+
+def _hydrate(row: sqlite3.Row) -> dict:
+    d = dict(row)
+    d["situation_vector"] = json.loads(d["situation_vector"] or "[]")
+    d["decision"] = json.loads(d["decision"] or "{}")
+    d["reflection"] = json.loads(d["reflection"]) if d.get("reflection") else None
+    return d
+
+
+def fill_outcome(
+    conn: sqlite3.Connection,
+    entry_id: int,
+    *,
+    realized_return: float,
+    alpha: float,
+    outcome_at: str,
+) -> None:
+    """결과 채움. |실현수익| ≥ 5% 면 한 층 승격하고 importance 를 올린다."""
+    e = get_entry(conn, entry_id)
+    if e is None:
+        return
+    tier = e["tier"]
+    importance = float(e["importance"] or 0.0)
+    if abs(realized_return) >= BIG_RETURN:
+        tier = _next_tier(tier)
+        importance = min(1.0, importance + 0.3)
+    conn.execute(
+        "UPDATE memory_entries SET realized_return=?, alpha_vs_benchmark=?, outcome_at=?, tier=?, "
+        "importance=? WHERE id=?",
+        (float(realized_return), float(alpha), outcome_at, tier, importance, entry_id),
+    )
+    conn.commit()
+
+
+def set_reflection(conn: sqlite3.Connection, entry_id: int, reflection: dict) -> None:
+    """반성 저장. lesson 이 있으면 한 층 승격."""
+    e = get_entry(conn, entry_id)
+    if e is None:
+        return
+    tier = e["tier"]
+    importance = float(e["importance"] or 0.0)
+    if reflection.get("lesson"):
+        tier = _next_tier(tier)
+        importance = min(1.0, importance + 0.2)
+    conn.execute(
+        "UPDATE memory_entries SET reflection=?, tier=?, importance=? WHERE id=?",
+        (json.dumps(reflection, ensure_ascii=False, default=str), tier, importance, entry_id),
+    )
+    conn.commit()
+
+
+def matured_count(conn: sqlite3.Connection) -> int:
+    return int(
+        conn.execute(
+            "SELECT COUNT(*) AS n FROM memory_entries WHERE outcome_at IS NOT NULL"
+        ).fetchone()["n"]
+    )
+
+
+def breaker_state(conn: sqlite3.Connection) -> dict | None:
+    b = control.get_flag(conn, BREAKER_KEY)
+    return b if isinstance(b, dict) and b.get("active") else None
+
+
+def retrieve(
+    conn: sqlite3.Connection,
+    *,
+    vector: list[float],
+    now: datetime,
+    settings: MemorySettings,
+    market: str | None = None,
+    k: int | None = None,
+) -> dict:
+    """{entries, warmup, breaker}. 만기 전(outcome 없음) 제외, 워밍업·브레이커면 빈 목록."""
+    k = k or settings.top_k
+    breaker = breaker_state(conn)
+    if breaker:
+        return {"entries": [], "warmup": False, "breaker": breaker}
+    if matured_count(conn) < settings.warmup:
+        return {"entries": [], "warmup": True, "breaker": None}
+    sql = "SELECT * FROM memory_entries WHERE outcome_at IS NOT NULL"
+    args: list = []
+    if market:
+        sql += " AND market=?"
+        args.append(market)
+    half = {
+        "short": settings.half_lives.short,
+        "mid": settings.half_lives.mid,
+        "long": settings.half_lives.long,
+    }
+    scored = []
+    for row in conn.execute(sql, args).fetchall():
+        e = _hydrate(row)
+        try:
+            age_days = (now - datetime.fromisoformat(e["decided_at"]).astimezone(UTC)).days
+        except ValueError:
+            age_days = 0
+        hl = half.get(e["tier"], settings.half_lives.short)
+        recency = 2 ** (-max(age_days, 0) / hl)
+        relevance = max(0.0, vec.cosine(vector, e["situation_vector"]))
+        score = (
+            W_RECENCY * recency
+            + W_RELEVANCE * relevance
+            + W_IMPORTANCE * float(e["importance"] or 0)
+        )
+        e["score"] = round(score, 4)
+        scored.append(e)
+    scored.sort(key=lambda e: e["score"], reverse=True)
+    return {"entries": scored[:k], "warmup": False, "breaker": None}
+
+
+def promote_and_prune(conn: sqlite3.Connection, *, now: datetime, settings: MemorySettings) -> dict:
+    """short 층에서 90일 넘고 importance < 0.2 면 삭제. (승격은 결과·반성 시점에 이미 처리)"""
+    deleted = 0
+    for row in conn.execute(
+        "SELECT id, decided_at, tier, importance FROM memory_entries"
+    ).fetchall():
+        try:
+            age = (now - datetime.fromisoformat(row["decided_at"]).astimezone(UTC)).days
+        except ValueError:
+            continue
+        if (
+            row["tier"] == "short"
+            and age > PRUNE_AGE_DAYS
+            and float(row["importance"] or 0) < PRUNE_IMPORTANCE
+        ):
+            conn.execute("DELETE FROM memory_entries WHERE id=?", (row["id"],))
+            deleted += 1
+    conn.commit()
+    return {"promoted": 0, "deleted": deleted}
+
+
+def circuit_breaker(
+    conn: sqlite3.Connection,
+    *,
+    nav_series: list[tuple[str, Decimal]],
+    vix_change: float | None,
+    settings: MemorySettings,
+) -> dict | None:
+    """드로다운 ≤ drawdown_stop_pct 또는 VIX 급등이면 플래그를 켜고 사유를 돌려준다."""
+    reason = None
+    if nav_series:
+        peak = max(Decimal(str(v)) for _, v in nav_series)
+        last = Decimal(str(nav_series[-1][1]))
+        if peak > 0:
+            dd = float(last / peak - 1)
+            if dd <= settings.drawdown_stop_pct:
+                reason = f"드로다운 {dd:.1%} ≤ {settings.drawdown_stop_pct:.0%}"
+    if reason is None and vix_change is not None and vix_change >= settings.vix_spike_pct:
+        reason = f"VIX 급등 {vix_change:+.0%} ≥ {settings.vix_spike_pct:.0%}"
+    if reason:
+        state = {"active": True, "reason": reason, "at": now_iso()}
+        control.set_flag(conn, BREAKER_KEY, state)
+        return state
+    control.set_flag(conn, BREAKER_KEY, {"active": False, "reason": None, "at": now_iso()})
+    return None

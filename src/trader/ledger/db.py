@@ -133,6 +133,25 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
             "ON fills(account_id, order_id, filled_at, qty, price)",
         ],
     ),
+    (
+        5,  # Phase 8: 메모리 엔트리, 보정 실행 기록
+        [
+            """CREATE TABLE IF NOT EXISTS memory_entries (
+                id INTEGER PRIMARY KEY,
+                ticker TEXT NOT NULL, market TEXT NOT NULL, account_id TEXT,
+                decision_id INTEGER UNIQUE, decided_at TEXT NOT NULL,
+                situation_vector TEXT NOT NULL, situation_summary TEXT,
+                decision TEXT NOT NULL, horizon_days INTEGER NOT NULL,
+                realized_return REAL, alpha_vs_benchmark REAL, reflection TEXT,
+                outcome_at TEXT, tier TEXT NOT NULL, importance REAL NOT NULL,
+                created_at TEXT NOT NULL
+            )""",
+            """CREATE TABLE IF NOT EXISTS calibration_runs (
+                id INTEGER PRIMARY KEY, created_at TEXT NOT NULL,
+                n_decisions INTEGER NOT NULL, active INTEGER NOT NULL, json TEXT NOT NULL
+            )""",
+        ],
+    ),
 ]
 
 

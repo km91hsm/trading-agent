@@ -33,3 +33,11 @@ llm:
 web:
   bind: 127.0.0.1
   port: 8787
+
+# 메모리 검색 (스펙 §6.5): 3층 반감기(일), 워밍업 건수, 서킷브레이커 기준
+memory:
+  half_lives: {short: 14, mid: 90, long: 365}
+  warmup: 50
+  drawdown_stop_pct: -0.10
+  vix_spike_pct: 0.30
+  top_k: 5
