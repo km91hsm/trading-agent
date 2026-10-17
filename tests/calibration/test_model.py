@@ -72,3 +72,12 @@ def test_signal_hits_uses_price_return_for_hold(conn):
     rates = model.hit_rates(df, query_vector=None)
     assert rates["technical"]["hit_rate"] == pytest.approx(1.0)
     assert rates["sentiment"]["hit_rate"] == pytest.approx(0.0)  # SELL 신호는 빗나감
+
+
+def test_build_calibration_one_row_per_day(conn):
+    seed_matured(conn, 3)
+    for _ in range(2):
+        model.build_calibration(
+            conn, min_decisions=1, query_vector=None, asof="2026-10-17T00:00:00+00:00"
+        )
+    assert conn.execute("SELECT COUNT(*) FROM calibration_runs").fetchone()[0] == 1

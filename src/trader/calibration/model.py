@@ -116,10 +116,24 @@ def build_calibration(
         report = schemas.CalibrationReport(
             asof=asof, n_decisions=n, active=True, min_decisions=min_decisions, roles=roles
         ).model_dump()
+    created = datetime.now(UTC).isoformat()
+    # 같은 날(UTC) 행이 있으면 갱신: 종목마다 1행씩 쌓이지 않도록 하루 1행
+    existing = conn.execute(
+        "SELECT id FROM calibration_runs WHERE substr(created_at, 1, 10)=? "
+        "ORDER BY id DESC LIMIT 1",
+        (created[:10],),
+    ).fetchone()
+    if existing:
+        conn.execute(
+            "UPDATE calibration_runs SET created_at=?, n_decisions=?, active=?, json=? WHERE id=?",
+            (created, n, int(active), json.dumps(report or {}, ensure_ascii=False), existing["id"]),
+        )
+        conn.commit()
+        return report
     conn.execute(
         "INSERT INTO calibration_runs(created_at, n_decisions, active, json) VALUES (?, ?, ?, ?)",
         (
-            datetime.now(UTC).isoformat(),
+            created,
             n,
             int(active),
             json.dumps(report or {}, ensure_ascii=False),

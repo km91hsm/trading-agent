@@ -7,9 +7,10 @@ from __future__ import annotations
 
 import math
 import sqlite3
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
@@ -17,6 +18,7 @@ from trader.ledger import metrics as ledger_metrics
 from trader.ledger import repo
 from trader.ml import dataset
 
+_KST = ZoneInfo("Asia/Seoul")
 TRADING_DAYS = 252
 COST_BPS = (0, 10, 20, 30)
 
@@ -133,8 +135,9 @@ def benchmarks(
 def _orders_between(
     conn, account_id: str, market: str, start: date, end: date
 ) -> list[sqlite3.Row]:
-    lo = f"{start.isoformat()}T00:00:00"
-    hi = f"{(end + timedelta(days=1)).isoformat()}T00:00:00"
+    # 주문 created_at 은 UTC 저장이라 KST 자정 경계를 UTC 로 바꿔 비교한다
+    lo = datetime.combine(start, time.min, _KST).astimezone(UTC).isoformat()
+    hi = datetime.combine(end + timedelta(days=1), time.min, _KST).astimezone(UTC).isoformat()
     return conn.execute(
         "SELECT qty, price, amount, side FROM orders WHERE account_id=? AND market=? "
         "AND status NOT IN ('rejected','cancelled','failed') "

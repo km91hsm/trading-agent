@@ -43,12 +43,19 @@ def _paper_days(conn: sqlite3.Connection) -> int:
     return len(days)
 
 
+INTERVAL_KINDS = ("monitor", "telegram_poll", "fills_sync")  # 오류일 때만 runs 에 남는 잡
+
+
 def _rate(conn: sqlite3.Connection, table: str, col: str, bad: tuple, since_iso: str) -> float:
     marks = ",".join("?" * len(bad))
+    extra, args = "", []
+    if table == "runs":  # interval 잡은 성공분이 기록되지 않아 분모를 왜곡한다
+        extra = f" AND kind NOT IN ({','.join('?' * len(INTERVAL_KINDS))})"
+        args = list(INTERVAL_KINDS)
     row = conn.execute(
         f"SELECT COUNT(*) AS n, SUM(CASE WHEN status IN ({marks}) THEN 1 ELSE 0 END) AS b "
-        f"FROM {table} WHERE {col} >= ?",
-        (*bad, since_iso),
+        f"FROM {table} WHERE {col} >= ?{extra}",
+        (*bad, since_iso, *args),
     ).fetchone()
     return (row["b"] or 0) / row["n"] if row["n"] else 0.0
 

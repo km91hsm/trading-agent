@@ -121,3 +121,41 @@ def test_one_over_n_is_universe_and_bh_is_held(project):
     assert b["one_over_n"]["return"] == pytest.approx(0.0)  # A·B·C 등가중(유니버스)
     assert b["buy_and_hold"]["return"] == pytest.approx(0.10)  # 보유 A 만
     assert b["benchmark_universe"] == ["A", "B", "C"]
+
+
+# --- 이연 회수: 날짜 창·KST 주문 창 ---------------------------------------------------
+
+
+def test_nav_history_is_date_window_not_count(conn):
+    for d, v in [("2026-09-01", 100), ("2026-10-10", 101), ("2026-10-15", 102)]:
+        repo.snapshot_positions(
+            conn,
+            account_id="paper-main",
+            d=date.fromisoformat(d),
+            market="KR",
+            nav=Decimal(v),
+            cash=Decimal(v),
+            positions=[],
+        )
+    got = repo.nav_history(conn, "paper-main", "KR", days=10, today=date(2026, 10, 17))
+    assert [d for d, _ in got] == ["2026-10-10", "2026-10-15"]
+
+
+def _insert_order(conn, *, created_at: str, amount: str):
+    conn.execute(
+        "INSERT INTO orders(decision_id, account_id, ticker, market, side, qty, order_type, "
+        "price, status, mode, created_at, amount) VALUES (1,'paper-main','005930','KR','BUY',1,"
+        "'LIMIT','1','placed','auto',?,?)",
+        (created_at, amount),
+    )
+    conn.commit()
+
+
+def test_orders_window_uses_kst_day(conn):
+    # 2026-10-17T23:30Z = 10-18 08:30 KST → 10-17 창에 들어가지 않는다
+    _insert_order(conn, created_at="2026-10-17T23:30:00+00:00", amount="1000")
+    _insert_order(conn, created_at="2026-10-17T02:00:00+00:00", amount="500")
+    rows = performance._orders_between(
+        conn, "paper-main", "KR", date(2026, 10, 17), date(2026, 10, 17)
+    )
+    assert [r["amount"] for r in rows] == ["500"]

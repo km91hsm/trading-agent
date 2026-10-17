@@ -496,9 +496,17 @@ def snapshot_positions(
 
 
 def nav_history(
-    conn: sqlite3.Connection, account_id: str, market: str, *, days: int = 30
+    conn: sqlite3.Connection,
+    account_id: str,
+    market: str,
+    *,
+    days: int = 30,
+    today: date | None = None,
 ) -> list[tuple[str, Decimal]]:
-    """최근 days 일의 (날짜, NAV) 오름차순 (날짜별 최신 스냅샷)."""
+    """(today 또는 마지막 스냅샷 날짜) − days 이후의 (날짜, NAV) 오름차순 (날짜별 최신 스냅샷).
+
+    스냅샷 개수가 아니라 날짜 창이다: 운영이 띄엄띄엄이어도 오래된 값이 섞이지 않는다.
+    """
     rows = conn.execute(
         "SELECT date, nav FROM positions_snapshot WHERE account_id=? AND market=? "
         "AND nav IS NOT NULL ORDER BY date, id",
@@ -507,8 +515,11 @@ def nav_history(
     by_date: dict[str, Decimal] = {}
     for r in rows:
         by_date[r["date"]] = _dec(r["nav"])
-    dates = sorted(by_date)[-days:]
-    return [(d, by_date[d]) for d in dates]
+    if not by_date:
+        return []
+    end = today or date.fromisoformat(max(by_date))
+    lo = (end - timedelta(days=days)).isoformat()
+    return [(d, by_date[d]) for d in sorted(by_date) if d >= lo]
 
 
 def latest_nav_before(
