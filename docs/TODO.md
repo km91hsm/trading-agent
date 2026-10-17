@@ -76,7 +76,8 @@
 - [x] 완료 기준: 계좌 전환, 산출물 열람, 웹 승인 주문, 차트 마커, 모의 주문이 실전 뷰에 안 섞임, 토큰 없는 제어 401 (2026-10-09 확인: TestClient 27개 — 계좌 분리·401·승인 2회 409·실전 auto confirm·경로 탈출; Vitest 5개; 브라우저 실기 — 대시보드·오늘의 실행(000660 토론 뷰)·차트(005930 KIS 일봉)·계좌·주문 페이지 렌더, 틀린 토큰으로 일시정지 → "토큰이 필요합니다" 표시. 웹 승인 주문 실기는 Phase 4 의 승인 실기(사용자 확인 대기)와 함께)
 - [ ] 사용자 확인 대기: `secrets/.env` 에 `WEB_TOKEN` 설정 후 `uv run trader web` → 설정 페이지에 토큰 입력 → 일시정지/재개가 반영되는지, 승인 요청이 있을 때 주문/승인 페이지에서 승인 → 주문 접수 확인
 - [x] 리뷰 Minor 이연(Phase 5) 회수(2026-10-17, 이연 회수 플랜): `_validate_ids` 점 티커 거부(이미 해결), `favicon`(inline SVG). `list_decisions` 창은 metrics 와 같이 KST 날짜 기준
-- [x] Phase 5 이연 회수(2026-10-17, 이연 회수 플랜): SSE 스냅샷에 `triggers`·`watchlist` 추가, 관심종목 웹 제어(`/api/control/watchlist` + 설정 페이지), 차트 SMA20/60 오버레이, ML 페이지 실데이터(Phase 7)·성과 페이지(Phase 8). 이연 유지: 분봉 차트(사용자 결정)
+- [x] Phase 5 이연 회수(2026-10-17, 이연 회수 플랜): SSE 스냅샷에 `triggers`·`watchlist` 추가, 관심종목 웹 제어(`/api/control/watchlist` + 설정 페이지), 차트 SMA20/60 오버레이, ML 페이지 실데이터(Phase 7)·성과 페이지(Phase 8). 분봉 차트는 아래 줄
+- [x] 분봉 차트(2026-10-17, 사용자 결정으로 진행): `GET /api/charts/minute`(당일 1분봉 UTC epoch 초·60초 캐시·주문/트리거 분 마커, KR 은 KIS 30봉 역방향 페이징 최대 390), 차트 페이지 간격 선택(일봉|1분). 이연 유지: US 120봉 초과 페이징(`NEXT`/`KEYB`, 실기 확인), 3·5·15분 집계·자동 갱신(사용자 결정)
 
 ## Phase 6 scan·monitor·데몬
 - [x] 정량 스크리너(`scan/quant`, 피처 스토어 기반) + screener 세션(haiku, `kind=screen`, `tool submit-screen`) + `trader scan` (ML 랭킹은 `rank_fn` 자리, Phase 7)
