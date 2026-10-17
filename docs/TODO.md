@@ -131,8 +131,11 @@
 - [ ] 리뷰 Minor 이연(Phase 8): `tool` 컨텍스트 `now` 를 stdin asof 로(`decided_at` 과 run date 불일치), 상황 벡터는 run date 이하 피처 행으로, `cost_sensitivity` 미체결 주문 포함·UTC/KST 하루 오차, `nav_history(days)` 는 스냅샷 개수 기준, `outcomes.mature(today)` 미사용, 백테스트 HOLD 적중 정의, `/watch add` 인자 없을 때 사용법, 관심종목 시장 구분 없음, `submit_reflection` 디렉터리 직접 생성, `calibration_runs` 종목마다 1행 누적, 메모리 차원 `sma_5_rel` 과 피처 열 부호 반대, `record_decision(decision_id=None)` 멱등 깨짐, reflect 잡 `PipelineError` 시 남은 시장 건너뜀, `run_error_rate` 분모에 interval 잡 성공분 없음(보수적)
 
 ## Phase 9 RL 사이징(실험)
-- [ ] gym env (상태·행동·드로다운 페널티)
-- [ ] PPO 워크포워드, 시드 3회
-- [ ] 모의 계좌 한정 섀도 적용
-- [ ] UI 실험 로그
-- [ ] 완료 기준: 8주 워크포워드 비교 리포트, 승격은 수동
+- [x] gym env (`ml/rl/env.SizingEnv`: 관측 16차원 = 상황 벡터 12 + 확신·LLM 비중 + 현재 비중·드로다운, 행동 0~0.25, 보상 = w·r − 회전 비용 − 드로다운 페널티; gymnasium 어댑터는 선택 extra)
+- [x] 워크포워드 × 시드 3회 학습·기준선(고정 10%·LLM 비중·변동성 타깃) 비교 (`rl train`, 폴드·엠바고는 quant 와 동일). 백엔드는 `cem`(numpy, 기본) / `ppo`(stable-baselines3, `uv sync --extra rl`)
+- [x] 모의 계좌 한정 섀도/적용 (`ml.yaml rl_sizer.enabled` ∧ `rl promote` 수동 승격 → executor 가 **모의 계좌·BUY/ADD** 에만 `rl_shadow` 기록, `mode: apply` 면 target_weight 교체·게이트 상한은 그대로. 실전 계좌는 기록도 없음)
+- [x] UI 실험 로그 (ML 페이지 "RL 실험" 절, `/api/rl/experiments|shadow|report`, STATUS `rl_sizer` 줄, 데몬 ml_train 이 enabled 일 때 함께 학습, `rl report`)
+- [x] 실기(2026-10-17): `rl train --market KR --seeds 1`(피처 스토어, CEM) → `rl models`·`rl report` → `FAKE_CLAUDE=1 analyze --dry-run`(HOLD 라 `rl_shadow` 0행, 모드 불변) → `/api/rl/*` 200 → STATUS 줄
+- [ ] 완료 기준(사용자 확인 대기): 8주 워크포워드 비교 리포트 — 모의 운영 8주 뒤 `uv run trader rl train` → `rl report --account paper-main --weeks 8` 로 RL vs 고정·LLM 비교, 승격은 `rl promote <버전>` 수동(그 뒤 `ml.yaml rl_sizer.enabled: true`, 처음엔 `mode: shadow`)
+- [ ] 사용자 확인 대기: PPO 백엔드 — `uv sync --extra rl`(torch 휠 필요, 이 머신은 x86_64 Python 이라 설치가 안 될 수 있음) 후 `ml.yaml rl_sizer.backend: ppo` 로 `rl train`
+- [ ] Phase 9 이연: 멀티 종목 동시 포트폴리오 환경, RL 실험 전용 페이지, 피처 스토어 날짜별 parquet 전체 읽기(학습·섀도 관측마다 수 초)
