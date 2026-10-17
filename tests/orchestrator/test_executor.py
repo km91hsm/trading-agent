@@ -459,3 +459,76 @@ def test_build_portfolio_breaker_uses_settings_and_market(ectx):
     assert store.breaker_state(ectx.conn, "KR") and store.breaker_state(ectx.conn, "US") is None
     executor.build_portfolio(ectx.conn, broker, acct, "KR", D, memory_settings=MemorySettings())
     assert store.breaker_state(ectx.conn, "KR") is None  # 기본 −10% 기준이면 해제
+
+
+# --- Phase 9: RL 사이저 섀도·적용 (모의 계좌 한정) ---------------------------------------
+
+
+def _sizer(mode, weight=0.05):
+    from trader.config import RlSizerCfg
+    from trader.ml.rl import shadow
+    from trader.ml.rl.policy import FixedPolicy
+
+    return shadow.Sizer(
+        policy=FixedPolicy(weight), version="v1", cfg=RlSizerCfg(enabled=True, mode=mode)
+    )
+
+
+def _shadow_rows(ectx, account_id=None):
+    sql = "SELECT * FROM rl_shadow"
+    args = ()
+    if account_id:
+        sql += " WHERE account_id=?"
+        args = (account_id,)
+    return ectx.conn.execute(sql, args).fetchall()
+
+
+def test_shadow_mode_records_but_does_not_change_qty(ectx):
+    ectx.rl_sizer = _sizer("shadow")
+    by = {r["account_id"]: r for r in _run(ectx)}
+    assert by["paper-main"]["qty"] == 13  # 변경 없음
+    rows = _shadow_rows(ectx)
+    assert len(rows) == 1 and rows[0]["account_id"] == "paper-main"
+    assert rows[0]["proposed_weight"] == 0.05 and rows[0]["applied"] == 0
+
+
+def test_apply_mode_changes_paper_qty_and_marks_applied(ectx):
+    ectx.rl_sizer = _sizer("apply")
+    by = {r["account_id"]: r for r in _run(ectx)}
+    assert by["paper-main"]["qty"] == 6  # 50만/71500
+    assert any(r.startswith("RL 사이저 적용") for r in by["paper-main"]["reasons"])
+    assert _shadow_rows(ectx)[0]["applied"] == 1
+
+
+def test_real_account_untouched_even_in_apply_mode(ectx):
+    for a in ectx.accounts:
+        if a.env == "real":
+            control.set_account_mode(ectx.conn, a, "approve")
+    ectx.rl_sizer = _sizer("apply")
+    by = {r["account_id"]: r for r in _run(ectx)}
+    assert not any(r.startswith("RL") for r in by["real-main"]["reasons"])
+    assert _shadow_rows(ectx, "real-main") == []
+
+
+def test_apply_mode_still_capped_by_risk_gate(ectx):
+    ectx.rl_sizer = _sizer("apply", weight=0.90)
+    by = {r["account_id"]: r for r in _run(ectx)}
+    assert by["paper-main"]["qty"] == 34  # 25% 상한 250만/71500
+
+
+def test_disabled_or_no_model_is_noop(ectx):
+    ectx.rl_sizer = None
+    results = _run(ectx)
+    assert _shadow_rows(ectx) == [] and results[0]["qty"] == 13
+
+
+def test_hold_and_sell_skip_rl(ectx):
+    ectx.rl_sizer = _sizer("apply")
+    _run(ectx, ok_decision(action="HOLD"))
+    assert _shadow_rows(ectx) == []
+
+
+def test_dry_run_does_not_record_shadow(ectx):
+    ectx.rl_sizer = _sizer("shadow")
+    _run(ectx, dry_run=True)
+    assert _shadow_rows(ectx) == []

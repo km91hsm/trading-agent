@@ -748,6 +748,7 @@ def submit_decision(
         state=ctx.state,
         now=ctx.now,
         holiday_fn=ctx.holiday_fn,
+        rl_sizer=_load_sizer(ctx.state),
     )
     executions = executor.execute(
         ectx,
@@ -769,6 +770,18 @@ def submit_decision(
         "executions": executions,
         "memory_entry_id": memory_entry_id,
     }
+
+
+def _load_sizer(state: Path | None):
+    """ml.yaml rl_sizer.enabled ∧ 승격 모델일 때만 Sizer. 어떤 실패도 결정 제출을 막지 않는다."""
+    try:
+        from trader.config import load_ml
+        from trader.ml.rl import shadow
+
+        return shadow.load(load_ml(), state)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("RL 사이저 로드 건너뜀: %s", e)
+        return None
 
 
 def _record_memory(

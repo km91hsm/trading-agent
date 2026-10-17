@@ -148,3 +148,9 @@ def test_status_shows_performance(conn, project):
         )
     text = status.build_status(conn, Settings(), [make_account("paper-main", "paper", "auto")], p)
     assert "## 성과(30일)" in text and "paper-main KR" in text and "+4.0%" in text
+
+
+def test_status_has_rl_sizer_line(conn, project):
+    p = project / "docs" / "TODO.md"
+    p.write_text(TODO, encoding="utf-8")
+    assert "rl_sizer 없음" in status.build_status(conn, Settings(), [], p)
