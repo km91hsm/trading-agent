@@ -7,6 +7,7 @@ import { ComparePage } from "./pages/Compare";
 import { Dashboard } from "./pages/Dashboard";
 import { DataPage } from "./pages/Data";
 import { MlPage } from "./pages/Ml";
+import { PerformancePage } from "./pages/Performance";
 import { OrdersPage } from "./pages/Orders";
 import { SettingsPage } from "./pages/Settings";
 import { TodayPage } from "./pages/Today";
@@ -27,6 +28,7 @@ export default function App() {
             <Route path="/chart" element={<ChartPage />} />
             <Route path="/data" element={<DataPage />} />
             <Route path="/ml" element={<MlPage />} />
+            <Route path="/performance" element={<PerformancePage />} />
             <Route path="/settings" element={<SettingsPage />} />
             <Route path="*" element={<Dashboard />} />
           </Routes>

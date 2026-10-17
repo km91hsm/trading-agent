@@ -124,3 +124,27 @@ def test_status_shows_ml_model(conn, project):
     registry.promote("quant", v)
     text = status.build_status(conn, Settings(), [], p)
     assert f"quant {v}" in text and "0.42" in text and "승격" in text
+
+
+def test_status_shows_performance(conn, project):
+    from datetime import date
+    from decimal import Decimal
+
+    from conftest import make_account
+
+    from trader.ledger import repo
+
+    p = project / "docs" / "TODO.md"
+    p.write_text(TODO, encoding="utf-8")
+    for d, v in ((date(2026, 10, 1), 100), (date(2026, 10, 9), 104)):
+        repo.snapshot_positions(
+            conn,
+            account_id="paper-main",
+            d=d,
+            market="KR",
+            nav=Decimal(v),
+            cash=Decimal(1),
+            positions=[],
+        )
+    text = status.build_status(conn, Settings(), [make_account("paper-main", "paper", "auto")], p)
+    assert "## 성과(30일)" in text and "paper-main KR" in text and "+4.0%" in text
