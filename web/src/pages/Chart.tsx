@@ -3,7 +3,7 @@ import { CandlestickSeries, LineSeries, createChart, createSeriesMarkers, type I
 import { getJson } from "../api";
 import { ErrorBox } from "../components/Tables";
 import { useApp, useLoad } from "../hooks";
-import type { ChartData, Market } from "../types";
+import type { ChartData, ChartInterval, Market, Marker } from "../types";
 
 /** 단순이동평균: 앞 n−1 개는 값 없음(선이 n 번째 봉부터 시작). */
 export function sma(closes: { time: Time; close: number }[], n: number): { time: Time; value: number }[] {
@@ -17,38 +17,52 @@ export function sma(closes: { time: Time; close: number }[], n: number): { time:
   return out;
 }
 
+export type MarkerStyle = { position: "aboveBar" | "belowBar"; color: string; shape: "arrowUp" | "arrowDown" | "circle" | "square" };
+
+/** 주문: 주황 화살표(매도·축소는 위), 결정: 보라 원, 트리거: 청록 사각형(위). */
+export function markerStyle(m: Pick<Marker, "kind" | "side">): MarkerStyle {
+  if (m.kind === "trigger") return { position: "aboveBar", color: "#2dd4bf", shape: "square" };
+  const above = m.side === "SELL" || m.side === "TRIM";
+  if (m.kind === "order") return { position: above ? "aboveBar" : "belowBar", color: "#f5a524", shape: above ? "arrowDown" : "arrowUp" };
+  return { position: above ? "aboveBar" : "belowBar", color: "#8b5cf6", shape: "circle" };
+}
+
 export function ChartPage() {
   const { accounts } = useApp();
   const [ticker, setTicker] = useState("005930");
   const [market, setMarket] = useState<Market>("KR");
   const [exchange, setExchange] = useState("NAS");
   const [accountId, setAccountId] = useState("");
-  const [q, setQ] = useState({ ticker: "005930", market: "KR" as Market, exchange: "NAS", accountId: "" });
+  const [interval, setInterval] = useState<ChartInterval>("1d");
+  const [q, setQ] = useState({ ticker: "005930", market: "KR" as Market, exchange: "NAS", accountId: "", interval: "1d" as ChartInterval });
   const [showSma, setShowSma] = useState(true);
   const box = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const data = useLoad(() => {
-    const params: Record<string, string> = { ticker: q.ticker, market: q.market, days: "160" };
+    const minute = q.interval === "1m";
+    const params: Record<string, string> = { ticker: q.ticker, market: q.market };
+    if (minute) params.count = "390";
+    else params.days = "160";
     if (q.market === "US") params.exchange = q.exchange;
     if (q.accountId) params.account_id = q.accountId;
-    return getJson<ChartData>("/api/charts", params);
-  }, [q]); // 원장 이벤트(tick)마다 KIS 일봉을 다시 받지 않는다. 조회 버튼으로만 갱신.
+    return getJson<ChartData>(minute ? "/api/charts/minute" : "/api/charts", params);
+  }, [q]); // 원장 이벤트(tick)마다 KIS 시세를 다시 받지 않는다. 조회 버튼으로만 갱신(분봉은 서버 60초 캐시).
 
   useEffect(() => {
     if (!box.current || !data.data) return;
     chartRef.current?.remove();
-    const chart = createChart(box.current, { height: 460, layout: { textColor: "#ddd", background: { color: "#161a22" } }, grid: { vertLines: { color: "#222" }, horzLines: { color: "#222" } } });
+    const minute = data.data.interval === "1m";
+    const chart = createChart(box.current, {
+      height: 460,
+      layout: { textColor: "#ddd", background: { color: "#161a22" } },
+      grid: { vertLines: { color: "#222" }, horzLines: { color: "#222" } },
+      timeScale: { timeVisible: minute, secondsVisible: false },
+    });
     chartRef.current = chart;
     const series = chart.addSeries(CandlestickSeries, { upColor: "#e5484d", downColor: "#2f81f7", borderVisible: false, wickUpColor: "#e5484d", wickDownColor: "#2f81f7" });
     series.setData(data.data.candles.map((c) => ({ time: c.time as Time, open: +c.open, high: +c.high, low: +c.low, close: +c.close })));
-    const markers: SeriesMarker<Time>[] = data.data.markers.map((m) => ({
-      time: m.time as Time,
-      position: m.side === "SELL" || m.side === "TRIM" ? "aboveBar" : "belowBar",
-      color: m.kind === "order" ? "#f5a524" : "#8b5cf6",
-      shape: m.kind === "order" ? (m.side === "SELL" ? "arrowDown" : "arrowUp") : "circle",
-      text: m.text,
-    }));
-    createSeriesMarkers(series, markers.sort((a, b) => String(a.time).localeCompare(String(b.time))));
+    const markers: SeriesMarker<Time>[] = data.data.markers.map((m) => ({ time: m.time as Time, ...markerStyle(m), text: m.text }));
+    createSeriesMarkers(series, markers.sort((a, b) => (a.time < b.time ? -1 : a.time > b.time ? 1 : 0)));
     if (showSma) {
       const closes = data.data.candles.map((c) => ({ time: c.time as Time, close: +c.close }));
       for (const [n, color] of [[20, "#f5a524"], [60, "#2fbf71"]] as const) {
@@ -70,7 +84,7 @@ export function ChartPage() {
         className="row"
         onSubmit={(e) => {
           e.preventDefault();
-          setQ({ ticker: ticker.trim(), market, exchange, accountId });
+          setQ({ ticker: ticker.trim(), market, exchange, accountId, interval });
         }}
       >
         <label>
@@ -100,13 +114,24 @@ export function ChartPage() {
           </select>
         </label>
         <label>
+          간격
+          <select value={interval} onChange={(e) => setInterval(e.target.value as ChartInterval)}>
+            <option value="1d">일봉</option>
+            <option value="1m">1분</option>
+          </select>
+        </label>
+        <label>
           <input type="checkbox" checked={showSma} onChange={(e) => setShowSma(e.target.checked)} /> SMA 20/60
         </label>
         <button type="submit">조회</button>
       </form>
       <ErrorBox error={data.error} />
       <div ref={box} className="chart" />
-      <p className="muted">● 결정 마커(보라) ▲▼ 주문 마커(주황). 선: SMA20(주황)·SMA60(초록). 일봉은 KIS 실전 시세.</p>
+      <p className="muted">
+        ● 결정 마커(보라) ▲▼ 주문 마커(주황) ■ 트리거 마커(청록). 선: SMA20(주황)·SMA60(초록). 시세는 KIS 실전.
+        1분봉은 당일(KR 은 KIS 30봉 단위 역방향 페이징, US 는 최근 120봉)이며 주문·트리거 마커만 찍는다.
+        {data.data?.interval === "1m" && data.data.session_date ? ` 세션 ${data.data.session_date} (${data.data.tz})` : ""}
+      </p>
     </section>
   );
 }
