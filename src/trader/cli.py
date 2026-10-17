@@ -1387,6 +1387,102 @@ def ml_demote(
     typer.echo(f"승격 해제: quant {m['version']} ({reason})")
 
 
+rl_app = typer.Typer(help="RL 사이저 학습·레지스트리 (실험, 모의 계좌 한정, 승격 수동)")
+app.add_typer(rl_app, name="rl")
+
+
+def _rl_version_exists(version: str) -> bool:
+    from trader.ml import registry
+
+    return any(m.get("version") == version for m in registry.list_models("rl_sizer"))
+
+
+@rl_app.command("train")
+def rl_train(
+    market: str | None = typer.Option(None, "--market", help="KR|US (기본 전체)"),
+    seeds: int | None = typer.Option(None, "--seeds", help="시드 수 (기본 ml.yaml)"),
+) -> None:
+    """스텝 데이터로 사이저를 워크포워드×시드 학습·기준선 비교·저장한다 (자동 승격 없음)."""
+    import json
+
+    from trader.ledger import db
+    from trader.ml.rl import train as rl_train_mod
+
+    try:
+        configure(paths.state_dir())
+        cfg = config.load_ml()
+        if market is not None and market not in ("KR", "US"):
+            raise config.ConfigError(f"시장은 KR 또는 US: {market}")
+        if seeds is not None:
+            rl_cfg = cfg.models.rl_sizer.model_copy(update={"seeds": seeds})
+            cfg = cfg.model_copy(
+                update={"models": cfg.models.model_copy(update={"rl_sizer": rl_cfg})}
+            )
+        conn = db.connect()
+        db.init_schema(conn)
+        try:
+            r = rl_train_mod.train_sizer(cfg, conn, market=market)
+        finally:
+            conn.close()
+    except (config.ConfigError, paths.ProjectRootNotFound) as e:
+        typer.echo(f"오류: {e}", err=True)
+        raise typer.Exit(code=1) from e
+    typer.echo(json.dumps(r, ensure_ascii=False, default=str))
+
+
+@rl_app.command("models")
+def rl_models() -> None:
+    """레지스트리의 rl_sizer 모델 목록."""
+    from trader.ml import registry
+
+    configure(paths.state_dir())
+    metas = registry.list_models("rl_sizer")
+    if not metas:
+        typer.echo("모델 없음")
+        return
+    for m in metas:
+        s = m.get("summary") or {}
+        rl, fx = s.get("rl") or {}, s.get("fixed") or {}
+        typer.echo(
+            f"{m['version']}  {m.get('backend', '-')}/{m.get('source', '-')}  "
+            f"RL {rl.get('return_mean', '-')}±{rl.get('return_std', '-')}  "
+            f"고정 {fx.get('return_mean', '-')}  스텝 {m.get('steps', '-')}  "
+            f"{'승격' if m.get('promoted') else '미승격'}"
+        )
+
+
+@rl_app.command("promote")
+def rl_promote(
+    version: str = typer.Argument(..., help="YYYYMMDD_HHMMSS"),
+    reason: str = typer.Option("manual", "--reason"),
+) -> None:
+    """사이저를 수동 승격한다 (이후 ml.yaml rl_sizer.enabled 가 켜져 있으면 모의 계좌 섀도)."""
+    from trader.ml import registry
+
+    configure(paths.state_dir())
+    if not _rl_version_exists(version):
+        typer.echo(f"오류: 모델 없음: {version}", err=True)
+        raise typer.Exit(code=1)
+    m = registry.promote("rl_sizer", version, reason=reason)
+    typer.echo(f"승격: rl_sizer {m['version']} ({reason})")
+
+
+@rl_app.command("demote")
+def rl_demote(
+    version: str = typer.Argument(..., help="YYYYMMDD_HHMMSS"),
+    reason: str = typer.Option("manual", "--reason"),
+) -> None:
+    """승격을 해제한다 (다른 승격 버전이 없으면 섀도 비활성)."""
+    from trader.ml import registry
+
+    configure(paths.state_dir())
+    if not _rl_version_exists(version):
+        typer.echo(f"오류: 모델 없음: {version}", err=True)
+        raise typer.Exit(code=1)
+    m = registry.demote("rl_sizer", version, reason=reason)
+    typer.echo(f"승격 해제: rl_sizer {m['version']} ({reason})")
+
+
 @tool_app.command("submit-reflection")
 def tool_submit_reflection(
     market: str = typer.Option(..., "--market"),
