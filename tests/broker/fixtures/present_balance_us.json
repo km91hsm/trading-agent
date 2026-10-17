@@ -1,0 +1,31 @@
+{
+  "rt_cd": "0",
+  "msg_cd": "KIOK0510",
+  "msg1": "조회가 완료되었습니다",
+  "output1": [],
+  "output2": [
+    {
+      "crcy_cd": "USD",
+      "frcr_buy_amt_smtl": "0.00",
+      "frcr_sll_amt_smtl": "0.00",
+      "frcr_dncl_amt_2": "1250.50",
+      "frst_bltn_exrt": "1380.50",
+      "frcr_buy_mgn_amt": "0.00",
+      "frcr_etc_mgna": "0.00",
+      "frcr_drwg_psbl_amt_1": "1200.00",
+      "frcr_evlu_amt2": "1725000",
+      "acpl_cstd_crcy_yn": "N",
+      "nxdy_frcr_drwg_psbl_amt": "1250.50"
+    }
+  ],
+  "output3": {
+    "pchs_amt_smtl": "0",
+    "evlu_amt_smtl": "0",
+    "dncl_amt": "0",
+    "tot_dncl_amt": "1725000",
+    "wdrw_psbl_tot_amt": "1656000",
+    "frcr_evlu_tota": "1725000",
+    "tot_asst_amt": "1725000",
+    "frcr_use_psbl_amt": "1656000"
+  }
+}

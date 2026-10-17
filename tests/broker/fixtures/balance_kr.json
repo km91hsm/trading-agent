@@ -1,0 +1,48 @@
+{
+  "rt_cd": "0",
+  "msg_cd": "KIOK0510",
+  "msg1": "조회가 완료되었습니다",
+  "output1": [
+    {
+      "pdno": "005930",
+      "prdt_name": "삼성전자",
+      "hldg_qty": "10",
+      "ord_psbl_qty": "10",
+      "pchs_avg_pric": "70000.0000",
+      "pchs_amt": "700000",
+      "prpr": "71500",
+      "evlu_amt": "715000",
+      "evlu_pfls_amt": "15000",
+      "evlu_pfls_rt": "2.14",
+      "evlu_erng_rt": "2.14285714"
+    },
+    {
+      "pdno": "000660",
+      "prdt_name": "SK하이닉스",
+      "hldg_qty": "0",
+      "ord_psbl_qty": "0",
+      "pchs_avg_pric": "0",
+      "pchs_amt": "0",
+      "prpr": "200000",
+      "evlu_amt": "0",
+      "evlu_pfls_amt": "0",
+      "evlu_pfls_rt": "0.00",
+      "evlu_erng_rt": "0"
+    }
+  ],
+  "output2": [
+    {
+      "dnca_tot_amt": "9300000",
+      "nxdy_excc_amt": "9300000",
+      "prvs_rcdl_excc_amt": "9300000",
+      "tot_evlu_amt": "10015000",
+      "nass_amt": "10015000",
+      "scts_evlu_amt": "715000",
+      "pchs_amt_smtl_amt": "700000",
+      "evlu_amt_smtl_amt": "715000",
+      "evlu_pfls_smtl_amt": "15000"
+    }
+  ],
+  "ctx_area_fk100": "",
+  "ctx_area_nk100": ""
+}

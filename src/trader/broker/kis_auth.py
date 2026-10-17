@@ -1,0 +1,169 @@
+"""KIS 접근 토큰 발급·캐시.
+
+- env 별 파일 `state/kis_token_<env>.json` = {access_token, expires_at, failed_at}
+- 만료 1시간 전부터 갱신을 시도하되, 갱신이 실패해도 아직 유효한 토큰이 있으면 그것을 쓴다.
+- 발급 실패 시각(failed_at)을 파일에 기록해 다른 인스턴스·프로세스도 60초 백오프를 지킨다.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+
+import httpx
+
+from trader.broker.errors import KisApiError
+from trader.broker.tr_ids import BASE_URL, TOKEN_PATH
+from trader.config import Env
+from trader.platform import paths
+
+logger = logging.getLogger("trader.kis")
+
+REFRESH_MARGIN = timedelta(hours=1)
+FAIL_BACKOFF = timedelta(seconds=60)
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
+
+
+def _quiet_httpx() -> None:
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+
+
+class KisAuth:
+    def __init__(
+        self,
+        env: Env,
+        app_key: str,
+        app_secret: str,
+        *,
+        http: httpx.Client | None = None,
+        state: Path | None = None,
+        clock: Callable[[], datetime] = _utc_now,
+    ) -> None:
+        _quiet_httpx()
+        self.env = env
+        self._app_key = app_key
+        self._app_secret = app_secret
+        self._http = http or httpx.Client(timeout=10)
+        self._state = state
+        self._clock = clock
+
+    @property
+    def cache_path(self) -> Path:
+        base = self._state if self._state is not None else paths.state_dir()
+        return base / f"kis_token_{self.env}.json"
+
+    # --- 캐시 ---------------------------------------------------------------
+
+    def _read_cache(self) -> dict:
+        """{token, expires_at, failed_at} — 없거나 깨졌으면 빈 dict."""
+        try:
+            data = json.loads(self.cache_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        out: dict = {}
+        try:
+            if data.get("access_token") and data.get("expires_at"):
+                out["token"] = str(data["access_token"])
+                out["expires_at"] = datetime.fromisoformat(str(data["expires_at"]))
+            if data.get("failed_at"):
+                out["failed_at"] = datetime.fromisoformat(str(data["failed_at"]))
+        except (ValueError, TypeError):
+            return {}
+        return out
+
+    def _write_cache(self, payload: dict) -> None:
+        """pid 접미사 임시파일 후 replace. 쓰기 실패는 로그만 남긴다(토큰은 이미 손에 있다)."""
+        try:
+            self.cache_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self.cache_path.with_name(f"{self.cache_path.name}.{os.getpid()}.tmp")
+            tmp.write_text(json.dumps(payload), encoding="utf-8")
+            tmp.replace(self.cache_path)
+        except OSError as e:
+            logger.warning("토큰 캐시 쓰기 실패(%s): %s", self.env, type(e).__name__)
+
+    def _cache_payload(self, cache: dict, **updates: object) -> dict:
+        payload: dict = {}
+        if cache.get("token"):
+            payload["access_token"] = cache["token"]
+            payload["expires_at"] = cache["expires_at"].isoformat()
+        if cache.get("failed_at"):
+            payload["failed_at"] = cache["failed_at"].isoformat()
+        payload.update(updates)
+        return payload
+
+    def invalidate(self) -> None:
+        """토큰이 서버에서 무효화됐을 때 캐시를 버린다."""
+        try:
+            self.cache_path.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError as e:
+            logger.warning("토큰 캐시 삭제 실패(%s): %s", self.env, type(e).__name__)
+
+    # --- 발급 ---------------------------------------------------------------
+
+    def _issue(self, cache: dict) -> str:
+        now = self._clock()
+        failed_at = cache.get("failed_at")
+        if failed_at is not None and now - failed_at < FAIL_BACKOFF:
+            raise KisApiError("AUTH", "토큰 발급 실패 직후라 60초 동안 재발급하지 않습니다")
+        body = {
+            "grant_type": "client_credentials",
+            "appkey": self._app_key,
+            "appsecret": self._app_secret,
+        }
+        try:
+            resp = self._http.post(BASE_URL[self.env] + TOKEN_PATH, json=body)
+        except httpx.HTTPError as e:
+            self._mark_failure(cache, now)
+            raise KisApiError("NETWORK", f"토큰 발급 요청 실패: {type(e).__name__}") from None
+        if resp.status_code != 200:
+            self._mark_failure(cache, now)
+            raise KisApiError(f"HTTP{resp.status_code}", "토큰 발급 거부") from None
+        try:
+            data = resp.json()
+            token = str(data["access_token"])
+            seconds = int(data.get("expires_in", 86400))
+        except (ValueError, KeyError, TypeError):
+            self._mark_failure(cache, now)
+            raise KisApiError("INVALID_JSON", "토큰 응답을 해석할 수 없습니다") from None
+        expires_at = now + timedelta(seconds=seconds)
+        self._write_cache({"access_token": token, "expires_at": expires_at.isoformat()})
+        logger.info("KIS 토큰 발급 (%s)", self.env)
+        return token
+
+    def _mark_failure(self, cache: dict, now: datetime) -> None:
+        self._write_cache(self._cache_payload(cache, failed_at=now.isoformat()))
+
+    def token(self) -> str:
+        cache = self._read_cache()
+        now = self._clock()
+        token = cache.get("token")
+        expires_at = cache.get("expires_at")
+        if token and expires_at and now < expires_at - REFRESH_MARGIN:
+            return token
+        try:
+            return self._issue(cache)
+        except KisApiError as e:
+            # 갱신 창 안의 실패: 아직 유효한 토큰이 있으면 그대로 쓴다.
+            if token and expires_at and now < expires_at:
+                logger.warning("토큰 갱신 실패(%s), 기존 토큰 사용: %s", self.env, e.msg_cd)
+                return token
+            raise
+
+    def headers(self) -> dict[str, str]:
+        return {
+            "authorization": f"Bearer {self.token()}",
+            "appkey": self._app_key,
+            "appsecret": self._app_secret,
+        }

@@ -1,0 +1,19 @@
+{
+  "rt_cd": "0",
+  "msg_cd": "MCA00000",
+  "msg1": "정상처리 되었습니다.",
+  "output": {
+    "stck_prpr": "71500",
+    "prdy_vrss": "500",
+    "prdy_vrss_sign": "2",
+    "prdy_ctrt": "0.70",
+    "acml_vol": "12345678",
+    "stck_oprc": "71000",
+    "stck_hgpr": "72000",
+    "stck_lwpr": "70800",
+    "w52_hgpr": "88000",
+    "w52_lwpr": "49900",
+    "per": "12.34",
+    "pbr": "1.23"
+  }
+}
