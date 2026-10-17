@@ -145,9 +145,19 @@ class ChannelsCfg(BaseModel):
     telegram: list[str] = Field(default_factory=list)
 
 
+class KisCfg(BaseModel):
+    """daily_days 는 high_52w_pos(252봉)·sma_120 워밍업을 위해 260 이상이어야 한다."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    daily_days: int = 260
+    investor_days: int = 20
+
+
 class SourcesConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    kis: KisCfg = Field(default_factory=KisCfg)
     news: NewsCfg = Field(default_factory=NewsCfg)
     macro: MacroCfg = Field(default_factory=MacroCfg)
     dart: ToggleCfg = Field(default_factory=ToggleCfg)

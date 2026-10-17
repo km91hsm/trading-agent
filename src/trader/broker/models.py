@@ -16,6 +16,7 @@ __all__ = [
     "Env",
     "InvestorFlow",
     "Market",
+    "OrderBook",
     "OrderRequest",
     "OrderResult",
     "Position",
@@ -55,6 +56,18 @@ class InvestorFlow(BaseModel):
     foreign_net: int
     institution_net: int
     individual_net: int
+
+
+class OrderBook(BaseModel):
+    """호가. asks/bids 는 1호가부터 (가격, 잔량) 순, 빈 호가는 제외."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    ticker: str
+    market: Market
+    asks: list[tuple[Decimal, int]]
+    bids: list[tuple[Decimal, int]]
+    asof: datetime
 
 
 class Position(BaseModel):

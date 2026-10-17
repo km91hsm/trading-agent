@@ -1,0 +1,16 @@
+{
+  "rt_cd": "0", "msg_cd": "MCA00000", "msg1": "정상",
+  "output1": {
+    "aspr_acpt_hour": "153000",
+    "askp1": "71600", "askp2": "71700", "askp3": "71800", "askp4": "71900", "askp5": "72000",
+    "askp6": "72100", "askp7": "72200", "askp8": "72300", "askp9": "72400", "askp10": "72500",
+    "bidp1": "71500", "bidp2": "71400", "bidp3": "71300", "bidp4": "71200", "bidp5": "71100",
+    "bidp6": "71000", "bidp7": "70900", "bidp8": "70800", "bidp9": "70700", "bidp10": "70600",
+    "askp_rsqn1": "100", "askp_rsqn2": "200", "askp_rsqn3": "300", "askp_rsqn4": "400", "askp_rsqn5": "500",
+    "askp_rsqn6": "600", "askp_rsqn7": "700", "askp_rsqn8": "800", "askp_rsqn9": "900", "askp_rsqn10": "1000",
+    "bidp_rsqn1": "110", "bidp_rsqn2": "210", "bidp_rsqn3": "310", "bidp_rsqn4": "410", "bidp_rsqn5": "510",
+    "bidp_rsqn6": "610", "bidp_rsqn7": "710", "bidp_rsqn8": "810", "bidp_rsqn9": "910", "bidp_rsqn10": "1010",
+    "total_askp_rsqn": "5500", "total_bidp_rsqn": "5600"
+  },
+  "output2": {"stck_prpr": "71500"}
+}

@@ -1,0 +1,16 @@
+{
+  "rt_cd": "0", "msg_cd": "MCA00000", "msg1": "정상",
+  "output1": {"rsym": "DNASAAPL", "zdiv": "4", "curr": "USD", "base": "225.12", "pvol": "1", "last": "227.55", "dymd": "20261008", "dhms": "155959", "bvol": "1", "avol": "1", "bdvl": "1", "advl": "1"},
+  "output2": {
+    "pask1": "227.5600", "vask1": "300", "pbid1": "227.5500", "vbid1": "250",
+    "pask2": "227.5700", "vask2": "400", "pbid2": "227.5400", "vbid2": "350",
+    "pask3": "227.5800", "vask3": "500", "pbid3": "227.5300", "vbid3": "450",
+    "pask4": "0", "vask4": "0", "pbid4": "0", "vbid4": "0",
+    "pask5": "0", "vask5": "0", "pbid5": "0", "vbid5": "0",
+    "pask6": "0", "vask6": "0", "pbid6": "0", "vbid6": "0",
+    "pask7": "0", "vask7": "0", "pbid7": "0", "vbid7": "0",
+    "pask8": "0", "vask8": "0", "pbid8": "0", "vbid8": "0",
+    "pask9": "0", "vask9": "0", "pbid9": "0", "vbid9": "0",
+    "pask10": "0", "vask10": "0", "pbid10": "0", "vbid10": "0"
+  }
+}

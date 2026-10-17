@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>"삼성전자" - Google 뉴스</title>
+    <item>
+      <title>삼성전자, 3분기 잠정실적 발표 - 연합뉴스</title>
+      <link>https://news.google.com/rss/articles/A1</link>
+      <guid isPermaLink="false">A1</guid>
+      <pubDate>Thu, 08 Oct 2026 23:10:00 GMT</pubDate>
+      <description>&lt;a href="x"&gt;삼성전자가 3분기 잠정실적을 발표했다&lt;/a&gt;&amp;nbsp;&amp;nbsp;연합뉴스</description>
+      <source url="https://www.yna.co.kr">연합뉴스</source>
+    </item>
+    <item>
+      <title>삼성전자 신제품 공개 - 한국경제</title>
+      <link>https://news.google.com/rss/articles/A2</link>
+      <guid isPermaLink="false">A2</guid>
+      <pubDate>Fri, 09 Oct 2026 09:00:00 GMT</pubDate>
+      <description>미래 기사</description>
+      <source url="https://www.hankyung.com">한국경제</source>
+    </item>
+    <item>
+      <title>삼성전자, 3분기 잠정실적 발표 - 연합뉴스</title>
+      <link>https://news.google.com/rss/articles/A1</link>
+      <guid isPermaLink="false">A1-dup</guid>
+      <pubDate>Thu, 08 Oct 2026 23:10:00 GMT</pubDate>
+      <description>중복</description>
+      <source url="https://www.yna.co.kr">연합뉴스</source>
+    </item>
+  </channel>
+</rss>

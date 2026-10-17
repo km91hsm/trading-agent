@@ -1,6 +1,10 @@
 # 수집 소스 on/off. 키를 추가하면 src/trader/config.py 의 SourcesConfig 도 함께 바꾼다.
 # 기본값은 스펙 §0.3 정책: robots·약관이 허용하는 소스만 on. off 소스를 켜는 책임은 사용자에게 있다.
 
+kis:
+  daily_days: 260      # high_52w_pos(252봉)·sma_120 워밍업 때문에 260 미만이면 지표가 None 이 된다
+  investor_days: 20
+
 news:
   enabled: true
   google_rss: true     # 키 불필요

@@ -1,0 +1,9 @@
+{
+  "rt_cd": "0", "msg_cd": "MCA00000", "msg1": "정상",
+  "output1": {"stck_prpr": "71500", "hts_kor_isnm": "삼성전자"},
+  "output2": [
+    {"stck_bsop_date": "20261008", "stck_cntg_hour": "153000", "stck_prpr": "71500", "stck_oprc": "71400", "stck_hgpr": "71600", "stck_lwpr": "71300", "cntg_vol": "12000", "acml_tr_pbmn": "1"},
+    {"stck_bsop_date": "20261008", "stck_cntg_hour": "152900", "stck_prpr": "71400", "stck_oprc": "71300", "stck_hgpr": "71500", "stck_lwpr": "71200", "cntg_vol": "8000", "acml_tr_pbmn": "1"},
+    {"stck_bsop_date": "20261008", "stck_cntg_hour": "152800", "stck_prpr": "71300", "stck_oprc": "71300", "stck_hgpr": "71400", "stck_lwpr": "71200", "cntg_vol": "5000", "acml_tr_pbmn": "1"}
+  ]
+}

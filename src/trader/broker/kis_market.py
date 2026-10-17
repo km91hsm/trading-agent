@@ -12,15 +12,17 @@ from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from trader.broker.errors import KisApiError
 from trader.broker.kis_client import KisClient
-from trader.broker.models import Candle, Quote
+from trader.broker.models import Candle, InvestorFlow, OrderBook, Quote
 from trader.broker.tr_ids import path
 from trader.platform import paths
 
 logger = logging.getLogger("trader.kis")
 
+_KST = ZoneInfo("Asia/Seoul")
 PAGE_SIZE = 100
 MAX_PAGES = 10  # 일봉 상한 약 1,000봉
 HOLIDAY_CACHE_DAYS = 7
@@ -99,12 +101,174 @@ class KisMarket:
             asof=self._now(),
         )
 
+    def get_index_kr(self, code: str = "0001") -> Quote:
+        """업종 지수 (0001 KOSPI, 1001 KOSDAQ, 2001 KOSPI200)."""
+        data = self._client.get(
+            path("DOM_INDEX"),
+            "DOM_INDEX",
+            {"FID_COND_MRKT_DIV_CODE": "U", "FID_INPUT_ISCD": code},
+        )
+        out = data.get("output") or {}
+        return Quote(
+            ticker=code,
+            market="KR",
+            price=_dec(out.get("bstp_nmix_prpr")),
+            change_pct=float(_dec(out.get("bstp_nmix_prdy_ctrt"))) / 100,
+            volume=_int(out.get("acml_vol")),
+            asof=self._now(),
+        )
+
+    def get_name_kr(self, ticker: str) -> str | None:
+        """종목명 (일봉 API output1.hts_kor_isnm). DART 가 죽었을 때의 폴백."""
+        today = self._now().astimezone(_KST).date()
+        data = self._client.get(
+            path("DOM_DAILY"),
+            "DOM_DAILY",
+            {
+                "FID_COND_MRKT_DIV_CODE": "J",
+                "FID_INPUT_ISCD": ticker,
+                "FID_INPUT_DATE_1": (today - timedelta(days=7)).strftime("%Y%m%d"),
+                "FID_INPUT_DATE_2": today.strftime("%Y%m%d"),
+                "FID_PERIOD_DIV_CODE": "D",
+                "FID_ORG_ADJ_PRC": "0",
+            },
+        )
+        name = str((data.get("output1") or {}).get("hts_kor_isnm", "")).strip()
+        return name or None
+
+    # --- 분봉 -----------------------------------------------------------------
+
+    def get_minute_kr(self, ticker: str) -> list[Candle]:
+        """당일 분봉 (KIS 는 기준 시각부터 과거 30건). 시간 오름차순으로 돌려준다."""
+        now_kst = self._now().astimezone(_KST)
+        data = self._client.get(
+            path("DOM_MINUTE"),
+            "DOM_MINUTE",
+            {
+                "FID_ETC_CLS_CODE": "",
+                "FID_COND_MRKT_DIV_CODE": "J",
+                "FID_INPUT_ISCD": ticker,
+                "FID_INPUT_HOUR_1": now_kst.strftime("%H%M%S"),
+                "FID_PW_DATA_INCU_YN": "N",
+            },
+        )
+        candles = [
+            Candle(
+                date=_ymd(str(r["stck_bsop_date"])),
+                open=_dec(r.get("stck_oprc")),
+                high=_dec(r.get("stck_hgpr")),
+                low=_dec(r.get("stck_lwpr")),
+                close=_dec(r.get("stck_prpr")),
+                volume=_int(r.get("cntg_vol")),
+                time=str(r.get("stck_cntg_hour", "")),
+            )
+            for r in _rows(data.get("output2"))
+            if r.get("stck_bsop_date")
+        ]
+        return sorted(candles, key=lambda c: (c.date, c.time or ""))
+
+    def get_minute_us(self, symbol: str, exchange: str, *, count: int = 120) -> list[Candle]:
+        data = self._client.get(
+            path("OVS_MINUTE"),
+            "OVS_MINUTE",
+            {
+                "AUTH": "",
+                "EXCD": exchange,
+                "SYMB": symbol,
+                "NMIN": "1",
+                "PINC": "1",
+                "NEXT": "",
+                "NREC": str(count),
+                "FILL": "",
+                "KEYB": "",
+            },
+        )
+        candles = [
+            Candle(
+                date=_ymd(str(r["xymd"])),
+                open=_dec(r.get("open")),
+                high=_dec(r.get("high")),
+                low=_dec(r.get("low")),
+                close=_dec(r.get("last")),
+                volume=_int(r.get("evol")),
+                time=str(r.get("xhms", "")),
+            )
+            for r in _rows(data.get("output2"))
+            if r.get("xymd")
+        ]
+        return sorted(candles, key=lambda c: (c.date, c.time or ""))
+
+    # --- 호가 -----------------------------------------------------------------
+
+    @staticmethod
+    def _levels(out: dict, price_key: str, qty_key: str) -> list[tuple[Decimal, int]]:
+        levels: list[tuple[Decimal, int]] = []
+        for i in range(1, 11):
+            price = _dec(out.get(f"{price_key}{i}"))
+            qty = _int(out.get(f"{qty_key}{i}"))
+            if price <= 0 and qty <= 0:
+                continue
+            levels.append((price, qty))
+        return levels
+
+    def get_orderbook_kr(self, ticker: str) -> OrderBook:
+        data = self._client.get(
+            path("DOM_ORDERBOOK"),
+            "DOM_ORDERBOOK",
+            {"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": ticker},
+        )
+        out = data.get("output1") or {}
+        return OrderBook(
+            ticker=ticker,
+            market="KR",
+            asks=self._levels(out, "askp", "askp_rsqn"),
+            bids=self._levels(out, "bidp", "bidp_rsqn"),
+            asof=self._now(),
+        )
+
+    def get_orderbook_us(self, symbol: str, exchange: str) -> OrderBook:
+        data = self._client.get(
+            path("OVS_ORDERBOOK"),
+            "OVS_ORDERBOOK",
+            {"AUTH": "", "EXCD": exchange, "SYMB": symbol},
+        )
+        out = data.get("output2") or {}
+        return OrderBook(
+            ticker=symbol,
+            market="US",
+            asks=self._levels(out, "pask", "vask"),
+            bids=self._levels(out, "pbid", "vbid"),
+            asof=self._now(),
+        )
+
+    # --- 투자자동향 -------------------------------------------------------------
+
+    def get_investor_kr(self, ticker: str, days: int = 20) -> list[InvestorFlow]:
+        """투자자별 일별 순매수 (KIS 는 최근 30영업일, 최신→과거). 날짜 오름차순."""
+        data = self._client.get(
+            path("DOM_INVESTOR"),
+            "DOM_INVESTOR",
+            {"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": ticker},
+        )
+        flows = [
+            InvestorFlow(
+                date=_ymd(str(r["stck_bsop_date"])),
+                foreign_net=_int(r.get("frgn_ntby_qty")),
+                institution_net=_int(r.get("orgn_ntby_qty")),
+                individual_net=_int(r.get("prsn_ntby_qty")),
+            )
+            for r in _rows(data.get("output"))
+            if r.get("stck_bsop_date")
+        ]
+        flows.sort(key=lambda f: f.date)
+        return flows[-days:] if days > 0 else flows
+
     # --- 일봉 -----------------------------------------------------------------
 
     def get_daily_kr(self, ticker: str, days: int = 250) -> list[Candle]:
         """KIS 는 호출당 최신 100봉(최신→과거)을 주므로 종료일을 뒤로 밀며 페이징한다."""
         by_date: dict[date, Candle] = {}
-        end = self._now().astimezone().date()
+        end = self._now().astimezone(_KST).date()
         for _ in range(MAX_PAGES):
             if len(by_date) >= days:
                 break

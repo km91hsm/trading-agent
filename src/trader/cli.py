@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import sys
-from datetime import datetime
+from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
 import typer
@@ -17,6 +17,7 @@ from trader.broker.kis_market import KisMarket
 from trader.logging_setup import configure
 from trader.notify.telegram import make_notifier
 from trader.platform import paths
+from trader.sources.inputs import InputDeps, collect_and_save
 
 app = typer.Typer(help="LLM 멀티 에이전트 주식 자동매매", no_args_is_help=True)
 kis_app = typer.Typer(help="KIS 브로커 도구", no_args_is_help=True)
@@ -162,6 +163,129 @@ def kis_ping(
     typer.echo(f"실패 {failures}건")
     if failures:
         raise typer.Exit(code=1)
+
+
+def _build_input_deps(secrets: config.Secrets, cfg: config.SourcesConfig) -> InputDeps:
+    """수집용 클라이언트를 조립한다. 시세 클라이언트를 못 만들면 해당 절만 건너뛴다."""
+    from trader.sources.dart import DartClient
+    from trader.sources.edgar import EdgarClient
+
+    cache = paths.state_dir() / "cache"
+    try:
+        market = _build_market(secrets)
+    except Exception as e:  # noqa: BLE001
+        logging.getLogger("trader.sources").warning("시세 클라이언트 생성 실패: %s", e)
+        market = None
+    dart = DartClient(secrets.DART_API_KEY, cache) if secrets.DART_API_KEY else None
+    edgar = EdgarClient(cfg.edgar.user_agent, cache) if cfg.edgar.enabled else None
+    return InputDeps(market=market, dart=dart, edgar=edgar)
+
+
+@app.command("collect")
+def collect(
+    ticker: str = typer.Option(..., "--ticker", help="종목코드/심볼"),
+    market: str = typer.Option("KR", "--market", help="KR 또는 US"),
+    exchange: str | None = typer.Option(None, "--exchange", help="미국 거래소 코드 (NAS/NYS/AMS)"),
+    asof: str | None = typer.Option(
+        None, "--asof", help="기준 시각 ISO8601 (기본: 현재 UTC, 24시간 넘은 과거는 거부)"
+    ),
+    force: bool = typer.Option(False, "--force", help="기존 00_inputs 를 덮어씀"),
+) -> None:
+    """종목의 00_inputs.json 을 수집·저장한다. 일부 절 실패는 정상(exit 0)."""
+    import json
+
+    try:
+        configure(paths.state_dir())
+        if market not in ("KR", "US"):
+            raise config.ConfigError(f"시장은 KR 또는 US 여야 합니다: {market}")
+        cfg = config.load_sources()
+        secrets = config.load_secrets()
+        when = datetime.fromisoformat(asof) if asof else datetime.now(UTC)
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=UTC)
+        deps = _build_input_deps(secrets, cfg)
+        path = collect_and_save(
+            ticker=ticker,
+            market=market,
+            exchange=exchange,
+            asof=when,
+            cfg=cfg,  # type: ignore[arg-type]
+            secrets=secrets,
+            deps=deps,
+            force=force,
+        )
+        errors = json.loads(path.read_text(encoding="utf-8")).get("errors", [])
+    except (config.ConfigError, paths.ProjectRootNotFound, ValueError) as e:
+        typer.echo(f"오류: {e}", err=True)
+        raise typer.Exit(code=1) from e
+    typer.echo(f"저장: {path}")
+    for e in errors:
+        typer.echo(f"  - {e}")
+    typer.echo(f"오류 절 {len(errors)}건")
+
+
+features_app = typer.Typer(help="피처 스토어", no_args_is_help=True)
+app.add_typer(features_app, name="features")
+
+
+def _build_dart(secrets: config.Secrets):
+    from trader.sources.dart import DartClient
+
+    cache = paths.state_dir() / "cache"
+    return DartClient(secrets.DART_API_KEY, cache) if secrets.DART_API_KEY else None
+
+
+def _run_features(action: str, market: str | None, **kwargs) -> None:
+    from trader.ml import features
+
+    try:
+        configure(paths.state_dir())
+        secrets = config.load_secrets()
+        universe = config.load_universe()
+        markets = [market] if market else ["KR", "US"]
+        if any(m not in ("KR", "US") for m in markets):
+            raise config.ConfigError(f"시장은 KR 또는 US 여야 합니다: {market}")
+        market_client = _build_market(secrets)
+        dart = _build_dart(secrets)
+        fn = features.backfill if action == "backfill" else features.snapshot
+        n = fn(
+            market_client=market_client,
+            dart=dart,
+            universe=universe,
+            markets=markets,  # type: ignore[arg-type]
+            progress=lambda s: typer.echo(f"  {s}"),
+            **kwargs,
+        )
+    except (config.ConfigError, paths.ProjectRootNotFound) as e:
+        typer.echo(f"오류: {e}", err=True)
+        raise typer.Exit(code=1) from e
+    except Exception as e:  # noqa: BLE001 - 시세 클라이언트 생성 실패 등
+        typer.echo(f"오류: {type(e).__name__}: {e}", err=True)
+        raise typer.Exit(code=1) from e
+    typer.echo(f"{action}: {n}행 저장")
+
+
+@features_app.command("snapshot")
+def features_snapshot(
+    market: str | None = typer.Option(None, "--market", help="KR 또는 US (기본: 둘 다)"),
+    asof: str | None = typer.Option(
+        None, "--asof", help="기준 시각 ISO8601 (24시간 넘은 과거는 거부)"
+    ),
+) -> None:
+    """유니버스 전체의 오늘 피처 행을 저장한다."""
+    when = datetime.fromisoformat(asof) if asof else None
+    if when is not None and when.tzinfo is None:
+        when = when.replace(tzinfo=UTC)
+    _run_features("snapshot", market, asof=when)
+
+
+@features_app.command("backfill")
+def features_backfill(
+    years: int = typer.Option(3, "--years", help="과거 적재 연수 (최대 약 4년=1000봉)"),
+    market: str | None = typer.Option(None, "--market", help="KR 또는 US (기본: 둘 다)"),
+) -> None:
+    """유니버스 전체의 과거 피처를 재구성해 저장한다."""
+    _run_features("backfill", market, years=years)
 
 
 @app.command("notify-test")

@@ -23,16 +23,19 @@
 - [x] 완료 기준(실기): `uv run trader notify-test` 로 텔레그램 수신 확인 (2026-10-09 확인)
 
 ## Phase 2 수집
-- [ ] KisMarket 분봉·호가·투자자동향·지수 조회 + tr_id 추가 (Phase 1 이연)
-- [ ] indicators (SMA·RSI·MACD·KDJ·볼린저·ATR·ROC·거래량 Z·52주 위치)
-- [ ] dart, edgar 수집기 (공통 비율 키)
-- [ ] news (구글 RSS·네이버 API), macro (FRED·ECOS·KIS 지수) 수집기
-- [ ] community 수집기: Reddit·클리앙 기본 on, DC·에펨코리아 구현하되 off, 세이브티커 비활성 자리
-- [ ] 00_inputs 조립 (섹션 격리·received_at·asof 필터) + `collect` 명령
-- [ ] 피처 스토어 + 3년 과거 적재
-- [ ] 완료 기준: 1종목 00_inputs.json, state/features/ parquet, 수집기 단위테스트
+- [x] KisMarket 분봉·호가·투자자동향·지수 조회 + tr_id 추가 (Phase 1 이연)
+- [x] indicators (SMA·RSI·MACD·KDJ·볼린저·ATR·ROC·거래량 Z·52주 위치)
+- [x] dart, edgar 수집기 (공통 비율 키)
+- [x] news (구글 RSS·네이버 API), macro (FRED·ECOS·KIS 지수) 수집기
+- [x] community 수집기: Reddit·클리앙 기본 on, DC·에펨코리아 구현하되 off, 세이브티커 비활성 자리
+- [x] 00_inputs 조립 (섹션 격리·received_at·asof 필터) + `collect` 명령
+- [x] 피처 스토어 + 3년 과거 적재
+- [x] 완료 기준: 1종목 00_inputs.json, state/features/ parquet, 수집기 단위테스트 (2026-10-09 확인: 005930·AAPL 수집, KR 1년 백필 5,040행. DART 는 점검(800)으로 절 오류 기록, 네이버 뉴스 API 는 401)
+- [ ] 사용자 확인 대기: 네이버 검색 API 키가 401 — 애플리케이션에 '검색' API 권한이 있는지, 키 값이 맞는지 확인 후 `uv run trader collect --ticker 005930 --force` 재실행
+- [ ] 사용자 확인 대기: DART 점검 종료 후 `collect`·`features backfill --years 3` 재실행으로 재무비율 적재
 
 ## Phase 3 에이전트
+- [ ] fundamental 입력 확장: DART 3개년 추세 + 최근 분기 재무, CFS 없으면 OFS 폴백, `inputs.SCHEMA_VERSION` 2 (Phase 2 이연, 스펙 §3.1)
 - [ ] `tool` CLI 4개 (collect·checkpoint·submit-decision·status) + 전제조건 검증
 - [ ] 출력 스키마 (AnalystReport·DebateTurn·Decision·CallMeta)
 - [ ] `.claude/agents/` md 8개 (orchestrator·analyst×4·researcher×2·trader)
@@ -67,13 +70,17 @@
 - [ ] daemon (APScheduler + web 동시 실행, 단일 인스턴스 잠금, 휴장일 건너뜀)
 - [ ] install (launchd / Windows 작업 스케줄러, 파이썬 템플릿)
 - [ ] YouTube 자막·텔레그램 채널 수집, manual_inputs, UI 실시간
-- [ ] KRX 공매도·대차잔고, 검색트렌드
-- [ ] 토스증권·네이버 종목토론실 API 조사 후 구현 여부 결정
+- [ ] KRX 공매도·대차잔고, 검색트렌드 (Phase 2 이연)
+- [ ] 토스증권·네이버 종목토론실 API 조사 후 구현 여부 결정 (Phase 2 이연)
+- [ ] 7일 이벤트 캘린더 소스 확정 (Phase 2 이연, 현재 `events` 없음)
+- [ ] Reddit 429 대응: OAuth API 전환 + User-Agent 를 Reddit 형식(`<platform>:<app>:<ver> (by /u/<user>)`)으로 (Phase 2 이연)
+- [ ] 커뮤니티 키워드 매칭을 ASCII 티커는 단어 경계로 (짧은 티커 과잉 매칭, Phase 2 이연)
+- [ ] 공시 조회 종료일을 KST 기준으로, `collect` 가 기존 파일 건너뜀을 표시, 미래 asof 거부 (Phase 2 이연)
 - [ ] 완료 기준: 평일 자동 1주 무사고, 트리거→재평가→계좌별 주문, Windows 에서 install 후 로그온 시 데몬 기동 확인
 
 ## Phase 7 ML 1단계
 - [ ] features/dataset/labels (라벨 엠바고)
-- [ ] 피처 스토어 news_count·community_count 집계, US 비율(EDGAR)
+- [ ] 피처 스토어 news_count·community_count 집계, US 연도별 비율(EDGAR), 동종업 중앙값 대비 비율 (Phase 2 이연)
 - [ ] quant 모델 + ranker (LightGBM)
 - [ ] 워크포워드 비중첩 평가 + 라벨 누출 역검증 테스트
 - [ ] registry
