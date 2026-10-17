@@ -338,7 +338,7 @@ def _scan_body(deps: DaemonDeps, market: str) -> dict:
     ml = ranker.current(deps.state)
     conn = deps.conn_factory()
     try:
-        runtime_watch = control.get_watchlist(conn)
+        runtime_watch = control.get_watchlist(conn, market=market)
         cands = quant.candidates(
             universe,
             market,

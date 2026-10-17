@@ -1177,12 +1177,12 @@ def scan(
         conn = db.connect()
         db.init_schema(conn)
         try:
-            watch = [*universe.watch, *control.get_watchlist(conn)]
+            watch = [*universe.watch, *control.get_watchlist(conn, market=market)]
             cands = quant.candidates(
                 universe,
                 market,
                 rank_fn=ml[0] if ml else None,  # type: ignore[arg-type]
-                watch_extra=control.get_watchlist(conn),
+                watch_extra=control.get_watchlist(conn, market=market),
             )
             cap_hit = dry_run or tools.sessions_today(conn, when) >= settings.llm.daily_session_cap
             brokers = {b.account.id: b for b in _build_brokers(secrets, accounts)}

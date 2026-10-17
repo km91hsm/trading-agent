@@ -30,3 +30,12 @@ def test_real_auto_requires_confirm(conn):
 def test_unknown_mode_rejected(conn):
     with pytest.raises(ValueError):
         control.set_account_mode(conn, make_account("p", "paper", "auto"), "yolo")
+
+
+def test_watchlist_market_filter(conn):
+    control.set_watchlist(conn, ["005930", "aapl", "US:BRK.B", "kr:000660"])
+    assert control.get_watchlist(conn, market="KR") == ["005930", "000660"]
+    assert control.get_watchlist(conn, market="US") == ["AAPL", "BRK.B"]
+    assert control.get_watchlist(conn) == ["005930", "AAPL", "US:BRK.B", "KR:000660"]
+    with pytest.raises(ValueError):
+        control.set_watchlist(conn, ["JP:7203"])

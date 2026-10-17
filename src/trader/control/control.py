@@ -31,13 +31,28 @@ def set_flag(conn: sqlite3.Connection, key: str, value: Any) -> None:
     conn.commit()
 
 
-_TICKER_RE = re.compile(r"^[A-Z0-9.\-]{1,12}$")
+_TICKER_RE = re.compile(r"^(?:(?:KR|US):)?[A-Z0-9.\-]{1,12}$")  # 선택적 시장 접두사
+_KR_CODE_RE = re.compile(r"^\d{6}$")
 
 
-def get_watchlist(conn: sqlite3.Connection) -> list[str]:
-    """런타임 관심종목(`/watch`, 웹). universe.watch 와 합쳐 scan 후보·분석 대상에 들어간다."""
+def _split_market(item: str) -> tuple[str, str]:
+    """`KR:005930` → ("KR", "005930"); 접두사가 없으면 6자리 숫자는 KR, 그 외 US."""
+    if ":" in item:
+        m, t = item.split(":", 1)
+        return m, t
+    return ("KR" if _KR_CODE_RE.match(item) else "US"), item
+
+
+def get_watchlist(conn: sqlite3.Connection, market: str | None = None) -> list[str]:
+    """런타임 관심종목(`/watch`, 웹). universe.watch 와 합쳐 scan 후보·분석 대상에 들어간다.
+
+    market 을 주면 그 시장 종목만 접두사 없이 돌려준다(접두사 없는 항목은 코드 형식으로 추정).
+    """
     v = get_flag(conn, "watchlist", [])
-    return [str(t) for t in v] if isinstance(v, list) else []
+    items = [str(t) for t in v] if isinstance(v, list) else []
+    if market is None:
+        return items
+    return [t for m, t in (_split_market(i) for i in items) if m == market]
 
 
 def set_watchlist(conn: sqlite3.Connection, tickers: list[str]) -> list[str]:

@@ -90,3 +90,10 @@ def test_scan_includes_runtime_watchlist(project):
     ids = [c["ticker"] for c in cands]
     assert "000007" in ids and "777777" in ids and "000003" not in ids
     assert [c for c in cands if c["ticker"] == "000007"][0]["score"] is not None
+
+
+def test_score_drops_rows_with_nan_signal():
+    df = _df()
+    df.loc[df["ticker"] == "T05", "roc_10"] = float("nan")
+    out = quant.score(df)
+    assert "T05" not in set(out["ticker"]) and out["score"].notna().all()
