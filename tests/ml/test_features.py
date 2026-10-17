@@ -258,3 +258,10 @@ def test_latest_rows_fills_columns_missing_in_old_files(project):
     df = features.latest_rows(None, "KR")
     assert list(df.columns) == list(features.FEATURE_COLUMNS)
     assert pd.isna(df["sma_5_rel"].iloc[0])
+
+
+def test_latest_rows_keeps_feature_dtypes(project):
+    features.write_rows(_rows("2026-10-01", ["A", "B"]))
+    df = features.latest_rows(None, "KR")
+    assert str(df["sma_5"].dtype) == "Float64" and str(df["close"].dtype) == "float64"
+    assert str(df["volume"].dtype) == "int64"

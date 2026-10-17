@@ -58,8 +58,7 @@ def watchlist_change(request: Request, body: WatchBody) -> dict:
             if body.action == "add":
                 out = control.set_watchlist(conn, [*current, body.ticker])
             else:
-                u = body.ticker.strip().upper()
-                out = control.set_watchlist(conn, [t for t in current if t != u])
+                out = control.remove_watch(conn, body.ticker)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
         return {"tickers": out}

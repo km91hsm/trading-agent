@@ -116,6 +116,7 @@
 - [x] Phase 7 이연(리뷰, Phase 8 회수): close 대비 비율 피처 `sma_5/20/60_rel·bb_pos·atr_pct·macd_hist_rel` 추가(옛 parquet 행은 NaN → `features backfill` 재실행 후 `ml train`). 중요도는 마지막 폴드 홀드아웃 기준
 - [x] Phase 7 이연: `features snapshot` 은 데몬 reflect 잡 앞에서 매일 실행(`DaemonDeps.snapshot_fn`, 실패는 통보). 재학습은 사용자 실기(`features backfill --years 3` → `ml train`)
 - [ ] 사용자 확인 대기: 3년 백필(`uv run trader features backfill --years 3`, DART 정상 시) 후 `ml train` 재실행 — 1년·20종목으로는 기준선을 못 넘음. 승격 전까지 05_quant·ML 랭킹은 비활성
+- [ ] 리뷰 Minor 이연(이연 회수 플랜): stale running 정리는 상태 표시·오류율 정확성용(세션 상한 `sessions_today` 는 created_at 기준이라 그대로), 신호 결측으로 제외된 종목이 `candidates` 에서 "피처 없음" 으로 표시, `scan --asof` 가 `latest_features` 에 전달되지 않음(과거 asof 스캔은 최신 파일)
 - [ ] Phase 7 이연 유지(별도 Phase·사용자 결정): US 연도별 재무비율·동종업 중앙값 비율(데이터 설계 필요), 피처 행 탐색 UI, 하이퍼파라미터 탐색
 
 ## Phase 8 학습·평가·보정

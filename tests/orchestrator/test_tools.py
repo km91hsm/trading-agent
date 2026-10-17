@@ -2,6 +2,7 @@ import json
 from datetime import date
 from decimal import Decimal
 
+import pandas as pd
 import pytest
 from helpers_agents import ok_decision, ok_report, ok_turn
 from helpers_sources import T0
@@ -931,7 +932,6 @@ def test_record_memory_decided_at_follows_run_date(ctx, project):
     # now 는 2026-10-09T01:00Z(KST 10-09) 이고 run date 가 10-09 → now 그대로;
     # run date 가 10-01 이면 그날 15:30 KST = 06:30Z
     from trader.ledger import repo
-    from trader.memory import store
 
     dec = Decision(**ok_decision())
     for d in (date(2026, 10, 9), date(2026, 10, 1)):
@@ -944,7 +944,6 @@ def test_record_memory_decided_at_follows_run_date(ctx, project):
         T0.isoformat(),
         "2026-10-01T06:30:00+00:00",
     ]
-    assert len(store.retrieve.__name__) > 0  # import 사용
 
 
 def test_market_dir_helper_creates_dir(project):
@@ -953,3 +952,41 @@ def test_market_dir_helper_creates_dir(project):
     d = run_store.market_dir(date(2026, 10, 9), "KR", None, create=True)
     assert d.is_dir() and d.name == "KR" and d.parent.name == "2026-10-09"
     assert not run_store.market_dir(date(2026, 10, 10), "US", None).exists()
+
+
+def test_ensure_calibration_query_vector_uses_run_date(ctx, project, monkeypatch):
+    from helpers_memory import seed_matured
+
+    from trader.calibration import model as cal
+    from trader.memory import vector as vec
+    from trader.ml import features as feat
+
+    _inputs(project)
+    seed_matured(ctx.conn, 60)
+    rows = []
+    for day, roc in ((date(2026, 10, 1), 1.0), (date(2026, 10, 20), 9.0)):
+        rows.append(
+            {
+                "date": day,
+                "ticker": "005930",
+                "market": "KR",
+                "close": 100.0,
+                "volume": 1,
+                "roc_10": roc,
+            }
+        )
+    df = pd.DataFrame(rows)
+    for c in feat.FEATURE_COLUMNS:
+        if c not in df.columns:
+            df[c] = float("nan")
+    feat.write_rows(df[feat.FEATURE_COLUMNS])
+    seen = {}
+    real = cal.build_calibration
+
+    def spy(conn, **kw):
+        seen["qv"] = kw["query_vector"]
+        return real(conn, **kw)
+
+    monkeypatch.setattr(cal, "build_calibration", spy)
+    tools.ensure_calibration(ctx, ticker="005930", market="KR", date=date(2026, 10, 5))
+    assert seen["qv"][0] == vec.situation_vector({"roc_10": 1.0, "close": 100.0}, "KR")[0]

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import Callable
 from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
@@ -101,7 +102,12 @@ def hit_rates(df: pd.DataFrame, *, query_vector: list[float] | None, k: int = 20
 
 
 def build_calibration(
-    conn: sqlite3.Connection, *, min_decisions: int, query_vector: list[float] | None, asof: str
+    conn: sqlite3.Connection,
+    *,
+    min_decisions: int,
+    query_vector: list[float] | None,
+    asof: str,
+    now: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> dict | None:
     n = int(
         conn.execute(
@@ -116,13 +122,19 @@ def build_calibration(
         report = schemas.CalibrationReport(
             asof=asof, n_decisions=n, active=True, min_decisions=min_decisions, roles=roles
         ).model_dump()
-    created = datetime.now(UTC).isoformat()
-    # 같은 날(UTC) 행이 있으면 갱신: 종목마다 1행씩 쌓이지 않도록 하루 1행
+    created_dt = now().astimezone(UTC)
+    created = created_dt.isoformat()
+    # 같은 KST 날짜 행이 있으면 갱신: 종목마다 1행씩 쌓이지 않도록 하루 1행
+    kst_day = created_dt.astimezone(_KST).date().isoformat()
     existing = conn.execute(
-        "SELECT id FROM calibration_runs WHERE substr(created_at, 1, 10)=? "
-        "ORDER BY id DESC LIMIT 1",
-        (created[:10],),
+        "SELECT id, created_at FROM calibration_runs ORDER BY id DESC LIMIT 1"
     ).fetchone()
+    if existing is not None:
+        prev_day = (
+            datetime.fromisoformat(existing["created_at"]).astimezone(_KST).date().isoformat()
+        )
+        if prev_day != kst_day:
+            existing = None
     if existing:
         conn.execute(
             "UPDATE calibration_runs SET created_at=?, n_decisions=?, active=?, json=? WHERE id=?",

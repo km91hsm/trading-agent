@@ -172,7 +172,8 @@ def latest_rows(
     if not seen:
         return pd.DataFrame(columns=FEATURE_COLUMNS)
     out = pd.DataFrame(list(seen.values())).reset_index(drop=True)
-    return out.sort_values("ticker").reset_index(drop=True)
+    # 행 단위 재조립은 nullable 열을 object 로 바꾸므로 피처 스토어 dtype 계약으로 되돌린다
+    return _coerce(out.sort_values("ticker").reset_index(drop=True))
 
 
 def write_rows(df: pd.DataFrame, state: Path | None = None) -> list[Path]:

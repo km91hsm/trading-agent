@@ -39,3 +39,13 @@ def test_watchlist_market_filter(conn):
     assert control.get_watchlist(conn) == ["005930", "AAPL", "US:BRK.B", "KR:000660"]
     with pytest.raises(ValueError):
         control.set_watchlist(conn, ["JP:7203"])
+
+
+def test_watchlist_canonical_and_remove(conn):
+    assert control.set_watchlist(conn, ["005930", "KR:005930", "aapl", "US:AAPL"]) == [
+        "005930",
+        "AAPL",
+    ]
+    assert control.remove_watch(conn, "005930") == ["AAPL"]
+    control.set_watchlist(conn, ["KR:000660"])
+    assert control.remove_watch(conn, "000660") == []  # 접두사 없는 요청으로 접두사 항목 제거

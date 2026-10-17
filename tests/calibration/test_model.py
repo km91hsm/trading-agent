@@ -81,3 +81,21 @@ def test_build_calibration_one_row_per_day(conn):
             conn, min_decisions=1, query_vector=None, asof="2026-10-17T00:00:00+00:00"
         )
     assert conn.execute("SELECT COUNT(*) FROM calibration_runs").fetchone()[0] == 1
+
+
+def test_build_calibration_day_key_is_kst(conn):
+    seed_matured(conn, 3)
+    # 10-17 23:30Z = 10-18 08:30 KST, 10-18 02:00Z = 10-18 11:00 KST → 같은 KST 날: 1행
+    for now in (datetime(2026, 10, 17, 23, 30, tzinfo=UTC), datetime(2026, 10, 18, 2, tzinfo=UTC)):
+        model.build_calibration(
+            conn, min_decisions=1, query_vector=None, asof=now.isoformat(), now=lambda n=now: n
+        )
+    assert conn.execute("SELECT COUNT(*) FROM calibration_runs").fetchone()[0] == 1
+    model.build_calibration(
+        conn,
+        min_decisions=1,
+        query_vector=None,
+        asof="x",
+        now=lambda: datetime(2026, 10, 17, 10, tzinfo=UTC),  # 10-17 19:00 KST → 다른 날
+    )
+    assert conn.execute("SELECT COUNT(*) FROM calibration_runs").fetchone()[0] == 2

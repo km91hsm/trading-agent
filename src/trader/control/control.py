@@ -56,16 +56,36 @@ def get_watchlist(conn: sqlite3.Connection, market: str | None = None) -> list[s
 
 
 def set_watchlist(conn: sqlite3.Connection, tickers: list[str]) -> list[str]:
-    """형식 검증(영숫자·.·- 12자 이내, 대문자화)·중복 제거 후 저장하고 결과를 돌려준다."""
+    """형식 검증(영숫자·.·- 12자 이내, 선택적 `KR:`/`US:` 접두사, 대문자화) 후 저장.
+
+    같은 (시장, 종목) 은 처음 쓴 표기 하나만 남긴다(`005930` 과 `KR:005930` 은 같은 항목).
+    """
     out: list[str] = []
+    keys: set[tuple[str, str]] = set()
     for t in tickers:
         u = str(t).strip().upper()
         if not _TICKER_RE.match(u):
             raise ValueError(f"잘못된 종목코드: {t}")
-        if u not in out:
+        key = _split_market(u)
+        if key not in keys:
+            keys.add(key)
             out.append(u)
     set_flag(conn, "watchlist", out)
     return out
+
+
+def remove_watch(conn: sqlite3.Connection, ticker: str) -> list[str]:
+    """접두사 유무와 무관하게 같은 종목을 제거한다 (`000660` 으로 `KR:000660` 도 지움)."""
+    u = str(ticker).strip().upper()
+    _, want = _split_market(u)
+    market = u.split(":", 1)[0] if ":" in u else None
+    keep = []
+    for item in get_watchlist(conn):
+        m, t = _split_market(item)
+        if t == want and (market is None or m == market):
+            continue
+        keep.append(item)
+    return set_watchlist(conn, keep)
 
 
 def is_paused(conn: sqlite3.Connection) -> bool:

@@ -222,7 +222,7 @@ def ensure_calibration(ctx: ToolContext, *, ticker: str, market: Market, date: d
         cfg = load_ml().models.calibration
         if not cfg.enabled:
             return None
-        row = quant_report.latest_row(ticker, market, ctx.state)
+        row = quant_report.latest_row(ticker, market, ctx.state, asof=date)
         qv = vec.situation_vector(row, market) if row else None
         report = cal.build_calibration(
             ctx.conn, min_decisions=cfg.min_decisions, query_vector=qv, asof=ctx.now().isoformat()
