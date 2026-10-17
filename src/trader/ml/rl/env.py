@@ -1,7 +1,9 @@
 """사이징 환경 (스펙 §9.4). gymnasium 없이도 같은 API(reset/step)로 돈다.
 
 관측 = 스텝 관측 14차원 + [현재 비중, 드로다운] = 16차원. 행동 = 비중 0~max_weight.
-보상 = w·r − 회전 비용(cost_bp·|Δw|) − drawdown_penalty·(드로다운 증가분). NAV 는 복리.
+보상 = w·r/(같은 날짜 스텝 수 × horizon_days) − 회전 비용(cost_bp·|Δw|) − drawdown_penalty·(드로다운
+증가분). NAV 는 복리. 같은 날 여러 종목과 horizon 일짜리 전방수익을 순차로 쌓으면 과대 복리가 되므로
+하루 포트폴리오 수익 근사로 나눈다(절대 수치는 근사, 정책 간 상대 비교용).
 """
 
 from __future__ import annotations
@@ -39,6 +41,7 @@ class SizingEnv:
         max_weight: float,
         drawdown_penalty: float,
         cost_bp: int,
+        horizon_days: int = 1,
     ) -> None:
         if steps is None or len(steps) == 0:
             raise ValueError("RL 환경에 스텝이 없습니다")
@@ -47,6 +50,10 @@ class SizingEnv:
             raise ValueError(f"관측 차원 {self.obs_matrix.shape[1]} ≠ {len(OBS_COLUMNS)}")
         self.returns = np.asarray(steps["fwd_return"], dtype="float64")
         self.dates = [pd.Timestamp(d).date().isoformat() for d in steps["date"]]
+        counts = pd.Series(self.dates).value_counts()
+        self.scale = np.array(
+            [1.0 / (float(counts[d]) * max(int(horizon_days), 1)) for d in self.dates]
+        )
         self.max_weight = float(max_weight)
         self.drawdown_penalty = float(drawdown_penalty)
         self.cost = float(cost_bp) / 10_000.0
@@ -76,7 +83,7 @@ class SizingEnv:
         w = float(np.asarray(action, dtype="float64").reshape(-1)[0])
         w = min(max(w, 0.0), self.max_weight)
         r = float(self.returns[self.i])
-        pnl = w * r
+        pnl = w * r * float(self.scale[self.i])
         self.nav *= 1.0 + pnl
         self.peak = max(self.peak, self.nav)
         dd_new = self.nav / self.peak - 1.0 if self.peak > 0 else 0.0

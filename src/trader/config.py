@@ -443,6 +443,7 @@ class RlSizerCfg(BaseModel):
     min_memory_steps: int = Field(default=200, ge=1)
     min_steps: int = Field(default=300, ge=1)
     fixed_weight: float = Field(default=0.10, ge=0, le=0.25)
+    horizon_days: int = Field(default=5, ge=1, le=60)  # 보상 정규화용, train 이 label 값으로 덮음
 
 
 class MlModelsCfg(BaseModel):

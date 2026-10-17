@@ -36,3 +36,21 @@ def test_gym_env_requires_extra(monkeypatch):
     monkeypatch.setitem(sys.modules, "gymnasium", None)
     with pytest.raises(ConfigError):
         gym_env(SizingEnv(_steps([0.0]), max_weight=0.25, drawdown_penalty=1.0, cost_bp=30))
+
+
+def test_env_splits_pnl_across_same_date_and_horizon():
+    import pandas as pd
+
+    two = _steps([0.10, 0.10])
+    two["date"] = [pd.Timestamp("2025-01-02")] * 2  # 같은 날 2종목
+    env = SizingEnv(two, max_weight=0.25, drawdown_penalty=0.0, cost_bp=0)
+    env.reset()
+    _, r1, *_ = env.step(0.25)
+    _, r2, _, _, info = env.step(0.25)
+    assert r1 == pytest.approx(0.0125) and info["nav"] == pytest.approx(1.0125**2)
+    env5 = SizingEnv(
+        _steps([0.10]), max_weight=0.25, drawdown_penalty=0.0, cost_bp=0, horizon_days=5
+    )
+    env5.reset()
+    _, r, *_ = env5.step(0.25)
+    assert r == pytest.approx(0.025 / 5)

@@ -36,7 +36,9 @@ def _default_fit(steps: pd.DataFrame, rl_cfg: RlSizerCfg, *, seed: int) -> tuple
 
 def _env(steps: pd.DataFrame, rl: RlSizerCfg) -> SizingEnv:
     return SizingEnv(
-        steps, max_weight=rl.max_weight, drawdown_penalty=rl.drawdown_penalty, cost_bp=rl.cost_bp
+        steps, max_weight=rl.max_weight, drawdown_penalty=rl.drawdown_penalty,
+        cost_bp=rl.cost_bp,
+        horizon_days=rl.horizon_days,
     )
 
 
@@ -74,7 +76,7 @@ def train_sizer(
 ) -> dict:
     """반환: status(trained|insufficient_data)·version·backend·source·steps·seeds·folds·summary·
     promoted(False)·promote_reason."""
-    rl = cfg.models.rl_sizer
+    rl = cfg.models.rl_sizer.model_copy(update={"horizon_days": cfg.label.horizon_days})
     fit = fit_fn or _default_fit
     steps = build_steps(
         conn,

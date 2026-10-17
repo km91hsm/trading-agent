@@ -30,6 +30,7 @@ def _env(steps: pd.DataFrame, cfg: RlSizerCfg) -> SizingEnv:
         max_weight=cfg.max_weight,
         drawdown_penalty=cfg.drawdown_penalty,
         cost_bp=cfg.cost_bp,
+        horizon_days=cfg.horizon_days,
     )
 
 
