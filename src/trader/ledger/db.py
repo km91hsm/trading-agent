@@ -156,6 +156,19 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
         6,  # Phase 8 리뷰: 원시 가격수익(HOLD 도 신호 채점 가능)
         ["ALTER TABLE memory_entries ADD COLUMN price_return REAL"],
     ),
+    (
+        7,  # Phase 9: RL 사이저 섀도 기록 (모의 계좌 한정, 결정·계좌당 1행)
+        [
+            """CREATE TABLE IF NOT EXISTS rl_shadow (
+                id INTEGER PRIMARY KEY,
+                decision_id INTEGER NOT NULL, account_id TEXT NOT NULL,
+                created_at TEXT NOT NULL, model_version TEXT NOT NULL,
+                obs TEXT NOT NULL, llm_weight REAL NOT NULL, proposed_weight REAL NOT NULL,
+                applied INTEGER NOT NULL DEFAULT 0,
+                UNIQUE(decision_id, account_id)
+            )""",
+        ],
+    ),
 ]
 
 

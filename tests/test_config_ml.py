@@ -22,3 +22,15 @@ def test_load_ml_defaults_and_repo_yaml(project):
     )
     with pytest.raises(config.ConfigError):
         config.load_ml()
+
+
+def test_rl_sizer_defaults_and_mode(project):
+    import pytest
+    from pydantic import ValidationError
+
+    rl = config.MlConfig().models.rl_sizer
+    assert rl.enabled is False and rl.seeds == 3 and rl.mode == "shadow"
+    assert rl.backend == "auto" and rl.max_weight == 0.25 and rl.min_steps == 300
+    with pytest.raises(ValidationError):
+        config.MlConfig.model_validate({"models": {"rl_sizer": {"mode": "live"}}})
+    assert config.load_ml().models.rl_sizer.mode == "shadow"  # config/ml.yaml 과 모델이 맞는다

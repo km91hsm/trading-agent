@@ -426,10 +426,23 @@ class CalibrationCfg(BaseModel):
 
 
 class RlSizerCfg(BaseModel):
+    """RL 사이저 (스펙 §9.4, 실험). 모의 계좌 한정, 승격은 `trader rl promote` 수동."""
+
     model_config = ConfigDict(extra="forbid")
 
     enabled: bool = False
-    seeds: int = 3
+    seeds: int = Field(default=3, ge=1, le=10)
+    mode: Literal["shadow", "apply"] = "shadow"  # apply 도 모의 계좌에만
+    backend: Literal["auto", "cem", "ppo"] = "auto"  # ppo 는 `uv sync --extra rl`
+    max_weight: float = Field(default=0.25, gt=0, le=0.25)
+    drawdown_penalty: float = Field(default=1.0, ge=0)
+    cost_bp: int = Field(default=30, ge=0)
+    total_timesteps: int = Field(default=20000, ge=1)
+    cem_iterations: int = Field(default=30, ge=1)
+    cem_population: int = Field(default=64, ge=4)
+    min_memory_steps: int = Field(default=200, ge=1)
+    min_steps: int = Field(default=300, ge=1)
+    fixed_weight: float = Field(default=0.10, ge=0, le=0.25)
 
 
 class MlModelsCfg(BaseModel):

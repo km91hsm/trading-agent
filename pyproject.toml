@@ -28,6 +28,10 @@ trader = "trader.cli:app"
 lightgbm = [
     "lightgbm>=4",
 ]
+rl = [
+    "gymnasium>=1.0",
+    "stable-baselines3>=2.3",
+]
 
 [dependency-groups]
 dev = [

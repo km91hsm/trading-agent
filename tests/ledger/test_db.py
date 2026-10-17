@@ -73,3 +73,23 @@ def test_run_lifecycle(conn):
     db.finish_run(conn, rid, "error", "boom")
     row = conn.execute("SELECT status, error, finished_at FROM runs WHERE id=?", (rid,)).fetchone()
     assert (row["status"], row["error"]) == ("error", "boom") and row["finished_at"]
+
+
+def test_v7_creates_rl_shadow(conn):
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(rl_shadow)")}
+    assert {
+        "decision_id",
+        "account_id",
+        "model_version",
+        "obs",
+        "llm_weight",
+        "proposed_weight",
+        "applied",
+    } <= cols
+    sql = (
+        "INSERT INTO rl_shadow(decision_id, account_id, created_at, model_version, obs, "
+        "llm_weight, proposed_weight) VALUES (1,'paper-main','t','v','[]',0.1,0.2)"
+    )
+    conn.execute(sql)
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(sql)
