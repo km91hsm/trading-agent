@@ -138,34 +138,52 @@ class KisMarket:
 
     # --- 분봉 -----------------------------------------------------------------
 
-    def get_minute_kr(self, ticker: str) -> list[Candle]:
-        """당일 분봉 (KIS 는 기준 시각부터 과거 30건). 시간 오름차순으로 돌려준다."""
-        now_kst = self._now().astimezone(_KST)
-        data = self._client.get(
-            path("DOM_MINUTE"),
-            "DOM_MINUTE",
-            {
-                "FID_ETC_CLS_CODE": "",
-                "FID_COND_MRKT_DIV_CODE": "J",
-                "FID_INPUT_ISCD": ticker,
-                "FID_INPUT_HOUR_1": now_kst.strftime("%H%M%S"),
-                "FID_PW_DATA_INCU_YN": "N",
-            },
-        )
-        candles = [
-            Candle(
-                date=_ymd(str(r["stck_bsop_date"])),
-                open=_dec(r.get("stck_oprc")),
-                high=_dec(r.get("stck_hgpr")),
-                low=_dec(r.get("stck_lwpr")),
-                close=_dec(r.get("stck_prpr")),
-                volume=_int(r.get("cntg_vol")),
-                time=str(r.get("stck_cntg_hour", "")),
+    MINUTE_PAGE = 30  # KIS 국내 분봉은 기준 시각부터 과거 30건만 준다
+    MINUTE_OPEN = "090000"
+
+    def get_minute_kr(self, ticker: str, *, count: int = 30) -> list[Candle]:
+        """당일 분봉. KIS 는 기준 시각부터 과거 30건만 주므로 count 만큼 1분 전 시각으로
+        역방향 페이징한다(새 봉 없음·30 미만·09:00 도달이면 중단). 시간 오름차순."""
+        hour = self._now().astimezone(_KST).strftime("%H%M%S")
+        seen: set[tuple[date, str]] = set()
+        candles: list[Candle] = []
+        while len(candles) < count:
+            data = self._client.get(
+                path("DOM_MINUTE"),
+                "DOM_MINUTE",
+                {
+                    "FID_ETC_CLS_CODE": "",
+                    "FID_COND_MRKT_DIV_CODE": "J",
+                    "FID_INPUT_ISCD": ticker,
+                    "FID_INPUT_HOUR_1": hour,
+                    "FID_PW_DATA_INCU_YN": "N",
+                },
             )
-            for r in _rows(data.get("output2"))
-            if r.get("stck_bsop_date")
-        ]
-        return sorted(candles, key=lambda c: (c.date, c.time or ""))
+            page = [
+                Candle(
+                    date=_ymd(str(r["stck_bsop_date"])),
+                    open=_dec(r.get("stck_oprc")),
+                    high=_dec(r.get("stck_hgpr")),
+                    low=_dec(r.get("stck_lwpr")),
+                    close=_dec(r.get("stck_prpr")),
+                    volume=_int(r.get("cntg_vol")),
+                    time=str(r.get("stck_cntg_hour", "")),
+                )
+                for r in _rows(data.get("output2"))
+                if r.get("stck_bsop_date")
+            ]
+            fresh = [c for c in page if (c.date, c.time or "") not in seen]
+            seen.update((c.date, c.time or "") for c in fresh)
+            candles.extend(fresh)
+            if not fresh or len(page) < self.MINUTE_PAGE:
+                break
+            earliest = min(c.time or "" for c in page)
+            if earliest <= self.MINUTE_OPEN:
+                break
+            t = datetime.strptime(earliest, "%H%M%S") - timedelta(minutes=1)
+            hour = t.strftime("%H%M%S")
+        ordered = sorted(candles, key=lambda c: (c.date, c.time or ""))
+        return ordered[-count:]
 
     def get_minute_us(self, symbol: str, exchange: str, *, count: int = 120) -> list[Candle]:
         data = self._client.get(

@@ -160,3 +160,84 @@ def test_orderbook_us_drops_empty_levels(market, respx_mock):
 def test_name_kr_from_daily_output1(market, respx_mock):
     respx_mock.get(REAL + DOM_DAILY).mock(return_value=resp("daily_kr_p1.json"))
     assert market.get_name_kr("005930") == "삼성전자"
+
+
+# --- 분봉 역방향 페이징 (분봉 차트) ------------------------------------------
+
+
+def _minute_payload(times: list[str], d: str = "20261008") -> dict:
+    rows = [
+        {
+            "stck_bsop_date": d,
+            "stck_cntg_hour": t,
+            "stck_prpr": "71500",
+            "stck_oprc": "71400",
+            "stck_hgpr": "71600",
+            "stck_lwpr": "71300",
+            "cntg_vol": "100",
+            "acml_tr_pbmn": "1",
+        }
+        for t in times
+    ]
+    return {"rt_cd": "0", "msg_cd": "MCA00000", "msg1": "ok", "output1": {}, "output2": rows}
+
+
+def _hhmm_range(end: str, n: int) -> list[str]:
+    """end(HHMMSS) 부터 1분씩 내려가며 n 개 (KIS 처럼 내림차순)."""
+    from datetime import datetime, timedelta
+
+    t = datetime.strptime(end, "%H%M%S")
+    return [(t - timedelta(minutes=i)).strftime("%H%M%S") for i in range(n)]
+
+
+def test_minute_kr_pages_backward_and_stops(market, respx_mock):
+    first = _minute_payload(_hhmm_range("153000", 30))  # 153000..150100
+    second = _minute_payload(_hhmm_range("150000", 30))  # 150000..143100
+    route = respx_mock.get(REAL + DOM_MINUTE).mock(
+        side_effect=[
+            httpx.Response(200, json=first),
+            httpx.Response(200, json=second),
+            httpx.Response(200, json=second),  # 같은 봉 반복 → 멈춰야 한다
+        ]
+    )
+    candles = market.get_minute_kr("005930", count=70)
+    assert len(route.calls) == 3
+    assert route.calls[1].request.url.params["FID_INPUT_HOUR_1"] == "150000"
+    assert route.calls[2].request.url.params["FID_INPUT_HOUR_1"] == "143000"
+    assert len(candles) == 60 and candles[0].time == "143100" and candles[-1].time == "153000"
+    assert len({c.time for c in candles}) == 60
+
+
+def test_minute_kr_stops_at_open_and_short_page(market, respx_mock):
+    route = respx_mock.get(REAL + DOM_MINUTE).mock(
+        return_value=httpx.Response(200, json=_minute_payload(_hhmm_range("092000", 21)))
+    )
+    candles = market.get_minute_kr("005930", count=390)
+    assert len(route.calls) == 1 and len(candles) == 21 and candles[0].time == "090000"
+
+
+def test_minute_kr_default_count_single_call(market, respx_mock):
+    route = respx_mock.get(REAL + DOM_MINUTE).mock(return_value=resp("minute_kr.json"))
+    assert len(market.get_minute_kr("005930")) == 3 and len(route.calls) == 1
+
+
+def test_fake_market_minutes():
+    from trader.broker.fake import FakeMarket
+    from trader.broker.models import Candle
+
+    one = Decimal(1)
+    c = [
+        Candle(
+            date=date(2026, 10, 8),
+            open=one,
+            high=one,
+            low=one,
+            close=one,
+            volume=1,
+            time=f"09{i:02d}00",
+        )
+        for i in range(5)
+    ]
+    fm = FakeMarket(minutes={"005930": c})
+    assert [x.time for x in fm.get_minute_kr("005930", count=2)] == ["090300", "090400"]
+    assert fm.get_minute_us("AAPL", "NAS") == [] and fm.calls == ["get_minute_kr", "get_minute_us"]

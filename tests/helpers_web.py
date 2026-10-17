@@ -50,6 +50,21 @@ def _candles(n=30) -> list[Candle]:
     return out
 
 
+def _minutes(n=5, d=date(2026, 10, 9), start_hhmm="0900") -> list[Candle]:
+    """현지 start_hhmm 부터 1분 간격 분봉 n 개 (time="HHMM00")."""
+    base = datetime.strptime(start_hhmm, "%H%M")
+    out = []
+    for i in range(n):
+        px = Decimal(70000 + i)
+        hhmm = (base + timedelta(minutes=i)).strftime("%H%M")
+        out.append(
+            Candle(
+                date=d, open=px, high=px + 5, low=px - 5, close=px + 1, volume=10, time=f"{hhmm}00"
+            )
+        )
+    return out
+
+
 def make_deps(project, *, token: str | None = TOKEN, dist=None, market=True) -> WebDeps:
     accounts = _accounts()
     return WebDeps(
@@ -60,6 +75,7 @@ def make_deps(project, *, token: str | None = TOKEN, dist=None, market=True) -> 
         market=FakeMarket(
             prices={"005930": Decimal("71500"), "AAPL": Decimal("227.55")},
             candles={"005930": _candles(), "AAPL": _candles()},
+            minutes={"005930": _minutes(), "AAPL": _minutes()},
         )
         if market
         else None,

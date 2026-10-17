@@ -99,15 +99,24 @@ export type Portfolio = {
 };
 
 export type Candle = {
-  time: string;
+  time: string | number; // 일봉 "YYYY-MM-DD", 분봉 UTC epoch 초
   open: string;
   high: string;
   low: string;
   close: string;
   volume: number;
 };
-export type Marker = { time: string; kind: "decision" | "order"; side: string; text: string };
-export type ChartData = { ticker: string; market: string; candles: Candle[]; markers: Marker[] };
+export type Marker = { time: string | number; kind: "decision" | "order" | "trigger"; side: string; text: string };
+export type ChartInterval = "1d" | "1m";
+export type ChartData = {
+  ticker: string;
+  market: string;
+  candles: Candle[];
+  markers: Marker[];
+  interval?: ChartInterval;
+  tz?: string;
+  session_date?: string | null;
+};
 
 export type Checkpoint = {
   stage: string;
