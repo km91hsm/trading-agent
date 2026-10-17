@@ -27,11 +27,13 @@ class FakeMarket:
         candles: dict[str, list[Candle]] | None = None,
         holidays: set[date] | None = None,
         *,
+        minutes: dict[str, list[Candle]] | None = None,
         fail: set[str] | None = None,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self.prices = prices or {}
         self.candles = candles or {}
+        self.minutes = minutes or {}
         self.holidays = holidays or set()
         self.fail = fail or set()
         self.calls: list[str] = []
@@ -69,6 +71,14 @@ class FakeMarket:
     def get_daily_us(self, symbol: str, exchange: str, days: int = 250) -> list[Candle]:
         self._record("get_daily_us")
         return list(self.candles.get(symbol, []))[-days:]
+
+    def get_minute_kr(self, ticker: str, *, count: int = 30) -> list[Candle]:
+        self._record("get_minute_kr")
+        return list(self.minutes.get(ticker, []))[-count:]
+
+    def get_minute_us(self, symbol: str, exchange: str, *, count: int = 120) -> list[Candle]:
+        self._record("get_minute_us")
+        return list(self.minutes.get(symbol, []))[-count:]
 
     def is_holiday(self, d: date) -> bool:
         self._record("is_holiday")
