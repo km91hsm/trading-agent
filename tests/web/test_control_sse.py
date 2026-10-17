@@ -160,3 +160,31 @@ def test_events_endpoint_is_async_and_bounded(client):
     assert inspect.iscoroutinefunction(sse.events)
     r = client.get("/api/events?once=1")
     assert r.text.count("event: change") == 1
+
+
+# --- 이연 회수: 관심종목 웹 제어·SSE 카운터 -------------------------------------------
+
+
+def test_watchlist_api_token_and_validation(client, deps):
+    assert client.get("/api/control/watchlist").json() == {"tickers": []}
+    body = {"action": "add", "ticker": "005930"}
+    assert client.post("/api/control/watchlist", json=body).status_code == 401
+    h = {"Authorization": f"Bearer {deps.token}"}
+    assert client.post("/api/control/watchlist", json=body, headers=h).json() == {
+        "tickers": ["005930"]
+    }
+    bad = {"action": "add", "ticker": "bad ticker!"}
+    assert client.post("/api/control/watchlist", json=bad, headers=h).status_code == 400
+    rm = {"action": "remove", "ticker": "005930"}
+    assert client.post("/api/control/watchlist", json=rm, headers=h).json() == {"tickers": []}
+    assert client.get("/api/control/watchlist").json() == {"tickers": []}
+
+
+def test_sse_snapshot_includes_triggers_and_watchlist(conn):
+    from trader.control import control
+    from trader.web import sse
+
+    s0 = sse.snapshot(conn)
+    assert "triggers" in s0 and "watchlist" in s0
+    control.set_watchlist(conn, ["AAPL"])
+    assert sse.snapshot(conn) != s0

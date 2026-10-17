@@ -39,6 +39,8 @@ def snapshot(conn: sqlite3.Connection) -> dict:
         "runs": _max("runs"),
         "calls": _max("agent_calls"),
         "decisions": _max("decisions"),
+        "triggers": _max("triggers"),
+        "watchlist": ",".join(control.get_watchlist(conn)),
         "paused": control.is_paused(conn),
     }
 

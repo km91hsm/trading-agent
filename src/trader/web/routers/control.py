@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from contextlib import closing
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict
@@ -30,6 +31,38 @@ class ModeBody(BaseModel):
     account_id: str
     mode: str
     confirm: str | None = None
+
+
+class WatchBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    action: Literal["add", "remove"]
+    ticker: str
+
+
+# 조회는 토큰 없음(다른 조회 API 와 같은 규칙), 변경은 위 router(토큰 필수)
+public_router = APIRouter(prefix="/control", tags=["control"])
+
+
+@public_router.get("/watchlist")
+def watchlist(request: Request) -> dict:
+    with closing(deps_of(request).conn_factory()) as conn:
+        return {"tickers": control.get_watchlist(conn)}
+
+
+@router.post("/watchlist")
+def watchlist_change(request: Request, body: WatchBody) -> dict:
+    with closing(deps_of(request).conn_factory()) as conn:
+        current = control.get_watchlist(conn)
+        try:
+            if body.action == "add":
+                out = control.set_watchlist(conn, [*current, body.ticker])
+            else:
+                u = body.ticker.strip().upper()
+                out = control.set_watchlist(conn, [t for t in current if t != u])
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        return {"tickers": out}
 
 
 def _exec_ctx(request: Request, conn):

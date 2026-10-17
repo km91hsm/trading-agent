@@ -23,6 +23,17 @@ export function SettingsPage() {
     }
   };
   const target = accounts.find((a) => a.id === (acct || accounts[0]?.id));
+  const [watchInput, setWatchInput] = useState("");
+  const watch = useLoad(() => getJson<{ tickers: string[] }>("/api/control/watchlist"), [tick]);
+  const changeWatch = async (action: "add" | "remove", t: string) => {
+    try {
+      await postJson("/api/control/watchlist", { action, ticker: t }, token);
+      setMsg(`관심종목 ${action === "add" ? "추가" : "제거"}: ${t}`);
+      setWatchInput("");
+    } catch (e) {
+      setMsg(`실패: ${(e as Error).message}`);
+    }
+  };
   return (
     <section>
       <h1>설정/제어</h1>
@@ -65,6 +76,20 @@ export function SettingsPage() {
         </button>
       </div>
       <p className="muted">실전 계좌의 auto 는 확인 문자열 LIVE 가 있어야 하며, 없으면 서버가 거부한다.</p>
+      <h2>관심종목 (런타임)</h2>
+      <ErrorBox error={watch.error} />
+      <div className="row">
+        <input placeholder="005930 또는 US:AAPL" value={watchInput} onChange={(e) => setWatchInput(e.target.value)} />
+        <button disabled={!token || !watchInput.trim()} onClick={() => changeWatch("add", watchInput.trim())}>추가</button>
+      </div>
+      <ul>
+        {(watch.data?.tickers ?? []).map((t) => (
+          <li key={t}>
+            {t} <button disabled={!token} onClick={() => changeWatch("remove", t)}>제거</button>
+          </li>
+        ))}
+        {!watch.data?.tickers.length && <li className="muted">없음 — universe.yaml 의 watch 와 합쳐 scan·분석 대상에 들어간다</li>}
+      </ul>
       {msg && <p>{msg}</p>}
       <h2>설정 (settings.yaml 요약)</h2>
       <ErrorBox error={settings.error} />
