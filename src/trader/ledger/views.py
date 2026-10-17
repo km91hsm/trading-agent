@@ -163,7 +163,7 @@ def account_summary(conn: sqlite3.Connection, account_id: str, today: date) -> d
         (account_id,),
     ).fetchone()["n"]
     return {
-        "stance": metrics.account_stance(conn, account_id, today),
+        "stance_by_market": metrics.stance_by_market(conn, account_id, today, MARKETS),
         "nav_by_market": nav_by_market,
         "pending_approvals": int(pending),
     }

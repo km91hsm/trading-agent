@@ -3,6 +3,7 @@ import { getJson, postJson, withAccount } from "../api";
 import { AccountPicker } from "../components/AccountPicker";
 import { ApprovalsTable, ErrorBox, OrdersTable, PositionsTable } from "../components/Tables";
 import { useApp, useLoad } from "../hooks";
+import { stanceText } from "../stance";
 import type { Market, Portfolio } from "../types";
 
 export function AccountPage() {
@@ -48,7 +49,7 @@ export function AccountPage() {
       <ErrorBox error={pf.error} />
       {acct && (
         <p>
-          {acct.env === "real" ? "실전" : "모의"} · 모드 <b>{acct.mode}</b> · 성향 {acct.stance}
+          {acct.env === "real" ? "실전" : "모의"} · 모드 <b>{acct.mode}</b> · 성향 {stanceText(acct)}
         </p>
       )}
       <h2>포지션 {pf.data?.snapshot ? `(스냅샷 ${pf.data.snapshot.date})` : ""}</h2>

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterable
 from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -67,5 +68,15 @@ def pending_approvals(conn: sqlite3.Connection) -> list[dict]:
     return repo.pending_approvals(conn)
 
 
-def account_stance(conn: sqlite3.Connection, account_id: str, today: date) -> str:
-    return stance_mod.decide(repo.realized_pnl_5d(conn, account_id, today))
+def account_stance(
+    conn: sqlite3.Connection, account_id: str, today: date, *, market: str | None = None
+) -> str:
+    """계좌 성향. market 을 주면 executor 와 같은 기준(그 시장의 최근 5거래일 실현손익)이다."""
+    return stance_mod.decide(repo.realized_pnl_5d(conn, account_id, today, market=market))
+
+
+def stance_by_market(
+    conn: sqlite3.Connection, account_id: str, today: date, markets: Iterable[str]
+) -> dict[str, str]:
+    """시장별 성향. 통화가 달라 KR·US 실현손익을 합산하지 않는다(executor 판정과 동일)."""
+    return {m: account_stance(conn, account_id, today, market=m) for m in markets}

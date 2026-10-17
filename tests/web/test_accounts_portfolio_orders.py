@@ -34,7 +34,8 @@ def test_accounts_lists_modes(client):
     rows = client.get("/api/accounts").json()
     assert [a["id"] for a in rows] == ["paper-main", "real-main"]
     assert rows[0]["mode"] == "auto" and rows[1]["mode"] == "off"
-    assert rows[0]["stance"] == "normal" and rows[0]["pending_approvals"] == 0
+    assert rows[0]["stance_by_market"] == {"KR": "normal", "US": "normal"}
+    assert rows[0]["pending_approvals"] == 0 and "stance" not in rows[0]
     assert "cano" not in rows[0]
 
 

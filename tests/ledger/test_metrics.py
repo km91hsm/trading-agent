@@ -112,6 +112,13 @@ def test_pending_and_stances(conn):
         filled_at="2026-10-08T01:00:00+00:00",
     )
     assert metrics.account_stance(conn, "paper-main", D) == "conservative"
+    # KR 손실만 있다: KR 은 conservative, US 는 normal, 시장 없는 합산은 conservative
+    assert metrics.account_stance(conn, "paper-main", D, market="KR") == "conservative"
+    assert metrics.account_stance(conn, "paper-main", D, market="US") == "normal"
+    assert metrics.stance_by_market(conn, "paper-main", D, ["KR", "US"]) == {
+        "KR": "conservative",
+        "US": "normal",
+    }
 
 
 def test_metrics_window_uses_kst_date(conn):
