@@ -109,9 +109,9 @@ def _ml_lines() -> list[str]:
         metas = registry.list_models("quant")
     except Exception as e:  # noqa: BLE001 - 레지스트리 문제가 STATUS 생성을 막지 않는다
         return [f"- 조회 실패: {e}"]
-    if not metas:
-        return ["- 없음 (`uv run trader ml train` 으로 학습)"]
     out = []
+    if not metas:
+        out.append("- 없음 (`uv run trader ml train` 으로 학습)")
     for m in metas[:3]:
         met = m.get("metrics") or {}
         out.append(
@@ -119,7 +119,25 @@ def _ml_lines() -> list[str]:
             f"{met.get('baseline', '-')} / 알파 {met.get('alpha', '-')} · "
             f"{'승격' if m.get('promoted') else '미승격'}"
         )
-    return out
+    return out + _rl_lines()
+
+
+def _rl_lines() -> list[str]:
+    try:
+        from trader.ml.rl import report
+
+        meta = report.current_model(None)
+    except Exception as e:  # noqa: BLE001
+        return [f"- rl_sizer 조회 실패: {e}"]
+    if meta is None:
+        return ["- rl_sizer 없음 (`uv run trader rl train`, 승격은 `rl promote` 수동)"]
+    s = meta.get("summary") or {}
+    rl, fx, llm = s.get("rl") or {}, s.get("fixed") or {}, s.get("llm") or {}
+    return [
+        f"- rl_sizer {meta.get('version')}: RL {rl.get('return_mean', '-')} / 고정 "
+        f"{fx.get('return_mean', '-')} / LLM {llm.get('return_mean', '-')} · "
+        f"{'승격' if meta.get('promoted') else '미승격'}"
+    ]
 
 
 def build_status(

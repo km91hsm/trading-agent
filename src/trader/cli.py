@@ -1451,6 +1451,35 @@ def rl_models() -> None:
         )
 
 
+@rl_app.command("report")
+def rl_report(
+    account: str = typer.Option("paper-main", "--account", help="모의 계좌 id"),
+    weeks: int = typer.Option(8, "--weeks", min=1, max=52),
+    market: str | None = typer.Option(None, "--market", help="KR|US (기본 전체)"),
+) -> None:
+    """모델 요약 + 최근 N주 섀도 실적(제안 vs LLM 비중의 가상 실현수익) JSON 1줄."""
+    import json
+
+    from trader.ledger import db
+    from trader.ml.rl import report
+
+    try:
+        configure(paths.state_dir())
+        accounts = config.load_accounts()
+        if not any(a.id == account for a in accounts):
+            raise config.ConfigError(f"알 수 없는 계좌: {account}")
+        conn = db.connect()
+        db.init_schema(conn)
+        try:
+            r = report.comparison(conn, None, account_id=account, market=market, weeks=weeks)
+        finally:
+            conn.close()
+    except (config.ConfigError, paths.ProjectRootNotFound) as e:
+        typer.echo(f"오류: {e}", err=True)
+        raise typer.Exit(code=1) from e
+    typer.echo(json.dumps(r, ensure_ascii=False, default=str))
+
+
 @rl_app.command("promote")
 def rl_promote(
     version: str = typer.Argument(..., help="YYYYMMDD_HHMMSS"),

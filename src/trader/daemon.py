@@ -557,6 +557,35 @@ def _ml_train_body(deps: DaemonDeps) -> dict:
         f"[ML 학습] quant {r.get('version') or '-'}: {r.get('status')} {acc} "
         f"승격={r.get('promoted')}"
     )
+    rl = _rl_train(deps)
+    if rl is not None:
+        r["rl_sizer"] = rl
+    return r
+
+
+def _rl_train(deps: DaemonDeps) -> dict | None:
+    """ml.yaml rl_sizer.enabled 일 때만 사이저도 학습한다 (승격은 수동). 실패는 통보만."""
+    from trader.config import load_ml
+    from trader.ml.rl import train as rl_train_mod
+
+    try:
+        cfg = load_ml()
+        if not cfg.models.rl_sizer.enabled:
+            return None
+        conn = deps.conn_factory()
+        try:
+            r = rl_train_mod.train_sizer(cfg, conn, state=deps.state, now=deps.now)
+        finally:
+            conn.close()
+    except Exception as e:  # noqa: BLE001 - 실험 학습 실패가 데몬을 막지 않는다
+        logger.exception("RL 사이저 학습 실패")
+        deps.notifier.send(f"[RL 학습 실패] {type(e).__name__}: {e}")
+        return {"status": "error", "error": f"{type(e).__name__}: {e}"}
+    s = (r.get("summary") or {}).get("rl") or {}
+    deps.notifier.send(
+        f"[RL 학습] rl_sizer {r.get('version') or '-'}: {r.get('status')} "
+        f"RL 수익 평균 {s.get('return_mean', '-')} (승격은 `trader rl promote` 수동)"
+    )
     return r
 
 

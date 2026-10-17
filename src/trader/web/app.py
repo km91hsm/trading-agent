@@ -54,6 +54,7 @@ def create_app(deps: WebDeps) -> FastAPI:
         orders,
         performance,
         portfolio,
+        rl,
         runs,
         system,
     )
@@ -74,6 +75,7 @@ def create_app(deps: WebDeps) -> FastAPI:
         charts.router,
         ml.router,
         performance.router,
+        rl.router,
         control.router,
         sse.router,
     )

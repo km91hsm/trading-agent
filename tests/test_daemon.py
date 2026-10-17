@@ -378,3 +378,29 @@ def test_reflect_job_snapshots_features_first(conn):
     deps.snapshot_fn = boom
     r = daemon._reflect_body(deps)  # 스냅샷 실패는 통보하고 반성은 계속
     assert r["features"] is None and any("피처 스냅샷 실패" in m for m in Sent.msgs)
+
+
+def test_ml_train_job_also_trains_sizer_when_enabled(conn, monkeypatch):
+    from trader import daemon as d
+    from trader.config import MlConfig
+    from trader.ml import train as train_mod
+    from trader.ml.rl import train as rl_train_mod
+
+    calls = []
+    monkeypatch.setattr(
+        train_mod,
+        "train_quant",
+        lambda *a, **k: {"status": "trained", "metrics": {}, "promoted": False},
+    )
+    monkeypatch.setattr(
+        rl_train_mod,
+        "train_sizer",
+        lambda *a, **k: calls.append(1) or {"status": "trained", "version": "v", "summary": {}},
+    )
+    monkeypatch.setattr(
+        "trader.config.load_ml",
+        lambda: MlConfig.model_validate({"models": {"rl_sizer": {"enabled": True}}}),
+    )
+    deps = _deps(conn, FakeMarket(), now=lambda: datetime(2026, 10, 10, 1, 0, tzinfo=UTC))
+    r = d._ml_train_body(deps)
+    assert calls == [1] and r["rl_sizer"]["status"] == "trained"
