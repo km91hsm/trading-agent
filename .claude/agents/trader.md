@@ -11,6 +11,7 @@ tools: []
 `{"reports": [AnalystReport…], "research_summary": {rounds, round0: {bull, bear}, final: {bull, bear}, gap_round0, gap_final, timing_agree, sycophantic, preferred, issues}, "context": {quote, risk_limits, costs_bp, portfolio: null, memory: [], calibration: null}}`.
 - `research_summary.preferred` 가 `"round0"` 이면 토론 뒤 양측이 한쪽으로 쏠린(아첨적 수렴) 경우다. **라운드 0 의 독립 의견을 우선**하고 최종 라운드는 참고만 한다.
 - `portfolio` 가 null 이면 현재 포지션 정보가 없으므로 ADD/TRIM 대신 BUY/SELL/HOLD 로 답한다.
+- `context.calibration`({n_decisions, roles: {role: {hit_rate, neighbor_hit_rate, bias}}})은 과거 결정에서 각 애널리스트 신호가 맞은 비율이다. null 이면 무시한다. 있으면 `neighbor_hit_rate`(비슷한 상황) 또는 `hit_rate` 가 0.5 미만인 역할의 근거는 검증 가능한 근거 수에서 절반만 센다.
 - `context.quant`({model, p_up, p_flat, p_down, signal, horizon_days, data_gaps})는 퀀트 모델의 5거래일 확률이다. null 이면 무시한다. 있으면 하나의 보조 의견으로만 쓰고(검증 가능한 근거 수에 더하지 않는다), `data_gaps` 가 있으면 신뢰를 낮춘다.
 - 입력에 `trigger`({kind: take_profit|move_7pct|invalidation, price, detail})가 있으면 장중 재평가다. 원래 결정(`30_decision`)을 전제로 **유지(HOLD)·익절(SELL/TRIM)·추가(ADD)** 중 하나를 현재가 기준으로 다시 정한다. 손절은 파이썬이 이미 처리하므로 손절 사유로 SELL 하지 않는다.
 

@@ -411,3 +411,51 @@ def test_executor_passes_holiday_fn_to_rules(ectx):
     r = _run(ectx, ok_decision(action="SELL", target_weight=0.0))
     p = next(x for x in r if x["account_id"] == "paper-main")
     assert p["approved"] is False and any("보유" in s for s in p["reasons"])
+
+
+def test_executor_updates_circuit_breaker_from_nav(ectx):
+    """모의 계좌 판정 때 최근 30일 NAV 로 서킷브레이커를 갱신한다 (−10% 드로다운이면 켜짐)."""
+    for i in range(10):
+        repo.snapshot_positions(
+            ectx.conn,
+            account_id="paper-main",
+            d=D - timedelta(days=12 - i),
+            market="KR",
+            nav=Decimal("10000000") if i < 5 else Decimal("8800000"),
+            cash=Decimal(1),
+            positions=[],
+        )
+    # 브로커 현금 1천만 → 오늘 NAV 1천만: 고점 1천만 대비 0% → 해제 상태여야 함
+    _run(ectx)
+    assert control.get_flag(ectx.conn, "memory_breaker:KR")["active"] is False
+    cash = {"KR": Cash(currency="KRW", available=Decimal("8900000"), total=Decimal("8900000"))}
+    ectx.brokers["paper-main"] = FakeBroker(ectx.accounts[0], cash=cash)
+    _run(ectx, ok_decision(ticker="000660"))
+    b = control.get_flag(ectx.conn, "memory_breaker:KR")
+    assert b["active"] is True and "드로다운" in b["reason"]
+    assert repo.nav_history(ectx.conn, "paper-main", "KR", days=30)[-1][1] == Decimal("8900000")
+
+
+def test_build_portfolio_breaker_uses_settings_and_market(ectx):
+    from trader.config import MemorySettings
+    from trader.memory import store
+
+    acct = ectx.accounts[0]
+    repo.snapshot_positions(
+        ectx.conn,
+        account_id=acct.id,
+        d=D - timedelta(days=1),
+        market="KR",
+        nav=Decimal(100),
+        cash=Decimal(100),
+        positions=[],
+    )
+    broker = FakeBroker(
+        acct, cash={"KR": Cash(currency="KRW", available=Decimal(97), total=Decimal(97))}
+    )
+    executor.build_portfolio(
+        ectx.conn, broker, acct, "KR", D, memory_settings=MemorySettings(drawdown_stop_pct=-0.02)
+    )
+    assert store.breaker_state(ectx.conn, "KR") and store.breaker_state(ectx.conn, "US") is None
+    executor.build_portfolio(ectx.conn, broker, acct, "KR", D, memory_settings=MemorySettings())
+    assert store.breaker_state(ectx.conn, "KR") is None  # 기본 −10% 기준이면 해제

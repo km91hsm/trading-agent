@@ -85,6 +85,23 @@ def _recent_decisions(runs_dir: Path, limit: int = 3) -> list[str]:
     return out
 
 
+def _perf_lines(conn: sqlite3.Connection, accounts: list[AccountConfig]) -> list[str]:
+    from trader.ledger import performance
+
+    out = []
+    for a in accounts:
+        for m in a.markets:
+            met = performance.metrics_of(performance.nav_series(conn, a.id, m, days=30))
+            if met["days"] == 0:
+                continue
+            ret = met["return"]
+            out.append(
+                f"- {a.id} {m}: {'' if ret is None else f'{ret:+.1%}'} "
+                f"MDD {'' if met['mdd'] is None else f'{met["mdd"]:.1%}'} ({met['days']}일)"
+            )
+    return out or ["- 스냅샷 없음"]
+
+
 def _ml_lines() -> list[str]:
     try:
         from trader.ml import registry
@@ -148,6 +165,7 @@ def build_status(
     if decisions:
         lines += ["", "## 최근 결정"]
         lines += [f"- {d}" for d in decisions]
+    lines += ["", "## 성과(30일)", *_perf_lines(conn, accounts)]
     lines += ["", "## ML 모델", *_ml_lines()]
     dist = metrics.decision_distribution(conn, days=30, now=now)
     lines += ["", "## 결정 분포(30일)"]

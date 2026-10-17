@@ -10,6 +10,7 @@ const LINKS: Array<[string, string]> = [
   ["/chart", "차트"],
   ["/data", "데이터"],
   ["/ml", "ML"],
+  ["/performance", "성과"],
   ["/settings", "설정/제어"],
 ];
 

@@ -56,6 +56,26 @@ class WebSettings(BaseModel):
     port: int = 8787
 
 
+class HalfLives(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    short: int = 14
+    mid: int = 90
+    long: int = 365
+
+
+class MemorySettings(BaseModel):
+    """메모리 검색 설정 (스펙 §6.5)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    half_lives: HalfLives = Field(default_factory=HalfLives)
+    warmup: int = 50
+    drawdown_stop_pct: float = -0.10
+    vix_spike_pct: float = 0.30
+    top_k: int = 5
+
+
 class Settings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -67,6 +87,7 @@ class Settings(BaseModel):
     claude_bin: str | None = None
     llm: LlmSettings = Field(default_factory=LlmSettings)
     web: WebSettings = Field(default_factory=WebSettings)
+    memory: MemorySettings = Field(default_factory=MemorySettings)
 
 
 # --- accounts.yaml ---------------------------------------------------------
@@ -400,7 +421,7 @@ class RankerCfg(BaseModel):
 class CalibrationCfg(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    enabled: bool = False
+    enabled: bool = True
     min_decisions: int = 60
 
 

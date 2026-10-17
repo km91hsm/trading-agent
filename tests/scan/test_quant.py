@@ -76,3 +76,17 @@ def _full(df):
         if c not in df.columns:
             df[c] = np.nan
     return df
+
+
+def test_scan_includes_runtime_watchlist(project):
+    """control 관심종목(/watch)은 universe.watch 와 같이 후보에 들어간다 (점수와 무관)."""
+    from trader.ml import features
+
+    df = _df()
+    df["ticker"] = [f"0000{i:02d}" for i in range(10)]
+    features.write_rows(_full(df))
+    uni = Universe(kr=[f"0000{i:02d}" for i in range(5)], exclude=["000003"])
+    cands = quant.candidates(uni, "KR", watch_extra=["000007", "000003", "777777"])
+    ids = [c["ticker"] for c in cands]
+    assert "000007" in ids and "777777" in ids and "000003" not in ids
+    assert [c for c in cands if c["ticker"] == "000007"][0]["score"] is not None

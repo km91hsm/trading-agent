@@ -5,7 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 # 프로젝트: LLM 멀티 에이전트 + ML 주식 자동매매 (KIS)
 
 ## 목적
-한국투자증권(KIS) Open API 로 모의·실전 계좌를 운용하는 주식 자동매매 시스템. Claude Code 오케스트레이터 세션(`claude -p`)이 서브에이전트(screener, 애널리스트 4, 리서처 2, 트레이더, reflector)를 소집해 분석하고, **파이썬 CLI 도구만 통해** 수집·체크포인트·결정 제출을 한다. 리스크 한도와 주문 실행은 LLM 이 아니라 파이썬이 강제한다. macOS 개발·운영, Windows 동일 실행 보장. 목표는 모의 4주 이상 무사고 + 벤치마크 우위 확인 후 사용자가 실전 전환. 현재 Phase 0~7(골격·브로커·수집·에이전트·리스크/계좌별 실행·웹 UI·scan/monitor/데몬·ML 1단계)까지 구현됐고 Phase 8(학습·평가·보정)부터 미구현이다.
+한국투자증권(KIS) Open API 로 모의·실전 계좌를 운용하는 주식 자동매매 시스템. Claude Code 오케스트레이터 세션(`claude -p`)이 서브에이전트(screener, 애널리스트 4, 리서처 2, 트레이더, reflector)를 소집해 분석하고, **파이썬 CLI 도구만 통해** 수집·체크포인트·결정 제출을 한다. 리스크 한도와 주문 실행은 LLM 이 아니라 파이썬이 강제한다. macOS 개발·운영, Windows 동일 실행 보장. 목표는 모의 4주 이상 무사고 + 벤치마크 우위 확인 후 사용자가 실전 전환. 현재 Phase 0~8(골격·브로커·수집·에이전트·리스크/계좌별 실행·웹 UI·scan/monitor/데몬·ML 1단계·학습/평가/보정)까지 구현됐고 Phase 9(RL 사이징, 실험)는 미구현이다. 실전 전환은 `docs/runbook-live-transition.md` 의 사용자 수동 절차로만 한다.
 
 ## 세션 시작 시 상태 확인
 - `state/STATUS.md` 는 SessionStart 훅(`.claude/hooks/session_start.py`)이 세션 시작·`/clear`·compact 때 자동 주입한다 (STATUS.md + `docs/TODO.md` 미완료 상위 항목).
@@ -28,7 +28,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `uv run trader features backfill [--years 3] [--market KR|US]` / `features snapshot [--market] [--asof ISO]` : 피처 스토어 적재 (실전 20/s 로 20종목 수 분)
 - `uv run trader analyze --ticker 005930 [--market US --exchange NAS] [--asof ISO] [--dry-run] [--skip-collect]` : 오케스트레이터 세션 1회 → `30_decision.json` + 계좌별 `40_risk_check_<id>`·`50_order_<id>`. `--dry-run` 은 판정·기록까지만(주문·승인 요청 없음). `FAKE_CLAUDE=1` 이면 claude 없이 고정 응답(HOLD) + 가짜 브로커. 실제 실행은 구독 호출을 쓰므로 `.claude/settings.json` 허용 목록에 넣지 않는다
 - `uv run trader approvals list|approve <id>|reject <id>` : approve 모드 계좌의 승인 요청 (30분 만료, 1회만 실행)
-- `uv run trader telegram poll` : getUpdates 1회로 `/approve <id>`·`/reject <id>`·`/status` 처리, 오프셋은 control `telegram_offset`
+- `uv run trader telegram poll` : getUpdates 1회로 `/approve <id>`·`/reject <id>`·`/status`·`/pause`·`/resume`·`/mode <계좌> <모드>`(실전은 off 만)·`/watch add|remove|list <ticker>` 처리, 오프셋은 control `telegram_offset`
 - `uv run trader control show|mode <계좌> <auto|approve|off> [--confirm LIVE]|pause|resume` : 런타임 제어. 실전 `auto` 는 `--confirm LIVE` 가 있어야 하며 `live_confirmed:<id>` 기록을 남긴다
 - `uv run trader web [--host] [--port]` : 웹 UI (기본 127.0.0.1:8787). 프런트는 `cd web && npm install && npm run build` 로 `web/dist` 를 만들어야 하며 없으면 안내 페이지만 뜬다. `npm test`(Vitest)·`npm run typecheck`
 - `uv run trader scan --market KR [--asof] [--dry-run]` : 정량 필터(피처 스토어) → screener 세션(haiku) → `state/runs/<date>/<market>/_scan.json`(picks + 보유 + watch = analyze 대상). `--dry-run`·세션 상한이면 세션 없이 정량 상위 3개
@@ -38,6 +38,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `uv run trader fills sync [--account] [--date]` : 체결 조회 → `fills` 멱등 적재·주문 상태 갱신
 - `uv run trader telegram loop [--interval 30]` : 텔레그램 명령 상시 처리(데몬 밖 단독 실행용, 거부 목록)
 - `uv run trader ml train [--market KR|US] [--min-rows 100]` : 피처 스토어로 퀀트 모델 워크포워드 학습·저장·승격 판정(stdout JSON). `ml models`(목록), `ml promote <버전> [--reason]`(수동 승격)
+- `uv run trader reflect [--market KR] [--dry-run]` : 만기 결정의 결과를 피처 스토어 종가로 채우고 reflector 세션(`kind=reflect`)으로 복기 → 메모리 `reflection`·`_reflect.json`. 데몬 잡도 같은 함수
+- `uv run trader calibration build` : 현재 메모리 결과로 애널리스트 신호 적중률 보정 리포트(결정 60건 미만이면 `active: false`)
+- `uv run trader backtest --since YYYY-MM-DD [--market]` : 컷오프 이후 결정의 적중률·평균 수익·알파(메모리 결과 우선, 없으면 피처 스토어 종가)
+- `uv run trader readiness` : 실전 전환 준비도 점검(읽기 전용, 모드 불변). 임계값은 `docs/runbook-live-transition.md` 표
 - `uv run trader kis order-test --account paper-main` : Phase 4 실기 전용. 모의 계좌에 현재가 −10% 1주 지정가 매수 → 즉시 취소 (실전 거부, 원장 미기록, 휴장일엔 KIS 가 40100000 으로 거부)
 - `uv run trader tool …` : 오케스트레이터 세션 전용(사람이 직접 쓰지 않음)
 - `uv run trader --help` : 등록된 명령 확인
@@ -73,6 +77,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **커뮤니티·뉴스 소스 정책은 `config/sources.yaml` 기본값이 출처다**(스펙 §0.3): Reddit·클리앙 on, DC·에펨코리아 구현하되 off, 토스·네이버 토론실은 Phase 6 조사, 세이브티커는 Cloudflare 차단으로 `disabled_sites` 기록만. `sources.kis.daily_days` 는 `high_52w_pos`(252봉) 때문에 260 이상.
 - **체크포인트는 `orchestrator/run_store` 함수로만**: `run_dir(date, market, ticker)` → `state/runs/<date>/<market>/<ticker>/`, `write_checkpoint`(원자적), `read_checkpoint`(없으면 None), `list_checkpoints`. `collect_and_save` 는 `00_inputs` 가 있으면 건너뛴다(`--force` 로 덮어씀). 디렉터리 날짜는 `asof` 의 KST 날짜.
 - **피처 스토어(`ml/features.py`).** `state/features/<date>.parquet`, 키 `(date, ticker)`, 쓰기는 멱등. 비율·수급은 KR 만 채우고 US 행은 NaN(US 비율은 Phase 7). `snapshot` 행의 date 는 asof 가 아니라 마지막 일봉 날짜. 지표 워밍업 구간도 NaN 인 채로 저장한다. 백필은 KIS 일봉 상한 1,000봉에서 자르고 DART 실패 시 가격 지표만 저장한다. `state/cache/` 7일 캐시는 DART 기업코드 맵·EDGAR 티커 맵·KIS 휴장일만 대상이다.
+- **메모리(스펙 §6.5, `memory/`).** `submit-decision` 이 결정마다 `memory_entries` 1행(`decision_id` UNIQUE, 멱등)을 12차원 상황 벡터(`memory/vector.DIMS`)와 함께 쓰고, `reflect`(`outcomes.mature`)가 만기 뒤 `realized_return·alpha_vs_benchmark` 를 채운다(BUY/ADD 그대로, SELL/TRIM 부호 반전, HOLD 0, 벤치마크는 같은 창 1/N). **Outcome Embargo**: 결과가 채워진 엔트리만 트레이더 입력·보정·백테스트에 들어간다. 검색은 `store.retrieve` 점수 0.4 recency(3층 반감기 14/90/365일) + 0.4 코사인 + 0.2 importance 로 상위 `top_k`, 만기 결정이 `warmup`(50) 미만이면 `memory_status.warmup=true` 로 빈 목록. 서킷브레이커는 **시장별** 플래그 `control.memory_breaker:<market>`(시장 없는 전역 키는 모든 시장에 적용)로, 모의 계좌 판정(`build_portfolio`) 때 그 시장 NAV 드로다운(`settings.memory.drawdown_stop_pct`)과 `control.vix_last`(트레이더 입력 묶음 때 `00_inputs.news_macro.macro.vix` 를 기록, 직전 다른 날짜 대비 변화율 ≥ `vix_spike_pct`)로 갱신되며 켜지면 그 시장의 메모리 입력이 비워진다. KR 판정이 US 플래그를 건드리지 않는다. `price_return`(원시 가격수익)을 `realized_return`(방향 기준)과 따로 저장해 HOLD 결정도 신호 채점에 쓴다. 승격은 |수익| ≥ 5% 또는 반성 lesson, 삭제는 importance < 0.2 의 short 층만.
+- **보정(스펙 §9.3, `calibration/`).** `35_calibration` 은 `ensure_calibration` 이 `ensure_quant` 뒤에 만들며 `ml.yaml models.calibration.enabled` 가 꺼져 있거나 만기 결정이 `min_decisions`(60) 미만이면 체크포인트를 만들지 않는다(트레이더는 `context.calibration` 없음으로 동작). 역할별 적중률은 상황 벡터 코사인 상위 k=20 이웃 가중.
+- **성과·준비도(스펙 §13, `ledger/performance.py`, `readiness.py`).** NAV 는 `positions_snapshot` 일별 최신, 벤치마크는 피처 스토어 종가(1/N 일별 리밸런스·B&H·승격 퀀트 상위 5), 비용 민감도는 주문금액 × 0/10/20/30bp ÷ 평균 NAV. `readiness.check` 는 읽기 전용이고 어떤 코드 경로도 실전 모드를 올리지 않는다(텔레그램 `/mode` 는 실전 계좌를 `off` 로 내리는 것만 받고 approve/auto 상향은 거부). 운영일 집계는 FAKE 세션(`agent_calls.model='fake'`)을 제외한다. 1/N 벤치마크는 피처 스토어 유니버스 전체이고 B&H 만 보유 종목이다(웹·readiness 동일 기준). 데몬 reflect 잡은 피처 스냅샷(`snapshot_fn`)을 먼저 찍어 만기 결과가 채워지게 한다. US 휴장일은 `daemon.US_HOLIDAYS` 정적 달력(2026~2027, 매년 갱신 필요).
 - **`claude -p` 플래그는 설치된 `claude --help` 에 있는 것만 쓴다.** `--bare` 는 구독 인증을 끄므로 금지. cwd 는 저장소 밖 임시 디렉터리, `--setting-sources ""` 로 훅·플러그인 유입을 막는다. `FAKE_CLAUDE=1` 이면 subprocess 없이 고정 응답.
 - **오류 타입.** 설정 오류는 `ConfigError`, KIS 오류는 `KisApiError`. 키는 URL·로그·예외 메시지에 남기지 않는다(`httpx` 로거는 WARNING).
 

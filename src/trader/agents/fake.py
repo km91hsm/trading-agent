@@ -77,6 +77,33 @@ def _call(agent: str) -> dict:
     }
 
 
+def run_fake_reflect(
+    ctx: tools.ToolContext, *, market: str, date: date, entries: list[dict]
+) -> list[str]:
+    """reflect 모드: 모든 엔트리에 NEUTRAL 반성(lesson 없음)."""
+    if not entries:
+        return []
+    payload = [
+        {
+            "entry_id": e["entry_id"],
+            "signal_review": {
+                role: {"verdict": "UNKNOWN", "note": "FAKE"}
+                for role in (e.get("analyst_signals") or {})
+            },
+            "decision_review": {"verdict": "NEUTRAL", "note": "FAKE 모드: 판단 보류"},
+            "lesson": None,
+            "confidence": 0.5,
+        }
+        for e in entries
+    ]
+    r = tools.submit_reflection(
+        ctx, market=market, date=date, payload=payload, call_meta=_call("reflector")
+    )
+    if not r["ok"]:
+        raise tools.ToolError(r["error"])
+    return ["_reflect"]
+
+
 def run_fake_screen(
     ctx: tools.ToolContext, *, market: str, date: date, candidates: list[dict]
 ) -> list[str]:

@@ -135,7 +135,12 @@ def checkpoint_list(ctx: ToolContext, *, ticker: str, market: Market, date: date
 
 
 def trader_context(
-    ctx: ToolContext, inputs: dict, market: Market, *, quant: dict | None = None
+    ctx: ToolContext,
+    inputs: dict,
+    market: Market,
+    *,
+    quant: dict | None = None,
+    calibration: dict | None = None,
 ) -> dict:
     """트레이더 입력의 파이썬 제공분. portfolio 는 계좌별 스냅샷, quant 는 05_quant(없으면 None)."""
     quote = ((inputs.get("technical") or {}).get("quote") or {}).get("data")
@@ -145,9 +150,89 @@ def trader_context(
         "costs_bp": ROUND_TRIP_COST_BP[market],
         "portfolio": _portfolio_context(ctx, market),
         "quant": quant,
-        "memory": [],
-        "calibration": None,
+        **_memory_context(ctx, inputs, market),
+        "calibration": calibration,
     }
+
+
+def _record_vix(conn, inputs: dict) -> None:
+    """00_inputs 의 news_macro.macro.vix(FRED 최신 관측)를 기록한다 (VIX 급등 브레이커 입력)."""
+    from trader.memory import store
+
+    try:
+        vix = ((inputs.get("news_macro") or {}).get("macro") or {}).get("vix") or {}
+        data = vix.get("data") or {}
+        if data.get("value") is not None and data.get("date"):
+            store.record_vix(conn, value=float(data["value"]), date=str(data["date"]))
+    except Exception as e:  # noqa: BLE001 - VIX 기록 실패는 메모리 검색을 막지 않는다
+        logger.warning("VIX 기록 실패: %s", e)
+
+
+def _memory_context(ctx: ToolContext, inputs: dict, market: Market) -> dict:
+    """{memory: [...상위 k 요약], memory_status: {warmup, breaker}}. 원장이 없으면 빈 목록."""
+    if ctx.conn is None:
+        return {"memory": [], "memory_status": {"warmup": True, "breaker": None}}
+    from trader.memory import store
+    from trader.memory import vector as vec
+    from trader.ml import quant_report
+
+    try:
+        _record_vix(ctx.conn, inputs)
+        ticker = str((inputs.get("meta") or {}).get("ticker") or "")
+        row = quant_report.latest_row(ticker, market, ctx.state) if ticker else None
+        qv = vec.situation_vector(row or {}, market)
+        r = store.retrieve(
+            ctx.conn, vector=qv, now=ctx.now(), settings=ctx.settings.memory, market=market
+        )
+    except Exception as e:  # noqa: BLE001 - 메모리는 선택 입력
+        logger.warning("메모리 검색 실패: %s", e)
+        return {"memory": [], "memory_status": {"warmup": True, "breaker": None, "error": str(e)}}
+    entries = [
+        {
+            "id": e["id"],
+            "ticker": e["ticker"],
+            "decided_at": e["decided_at"],
+            "situation_summary": e["situation_summary"],
+            "decision": e["decision"],
+            "realized_return": e["realized_return"],
+            "alpha_vs_benchmark": e["alpha_vs_benchmark"],
+            "lesson": (e.get("reflection") or {}).get("lesson") if e.get("reflection") else None,
+            "score": e["score"],
+        }
+        for e in r["entries"]
+    ]
+    return {"memory": entries, "memory_status": {"warmup": r["warmup"], "breaker": r["breaker"]}}
+
+
+def ensure_calibration(ctx: ToolContext, *, ticker: str, market: Market, date: date) -> dict | None:
+    """결과 엔트리가 min_decisions(60) 이상일 때만 35_calibration 을 쓴다(있으면 그대로)."""
+    from trader.calibration import model as cal
+    from trader.config import load_ml
+    from trader.memory import vector as vec
+    from trader.ml import quant_report
+
+    if ctx.conn is None:
+        return None
+    d = _dir(ctx, ticker, market, date)
+    existing = read_checkpoint(d, "35_calibration")
+    if existing is not None:
+        return existing.get("data")
+    try:
+        cfg = load_ml().models.calibration
+        if not cfg.enabled:
+            return None
+        row = quant_report.latest_row(ticker, market, ctx.state)
+        qv = vec.situation_vector(row, market) if row else None
+        report = cal.build_calibration(
+            ctx.conn, min_decisions=cfg.min_decisions, query_vector=qv, asof=ctx.now().isoformat()
+        )
+    except Exception as e:  # noqa: BLE001 - 보정은 선택 입력
+        logger.warning("35_calibration 생략 %s %s: %s", market, ticker, e)
+        return None
+    if report is None:
+        return None
+    write_checkpoint(d, "35_calibration", _wrap(report, _call("calibration", None)))
+    return report
 
 
 def ensure_quant(ctx: ToolContext, *, ticker: str, market: Market, date: date) -> dict | None:
@@ -322,10 +407,14 @@ def checkpoint_read(
     if section is None:
         return {"ok": True, "data": data}
     if stage == "00_inputs" and section == "trader_context":
-        q = read_checkpoint(_dir(ctx, ticker, market, date), "05_quant")
+        dd = _dir(ctx, ticker, market, date)
+        q = read_checkpoint(dd, "05_quant")
+        c = read_checkpoint(dd, "35_calibration")
         return {
             "ok": True,
-            "data": trader_context(ctx, data, market, quant=(q or {}).get("data")),
+            "data": trader_context(
+                ctx, data, market, quant=(q or {}).get("data"), calibration=(c or {}).get("data")
+            ),
         }
     body = data.get("data", data) if stage != "00_inputs" else data
     if section not in body:
@@ -569,7 +658,11 @@ def checkpoint_bundle(
             "reports": reports,
             "research_summary": _trader_summary(summ.get("data", summ)),
             "context": trader_context(
-                ctx, inputs, market, quant=(read_checkpoint(d, "05_quant") or {}).get("data")
+                ctx,
+                inputs,
+                market,
+                quant=(read_checkpoint(d, "05_quant") or {}).get("data"),
+                calibration=(read_checkpoint(d, "35_calibration") or {}).get("data"),
             ),
         }
         return {"ok": True, "data": _shrink(data, BUNDLE_LIMIT_BYTES, drop_evidence=True)}
@@ -666,6 +759,7 @@ def submit_decision(
         dry_run=ctx.dry_run,
     )
     logger.info("결정 저장 %s %s: %s (계좌 %d)", market, ticker, decision.action, len(executions))
+    memory_entry_id = _record_memory(ctx, decision, market, date)
     return {
         "ok": True,
         "path": str(path),
@@ -673,7 +767,42 @@ def submit_decision(
         "action": decision.action,
         "dry_run": ctx.dry_run,
         "executions": executions,
+        "memory_entry_id": memory_entry_id,
     }
+
+
+def _record_memory(
+    ctx: ToolContext, decision: schemas.Decision, market: Market, date: date
+) -> int | None:
+    """결정 1건을 메모리 엔트리로 기록한다 (decision_id 멱등). 실패해도 결정 제출을 막지 않는다."""
+    if ctx.conn is None:
+        return None
+    try:
+        from trader.memory import store
+        from trader.ml import quant_report
+
+        decision_id = repo.decision_id(ctx.conn, date, market, decision.ticker)
+        if decision_id is None:
+            return None
+        paper = next(
+            (a.id for a in ctx.accounts if a.env == "paper"),
+            ctx.accounts[0].id if ctx.accounts else "",
+        )
+        row = quant_report.latest_row(decision.ticker, market, ctx.state)
+        return store.record_decision(
+            ctx.conn,
+            decision_id=decision_id,
+            ticker=decision.ticker,
+            market=market,
+            account_id=paper,
+            decided_at=ctx.now().isoformat(),
+            decision=decision.model_dump(),
+            row=row,
+            horizon_days=decision.horizon_days,
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("메모리 기록 실패 %s %s: %s", market, decision.ticker, e)
+        return None
 
 
 def _quote_price(inputs: dict) -> Decimal | None:
@@ -722,6 +851,50 @@ def submit_screen(
     path = write_checkpoint(d, "_screen", _wrap(screened.model_dump(), _call(agent, call_meta)))
     logger.info("스크리닝 저장 %s: %s", market, [p.ticker for p in screened.picks])
     return {"ok": True, "path": str(path), "picks": [p.ticker for p in screened.picks]}
+
+
+# --- submit-reflection (Phase 8 reflect) ----------------------------------------
+
+
+def submit_reflection(
+    ctx: ToolContext,
+    *,
+    market: Market,
+    date: date,
+    payload: list | dict,
+    agent: str = "reflector",
+    call_meta: dict | None = None,
+) -> dict:
+    """Reflection 배열을 검증해 메모리에 저장하고 runs/<date>/<market>/_reflect.json 에 덧붙인다."""
+    from trader.memory import store
+
+    if ctx.conn is None:
+        return {"ok": False, "error": "원장 연결 없음"}
+    if market not in ("KR", "US"):
+        return {"ok": False, "error": f"market 은 KR 또는 US: {market!r}"}
+    items = payload if isinstance(payload, list) else [payload]
+    parsed: list[schemas.Reflection] = []
+    for i, item in enumerate(items):
+        try:
+            parsed.append(schemas.Reflection.model_validate(_unescape(item)))
+        except ValidationError as e:
+            msgs = "; ".join(
+                f"{'.'.join(str(x) for x in err['loc'])}: {err['msg']}" for err in e.errors()
+            )
+            return {"ok": False, "error": f"스키마 검증 실패(Reflection[{i}]): {msgs}"}
+    for r in parsed:
+        if store.get_entry(ctx.conn, r.entry_id) is None:
+            return {"ok": False, "error": f"메모리 엔트리 없음: {r.entry_id}"}
+    for r in parsed:
+        store.set_reflection(ctx.conn, r.entry_id, r.model_dump())
+    base = ctx.state if ctx.state is not None else paths.state_dir()
+    d = base / "runs" / date.isoformat() / market
+    d.mkdir(parents=True, exist_ok=True)
+    existing = read_checkpoint(d, "_reflect") or _wrap([], _call(agent, call_meta))
+    data = list(existing.get("data") or []) + [r.model_dump() for r in parsed]
+    write_checkpoint(d, "_reflect", _wrap(data, _call(agent, call_meta)))
+    logger.info("반성 저장 %s: %d건", market, len(parsed))
+    return {"ok": True, "saved": len(parsed), "entry_ids": [r.entry_id for r in parsed]}
 
 
 # --- status -----------------------------------------------------------------

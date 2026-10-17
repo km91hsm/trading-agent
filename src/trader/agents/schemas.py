@@ -104,6 +104,58 @@ class QuantReport(BaseModel):
     feature_date: str | None = None
 
 
+ReviewVerdict = Literal["HIT", "MISS", "UNKNOWN"]
+DecisionVerdict = Literal["GOOD", "BAD", "NEUTRAL"]
+
+
+class SignalReview(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    verdict: ReviewVerdict
+    note: str = Field(default="", max_length=300)
+
+
+class DecisionReview(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    verdict: DecisionVerdict
+    note: str = Field(default="", max_length=500)
+
+
+class Reflection(BaseModel):
+    """reflector 출력 (스펙 §6.5 복기 2종: 신호→가격, 결정→손익)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    entry_id: int
+    signal_review: dict[str, SignalReview] = Field(default_factory=dict)
+    decision_review: DecisionReview
+    lesson: str | None = Field(default=None, max_length=300)
+    confidence: float = Field(ge=0, le=1)
+
+
+class RoleCalibration(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    hit_rate: float | None
+    n: int
+    neighbor_hit_rate: float | None
+    neighbor_n: int
+    bias: float
+
+
+class CalibrationReport(BaseModel):
+    """35_calibration: 역할별 신호 적중률 (스펙 §9.3, 결정 60건 이상일 때만)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    asof: str
+    n_decisions: int
+    active: bool
+    min_decisions: int
+    roles: dict[str, RoleCalibration]
+
+
 class Pick(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -137,6 +189,7 @@ _STAGE_PATTERNS: list[tuple[re.Pattern[str], type[BaseModel]]] = [
     (re.compile(r"^20_debate_r\d+_(bull|bear)$"), DebateTurn),
     (re.compile(r"^30_decision$"), Decision),
     (re.compile(r"^05_quant$"), QuantReport),
+    (re.compile(r"^35_calibration$"), CalibrationReport),
 ]
 
 

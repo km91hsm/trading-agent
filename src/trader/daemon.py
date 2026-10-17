@@ -96,16 +96,45 @@ def market_date(market: str, now: datetime | date) -> date:
     return now
 
 
+# NYSE 휴장일 2026~2027 (정적 달력; KIS 해외 휴장 API 미확인). 토·일 겹침은 대체 휴일로 반영.
+US_HOLIDAYS: frozenset[date] = frozenset(
+    {
+        date(2026, 1, 1),
+        date(2026, 1, 19),
+        date(2026, 2, 16),
+        date(2026, 4, 3),
+        date(2026, 5, 25),
+        date(2026, 6, 19),
+        date(2026, 7, 3),
+        date(2026, 9, 7),
+        date(2026, 11, 26),
+        date(2026, 12, 25),
+        date(2027, 1, 1),
+        date(2027, 1, 18),
+        date(2027, 2, 15),
+        date(2027, 3, 26),
+        date(2027, 5, 31),
+        date(2027, 6, 18),
+        date(2027, 7, 5),
+        date(2027, 9, 6),
+        date(2027, 11, 25),
+        date(2027, 12, 24),
+    }
+)
+
+
 def should_skip(
     market: str, today: datetime | date, market_client: Any | None, conn: sqlite3.Connection | None
 ) -> str | None:
-    """paused·주말(시장 현지 날짜)·KR 휴장일(KIS). US 휴장일은 Phase 8(KIS 해외 휴장 API 미확인)."""
+    """paused·주말(시장 현지 날짜)·KR 휴장일(KIS)·US 휴장일(정적 NYSE 달력 US_HOLIDAYS)."""
     if conn is not None and control.is_paused(conn):
         return "일시정지"
     local = market_date(market, today)
     if local.weekday() >= 5:
         return "주말"
     today = local
+    if market == "US":
+        return "휴장일" if today in US_HOLIDAYS else None
     if market == "KR" and market_client is not None:
         try:
             if market_client.is_holiday(today):
@@ -232,6 +261,9 @@ class DaemonDeps:
     web_app_factory: Callable[[], Any] | None = None
     dry_run: bool = False
     session_runner: Callable[..., Any] | None = None  # 테스트 주입용 (기본 run_session)
+    snapshot_fn: Callable[[list[str]], int] | None = (
+        None  # reflect 전 피처 스냅샷(시장 목록 → 행 수)
+    )
 
 
 def _today(deps: DaemonDeps) -> date:
@@ -273,9 +305,16 @@ def _scan_body(deps: DaemonDeps, market: str) -> dict:
     from trader.ml import ranker
 
     ml = ranker.current(deps.state)
-    cands = quant.candidates(universe, market, state=deps.state, rank_fn=ml[0] if ml else None)
     conn = deps.conn_factory()
     try:
+        runtime_watch = control.get_watchlist(conn)
+        cands = quant.candidates(
+            universe,
+            market,
+            state=deps.state,
+            rank_fn=ml[0] if ml else None,
+            watch_extra=runtime_watch,
+        )
         cap_hit = tools.sessions_today(conn, deps.now()) >= deps.settings.llm.daily_session_cap
         r = screener.run_screen(
             deps.settings,
@@ -288,7 +327,7 @@ def _scan_body(deps: DaemonDeps, market: str) -> dict:
             state=deps.state,
             now=deps.now,
             brokers=deps.brokers,
-            watch=list(universe.watch),
+            watch=[*universe.watch, *runtime_watch],
             asof=deps.now(),
         )
     finally:
@@ -318,6 +357,7 @@ def _ensure_quant(deps: DaemonDeps, ticker: str, market: str, today: date) -> No
             now=deps.now,
         )
         tools.ensure_quant(ctx, ticker=ticker, market=market, date=today)  # type: ignore[arg-type]
+        tools.ensure_calibration(ctx, ticker=ticker, market=market, date=today)  # type: ignore[arg-type]
     except Exception as e:  # noqa: BLE001 - 05_quant 는 선택 입력
         logger.warning("05_quant 생성 실패 %s %s: %s", market, ticker, e)
     finally:
@@ -451,6 +491,52 @@ def _fills_body(deps: DaemonDeps) -> dict:
     return out
 
 
+def _reflect_body(deps: DaemonDeps) -> dict:
+    """장 마감 후: 만기 결정 결과 채우기 → 반성 대기가 있는 시장만 세션 → 메모리 정리."""
+    from trader.memory import outcomes, store
+    from trader.orchestrator.reflect import pending, run_reflect
+
+    features_n: int | None = None
+    if deps.snapshot_fn is not None:
+        try:
+            features_n = int(deps.snapshot_fn(list(deps.settings.markets)))
+        except Exception as e:  # noqa: BLE001 - 스냅샷 실패는 통보하고 반성은 계속
+            logger.warning("피처 스냅샷 실패: %s", e)
+            deps.notifier.send(f"[피처 스냅샷 실패] {e} — 만기 결과가 채워지지 않을 수 있음")
+    conn = deps.conn_factory()
+    try:
+        matured = outcomes.mature(conn, state=deps.state, today=_today(deps))
+        sessions = 0
+        for market in deps.settings.markets:
+            if not pending(conn, market=market):
+                continue
+            res = run_reflect(
+                deps.settings,
+                conn,
+                deps.accounts,
+                market=market,
+                date=_today(deps),
+                state=deps.state,
+                now=deps.now,
+                dry_run=True,
+                brokers=deps.brokers,
+                notifier=deps.notifier,
+            )
+            if res.session_id or res.fake:
+                sessions += 1
+            if not res.ok:
+                deps.notifier.send(f"[reflect 실패] {market}: {res.error}")
+        pr = store.promote_and_prune(conn, now=deps.now(), settings=deps.settings.memory)
+    finally:
+        conn.close()
+    return {
+        "features": features_n,
+        "matured": len(matured),
+        "sessions": sessions,
+        "pruned": pr["deleted"],
+    }
+
+
 def _ml_train_body(deps: DaemonDeps) -> dict:
     from trader.config import load_ml
     from trader.ml import train as train_mod
@@ -492,7 +578,7 @@ def job_body(deps: DaemonDeps, job: Job) -> Callable[[], Any]:
     if job.kind == "fills_sync":
         return lambda: _fills_body(deps)
     if job.kind == "reflect":
-        return lambda: logger.info("reflect 는 Phase 8 에서 구현한다 (자리)")
+        return lambda: _reflect_body(deps)
     if job.kind == "ml_train":
         return lambda: _ml_train_body(deps)
     raise ValueError(f"알 수 없는 잡: {job.kind}")

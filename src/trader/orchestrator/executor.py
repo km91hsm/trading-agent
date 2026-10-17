@@ -21,7 +21,7 @@ from trader.agents import schemas
 from trader.agents.schemas import Decision
 from trader.broker.errors import KisApiError
 from trader.broker.models import OrderRequest, OrderResult
-from trader.config import AccountConfig, Mode, Settings
+from trader.config import AccountConfig, MemorySettings, Mode, Settings
 from trader.control import control
 from trader.ledger import repo
 from trader.notify.telegram import Notifier, NullNotifier
@@ -74,8 +74,38 @@ def effective_mode(conn: sqlite3.Connection, account: AccountConfig) -> tuple[Mo
     return mode, None
 
 
+def _update_breaker(
+    conn,
+    account: AccountConfig,
+    market: str,
+    today: date,
+    nav: Decimal,
+    settings: MemorySettings | None = None,
+) -> None:
+    """모의 계좌 NAV(최근 30일 + 오늘)·최근 VIX 변화로 그 시장의 메모리 서킷브레이커를 갱신한다."""
+    from trader.memory import store
+
+    try:
+        series = repo.nav_history(conn, account.id, market, days=30)
+        series = [s for s in series if s[0] != today.isoformat()] + [(today.isoformat(), nav)]
+        store.circuit_breaker(
+            conn,
+            nav_series=series,
+            vix_change=store.latest_vix_change(conn),
+            settings=settings or MemorySettings(),
+            market=market,
+        )
+    except Exception as e:  # noqa: BLE001 - 브레이커 갱신 실패는 판정을 막지 않는다
+        logger.warning("서킷브레이커 갱신 실패 %s: %s", account.id, e)
+
+
 def build_portfolio(
-    conn: sqlite3.Connection, broker: Any, account: AccountConfig, market: str, today: date
+    conn: sqlite3.Connection,
+    broker: Any,
+    account: AccountConfig,
+    market: str,
+    today: date,
+    memory_settings: MemorySettings | None = None,
 ) -> rules.Portfolio:
     """브로커 잔고·현금 + 원장 집계로 Portfolio 를 만들고 positions_snapshot 을 남긴다."""
     positions = {p.ticker: p for p in broker.get_positions(market)}
@@ -83,6 +113,8 @@ def build_portfolio(
     nav = cash.total + sum((p.eval_amount for p in positions.values()), Decimal(0))
     prev = repo.latest_nav_before(conn, account.id, today, market=market)
     today_pnl = float(nav / prev - 1) if prev else 0.0
+    if account.env == "paper":
+        _update_breaker(conn, account, market, today, nav, memory_settings)
     repo.snapshot_positions(
         conn,
         account_id=account.id,
@@ -153,7 +185,9 @@ def execute(
         try:
             if broker is None:
                 raise KisApiError("NO_BROKER", f"계좌 {account.id} 브로커 없음(앱키 미설정)")
-            portfolio = build_portfolio(ctx.conn, broker, account, market, date)
+            portfolio = build_portfolio(
+                ctx.conn, broker, account, market, date, memory_settings=ctx.settings.memory
+            )
             verdict = rules.evaluate(
                 decision,
                 portfolio,

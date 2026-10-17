@@ -763,3 +763,164 @@ def test_ensure_quant_disabled_or_broken_never_raises(ctx, project):
     (project / "config" / "ml.yaml").unlink()
     (project / "state" / "models" / "quant" / v / "model.joblib").write_bytes(b"garbage")
     assert tools.ensure_quant(ctx, ticker="005930", market="KR", date=D) is None
+
+
+# --- Phase 8: 35_calibration ---------------------------------------------------------
+
+
+def test_ensure_calibration_inactive_below_60(ctx, project):
+    from helpers_memory import seed_matured
+
+    _inputs(project)
+    seed_matured(ctx.conn, 59)
+    assert tools.ensure_calibration(ctx, ticker="005930", market="KR", date=D) is None
+    assert read_checkpoint(run_dir(D, "KR", "005930"), "35_calibration") is None
+    b = tools.trader_context(ctx, read_checkpoint(run_dir(D, "KR", "005930"), "00_inputs"), "KR")
+    assert b["calibration"] is None
+
+
+def test_ensure_calibration_active_at_60_and_in_context(ctx, project):
+    from helpers_memory import seed_matured
+
+    _inputs(project)
+    seed_matured(ctx.conn, 60)
+    r = tools.ensure_calibration(ctx, ticker="005930", market="KR", date=D)
+    assert r["active"] and r["roles"]["technical"]["n"] == 60
+    cp = read_checkpoint(run_dir(D, "KR", "005930"), "35_calibration")
+    assert cp["data"]["asof"] and cp["call"]["agent"] == "calibration"
+    for role in ("technical", "fundamental"):
+        tools.checkpoint_write(
+            ctx,
+            ticker="005930",
+            market="KR",
+            date=D,
+            stage=f"10_analyst_{role}",
+            payload=ok_report(role=role),
+            agent="a",
+        )
+    for side in ("bull", "bear"):
+        tools.checkpoint_write(
+            ctx,
+            ticker="005930",
+            market="KR",
+            date=D,
+            stage=f"20_debate_r0_{side}",
+            payload=ok_turn(side),
+            agent="r",
+        )
+    tools.checkpoint_summarize(ctx, ticker="005930", market="KR", date=D)
+    b = tools.checkpoint_bundle(ctx, ticker="005930", market="KR", date=D, kind="trader")
+    assert b["data"]["context"]["calibration"]["roles"]["technical"]["hit_rate"] is not None
+    assert tools.ensure_calibration(ctx, ticker="005930", market="KR", date=D)["active"]  # 멱등
+
+
+# --- Phase 8: 메모리 되먹임 ------------------------------------------------------------
+
+
+def _ready_for_decision(ctx, project):
+    _inputs(project)
+    for role in ("technical", "fundamental"):
+        tools.checkpoint_write(
+            ctx,
+            ticker="005930",
+            market="KR",
+            date=D,
+            stage=f"10_analyst_{role}",
+            payload=ok_report(role=role),
+            agent="a",
+        )
+    for side in ("bull", "bear"):
+        tools.checkpoint_write(
+            ctx,
+            ticker="005930",
+            market="KR",
+            date=D,
+            stage=f"20_debate_r0_{side}",
+            payload=ok_turn(side),
+            agent="r",
+        )
+    tools.checkpoint_summarize(ctx, ticker="005930", market="KR", date=D)
+
+
+def test_trader_context_memory_empty_during_warmup(ctx, project):
+    from helpers_memory import seed_matured
+
+    _ready_for_decision(ctx, project)
+    seed_matured(ctx.conn, 49)
+    b = tools.checkpoint_bundle(ctx, ticker="005930", market="KR", date=D, kind="trader")
+    assert (
+        b["data"]["context"]["memory"] == []
+        and b["data"]["context"]["memory_status"]["warmup"] is True
+    )
+
+
+def test_trader_context_memory_top5_after_warmup(ctx, project):
+    from helpers_memory import seed_matured
+
+    _ready_for_decision(ctx, project)
+    seed_matured(ctx.conn, 50)
+    from trader.memory import store
+
+    store.set_reflection(
+        ctx.conn, 1, {"decision_review": {"verdict": "GOOD", "note": "x"}, "lesson": "교훈"}
+    )
+    b = tools.checkpoint_bundle(ctx, ticker="005930", market="KR", date=D, kind="trader")
+    mem = b["data"]["context"]["memory"]
+    assert len(mem) == 5 and b["data"]["context"]["memory_status"]["warmup"] is False
+    assert set(mem[0]) == {
+        "id",
+        "ticker",
+        "decided_at",
+        "situation_summary",
+        "decision",
+        "realized_return",
+        "alpha_vs_benchmark",
+        "lesson",
+        "score",
+    }
+    assert any(m["lesson"] == "교훈" for m in mem)
+
+
+def test_submit_decision_records_memory_entry_and_ids_used(ctx, project):
+    from trader.memory import store
+
+    _ready_for_decision(ctx, project)
+    r = tools.submit_decision(
+        ctx, ticker="005930", market="KR", date=D, payload=ok_decision(memory_ids_used=["7", "x"])
+    )
+    assert r["ok"] and r["memory_entry_id"]
+    e = store.get_entry(ctx.conn, r["memory_entry_id"])
+    assert e["ticker"] == "005930" and e["decision"]["action"] == "BUY"
+    assert e["decision"]["memory_ids_used"] == ["7", "x"] and len(e["situation_vector"]) == 12
+    assert e["horizon_days"] == 10  # ok_decision 의 horizon_days
+    r2 = tools.submit_decision(ctx, ticker="005930", market="KR", date=D, payload=ok_decision())
+    assert r2.get("already") is True
+    assert ctx.conn.execute("SELECT COUNT(*) FROM memory_entries").fetchone()[0] == 1
+
+
+def test_ensure_calibration_respects_enabled_flag(ctx, project):
+    from helpers_memory import seed_matured
+
+    _inputs(project)
+    seed_matured(ctx.conn, 60)
+    (project / "config" / "ml.yaml").write_text(
+        "models:\n  calibration: {enabled: false, min_decisions: 60}\n", encoding="utf-8"
+    )
+    assert tools.ensure_calibration(ctx, ticker="005930", market="KR", date=D) is None
+    assert read_checkpoint(run_dir(D, "KR", "005930"), "35_calibration") is None
+
+
+def test_memory_context_records_vix_change(ctx):
+    from trader.memory import store
+
+    def inputs(value, day):
+        return {
+            "meta": {"ticker": "005930"},
+            "news_macro": {"macro": {"vix": {"data": {"value": value, "date": day}}}},
+        }
+
+    tools._memory_context(ctx, inputs(20.0, "2026-10-15"), "KR")
+    tools._memory_context(ctx, inputs(27.0, "2026-10-16"), "KR")
+    assert store.latest_vix_change(ctx.conn) == pytest.approx(0.35)
+    tools._memory_context(ctx, {"meta": {"ticker": "005930"}}, "KR")  # macro 없음 → 유지
+    assert store.latest_vix_change(ctx.conn) == pytest.approx(0.35)

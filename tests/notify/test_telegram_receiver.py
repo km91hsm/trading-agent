@@ -34,7 +34,7 @@ def test_poll_filters_chat_and_parses():
     assert parse_command("/approve 5") == ("approve", "5")
     assert parse_command("/reject@my_bot 7") == ("reject", "7")
     assert parse_command("/status") == ("status", None)
-    assert parse_command("안녕") is None and parse_command("/pause") is None
+    assert parse_command("안녕") is None and parse_command("/foo") is None
 
 
 @respx.mock

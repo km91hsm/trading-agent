@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
@@ -445,12 +445,9 @@ def analyze(
         try:
             from trader.orchestrator import tools as _tools
 
-            _tools.ensure_quant(
-                _tools.ToolContext(settings=settings, accounts=accounts, conn=conn),
-                ticker=ticker,
-                market=market,
-                date=day,  # type: ignore[arg-type]
-            )
+            _tctx = _tools.ToolContext(settings=settings, accounts=accounts, conn=conn)
+            _tools.ensure_quant(_tctx, ticker=ticker, market=market, date=day)  # type: ignore[arg-type]
+            _tools.ensure_calibration(_tctx, ticker=ticker, market=market, date=day)  # type: ignore[arg-type]
             res = run_session(
                 SessionSpec(
                     market=market,
@@ -608,7 +605,9 @@ def tool_collect(
         errors = json.loads(path.read_text(encoding="utf-8")).get("errors", [])
         from trader.orchestrator import tools
 
-        q = tools.ensure_quant(ctx, ticker=ticker, market=market, date=when.astimezone(_KST).date())  # type: ignore[arg-type]
+        day_ = when.astimezone(_KST).date()
+        q = tools.ensure_quant(ctx, ticker=ticker, market=market, date=day_)  # type: ignore[arg-type]
+        tools.ensure_calibration(ctx, ticker=ticker, market=market, date=day_)  # type: ignore[arg-type]
         result = {"ok": True, "path": str(path), "errors": errors, "quant": bool(q)}
     except Exception as e:  # noqa: BLE001
         result = {"ok": False, "error": f"{type(e).__name__}: {e}"}
@@ -858,6 +857,24 @@ def _telegram_run(*, interval: int, max_iterations: int | None) -> None:
         ectx.conn.close()
 
 
+def _daemon_snapshot_fn(secrets: config.Secrets, universe, market_client):
+    """데몬 reflect 잡 앞에서 매일 피처 스냅샷을 찍는 함수 (시세 클라이언트 없으면 None)."""
+    if market_client is None:
+        return None
+    from trader.ml import features
+
+    def run(markets: list[str]) -> int:
+        return features.snapshot(
+            market_client=market_client,
+            dart=_build_dart(secrets),
+            universe=universe,
+            markets=markets,  # type: ignore[arg-type]
+            progress=lambda s: None,
+        )
+
+    return run
+
+
 @app.command("daemon")
 def daemon_cmd(
     no_web: bool = typer.Option(False, "--no-web", help="웹 서버를 띄우지 않음"),
@@ -909,6 +926,7 @@ def daemon_cmd(
         input_deps=_build_input_deps(secrets, sources_cfg),
         web_app_factory=web_app,
         dry_run=dry_run,
+        snapshot_fn=_daemon_snapshot_fn(secrets, universe, market_client),
     )
     r = daemon_mod.run(deps, web=not no_web)
     if not r.get("ok"):
@@ -1134,6 +1152,7 @@ def scan(
     """정량 필터 → screener 세션 → 오늘 분석 대상 목록 (_scan.json, stdout JSON)."""
     import json
 
+    from trader.control import control
     from trader.ledger import db
     from trader.orchestrator import tools
     from trader.orchestrator.run_store import write_checkpoint
@@ -1155,10 +1174,16 @@ def scan(
         from trader.ml import ranker
 
         ml = ranker.current()
-        cands = quant.candidates(universe, market, rank_fn=ml[0] if ml else None)  # type: ignore[arg-type]
         conn = db.connect()
         db.init_schema(conn)
         try:
+            watch = [*universe.watch, *control.get_watchlist(conn)]
+            cands = quant.candidates(
+                universe,
+                market,
+                rank_fn=ml[0] if ml else None,  # type: ignore[arg-type]
+                watch_extra=control.get_watchlist(conn),
+            )
             cap_hit = dry_run or tools.sessions_today(conn, when) >= settings.llm.daily_session_cap
             brokers = {b.account.id: b for b in _build_brokers(secrets, accounts)}
             r = screener.run_screen(
@@ -1170,7 +1195,7 @@ def scan(
                 candidates=cands,
                 cap_hit=cap_hit,
                 brokers=brokers,
-                watch=list(universe.watch),
+                watch=watch,
                 asof=when,
             )
         finally:
@@ -1360,6 +1385,153 @@ def ml_demote(
         raise typer.Exit(code=1)
     m = registry.demote("quant", version, reason=reason)
     typer.echo(f"승격 해제: quant {m['version']} ({reason})")
+
+
+@tool_app.command("submit-reflection")
+def tool_submit_reflection(
+    market: str = typer.Option(..., "--market"),
+    date: str = typer.Option(..., "--date"),
+    json_text: str | None = typer.Option(
+        None, "--json", help="Reflection 배열 JSON (없으면 stdin)"
+    ),
+) -> None:
+    from trader.orchestrator import tools
+
+    _tool_run(tools.submit_reflection, market=market, date=date, payload=_payload_arg(json_text))
+
+
+@app.command("reflect")
+def reflect_cmd(
+    market: str = typer.Option("KR", "--market", help="KR 또는 US"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="결과 채우기까지만 (세션 없음)"),
+) -> None:
+    """만기 결정의 결과를 채우고(피처 스토어 종가) reflector 세션으로 복기를 받는다 (스펙 §6.5)."""
+    from trader.ledger import db
+    from trader.memory import outcomes, store
+    from trader.orchestrator.reflect import pending, run_reflect
+    from trader.orchestrator.session import PipelineError
+
+    try:
+        configure(paths.state_dir())
+        if market not in ("KR", "US"):
+            raise config.ConfigError(f"시장은 KR 또는 US 여야 합니다: {market}")
+        settings = config.load_settings()
+        accounts = config.load_accounts()
+    except (config.ConfigError, paths.ProjectRootNotFound) as e:
+        typer.echo(f"오류: {e}", err=True)
+        raise typer.Exit(code=1) from e
+    conn = db.connect()
+    db.init_schema(conn)
+    try:
+        today = datetime.now(_KST).date()
+        matured = outcomes.mature(conn, state=None, today=today)
+        typer.echo(f"결과 채움 {len(matured)}건")
+        n_pending = len(pending(conn, market=market))
+        if dry_run:
+            typer.echo(f"대기 중 반성 {n_pending}건 (--dry-run: 세션 생략)")
+            return
+        res = run_reflect(settings, conn, accounts, market=market, date=today, dry_run=True)
+        if not res.ok:
+            typer.echo(f"세션 실패: {res.error}", err=True)
+            raise typer.Exit(code=1)
+        pr = store.promote_and_prune(conn, now=datetime.now(UTC), settings=settings.memory)
+        typer.echo(
+            f"반성 {n_pending}건 ({'FAKE' if res.fake else 'session=' + str(res.session_id)}), "
+            f"정리 {pr['deleted']}건 삭제"
+        )
+    except PipelineError as e:
+        typer.echo(f"오류: {e}", err=True)
+        raise typer.Exit(code=1) from e
+    finally:
+        conn.close()
+
+
+# --- 보정 (Phase 8) -------------------------------------------------------------------
+
+calibration_app = typer.Typer(help="애널리스트 신호 적중률 보정 (결정 60건 미만이면 비활성)")
+app.add_typer(calibration_app, name="calibration")
+
+
+@calibration_app.command("build")
+def calibration_build() -> None:
+    """현재 메모리 결과로 보정 리포트를 계산해 출력한다 (체크포인트는 analyze 때 종목별로 생성)."""
+    import json
+
+    from trader.calibration import model as cal
+    from trader.ledger import db
+
+    configure(paths.state_dir())
+    cfg = config.load_ml().models.calibration
+    conn = db.connect()
+    db.init_schema(conn)
+    try:
+        r = cal.build_calibration(
+            conn,
+            min_decisions=cfg.min_decisions,
+            query_vector=None,
+            asof=datetime.now(UTC).isoformat(),
+        )
+    finally:
+        conn.close()
+    typer.echo(
+        json.dumps(r or {"active": False, "min_decisions": cfg.min_decisions}, ensure_ascii=False)
+    )
+
+
+@app.command("backtest")
+def backtest_cmd(
+    since: str = typer.Option(..., "--since", help="컷오프 날짜(YYYY-MM-DD). 이후 결정만 집계"),
+    market: str | None = typer.Option(None, "--market", help="KR 또는 US (없으면 전체)"),
+) -> None:
+    """컷오프 이후 결정의 적중률·평균 수익·알파를 메모리 결과/피처 스토어 종가로 집계한다."""
+    import json
+
+    from trader import backtest
+    from trader.ledger import db
+
+    try:
+        configure(paths.state_dir())
+        cutoff = date.fromisoformat(since)
+    except (ValueError, paths.ProjectRootNotFound) as e:
+        typer.echo(f"오류: {e}", err=True)
+        raise typer.Exit(code=1) from e
+    conn = db.connect()
+    db.init_schema(conn)
+    try:
+        r = backtest.simple_backtest(conn, paths.state_dir(), since=cutoff, market=market)
+    finally:
+        conn.close()
+    typer.echo(json.dumps(r, ensure_ascii=False))
+
+
+@app.command("readiness")
+def readiness_cmd() -> None:
+    """실전 전환 준비도 점검(읽기 전용). 모드는 바꾸지 않는다 — docs/runbook-live-transition.md."""
+    import json
+
+    from trader import readiness
+    from trader.ledger import db
+
+    try:
+        configure(paths.state_dir())
+        settings = config.load_settings()
+        accounts = config.load_accounts()
+    except (config.ConfigError, paths.ProjectRootNotFound) as e:
+        typer.echo(f"오류: {e}", err=True)
+        raise typer.Exit(code=1) from e
+    conn = db.connect()
+    db.init_schema(conn)
+    try:
+        r = readiness.check(
+            conn,
+            accounts=accounts,
+            settings=settings,
+            state=paths.state_dir(),
+            today=datetime.now(_KST).date(),
+        )
+    finally:
+        conn.close()
+    typer.echo(json.dumps(r, ensure_ascii=False))
 
 
 @app.command("notify-test")

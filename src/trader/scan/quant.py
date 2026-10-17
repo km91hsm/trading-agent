@@ -98,14 +98,15 @@ def candidates(
     state: Path | None = None,
     rank_fn: Callable[[pd.DataFrame], pd.DataFrame] | None = None,
     exclude: set[str] | None = None,
+    watch_extra: list[str] | None = None,
 ) -> list[dict]:
-    """유니버스(+watch) 를 점수순으로. 피처가 없는 종목은 점수 None 으로 끝에 둔다."""
+    """유니버스(+watch+런타임 관심종목) 를 점수순으로. 피처 없는 종목은 점수 None 으로 끝에."""
     excl = set(universe.exclude) | (exclude or set())
     if market == "KR":
         ids = [(t, None) for t in universe.kr]
     else:
         ids = [(u.symbol, u.exchange) for u in universe.us]
-    for w in universe.watch:
+    for w in [*universe.watch, *(watch_extra or [])]:
         if all(w != t for t, _ in ids):
             ids.append((w, None))
     ids = [(t, e) for t, e in ids if t not in excl]

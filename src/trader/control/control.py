@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from typing import Any, get_args
 
@@ -28,6 +29,28 @@ def set_flag(conn: sqlite3.Connection, key: str, value: Any) -> None:
         (key, json.dumps(value), now_iso()),
     )
     conn.commit()
+
+
+_TICKER_RE = re.compile(r"^[A-Z0-9.\-]{1,12}$")
+
+
+def get_watchlist(conn: sqlite3.Connection) -> list[str]:
+    """런타임 관심종목(`/watch`, 웹). universe.watch 와 합쳐 scan 후보·분석 대상에 들어간다."""
+    v = get_flag(conn, "watchlist", [])
+    return [str(t) for t in v] if isinstance(v, list) else []
+
+
+def set_watchlist(conn: sqlite3.Connection, tickers: list[str]) -> list[str]:
+    """형식 검증(영숫자·.·- 12자 이내, 대문자화)·중복 제거 후 저장하고 결과를 돌려준다."""
+    out: list[str] = []
+    for t in tickers:
+        u = str(t).strip().upper()
+        if not _TICKER_RE.match(u):
+            raise ValueError(f"잘못된 종목코드: {t}")
+        if u not in out:
+            out.append(u)
+    set_flag(conn, "watchlist", out)
+    return out
 
 
 def is_paused(conn: sqlite3.Connection) -> bool:

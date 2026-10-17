@@ -334,3 +334,47 @@ def test_ml_train_body_wraps_exceptions(conn, monkeypatch):
     deps.notifier = type("N", (), {"send": lambda self, t, **k: sent.append(t) or True})()
     r = d._ml_train_body(deps)
     assert r["status"] == "error" and any("학습 폭발" in m for m in sent)
+
+
+def test_daemon_reflect_job_skips_when_nothing_matured(conn, monkeypatch):
+    from trader import daemon as d
+
+    deps = _deps(conn, FakeMarket(), now=lambda: datetime(2026, 10, 10, 8, 0, tzinfo=UTC))
+    job = next(j for j in d.build_jobs(SCHED, Settings(), markets=["KR"]) if j.id == "reflect")
+    r = d.job_body(deps, job)()
+    assert r["matured"] == 0 and r["sessions"] == 0
+
+
+def test_us_holiday_skipped(conn):
+    """US 휴장일은 정적 NYSE 달력(2026~2027)으로 건너뛴다 (Phase 6 이연)."""
+    assert daemon.should_skip("US", date(2026, 12, 25), None, conn) == "휴장일"
+    assert daemon.should_skip("US", date(2026, 11, 26), None, conn) == "휴장일"
+    assert daemon.should_skip("US", date(2026, 7, 3), None, conn) == "휴장일"  # 7/4 토요일 대체
+    assert daemon.should_skip("US", date(2027, 6, 18), None, conn) == "휴장일"
+    assert daemon.should_skip("US", date(2026, 12, 24), None, conn) is None
+    assert daemon.should_skip("KR", date(2026, 12, 25), None, conn) is None  # KR 은 KIS 조회
+    assert len(daemon.US_HOLIDAYS) == 20
+
+
+def test_reflect_job_snapshots_features_first(conn):
+    calls = []
+    deps = _deps(conn, FakeMarket(), now=lambda: datetime(2026, 10, 8, 7, 0, tzinfo=UTC))
+    deps.snapshot_fn = lambda markets: calls.append(list(markets)) or 3
+    r = daemon._reflect_body(deps)
+    assert calls == [["KR", "US"]] and r["features"] == 3
+
+    class Sent:
+        msgs = []
+
+        def send(self, text, *, escape=True):
+            self.msgs.append(text)
+            return True
+
+    deps.notifier = Sent()
+
+    def boom(markets):
+        raise RuntimeError("KIS 장애")
+
+    deps.snapshot_fn = boom
+    r = daemon._reflect_body(deps)  # 스냅샷 실패는 통보하고 반성은 계속
+    assert r["features"] is None and any("피처 스냅샷 실패" in m for m in Sent.msgs)

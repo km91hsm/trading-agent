@@ -28,6 +28,7 @@ AGENTS: tuple[str, ...] = (
 )
 ORCHESTRATOR = "orchestrator"
 SCREEN_AGENTS: tuple[str, ...] = ("screener",)
+REFLECT_AGENTS: tuple[str, ...] = ("reflector",)
 
 
 @dataclass
@@ -103,5 +104,8 @@ def orchestrator_prompt(settings: Settings, base: Path | None = None) -> str:
         "- DebateTurn 스키마: " + schemas.json_schema(schemas.DebateTurn) + "\n"
         "- Decision 스키마: " + schemas.json_schema(schemas.Decision) + "\n"
         "- Screened 스키마(screen 모드): " + schemas.json_schema(schemas.Screened) + "\n"
+        "- Reflection 스키마(reflect 모드, 배열로 제출): "
+        + schemas.json_schema(schemas.Reflection)
+        + "\n"
     )
     return body + runtime
