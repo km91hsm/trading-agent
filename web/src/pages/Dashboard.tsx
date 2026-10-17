@@ -1,6 +1,7 @@
 import { getJson } from "../api";
 import { ErrorBox } from "../components/Tables";
 import { useApp, useLoad } from "../hooks";
+import { stanceText } from "../stance";
 import type { Decision } from "../types";
 
 type Calls = { calls: Array<{ cost_usd: number | null }>; sessions_today: number; cost_today: number };
@@ -21,7 +22,7 @@ export function Dashboard() {
             <h3>
               {a.id} <small>{a.env === "real" ? "실전" : "모의"}</small>
             </h3>
-            <div>모드: <b>{a.mode}</b> · 성향: {a.stance}</div>
+            <div>모드: <b>{a.mode}</b> · 성향: {stanceText(a)}</div>
             <div>NAV KR: {a.nav_by_market.KR ?? "-"} · US: {a.nav_by_market.US ?? "-"}</div>
             <div>미승인 주문: {a.pending_approvals}</div>
           </div>

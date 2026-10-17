@@ -163,7 +163,8 @@ def build_status(
     ]
     today = now.astimezone(_KST).date()
     for a in accounts:
-        st = metrics.account_stance(conn, a.id, today)
+        by_market = metrics.stance_by_market(conn, a.id, today, a.markets)
+        st = ", ".join(f"{m} {v}" for m, v in by_market.items())
         lines.append(
             f"| {a.id} | {a.env} | {get_account_mode(conn, a)} | {','.join(a.markets)} | {st} |"
         )

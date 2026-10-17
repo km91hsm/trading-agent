@@ -6,7 +6,7 @@ export type Account = {
   markets: Market[];
   mode: "auto" | "approve" | "off";
   yaml_mode: string;
-  stance: string;
+  stance_by_market: Record<string, string>;
   nav_by_market: Record<string, string | null>;
   pending_approvals: number;
 };

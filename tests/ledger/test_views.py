@@ -127,6 +127,6 @@ def test_account_summary_counts_pending(conn):
     )
     s = views.account_summary(conn, "paper-main", D)
     assert s["pending_approvals"] == 1 and s["nav_by_market"] == {"KR": "10000000", "US": None}
-    assert s["stance"] == "normal"
+    assert s["stance_by_market"] == {"KR": "normal", "US": "normal"} and "stance" not in s
     assert views.list_approvals(conn, "paper-main", status="pending")[0]["order"] == {}
     assert views.list_approvals(conn, "real-main") == []

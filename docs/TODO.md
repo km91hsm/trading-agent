@@ -78,7 +78,7 @@
 - [x] 리뷰 Minor 이연(Phase 5) 회수(2026-10-17, 이연 회수 플랜): `_validate_ids` 점 티커 거부(이미 해결), `favicon`(inline SVG). `list_decisions` 창은 metrics 와 같이 KST 날짜 기준
 - [x] Phase 5 이연 회수(2026-10-17, 이연 회수 플랜): SSE 스냅샷에 `triggers`·`watchlist` 추가, 관심종목 웹 제어(`/api/control/watchlist` + 설정 페이지), 차트 SMA20/60 오버레이, ML 페이지 실데이터(Phase 7)·성과 페이지(Phase 8). 분봉 차트는 아래 줄
 - [x] 분봉 차트(2026-10-17, 사용자 결정으로 진행): `GET /api/charts/minute`(당일 1분봉 UTC epoch 초·60초 캐시·주문/트리거 분 마커, KR 은 KIS 30봉 역방향 페이징 최대 390), 차트 페이지 간격 선택(일봉|1분). 이연 유지: US 120봉 초과 페이징(`NEXT`/`KEYB`, 실기 확인), 3·5·15분 집계·자동 갱신(사용자 결정)
-- [ ] 리뷰 이연(2026-10-17 전체 리뷰, 설계 판단 필요): `metrics.account_stance` 가 계좌 단위로 KR·US 실현손익을 합산(executor 는 시장별 성향) — 웹 `/api/accounts` 에 `stance_by_market` 추가 여부 (수집기 `httpx.Client` 정리·`ml/rl` 포맷은 2026-10-18 처리)
+- [x] 리뷰 이연(2026-10-17 전체 리뷰): 계좌 성향을 시장별로 — 웹 `/api/accounts`·STATUS 가 `stance_by_market` (2026-10-18 처리, 수집기 `httpx.Client` 정리·`ml/rl` 포맷도 같은 날)
 - [ ] 리뷰 Minor 이연(분봉 차트): KR 분봉 페이지 수 상한(비정상 응답 시 최대 390회, 한도는 RateLimiter 가 지킴), `stck_cntg_hour` 빈 봉 제외, 날짜 혼합 응답 시 전일 봉 제거
 
 ## Phase 6 scan·monitor·데몬
