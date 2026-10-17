@@ -182,11 +182,13 @@ def minute_chart(
 def _intraday_markers(deps, m, ticker, account_id, session_date, tz) -> list[dict]:
     """session_date(시장 현지) 의 주문·트리거를 분 단위 내림 epoch 로. 결정은 시각이 없어 제외."""
 
-    def minute_of(created_at: str) -> int | None:
+    def minute_of(created_at: str) -> tuple[int, str] | None:
+        """(분 단위 내림 epoch, 현지 HH:MM). 장 밖 시각 마커는 차트가 가장 가까운 봉에 붙이므로
+        텍스트에 실제 시각을 남긴다."""
         dt = datetime.fromisoformat(created_at).astimezone(tz)
         if dt.date().isoformat() != session_date:
             return None
-        return int(dt.timestamp()) // 60 * 60
+        return int(dt.timestamp()) // 60 * 60, dt.strftime("%H:%M")
 
     out: list[dict] = []
     with closing(deps.conn_factory()) as conn:
@@ -199,23 +201,19 @@ def _intraday_markers(deps, m, ticker, account_id, session_date, tz) -> list[dic
             sql += " AND account_id=?"
             args.append(account_id)
         for r in conn.execute(sql + " ORDER BY id", args).fetchall():
-            t = minute_of(r["created_at"])
-            if t is not None:
+            at = minute_of(r["created_at"])
+            if at is not None:
+                t, hhmm = at
                 px = r["price"] or "시장가"
-                text = f"{r['account_id']} {r['side']} {r['qty']}주 @{px}"
+                text = f"{hhmm} {r['account_id']} {r['side']} {r['qty']}주 @{px}"
                 out.append({"time": t, "kind": "order", "side": r["side"], "text": text})
         for r in conn.execute(
             "SELECT kind, detail, created_at FROM triggers WHERE market=? AND ticker=? ORDER BY id",
             (m, ticker),
         ).fetchall():
-            t = minute_of(r["created_at"])
-            if t is not None:
-                out.append(
-                    {
-                        "time": t,
-                        "kind": "trigger",
-                        "side": "TRIGGER",
-                        "text": f"트리거 {r['kind']}: {r['detail']}",
-                    }
-                )
+            at = minute_of(r["created_at"])
+            if at is not None:
+                t, hhmm = at
+                text = f"{hhmm} 트리거 {r['kind']}: {r['detail']}"
+                out.append({"time": t, "kind": "trigger", "side": "TRIGGER", "text": text})
     return sorted(out, key=lambda x: x["time"])

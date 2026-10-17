@@ -27,6 +27,12 @@ export function markerStyle(m: Pick<Marker, "kind" | "side">): MarkerStyle {
   return { position: above ? "aboveBar" : "belowBar", color: "#8b5cf6", shape: "circle" };
 }
 
+/** 분봉 epoch(초) 을 세션 타임존의 HH:MM 으로. 일봉 문자열은 그대로 (축·크로스헤어 포매터). */
+export function formatSessionTime(t: Time | string | number, tz: string): string {
+  if (typeof t !== "number") return String(t);
+  return new Intl.DateTimeFormat("en-GB", { timeZone: tz, hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date(t * 1000));
+}
+
 export function ChartPage() {
   const { accounts } = useApp();
   const [ticker, setTicker] = useState("005930");
@@ -52,11 +58,14 @@ export function ChartPage() {
     if (!box.current || !data.data) return;
     chartRef.current?.remove();
     const minute = data.data.interval === "1m";
+    const tz = data.data.tz ?? "Asia/Seoul";
+    const fmt = (t: Time) => formatSessionTime(t, tz);
     const chart = createChart(box.current, {
       height: 460,
       layout: { textColor: "#ddd", background: { color: "#161a22" } },
       grid: { vertLines: { color: "#222" }, horzLines: { color: "#222" } },
-      timeScale: { timeVisible: minute, secondsVisible: false },
+      timeScale: { timeVisible: minute, secondsVisible: false, ...(minute ? { tickMarkFormatter: fmt } : {}) },
+      ...(minute ? { localization: { timeFormatter: fmt } } : {}),
     });
     chartRef.current = chart;
     const series = chart.addSeries(CandlestickSeries, { upColor: "#e5484d", downColor: "#2f81f7", borderVisible: false, wickUpColor: "#e5484d", wickDownColor: "#2f81f7" });

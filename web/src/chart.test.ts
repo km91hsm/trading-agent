@@ -9,3 +9,12 @@ describe("markerStyle", () => {
     expect(markerStyle({ kind: "trigger", side: "TRIGGER" })).toEqual({ position: "aboveBar", color: "#2dd4bf", shape: "square" });
   });
 });
+
+describe("formatSessionTime", () => {
+  it("UTC epoch 초를 세션 타임존의 HH:MM 으로", async () => {
+    const { formatSessionTime } = await import("./pages/Chart");
+    expect(formatSessionTime(Date.UTC(2026, 9, 9, 0, 0) / 1000, "Asia/Seoul")).toBe("09:00");
+    expect(formatSessionTime(Date.UTC(2026, 9, 9, 13, 30) / 1000, "America/New_York")).toBe("09:30");
+    expect(formatSessionTime("2026-10-09", "Asia/Seoul")).toBe("2026-10-09"); // 일봉 문자열은 그대로
+  });
+});

@@ -211,6 +211,8 @@ def test_minute_chart_epoch_and_markers_same_day_only(client, conn):
         ("trigger", t0 + 180),
     ]
     assert "트리거 take_profit" in r["markers"][1]["text"]
+    assert r["markers"][0]["text"].startswith("09:02 paper-main BUY")  # 현지 시각 접두사
+    assert r["markers"][1]["text"].startswith("09:03 트리거")
     assert all(m["kind"] != "decision" for m in r["markers"])
 
 
