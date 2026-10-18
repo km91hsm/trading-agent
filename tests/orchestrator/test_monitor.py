@@ -344,3 +344,78 @@ def test_trigger_not_duplicated_while_unhandled(conn):
     monitor.monitor_once(ctx, market="KR", today=D)
     n = conn.execute("SELECT COUNT(*) FROM triggers WHERE kind='take_profit'").fetchone()[0]
     assert n == 1  # 미처리 트리거가 있으면 같은 종류를 다시 쌓지 않는다
+
+
+def test_stop_loss_bookkeeping_failure_does_not_abort_tick_or_repeat(conn, monkeypatch):
+    """접수 뒤 원장 기록 실패(OrderBookkeepingError)가 나머지 손절 점검을 끊거나
+    다음 틱에 같은 SELL 을 다시 내게 하면 안 된다."""
+    from trader.orchestrator import executor as executor_mod
+
+    _decision(conn, stop_loss=65000.0)
+    dec_b = Decision(**ok_decision(ticker="000660", stop_loss=90000.0))
+    repo.ingest_checkpoint(conn, D, "KR", "000660", "30_decision", {"data": dec_b.model_dump()})
+    positions = [_pos("005930", cur="63000"), _pos("000660", avg="100000", cur="85000")]
+    ctx = _ctx(conn, positions=positions)
+    ctx.market_client = FakeMarket(prices={"005930": Decimal("63000"), "000660": Decimal("85000")})
+
+    def boom(*a, **kw):
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(repo, "insert_order", boom)
+    r = monitor.monitor_once(ctx, market="KR", today=D)
+    orders = ctx.brokers["paper-main"].orders
+    assert {o.ticker for o in orders} == {"005930", "000660"}  # 둘 다 점검됐다
+    assert r["stop_loss_orders"] == 0  # 기록이 실패한 주문은 성공으로 세지 않는다
+    monitor.monitor_once(ctx, market="KR", today=D)
+    assert len(ctx.brokers["paper-main"].orders) == 2  # 접수된 주문을 다시 내지 않는다
+    assert executor_mod.OrderBookkeepingError is not None
+
+
+def test_filled_trim_earlier_today_does_not_suppress_stop_loss(conn):
+    """오전에 체결된 TRIM(SELL, filled)이 잔량의 손절을 하루 동안 막으면 안 된다."""
+    dec = _decision(conn, stop_loss=65000.0)
+    dec_id = repo.decision_id(conn, D, "KR", "005930")
+    repo.insert_order(
+        conn,
+        decision_id=dec_id,
+        account_id="paper-main",
+        ticker=dec.ticker,
+        market="KR",
+        side="SELL",
+        qty=5,
+        order_type="MARKET",
+        price=None,
+        status="filled",
+        order_no="T1",
+        message="TRIM",
+        mode="auto",
+        created_at=(NOW - timedelta(hours=1)).isoformat(),
+    )
+    ctx = _ctx(conn, positions=[_pos(cur="63000", qty=5)], price="63000")
+    r = monitor.monitor_once(ctx, market="KR", today=D)
+    assert r["stop_loss_orders"] == 1 and len(ctx.brokers["paper-main"].orders) == 1
+
+
+def test_stale_accepted_sell_of_old_decision_does_not_block_stop_loss(conn):
+    """어제 미체결로 끝난 손절 SELL(상태 accepted 그대로)이 오늘 손절을 영구히 막으면 안 된다."""
+    _old_decision(conn, stop_loss=65000.0)
+    dec_id = repo.decision_id(conn, D - timedelta(days=1), "KR", "005930")
+    repo.insert_order(
+        conn,
+        decision_id=dec_id,
+        account_id="paper-main",
+        ticker="005930",
+        market="KR",
+        side="SELL",
+        qty=10,
+        order_type="MARKET",
+        price=None,
+        status="accepted",
+        order_no="OLD",
+        message="손절",
+        mode="auto",
+        created_at=(NOW - timedelta(days=1)).isoformat(),
+    )
+    ctx = _ctx(conn, positions=[_pos(cur="63000")], price="63000")
+    r = monitor.monitor_once(ctx, market="KR", today=D)
+    assert r["stop_loss_orders"] == 1 and len(ctx.brokers["paper-main"].orders) == 1

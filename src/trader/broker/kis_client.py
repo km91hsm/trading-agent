@@ -11,7 +11,7 @@ from typing import Any
 
 import httpx
 
-from trader.broker.errors import KisApiError
+from trader.broker.errors import UNKNOWN_RESPONSE_CODE, KisApiError
 from trader.broker.kis_auth import KisAuth
 from trader.broker.tr_ids import BASE_URL, tr_id
 from trader.config import Env
@@ -22,6 +22,14 @@ RATE_PER_SEC: dict[Env, int] = {"real": 20, "paper": 2}
 RETRY_CODE = "EGW00201"  # 초당 거래건수 초과 (HTTP 200·500 양쪽으로 온다, 실기 확인)
 TOKEN_ERROR_CODES = frozenset({"EGW00123", "EGW00121"})  # 만료·유효하지 않은 토큰
 RETRY_WAIT_S = 0.5
+# 요청이 서버에 닿은 뒤 응답을 못 받은 실패 → UNKNOWN_RESPONSE_CODE (ConnectError 는 NETWORK)
+_SENT_BUT_NO_RESPONSE = (
+    httpx.ReadTimeout,
+    httpx.WriteTimeout,
+    httpx.ReadError,
+    httpx.WriteError,
+    httpx.RemoteProtocolError,
+)
 
 
 class RateLimiter:
@@ -86,6 +94,8 @@ class KisClient:
         self._limiter.acquire()
         try:
             resp = self._http.request(method, self.base_url + path, headers=self._headers(tr), **kw)
+        except _SENT_BUT_NO_RESPONSE as e:
+            raise KisApiError(UNKNOWN_RESPONSE_CODE, f"응답 없음: {type(e).__name__}", tr) from None
         except httpx.HTTPError as e:
             raise KisApiError("NETWORK", f"요청 실패: {type(e).__name__}", tr) from None
         try:

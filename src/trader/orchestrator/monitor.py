@@ -289,9 +289,12 @@ def _sell_now(
     23:30 KST 에 낸 손절 매도를 00:30 KST 점검이 놓치고 다시 낸다)."""
     local_day = ctx.now().astimezone(MARKET_TZ.get(market, KST)).date()
     if repo.has_open_order_today(
-        ctx.conn, account.id, pos.ticker, "SELL", local_day, market=market
+        ctx.conn, account.id, pos.ticker, "SELL", local_day, market=market, exclude_filled=True
     ):
         return 0
+    unrecorded = f"sl_unrecorded:{account.id}:{market}:{pos.ticker}:{local_day.isoformat()}"
+    if control.get_flag(ctx.conn, unrecorded):
+        return 0  # 접수됐지만 원장에 못 적은 손절이 있다 (아래) — 오늘은 다시 내지 않는다
     if control.is_paused(ctx.conn):
         key = f"sl_paused_notified:{market}:{pos.ticker}:{today.isoformat()}"
         if not control.get_flag(ctx.conn, key):
@@ -311,17 +314,24 @@ def _sell_now(
         state=ctx.state,
         now=ctx.now,
     )
-    results = executor.execute(
-        ectx,
-        dec,
-        date=today,
-        market=market,
-        price=quote,
-        exchange=ctx.exchanges.get(pos.ticker),
-        dry_run=ctx.dry_run,
-        is_stop_loss=True,
-        decision_id=(latest or {}).get("id"),
-    )
+    try:
+        results = executor.execute(
+            ectx,
+            dec,
+            date=today,
+            market=market,
+            price=quote,
+            exchange=ctx.exchanges.get(pos.ticker),
+            dry_run=ctx.dry_run,
+            is_stop_loss=True,
+            decision_id=(latest or {}).get("id"),
+        )
+    except executor.OrderBookkeepingError as e:
+        # 접수는 됐는데 orders 행이 없다: 다음 틱이 "살아 있는 SELL 없음" 으로 보고 같은 매도를
+        # 다시 내지 않도록 플래그로 막고(알림은 _place 가 보냈다) 다른 종목 점검은 계속한다
+        logger.error("손절 주문 기록 실패 %s %s %s: %s", account.id, market, pos.ticker, e)
+        control.set_flag(ctx.conn, unrecorded, e.order_no or "-")
+        return 0
     r = results[0] if results else {}
     order = r.get("order")
     if order and order.get("accepted"):

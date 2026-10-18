@@ -630,3 +630,59 @@ def test_approve_bookkeeping_failure_marks_failed_not_stuck(ectx, monkeypatch):
     r = executor.approve(ectx, aid)
     assert r["ok"] is False and "FAKE-1" in r["error"]
     assert repo.get_approval(ectx.conn, aid)["status"] == "failed"
+
+
+def test_unknown_network_result_is_recorded_as_unknown_and_counts_as_live(ectx):
+    """응답을 못 받은 주문(NETWORK_UNKNOWN)은 failed 가 아니라 unknown 으로 남겨
+    중복 방지 조건이 살아 있는 주문으로 보게 한다 (KIS 에 접수됐을 수 있다)."""
+    from trader.broker.errors import KisApiError
+
+    class TimeoutBroker(FakeBroker):
+        def place_order(self, request):
+            raise KisApiError("NETWORK_UNKNOWN", "요청 실패: ReadTimeout", "TTTC0802U")
+
+    cash = _broker(ectx.accounts[0]).cash
+    ectx.brokers["paper-main"] = TimeoutBroker(ectx.accounts[0], cash=cash)
+    results = _run(ectx)
+    r = next(x for x in results if x["account_id"] == "paper-main")
+    assert r["order"]["status"] == "unknown" and r["order"]["accepted"] is False
+    row = ectx.conn.execute("SELECT status, order_no FROM orders").fetchone()
+    assert (row["status"], row["order_no"]) == ("unknown", None)
+    dec_id = repo.decision_id(ectx.conn, D, "KR", "005930")
+    assert repo.has_open_order_or_approval(ectx.conn, dec_id, "paper-main", "BUY")
+    assert repo.has_open_order_today(ectx.conn, "paper-main", "005930", "BUY", D, market="KR")
+    assert "005930" in repo.today_buy_tickers(ectx.conn, "paper-main", D, market="KR")
+    assert any("미확인" in m for m in ectx.notifier.sent)
+
+
+def test_approve_rejected_when_account_mode_is_no_longer_approve(ectx):
+    """요청 뒤 계좌를 off 로 내렸으면 승인해도 주문이 나가지 않는다 (요청은 pending 유지)."""
+    aid = _pending(ectx)
+    control.set_account_mode(ectx.conn, ectx.accounts[0], "off")
+    r = executor.approve(ectx, aid)
+    assert r["ok"] is False and "모드" in r["error"]
+    assert ectx.brokers["paper-main"].orders == []
+    assert repo.get_approval(ectx.conn, aid)["status"] == "pending"
+
+
+def test_rejected_order_bookkeeping_failure_is_not_escalated(ectx, monkeypatch):
+    """브로커가 거부한 주문(접수번호 없음)의 기록 실패는 긴급 알림·중단 대상이 아니다."""
+    second = AccountConfig(id="paper-2", env="paper", cano="3", markets=["KR"], mode="auto")
+    ectx.accounts.append(second)
+    ectx.brokers["paper-main"] = _broker(ectx.accounts[0], fail={"place_order"})
+    ectx.brokers["paper-2"] = _broker(second)
+    real_insert = repo.insert_order
+    calls = {"n": 0}
+
+    def flaky(*a, **kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("database is locked")
+        return real_insert(*a, **kw)
+
+    monkeypatch.setattr(repo, "insert_order", flaky)
+    results = _run(ectx)
+    by = {r["account_id"]: r for r in results}
+    assert by["paper-main"]["order"]["status"] == "failed"
+    assert by["paper-2"]["order"]["accepted"] is True  # 다음 계좌는 계속 실행된다
+    assert not any("긴급" in m for m in ectx.notifier.sent)

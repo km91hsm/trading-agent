@@ -747,6 +747,16 @@ def submit_decision(
             "ok": False,
             "error": "00_inputs 의 technical.quote 에 현재가가 없어 판정할 수 없음",
         }
+    if decision.stop_loss is not None and Decimal(str(decision.stop_loss)) >= price:
+        # 게이트는 BUY/ADD 주문만 막지만 저장된 결정의 손절선은 monitor 가 모든 action 에 대해
+        # 읽어 즉시 전량 매도하므로, 저장 전에 action 과 무관하게 거부한다
+        return {
+            "ok": False,
+            "error": (
+                f"손절선 {decision.stop_loss} 이 현재가 {price} 이상: 모니터가 즉시 손절 매도함. "
+                "현재가 아래로 다시 제출하거나 stop_loss 를 비우세요"
+            ),
+        }
     stage_name = resume_stage or "30_decision"
     path = write_checkpoint(d, stage_name, _wrap(decision.model_dump(), _call(agent, call_meta)))
     _ingest_run(ctx, d, date, market, ticker)

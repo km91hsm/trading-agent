@@ -353,16 +353,20 @@ def has_open_order_today(
     d: date,
     *,
     market: str | None = None,
+    exclude_filled: bool = False,
 ) -> bool:
     """오늘 같은 계좌·종목·방향의 살아 있는 주문이 있으면 True (손절 반복 발주 방지).
 
     market 을 주면 d 를 그 시장의 현지 날짜로 보고 현지 하루 창을 쓴다 (US 모니터는 KST 자정을
     넘겨 돌므로 KST 창으로는 23:30 KST 주문을 00:30 KST 에 놓친다).
+    exclude_filled=True 면 이미 체결이 끝난 주문은 세지 않는다 (오전에 체결된 TRIM 이 잔량의
+    손절을 막으면 안 된다; 체결된 주문은 더 이상 "살아 있는" 주문이 아니다).
     """
     lo, hi = day_bounds(d, market)
+    excluded = "'rejected','cancelled','failed'" + (",'filled'" if exclude_filled else "")
     row = conn.execute(
         "SELECT 1 FROM orders WHERE account_id=? AND ticker=? AND side=? "
-        "AND status NOT IN ('rejected','cancelled','failed') "
+        f"AND status NOT IN ({excluded}) "
         "AND created_at >= ? AND created_at < ? LIMIT 1",
         (account_id, ticker, side, lo, hi),
     ).fetchone()

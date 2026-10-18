@@ -1048,3 +1048,22 @@ def test_submit_without_ledger_connection_does_not_leave_decision_file(ctx, proj
     r = tools.submit_decision(ctx, ticker="005930", market="KR", date=D, payload=ok_decision())
     assert r["ok"] is False and "원장" in r["error"]
     assert read_checkpoint(run_dir(D, "KR", "005930"), "30_decision") is None
+
+
+def test_submit_rejects_stop_loss_at_or_above_price_for_any_action(ctx, project):
+    """손절선이 현재가 이상이면 action 과 무관하게 제출을 거부한다.
+
+    게이트는 BUY/ADD 주문만 막았고 30_decision 은 저장돼 monitor 가 그 손절선으로 보유분을
+    즉시 전량 매도했다 (HOLD/ADD 에 LLM 이 손절선을 현재가 위로 적는 실수 한 번 = 전량 청산)."""
+    _ready_for_submit(ctx, project)
+    for action in ("HOLD", "ADD"):
+        r = tools.submit_decision(
+            ctx,
+            ticker="005930",
+            market="KR",
+            date=D,
+            payload=ok_decision(action=action, stop_loss=72000.0, target_weight=0.1),
+        )
+        assert r["ok"] is False and "손절선" in r["error"], action
+    assert read_checkpoint(run_dir(D, "KR", "005930"), "30_decision") is None
+    assert ctx.conn.execute("SELECT COUNT(*) AS n FROM decisions").fetchone()["n"] == 0

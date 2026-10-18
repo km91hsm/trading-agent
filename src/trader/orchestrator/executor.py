@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from trader.agents.schemas import Decision
-from trader.broker.errors import KisApiError
+from trader.broker.errors import UNKNOWN_RESPONSE_CODE, KisApiError
 from trader.broker.models import OrderRequest, OrderResult
 from trader.config import KST, AccountConfig, MemorySettings, Mode, Settings
 from trader.control import control
@@ -303,16 +303,15 @@ def execute(
                 reasons=[f"잔고 조회 실패로 판정 불가: {e}"],
             )
         # 멱등: 같은 결정·계좌에 살아 있는 주문·승인 요청이 있으면 다시 내지 않는다 (재실행·재시도).
-        # 손절은 미승인 요청(pending)에 막히면 안 되므로 주문만 본다.
+        # 손절은 이 결정 단위 조건을 보지 않는다: 결정은 며칠 전 것일 수 있고 미체결로 끝난
+        # 손절 SELL(accepted 그대로)이 다음 손절을 영구히 막기 때문이다. 손절의 중복 방지는
+        # monitor._sell_now 의 "같은 현지 날짜의 살아 있는 SELL" 조건이 맡는다.
         if (
             verdict.approved
             and decision_id is not None
+            and not is_stop_loss
             and repo.has_open_order_or_approval(
-                ctx.conn,
-                decision_id,
-                account.id,
-                verdict.side,
-                include_approvals=not is_stop_loss,
+                ctx.conn, decision_id, account.id, verdict.side
             )
         ):
             verdict = verdict.model_copy(
@@ -423,8 +422,20 @@ def _place(
         status = "accepted" if result.accepted else "rejected"
     except KisApiError as e:
         result = OrderResult(order_no=None, accepted=False, message=f"{e.msg_cd}: {e.msg1}")
-        status = "failed"
-        logger.warning("주문 실패 %s %s: %s", account.id, request.ticker, e)
+        if e.msg_cd == UNKNOWN_RESPONSE_CODE:
+            # 요청은 나갔는데 응답이 없다: KIS 에 접수됐을 수 있어 failed 로 적으면 중복 방지
+            # 조건(failed 제외)이 놓쳐 같은 주문을 다시 낸다. unknown 으로 살려 두고 체결
+            # 동기화가 같은 날·종목·방향 체결로 확정한다.
+            status = "unknown"
+            logger.error("주문 응답 없음 %s %s: %s", account.id, request.ticker, e)
+            _notify_quietly(
+                ctx,
+                f"[주문 상태 미확인] {account.id} {request.side} {request.ticker} {request.qty}주 "
+                f"응답을 받지 못함 — KIS 앱에서 확인, 체결 동기화(fills sync)가 확정함: {e.msg1}",
+            )
+        else:
+            status = "failed"
+            logger.warning("주문 실패 %s %s: %s", account.id, request.ticker, e)
     except ValueError as e:  # 거래소 코드 누락·계좌 시장 불일치 등 요청 자체의 오류
         result = OrderResult(order_no=None, accepted=False, message=f"INVALID: {e}")
         status = "failed"
@@ -453,6 +464,12 @@ def _place(
             org_no=result.org_no,
         )
     except Exception as e:
+        if status not in ("accepted", "unknown"):
+            # 브로커가 거부·실패한 주문은 KIS 에 없으므로 행이 빠져도 추적할 것이 없다
+            logger.error(
+                "실패 주문의 기록 실패 %s %s (%s): %s", account.id, request.ticker, status, e
+            )
+            return result.model_dump(mode="json") | {"status": status}
         logger.critical(
             "주문 기록 실패 %s %s %s %d주 접수번호 %s: %s",
             account.id,
@@ -540,6 +557,12 @@ def approve(ctx: ExecContext, approval_id: int) -> dict:
     account = next((x for x in ctx.accounts if x.id == a["account_id"]), None)
     if account is None:
         return {"ok": False, "error": f"계좌 {a['account_id']} 가 설정에 없음"}
+    mode, _ = effective_mode(ctx.conn, account)
+    if mode != "approve":  # 요청 뒤 off 로 내렸으면 승인해도 주문이 나가면 안 된다
+        return {
+            "ok": False,
+            "error": f"계좌 모드가 approve 가 아님({mode}): 승인 미실행 (요청은 pending 유지)",
+        }
     order = dict(a["order"])
     raw_quote = order.pop(QUOTE_PRICE_KEY, None)
     quote_price = Decimal(str(raw_quote)) if raw_quote is not None else None

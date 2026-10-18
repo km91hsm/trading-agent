@@ -29,6 +29,21 @@ def _order_id_for(conn: sqlite3.Connection, account_id: str, f: Fill) -> int:
     ).fetchone()
     if row:
         return int(row["id"])
+    # 응답을 못 받아 unknown(주문번호 없음)으로 남은 주문은 같은 날·종목·방향 체결로 확정한다
+    row = conn.execute(
+        "SELECT id FROM orders WHERE account_id=? AND ticker=? AND side=? AND status='unknown' "
+        "AND order_no IS NULL AND created_at >= ? AND created_at < ? ORDER BY id LIMIT 1",
+        (account_id, f.ticker, f.side, lo, hi),
+    ).fetchone()
+    if row:
+        conn.execute(
+            "UPDATE orders SET order_no=?, status='accepted' WHERE id=?", (f.order_no, row["id"])
+        )
+        conn.commit()
+        logger.info(
+            "미확인 주문 확정 %s %s %s → 접수번호 %s", account_id, f.ticker, f.side, f.order_no
+        )
+        return int(row["id"])
     return repo.insert_order(
         conn,
         decision_id=None,

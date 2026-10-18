@@ -163,3 +163,32 @@ def test_fill_does_not_attach_to_old_order_with_reused_order_no(conn):
     # 옛 주문의 체결은 그대로
     q = conn.execute("SELECT SUM(qty) AS q FROM fills WHERE order_id=?", (old,)).fetchone()["q"]
     assert q == 3
+
+
+def test_fill_attaches_to_unknown_order_of_same_day(conn):
+    """응답을 못 받아 unknown 으로 남은 주문(주문번호 없음)에 같은 날·종목·방향 체결이 오면
+    external 행을 만들지 않고 그 주문에 붙여 accepted→filled 로 확정한다."""
+    acct = make_account("paper-main", "paper", "auto")
+    dec_id = repo.ingest_checkpoint(conn, D, "KR", "005930", "30_decision", {"data": ok_decision()})
+    oid = repo.insert_order(
+        conn,
+        decision_id=dec_id,
+        account_id="paper-main",
+        ticker="005930",
+        market="KR",
+        side="BUY",
+        qty=3,
+        order_type="LIMIT",
+        price=Decimal("71000"),
+        status="unknown",
+        order_no=None,
+        message="NETWORK_UNKNOWN",
+        mode="auto",
+        created_at="2026-10-09T00:10:00+00:00",
+    )
+    broker = FakeBroker(acct, fills={("KR", D): [_fill("0000117057")]})
+    fills_mod.sync_fills(conn, broker, acct, D)
+    rows = conn.execute("SELECT id, status, order_no, mode FROM orders ORDER BY id").fetchall()
+    assert len(rows) == 1 and rows[0]["id"] == oid
+    row = rows[0]
+    assert (row["status"], row["order_no"], row["mode"]) == ("filled", "0000117057", "auto")

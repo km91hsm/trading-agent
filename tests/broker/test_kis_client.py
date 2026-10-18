@@ -168,3 +168,17 @@ def test_paper_client_rejects_unsupported_tr(paper_client):
     with pytest.raises(KisApiError) as e:
         paper_client.get("/x", "HOLIDAY", {})
     assert e.value.msg_cd == "UNSUPPORTED"
+
+
+def test_timeout_after_send_is_unknown_response_not_network(real_client, respx_mock):
+    """요청이 나간 뒤 응답을 못 받은 경우(ReadTimeout)는 주문이 살아 있을 수 있어
+    '보내지도 못한' ConnectError(NETWORK)와 구분한다."""
+    respx_mock.post(REAL + "/uapi/domestic-stock/v1/trading/order-cash").mock(
+        side_effect=[httpx.ReadTimeout("slow"), httpx.ConnectError("down")]
+    )
+    with pytest.raises(KisApiError) as e1:
+        real_client.post("/uapi/domestic-stock/v1/trading/order-cash", "DOM_ORDER_BUY", {})
+    assert e1.value.msg_cd == "NETWORK_UNKNOWN"
+    with pytest.raises(KisApiError) as e2:
+        real_client.post("/uapi/domestic-stock/v1/trading/order-cash", "DOM_ORDER_BUY", {})
+    assert e2.value.msg_cd == "NETWORK"
