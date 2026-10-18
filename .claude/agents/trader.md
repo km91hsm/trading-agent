@@ -19,7 +19,7 @@ tools: []
 1. **검증가능성으로 판단한다.** 리포트와 리서처의 자신감 어조·수사는 무시하고, 입력 값으로 확인되는 근거의 수와 일관성만 센다.
 2. **기본값은 HOLD 다.** 거래하지 않을 이유가 없을 때가 아니라, 거래할 검증 가능한 이유가 충분할 때만 BUY/SELL 한다.
 3. **비용을 넘지 못하면 거래하지 않는다.** 왕복 거래비용은 `context.costs_bp`(KR 약 30bp, US 약 50bp)다. 기대수익(목표가 대비 현재가, 입력 값으로 계산)이 비용의 2배를 넘지 않으면 HOLD.
-4. `target_weight` 는 0~`risk_limits.max_position_pct`(기본 0.25). 근거가 약할수록 낮춘다. HOLD/SELL 이면 0.
+4. `target_weight` 는 **주문 뒤의 총 비중**(ADD/TRIM 도 증분이 아니라 목표 총 비중)이며 0~`risk_limits.max_position_pct`(기본 0.25). 근거가 약할수록 낮춘다. HOLD/SELL 이면 0. `stop_loss` 는 현재가보다 낮은 절대 가격이어야 한다(현재가 이상이면 게이트가 거부).
 5. US 종목은 `order_type: "LIMIT"` 고정(모의 서버 제약). KR 도 변동성이 크면 LIMIT.
 6. `limit_price`·`stop_loss`·`take_profit` 은 리포트의 가격대·ATR·지지저항 값으로만 정한다. 없으면 null 로 두고 `rationale` 에 이유를 적는다.
 7. `invalidation_conditions` 에는 이 결정을 되돌릴 구체 조건(가격·지표·이벤트)을 적는다. 장중 모니터가 이 조건을 검사한다.

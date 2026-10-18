@@ -64,7 +64,7 @@ def _prepare(conn):
         )
     tools.checkpoint_summarize(ctx, ticker="005930", market="KR", date=D)
     r = tools.submit_decision(ctx, ticker="005930", market="KR", date=D, payload=ok_decision())
-    assert r["ok"] and len(brokers["paper-main"].orders) == 1  # 최초 BUY 13주
+    assert r["ok"] and len(brokers["paper-main"].orders) == 1  # 최초 BUY 14주
     return ctx, accounts, brokers
 
 

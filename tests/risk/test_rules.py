@@ -64,10 +64,29 @@ def test_qty_from_weight_and_position_cap():
     # 0.1 × 1천만 / 7만 = 14.28 → 14주
     v = _eval(ok_decision(target_weight=0.1))
     assert v.approved and v.adjusted_qty == 14 and v.reasons == []
-    # 이미 20% 보유 + 목표 0.1 → 종목당 25% 상한까지 5% 만 추가 (50만/7만 = 7주)
+    # target_weight 는 주문 뒤 총 비중: 이미 20% 보유 + 목표 0.25 → 5% 만 추가 (50만/7만 = 7주)
     p = _portfolio(positions={"005930": _pos("005930", qty=20, price="100000")})
+    v = _eval(ok_decision(action="ADD", target_weight=0.25), p)
+    assert v.approved and v.adjusted_qty == 7
+    # 이미 목표 비중 이상 보유면 ADD 는 0주 거부 (목표 비중을 다시 통째로 사지 않는다)
     v = _eval(ok_decision(action="ADD", target_weight=0.1), p)
-    assert v.approved and v.adjusted_qty == 7 and any("종목당" in r for r in v.reasons)
+    assert v.approved is False and v.adjusted_qty == 0
+    assert any("이미 목표 비중" in r for r in v.reasons)
+
+
+def test_limit_order_qty_uses_limit_price():
+    """지정가가 현재가보다 높으면 수량은 지정가 기준이어야 주문금액이 한도를 넘지 않는다."""
+    # 0.1 × 1천만 = 100만. 현재가 7만이면 14주지만 지정가 7.35만 기준 13주 (13×73500 = 955,500)
+    v = _eval(ok_decision(target_weight=0.1, order_type="LIMIT", limit_price=73500.0))
+    assert v.approved and v.adjusted_qty == 13 and v.price == Decimal("73500")
+
+
+def test_buy_with_stop_loss_at_or_above_price_rejected():
+    """손절선이 현재가 이상이면 모니터 첫 점검에서 즉시 매도되므로 매수를 거부한다."""
+    v = _eval(ok_decision(stop_loss=72000.0), price="70000")
+    assert v.approved is False and any("손절선" in r for r in v.reasons)
+    v = _eval(ok_decision(stop_loss=65000.0), price="70000")
+    assert v.approved
 
 
 def test_max_positions_blocks_new():
@@ -141,7 +160,9 @@ def test_low_confidence_halves():
 
 def test_us_market_order_forced_limit():
     v = _eval(
-        ok_decision(ticker="AAPL", order_type="MARKET", limit_price=None, take_profit=None),
+        ok_decision(
+            ticker="AAPL", order_type="MARKET", limit_price=None, take_profit=None, stop_loss=180.0
+        ),
         price="200",
         market="US",
     )

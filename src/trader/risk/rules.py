@@ -120,10 +120,17 @@ def evaluate(
                 f"목표 비중 {weight:.2f} 을 종목당 상한 {lim.max_position_pct:.2f} 로 조정"
             )
             weight = lim.max_position_pct
+        # target_weight 는 주문 뒤의 총 비중이다 (ADD 도 TRIM 과 같은 의미). 매수금액은 그 증분.
         target_value = Decimal(str(weight)) * nav
         current_value = held.eval_amount if held else Decimal(0)
+        buy_value = target_value - current_value
+        if held is not None and buy_value <= 0:
+            buy_value = Decimal(0)
+            rejected.append(
+                f"이미 목표 비중 이상 보유 (현재 {float(current_value / nav) if nav else 0:.2f} ≥ "
+                f"목표 {weight:.2f})"
+            )
         room = Decimal(str(lim.max_position_pct)) * nav - current_value
-        buy_value = target_value
         if buy_value > room:
             buy_value = max(room, Decimal(0))
             reasons.append(f"종목당 상한 {lim.max_position_pct:.0%} 까지만 추가 매수")
@@ -131,7 +138,12 @@ def evaluate(
         if buy_value > available:
             buy_value = max(available, Decimal(0))
             reasons.append("가능금액(당일 누적 주문 차감) 초과로 수량 축소")
-        qty = _floor_qty(buy_value, price)
+        # 수량은 실제 주문가 기준 (지정가가 현재가보다 높으면 현재가 기준 수량은 금액을 초과한다)
+        qty = _floor_qty(buy_value, order_price if order_price is not None else price)
+        if decision.stop_loss is not None and Decimal(str(decision.stop_loss)) >= price:
+            rejected.append(
+                f"손절선 {decision.stop_loss} 이 현재가 {price} 이상 (모니터가 즉시 손절 매도함)"
+            )
         if decision.confidence < LOW_CONFIDENCE:
             qty //= 2
             reasons.append(f"confidence {decision.confidence:.2f} < {LOW_CONFIDENCE} 로 수량 절반")

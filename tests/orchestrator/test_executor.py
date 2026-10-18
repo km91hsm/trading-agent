@@ -72,13 +72,13 @@ def _run(ectx, decision=None, *, dry_run=False, market="KR", exchange=None, pric
 def test_paper_auto_places_order_and_writes_checkpoints(ectx):
     results = _run(ectx)
     by = {r["account_id"]: r for r in results}
-    assert by["paper-main"]["approved"] and by["paper-main"]["qty"] == 13  # 100만/71500
+    assert by["paper-main"]["approved"] and by["paper-main"]["qty"] == 14  # 100만/지정가 71000
     orders = ectx.brokers["paper-main"].orders
-    assert len(orders) == 1 and orders[0].qty == 13 and orders[0].price == Decimal("71000")
+    assert len(orders) == 1 and orders[0].qty == 14 and orders[0].price == Decimal("71000")
     rc = read_checkpoint(run_dir(D, "KR", "005930"), "40_risk_check_paper-main")
     assert rc["data"]["approved"] is True and rc["data"]["mode"] == "auto"
     oc = read_checkpoint(run_dir(D, "KR", "005930"), "50_order_paper-main")
-    assert oc["data"]["result"]["accepted"] and oc["data"]["request"]["qty"] == 13
+    assert oc["data"]["result"]["accepted"] and oc["data"]["request"]["qty"] == 14
     row = ectx.conn.execute("SELECT status, order_no, mode FROM orders").fetchone()
     assert (row["status"], row["order_no"], row["mode"]) == ("accepted", "FAKE-1", "auto")
     assert ectx.conn.execute("SELECT COUNT(*) FROM risk_checks").fetchone()[0] == 2
@@ -119,7 +119,7 @@ def test_approve_mode_creates_approval_and_notifies(ectx):
     r = next(x for x in results if x["account_id"] == "paper-main")
     assert r["mode"] == "approve" and r["approval_id"] is not None and r["order"] is None
     pending = repo.pending_approvals(ectx.conn)
-    assert len(pending) == 1 and pending[0]["order"]["qty"] == 13
+    assert len(pending) == 1 and pending[0]["order"]["qty"] == 14
     assert pending[0]["expires_at"] == "2026-10-09T01:30:00+00:00"
     assert ectx.brokers["paper-main"].orders == []
     assert any("/approve" in m for m in ectx.notifier.sent)
@@ -189,7 +189,7 @@ def test_today_pnl_from_previous_snapshot_blocks_buy(ectx):
 def test_us_order_carries_exchange(ectx):
     results = _run(
         ectx,
-        ok_decision(ticker="AAPL", limit_price=200.0, take_profit=230.0),
+        ok_decision(ticker="AAPL", limit_price=200.0, take_profit=230.0, stop_loss=180.0),
         market="US",
         exchange="NAS",
         price=Decimal("200"),
@@ -321,12 +321,12 @@ def test_approve_conditional_update_guards_race(ectx):
 
 def test_dual_market_aggregates_are_per_market(ectx):
     """KR 1천만원 스냅샷·주문이 US(1만달러) 판정에 섞이면 안 된다."""
-    _run(ectx)  # KR BUY 13주 @71000 = 923,000 KRW 주문 + KR 스냅샷
+    _run(ectx)  # KR BUY 14주 @71000 = 994,000 KRW 주문 + KR 스냅샷
     assert repo.today_order_amount(ectx.conn, "paper-main", D, market="US") == Decimal(0)
-    assert repo.today_order_amount(ectx.conn, "paper-main", D, market="KR") == Decimal("923000")
+    assert repo.today_order_amount(ectx.conn, "paper-main", D, market="KR") == Decimal("994000")
     r = _run(
         ectx,
-        ok_decision(ticker="AAPL", limit_price=200.0, take_profit=230.0),
+        ok_decision(ticker="AAPL", limit_price=200.0, take_profit=230.0, stop_loss=180.0),
         market="US",
         exchange="NAS",
         price=Decimal("200"),
@@ -486,7 +486,7 @@ def _shadow_rows(ectx, account_id=None):
 def test_shadow_mode_records_but_does_not_change_qty(ectx):
     ectx.rl_sizer = _sizer("shadow")
     by = {r["account_id"]: r for r in _run(ectx)}
-    assert by["paper-main"]["qty"] == 13  # 변경 없음
+    assert by["paper-main"]["qty"] == 14  # 변경 없음
     rows = _shadow_rows(ectx)
     assert len(rows) == 1 and rows[0]["account_id"] == "paper-main"
     assert rows[0]["proposed_weight"] == 0.05 and rows[0]["applied"] == 0
@@ -495,7 +495,7 @@ def test_shadow_mode_records_but_does_not_change_qty(ectx):
 def test_apply_mode_changes_paper_qty_and_marks_applied(ectx):
     ectx.rl_sizer = _sizer("apply")
     by = {r["account_id"]: r for r in _run(ectx)}
-    assert by["paper-main"]["qty"] == 6  # 50만/71500
+    assert by["paper-main"]["qty"] == 7  # 50만/지정가 71000
     assert any(r.startswith("RL 사이저 적용") for r in by["paper-main"]["reasons"])
     assert _shadow_rows(ectx)[0]["applied"] == 1
 
@@ -513,13 +513,13 @@ def test_real_account_untouched_even_in_apply_mode(ectx):
 def test_apply_mode_still_capped_by_risk_gate(ectx):
     ectx.rl_sizer = _sizer("apply", weight=0.90)
     by = {r["account_id"]: r for r in _run(ectx)}
-    assert by["paper-main"]["qty"] == 34  # 25% 상한 250만/71500
+    assert by["paper-main"]["qty"] == 35  # 25% 상한 250만/지정가 71000
 
 
 def test_disabled_or_no_model_is_noop(ectx):
     ectx.rl_sizer = None
     results = _run(ectx)
-    assert _shadow_rows(ectx) == [] and results[0]["qty"] == 13
+    assert _shadow_rows(ectx) == [] and results[0]["qty"] == 14
 
 
 def test_hold_and_sell_skip_rl(ectx):
