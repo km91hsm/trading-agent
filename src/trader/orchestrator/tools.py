@@ -764,8 +764,16 @@ def submit_decision(
         repo.ingest_checkpoint(
             ctx.conn, date, market, ticker, resume_stage, read_checkpoint(d, resume_stage) or {}
         )
+    m_round = _RESUME_RE.match(resume_stage) if resume_stage else None
     executions, memory_entry_id = _execute_and_record(
-        ctx, d, date, market, decision, inputs, price
+        ctx,
+        d,
+        date,
+        market,
+        decision,
+        inputs,
+        price,
+        resume_round=int(m_round.group(1)) if m_round else None,
     )
     logger.info("결정 저장 %s %s: %s (계좌 %d)", market, ticker, decision.action, len(executions))
     return {
@@ -787,10 +795,12 @@ def _execute_and_record(
     decision: schemas.Decision,
     inputs: dict,
     price: Decimal,
+    *,
+    resume_round: int | None = None,
 ) -> tuple[list[dict], int | None]:
     """리스크 게이트·계좌별 실행(주문은 executor 안에서만) + 메모리 엔트리.
 
-    결정은 1회, 판정·주문은 계좌마다."""
+    결정은 1회, 판정·주문은 계좌마다. 재평가 라운드는 41_/51_ 체크포인트 이름에 들어간다."""
     from trader.orchestrator import executor
 
     assert ctx.conn is not None
@@ -813,6 +823,7 @@ def _execute_and_record(
         price=price,
         exchange=(inputs.get("meta") or {}).get("exchange"),
         dry_run=ctx.dry_run,
+        resume_round=resume_round,
     )
     memory_entry_id = _record_memory(ctx, decision, market, date)
     return executions, memory_entry_id

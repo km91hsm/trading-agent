@@ -116,3 +116,17 @@ def test_fake_broker_get_balance():
     cash = {"KR": Cash(currency="KRW", available=D(1), total=D(1))}
     fb = FakeBroker(a, cash=cash)
     assert fb.get_balance("KR") == ([], cash["KR"])
+
+
+def test_positions_us_carry_exchange_code(paper_client, respx_mock):
+    """US 보유 종목은 잔고의 ovrs_excg_cd(NASD|NYSE|AMEX)를 시세용 EXCD(NAS|NYS|AMS)로 바꿔 둔다
+    (monitor 가 universe 밖 보유분의 시세·매도 거래소를 알 수 있도록)."""
+    from conftest_broker import load
+
+    _route(respx_mock, "/uapi/overseas-stock/v1/trading/inquire-balance", "balance_us.json", load)
+    broker = KisBroker(make_account("paper-main", "paper", "auto", ["KR", "US"]), paper_client)
+    pos = broker.get_positions("US")
+    assert pos[0].exchange == "NAS"
+    kr = KisBroker(make_account("paper-main", "paper", "auto"), paper_client)
+    _route(respx_mock, "/uapi/domestic-stock/v1/trading/inquire-balance", "balance_kr.json", load)
+    assert kr.get_positions("KR")[0].exchange is None

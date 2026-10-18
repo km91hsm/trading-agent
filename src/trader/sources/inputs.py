@@ -24,7 +24,7 @@ import httpx
 from pydantic import BaseModel
 
 from trader.config import KST, MARKET_TZ, ConfigError, Market, Secrets, SourcesConfig
-from trader.orchestrator.run_store import read_checkpoint, run_dir, write_checkpoint
+from trader.orchestrator.run_store import read_checkpoint, run_date_for, run_dir, write_checkpoint
 from trader.sources import indicators, manual_inputs
 from trader.sources.base import SKIP_REASONS, Section, run_section, skipped_section
 from trader.sources.community import collect_channels, collect_community  # noqa: F401
@@ -414,7 +414,8 @@ def collect_and_save(
         )
     if asof - deps.now() > MAX_FUTURE:
         raise ConfigError(f"미래 asof 는 허용하지 않습니다 (asof={asof.isoformat()})")
-    d = run_dir(asof.astimezone(KST).date(), market, ticker, state)
+    # 디렉터리 날짜는 시장 운영일(US 는 뉴욕 날짜): 데몬 monitor·재평가와 같은 runs/<date> 를 본다
+    d = run_dir(run_date_for(market, asof), market, ticker, state)
     if not force and read_checkpoint(d, "00_inputs") is not None:
         logger.info("00_inputs 이미 존재, 건너뜀: %s", d)
         return d / "00_inputs.json"

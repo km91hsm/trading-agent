@@ -150,3 +150,22 @@ def test_fake_resume_session_writes_31_decision(conn, monkeypatch):
 
 def test_decision_schema_unchanged_for_resume():
     assert Decision(**ok_decision()).action == "BUY"
+
+
+def test_resume_stage_writes_round_specific_risk_and_order_checkpoints(conn):
+    """재평가(31_decision_r<n>)의 판정·주문 체크포인트는 오늘 분석의 40_/50_ 을 덮어쓰지 않는다."""
+    ctx, accounts, brokers = _prepare(conn)
+    d = run_dir(D, "KR", "005930")
+    before = (d / "40_risk_check_paper-main.json").read_text(encoding="utf-8")
+    r = tools.submit_decision(
+        ctx,
+        ticker="005930",
+        market="KR",
+        date=D,
+        stage="31_decision_r1",
+        payload=ok_decision(action="SELL", target_weight=0.0),
+    )
+    assert r["ok"]
+    stages = list_checkpoints(d)
+    assert "41_risk_check_r1_paper-main" in stages
+    assert (d / "40_risk_check_paper-main.json").read_text(encoding="utf-8") == before

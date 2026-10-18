@@ -40,15 +40,23 @@ class Signal:
     detail: dict = field(default_factory=dict)
 
 
+_NON_PRICE_WORDS = ("거래량", "시총", "시가총액", "억", "만주", "%", "RSI", "배수", "PER", "PBR")
+
+
 def parse_price_conditions(conditions: list[str]) -> list[tuple[str, Decimal]]:
-    """'종가 < 65000', '70,000원 이상' 같은 문장에서 (연산자, 가격) 만 뽑는다. 지표 조건은 무시."""
+    """'종가 < 65000', '70,000원 이상' 같은 문장에서 (연산자, 가격) 만 뽑는다. 지표 조건은 무시.
+
+    거래량·시총·비율 문장은 숫자가 커도 가격이 아니므로 건너뛰고, 한 문장에 숫자가 여럿이면
+    ('3일 연속 종가 65000 이하') 가장 큰 수를 가격으로 본다."""
     out: list[tuple[str, Decimal]] = []
     for c in conditions or []:
         text = str(c)
-        m = _NUM_RE.search(text)
-        if not m:
+        if any(w in text for w in _NON_PRICE_WORDS):
             continue
-        num = Decimal(m.group(1).replace(",", ""))
+        nums = [Decimal(x.replace(",", "")) for x in _NUM_RE.findall(text)]
+        if not nums:
+            continue
+        num = max(nums)
         if num < 100:  # RSI·비율 같은 작은 수는 가격이 아니다
             continue
         if "<" in text or "이하" in text or "미만" in text or "하회" in text:
@@ -106,10 +114,19 @@ class MonitorContext:
     exchanges: dict[str, str] = field(default_factory=dict)  # US ticker → NAS|NYS|AMS
 
 
-def _quote(ctx: MonitorContext, market: str, ticker: str) -> Decimal:
+def _exchange(ctx: MonitorContext, pos: Position) -> str | None:
+    """US 거래소: 브로커 잔고가 준 값 우선, 없으면 universe.us. 둘 다 없으면 None (NAS 추정 금지:
+    NYSE 종목을 NAS 로 조회하면 시세 0 → 손절 불능)."""
+    return pos.exchange or ctx.exchanges.get(pos.ticker)
+
+
+def _quote(ctx: MonitorContext, market: str, pos: Position) -> Decimal:
     if market == "KR":
-        return ctx.market_client.get_price_kr(ticker).price
-    return ctx.market_client.get_price_us(ticker, ctx.exchanges.get(ticker, "NAS")).price
+        return ctx.market_client.get_price_kr(pos.ticker).price
+    exchange = _exchange(ctx, pos)
+    if exchange is None:
+        raise ValueError(f"US 거래소 코드 없음 (잔고·universe.us 모두): {pos.ticker}")
+    return ctx.market_client.get_price_us(pos.ticker, exchange).price
 
 
 STOP_LOSS_LIMIT_DISCOUNT = Decimal("0.03")  # US 손절은 현재가 3% 아래 지정가(체결 가능 지정가)
@@ -136,11 +153,15 @@ def _stop_loss_decision(ticker: str, market: str, quote: Decimal, sig: Signal) -
     )
 
 
-def _can_reevaluate(ctx: MonitorContext, market: str, ticker: str) -> str | None:
+def _can_reevaluate(ctx: MonitorContext, market: str, ticker: str, today: date) -> str | None:
     if ctx.session_runner is None:
         return "session_runner 없음"
     if control.is_paused(ctx.conn):
         return "일시정지"
+    if repo.decision_id(ctx.conn, today, market, ticker) is None:
+        # submit-decision --stage 31_* 은 오늘 30_decision 을 요구한다. analyze 가 아직(또는 실패로)
+        # 안 끝난 보유분은 세션을 띄워도 제출이 거부되므로 트리거만 남겨 다음 틱에 다시 본다
+        return "오늘 결정 없음 (analyze 미완료)"
     if tools.sessions_today(ctx.conn, ctx.now()) >= ctx.settings.llm.daily_session_cap:
         return "세션 상한"
     last = repo.last_trigger_handled_at(ctx.conn, market, ticker)
@@ -167,7 +188,7 @@ def monitor_once(ctx: MonitorContext, *, market: str, today: date) -> dict:
             logger.warning("보유 조회 실패 %s: %s", account.id, e)
             continue
         for pos in positions:
-            quote = _cached_quote(ctx, market, pos.ticker, quotes)
+            quote = _cached_quote(ctx, market, pos, quotes)
             if quote is None:
                 continue
             result["checked"] += 1
@@ -214,7 +235,7 @@ def monitor_once(ctx: MonitorContext, *, market: str, today: date) -> dict:
             continue
         handled.add(pos.ticker)
         first_id = tids[0]
-        why = _can_reevaluate(ctx, market, pos.ticker)
+        why = _can_reevaluate(ctx, market, pos.ticker, today)
         if why:
             logger.info("재평가 생략 %s %s: %s", market, pos.ticker, why)
             continue
@@ -227,7 +248,7 @@ def monitor_once(ctx: MonitorContext, *, market: str, today: date) -> dict:
                 market=market,
                 date=today,
                 ticker=pos.ticker,
-                exchange=ctx.exchanges.get(pos.ticker),
+                exchange=_exchange(ctx, pos),
                 trigger_id=first_id,
                 trigger={"kind": s0.kind, "price": str(s0.price), "detail": s0.detail},
                 brokers=ctx.brokers,
@@ -248,9 +269,9 @@ def monitor_once(ctx: MonitorContext, *, market: str, today: date) -> dict:
                 )
             ctx.notifier.send(f"[재평가 실패] {market} {pos.ticker}: {type(e).__name__}: {e}")
             continue
-        for tid in tids[1:]:  # 같은 세션이 나머지 트리거도 처리한 것으로 표시
+        for tid in tids[1:]:  # 같은 세션이 나머지 트리거도 처리한 것으로 표시 (실패도 같은 표시)
             repo.mark_trigger_handled(
-                ctx.conn, tid, res.session_id, handled_at=ctx.now().isoformat()
+                ctx.conn, tid, resume.handled_marker(res), handled_at=ctx.now().isoformat()
             )
         if res.ok:
             result["reevaluated"] += 1
@@ -258,11 +279,12 @@ def monitor_once(ctx: MonitorContext, *, market: str, today: date) -> dict:
 
 
 def _cached_quote(
-    ctx: MonitorContext, market: str, ticker: str, quotes: dict[str, Decimal | None]
+    ctx: MonitorContext, market: str, pos: Position, quotes: dict[str, Decimal | None]
 ) -> Decimal | None:
+    ticker = pos.ticker
     if ticker not in quotes:
         try:
-            q = _quote(ctx, market, ticker)
+            q = _quote(ctx, market, pos)
         except (KisApiError, ValueError) as e:
             logger.warning("시세 실패 %s %s: %s", market, ticker, e)
             q = None
@@ -321,7 +343,7 @@ def _sell_now(
             date=today,
             market=market,
             price=quote,
-            exchange=ctx.exchanges.get(pos.ticker),
+            exchange=_exchange(ctx, pos),
             dry_run=ctx.dry_run,
             is_stop_loss=True,
             decision_id=(latest or {}).get("id"),

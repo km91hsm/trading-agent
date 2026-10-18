@@ -509,16 +509,20 @@ def realized_pnl_5d(
     return total
 
 
-def _first_buy_of_current_lot(events: list[tuple[str, str, int]]) -> date | None:
+def _first_buy_of_current_lot(
+    events: list[tuple[str, str, int]], market: str | None = None
+) -> date | None:
     """(시각, 방향, 수량) 시간순 이벤트에서 현재 보유 묶음의 첫 매수일. 보유가 0 이면 None.
 
-    전량 매도 뒤 다시 사면 그 매수일부터 센다 (최소 보유기간이 재진입에도 적용되도록)."""
+    전량 매도 뒤 다시 사면 그 매수일부터 센다 (최소 보유기간이 재진입에도 적용되도록).
+    날짜는 시장 현지(US 는 ET): KST 로 보면 ET 오전 체결이 다음 날이 돼 보유 거래일이 하루 준다."""
+    tz = MARKET_TZ.get(market or "", KST)
     qty = 0
     since: date | None = None
     for at, side, n in events:
         if side == "BUY":
             if qty <= 0:
-                since = datetime.fromisoformat(at).astimezone(KST).date()
+                since = datetime.fromisoformat(at).astimezone(tz).date()
                 qty = 0
             qty += int(n)
         else:
@@ -544,28 +548,31 @@ def held_since(
         scope = f" AND o.ticker IN ({','.join('?' * len(tickers))})"
         scope_args = list(tickers)
     by_ticker: dict[str, list[tuple[str, str, int]]] = {}
+    markets: dict[str, str] = {}
     for r in conn.execute(
-        "SELECT o.ticker, o.side, f.qty, f.filled_at FROM fills f JOIN orders o ON o.id=f.order_id "
-        f"WHERE f.account_id=?{scope} ORDER BY f.filled_at, f.id",
+        "SELECT o.ticker, o.market, o.side, f.qty, f.filled_at FROM fills f "
+        f"JOIN orders o ON o.id=f.order_id WHERE f.account_id=?{scope} ORDER BY f.filled_at, f.id",
         (account_id, *scope_args),
     ).fetchall():
         by_ticker.setdefault(r["ticker"], []).append((r["filled_at"], r["side"], r["qty"]))
+        markets[r["ticker"]] = r["market"]
     out: dict[str, date] = {}
     for t, events in by_ticker.items():
-        since = _first_buy_of_current_lot(events)
+        since = _first_buy_of_current_lot(events, markets.get(t))
         if since is not None:
             out[t] = since
     fallback: dict[str, list[tuple[str, str, int]]] = {}
     for r in conn.execute(
-        "SELECT ticker, side, qty, created_at FROM orders o WHERE account_id=? "
+        "SELECT ticker, market, side, qty, created_at FROM orders o WHERE account_id=? "
         f"AND status NOT IN ('rejected','cancelled','failed'){scope} ORDER BY created_at, id",
         (account_id, *scope_args),
     ).fetchall():
         if r["ticker"] in by_ticker:
             continue  # 체결 기록이 있는 종목은 체결이 정본
         fallback.setdefault(r["ticker"], []).append((r["created_at"], r["side"], r["qty"]))
+        markets[r["ticker"]] = r["market"]
     for t, events in fallback.items():
-        since = _first_buy_of_current_lot(events)
+        since = _first_buy_of_current_lot(events, markets.get(t))
         if since is not None:
             out[t] = since
     return out

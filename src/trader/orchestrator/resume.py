@@ -56,7 +56,17 @@ def reevaluate(
         notifier=notifier,
     )
     if trigger_id:
-        repo.mark_trigger_handled(conn, trigger_id, res.session_id, handled_at=now().isoformat())
+        repo.mark_trigger_handled(
+            conn, trigger_id, handled_marker(res), handled_at=now().isoformat()
+        )
     if not res.ok:
         logger.warning("재평가 세션 실패 %s %s: %s", market, ticker, res.error)
     return res
+
+
+def handled_marker(res: session_mod.SessionResult) -> str | None:
+    """triggers.session_id 에 남길 값. 세션이 떴어도 실패(타임아웃·예산·오류)면 '실패:' 접두사를
+    붙여 운영일 1회 제한(`repo.reevaluated_between`)에서 빼고 30분 뒤 재시도할 수 있게 한다."""
+    if res.ok:
+        return res.session_id
+    return f"실패: {res.error or 'unknown'} ({res.session_id or '-'})"[:200]

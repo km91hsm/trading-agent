@@ -189,7 +189,11 @@ def test_trigger_reevaluation_rate_limited(conn):
     # 같은 틱의 트리거(take_profit + move_7pct)는 세션 1회가 모두 처리한 것으로 표시된다
     assert {r["kind"] for r in rows} == {"take_profit", "move_7pct"}
     assert all(r["handled_at"] is not None for r in rows)
-    # 다음 운영일에는 다시 1회
+    # 다음 운영일에는 (그날 결정이 있으면) 다시 1회
+    dec = Decision(**ok_decision(take_profit=80000.0))
+    repo.ingest_checkpoint(
+        conn, D + timedelta(days=1), "KR", "005930", "30_decision", {"data": dec.model_dump()}
+    )
     ctx.now = lambda: NOW + timedelta(days=1)
     r5 = monitor.monitor_once(ctx, market="KR", today=D + timedelta(days=1))
     assert r5["reevaluated"] == 1 and len(ctx.calls) == 2
@@ -419,3 +423,86 @@ def test_stale_accepted_sell_of_old_decision_does_not_block_stop_loss(conn):
     ctx = _ctx(conn, positions=[_pos(cur="63000")], price="63000")
     r = monitor.monitor_once(ctx, market="KR", today=D)
     assert r["stop_loss_orders"] == 1 and len(ctx.brokers["paper-main"].orders) == 1
+
+
+def test_failed_session_result_does_not_lock_trigger_kind_for_day(conn):
+    """세션이 떴지만 실패(ok=False: 타임아웃·예산)한 재평가도 '실패:' 로 표시해 하루 1회 제한에서
+    빼야 한다. uuid 로 handled 표시되면 그 종류는 그날 다시 재평가되지 않는다."""
+    from trader.orchestrator.session import SessionResult
+
+    _decision(conn, take_profit=80000.0)
+    calls = []
+
+    def runner(spec, *a, **kw):
+        calls.append(spec)
+        if len(calls) == 1:
+            return SessionResult(ok=False, session_id="uuid-1", error="timeout", fake=True)
+        return SessionResult(ok=True, session_id="uuid-2", fake=True)
+
+    ctx = _ctx(conn, positions=[_pos(avg="70000", cur="80000")], price="80000", runner=runner)
+    r1 = monitor.monitor_once(ctx, market="KR", today=D)
+    assert r1["reevaluated"] == 0 and len(calls) == 1
+    sql = "SELECT session_id FROM triggers WHERE handled_at IS NOT NULL"
+    handled = conn.execute(sql).fetchall()
+    assert handled and all(r["session_id"].startswith("실패:") for r in handled)
+    ctx.now = lambda: NOW + timedelta(minutes=31)
+    r2 = monitor.monitor_once(ctx, market="KR", today=D)
+    assert r2["reevaluated"] == 1 and len(calls) == 2
+
+
+def test_no_decision_today_skips_session_and_keeps_trigger_pending(conn):
+    """오늘 30_decision 이 없으면(analyze 미완료·실패) 유료 세션을 띄워도 submit 이 거부되므로
+    세션 없이 트리거만 미처리로 남겨 다음 틱에 다시 본다."""
+    _old_decision(conn, take_profit=80000.0)
+    ctx = _ctx(conn, positions=[_pos(avg="70000", cur="80000")], price="80000")
+    r = monitor.monitor_once(ctx, market="KR", today=D)
+    assert r["triggers"] >= 1 and r["reevaluated"] == 0 and ctx.calls == []
+    rows = conn.execute("SELECT handled_at FROM triggers").fetchall()
+    assert rows and all(r["handled_at"] is None for r in rows)
+
+
+def test_us_position_exchange_from_broker_used_for_quote_and_sell(conn):
+    """universe.us 에 없는 US 보유분(수동 매수·관심종목 해제)도 브로커가 준 거래소로 시세를 읽고
+    손절 매도를 낸다 (ctx.exchanges 에 없으면 NAS 로 조회해 시세 0 → 손절 불능이었다)."""
+    acct = AccountConfig(id="paper-main", env="paper", cano="1", markets=["US"], mode="auto")
+    pos = Position(
+        ticker="XOM",
+        market="US",
+        qty=3,
+        avg_price=Decimal("120"),
+        current_price=Decimal("100"),
+        eval_amount=Decimal("300"),
+        pnl_pct=-0.17,
+        exchange="NYS",
+    )
+    cash = {"US": Cash(currency="USD", available=Decimal("10000"), total=Decimal("10000"))}
+    seen = []
+
+    class Market(FakeMarket):
+        def get_price_us(self, symbol, exchange):
+            seen.append(exchange)
+            return super().get_price_us(symbol, exchange)
+
+    ctx = monitor.MonitorContext(
+        settings=Settings(),
+        accounts=[acct],
+        conn=conn,
+        brokers={acct.id: FakeBroker(acct, positions=[pos], cash=cash)},
+        market_client=Market(prices={"XOM": Decimal("100")}),
+        notifier=Sent(),
+        now=lambda: NOW,
+    )
+    r = monitor.monitor_once(ctx, market="US", today=D)
+    assert seen == ["NYS"] and r["stop_loss_orders"] == 1
+    order = ctx.brokers["paper-main"].orders[0]
+    assert order.exchange == "NYS" and order.side == "SELL"
+
+
+def test_parse_price_conditions_ignores_volume_and_picks_price_number():
+    conds = [
+        "거래량 10,000,000 미만",  # 거래량은 가격 조건이 아니다
+        "시총 5000억 하회",
+        "3일 연속 종가 65000 이하",  # 첫 숫자(3)가 아니라 가격(65000)
+        "RSI 80 초과 과열",
+    ]
+    assert monitor.parse_price_conditions(conds) == [("<", Decimal("65000"))]

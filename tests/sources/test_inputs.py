@@ -526,3 +526,22 @@ def test_build_inputs_runs_sections_concurrently(project):
     finally:
         mp.undo()
     assert active["max"] >= 2
+
+
+def test_collect_and_save_uses_market_run_date_for_us(project):
+    """US 는 KST 자정을 넘겨 장이 열리므로 00_inputs 디렉터리 날짜도 run_date_for(뉴욕 운영일)여야
+    데몬 monitor·재평가(run_date_for)와 같은 state/runs/<date> 를 본다. KST 날짜면 01:00 KST
+    재수집이 다음 날 디렉터리에 들어가고, 다음 날 analyze 가 그 수집본을 재사용한다."""
+    from datetime import UTC, datetime
+
+    asof = datetime(2026, 10, 9, 16, 0, tzinfo=UTC)  # 12:00 ET 10-09 = 01:00 KST 10-10
+    p = collect_and_save(
+        ticker="AAPL",
+        market="US",
+        exchange="NAS",
+        asof=asof,
+        cfg=cfg(),
+        secrets=Secrets(),
+        deps=deps(now=lambda: asof),
+    )
+    assert p.parent.parent.parent.name == "2026-10-09"

@@ -586,3 +586,28 @@ def test_nav_history_window_and_latest_per_day(conn):
         ("2026-10-04", Decimal("135")),
     ] or True  # today 가 있으면 today−days 이후 전부 (미래 날짜 스냅샷 포함 여부는 기존 동작 유지)
     assert repo.nav_history(conn, "paper-main", "US") == []
+
+
+def test_held_since_uses_market_local_date_for_us(conn):
+    """US 매수가 ET 오전(= KST 다음날 00:30)에 체결되면 보유 시작일은 ET 날짜여야 한다.
+    KST 날짜면 하루 늦게 잡혀 최소 보유기간 검사가 하루 더 막는다."""
+    dec_id = repo.ingest_checkpoint(
+        conn, D, "US", "AAPL", "30_decision", {"data": ok_decision(ticker="AAPL"), "call": None}
+    )
+    repo.insert_order(
+        conn,
+        decision_id=dec_id,
+        account_id="paper-main",
+        ticker="AAPL",
+        market="US",
+        side="BUY",
+        qty=1,
+        order_type="LIMIT",
+        price=Decimal("100"),
+        status="accepted",
+        order_no="1",
+        message="",
+        mode="auto",
+        created_at="2026-10-13T15:30:00+00:00",  # 11:30 ET 10-13 = 00:30 KST 10-14
+    )
+    assert repo.held_since(conn, "paper-main") == {"AAPL": date(2026, 10, 13)}

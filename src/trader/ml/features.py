@@ -18,7 +18,7 @@ import numpy as np
 import pandas as pd
 
 from trader.broker.models import Candle, InvestorFlow, Market
-from trader.config import KST, ConfigError, Universe
+from trader.config import ConfigError, Universe
 from trader.platform import paths
 from trader.sources import indicators
 from trader.sources.dart import ANNUAL, basic_ratios
@@ -295,11 +295,12 @@ def counts_from_inputs(
     ticker: str, market: Market, asof: datetime, state: Path | None = None
 ) -> tuple[int | None, int | None]:
     """같은 KST 날짜의 00_inputs 에서 뉴스·커뮤니티 건수를 센다. 없으면 (None, None)."""
-    from trader.orchestrator.run_store import read_checkpoint
+    from trader.orchestrator.run_store import read_checkpoint, run_date_for
     from trader.platform import paths
 
     base = state if state is not None else paths.state_dir()
-    d = base / "runs" / asof.astimezone(KST).date().isoformat() / market / ticker
+    # US 분석은 ET 운영일 디렉터리에 있다 (KST 날짜로 찾으면 스냅샷 시각엔 아직 없어 늘 NaN)
+    d = base / "runs" / run_date_for(market, asof).isoformat() / market / ticker
     inputs = read_checkpoint(d, "00_inputs") if d.is_dir() else None
     if not inputs:
         return None, None

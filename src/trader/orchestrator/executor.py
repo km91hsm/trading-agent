@@ -243,17 +243,23 @@ def execute(
     dry_run: bool = True,
     is_stop_loss: bool = False,
     decision_id: int | None = None,
+    resume_round: int | None = None,
 ) -> list[dict]:
     """계좌마다 판정·기록·(모드별) 주문. 계좌 하나의 실패가 다른 계좌를 막지 않는다.
 
     is_stop_loss 면 보유기간·주 2회 규칙을 면제하고 approve 계좌도 승인 없이 즉시 낸다(사후 통보).
+    resume_round 는 재평가(31_decision_r<n>) 라운드로, 판정·주문 체크포인트 이름에 들어간다.
     """
     d = run_dir(date, market, decision.ticker, ctx.state)
     if decision_id is None:
         decision_id = repo.decision_id(ctx.conn, date, market, decision.ticker)
-    # 손절은 오늘 분석의 40_/50_ 체크포인트를 덮어쓰지 않도록 별도 이름을 쓴다
-    risk_stage = "45_stop_loss" if is_stop_loss else "40_risk_check"
-    order_stage = "55_order_sl" if is_stop_loss else "50_order"
+    # 손절·재평가는 오늘 분석의 40_/50_ 체크포인트를 덮어쓰지 않도록 별도 이름을 쓴다
+    if is_stop_loss:
+        risk_stage, order_stage = "45_stop_loss", "55_order_sl"
+    elif resume_round is not None:
+        risk_stage, order_stage = f"41_risk_check_r{resume_round}", f"51_order_r{resume_round}"
+    else:
+        risk_stage, order_stage = "40_risk_check", "50_order"
     paused = control.is_paused(ctx.conn)
     results: list[dict] = []
     rl_base: list[float] | None = None

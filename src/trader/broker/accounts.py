@@ -120,6 +120,7 @@ class KisBroker:
                     current_price=_dec(r.get("now_pric2")),
                     eval_amount=_dec(r.get("ovrs_stck_evlu_amt")),
                     pnl_pct=float(_dec(r.get("evlu_pfls_rt"))) / 100,
+                    exchange=US_QUOTE_EXCHANGE.get(str(r.get("ovrs_excg_cd") or "").upper()),
                 )
             )
         return out
@@ -321,6 +322,7 @@ def _local_dt(ymd: Any, hms: Any, tz: ZoneInfo) -> datetime:
 
 # 주문용 거래소 코드 (시세 EXCD 와 다르다): NAS→NASD, NYS→NYSE, AMS→AMEX
 US_ORDER_EXCHANGE = {"NAS": "NASD", "NYS": "NYSE", "AMS": "AMEX"}
+US_QUOTE_EXCHANGE = {v: k for k, v in US_ORDER_EXCHANGE.items()}  # 잔고 ovrs_excg_cd → 시세 EXCD
 
 
 def _us_order_exchange(exchange: str | None) -> str:

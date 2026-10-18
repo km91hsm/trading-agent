@@ -84,3 +84,29 @@ def test_cli_collect_reports_skip_when_existing(quiet_project, monkeypatch):
     assert CliRunner().invoke(app, args).exit_code == 0
     r = CliRunner().invoke(app, args)
     assert r.exit_code == 0 and "건너뜀" in r.stdout
+
+
+def test_cli_collect_us_directory_is_market_run_date(quiet_project, monkeypatch):
+    """CLI collect/analyze/scan 도 데몬·monitor 와 같은 운영일(run_date_for)을 써야 US 가
+    KST 자정 뒤에 다른 state/runs/<date> 를 보지 않는다."""
+    from datetime import datetime
+
+    monkeypatch.setattr(
+        cli,
+        "_build_input_deps",
+        lambda s, c: InputDeps(market=FakeMarket(), dart=FakeDart(), edgar=None),
+    )
+    # 가장 가까운 과거 "08:00 KST" (= 전날 19:00 ET): KST 날짜와 뉴욕 운영일이 다른 시각
+    kst_now = datetime.now(ZoneInfo("Asia/Seoul"))
+    asof = kst_now.replace(hour=8, minute=0, second=0, microsecond=0)
+    if asof > kst_now:
+        asof -= timedelta(days=1)
+    from trader.orchestrator.run_store import run_date_for
+
+    expect = run_date_for("US", asof)
+    assert expect != asof.date()  # KST 날짜(당일)와 다름을 전제로 한다
+    args = ["collect", "--ticker", "AAPL", "--market", "US", "--exchange", "NAS"]
+    r = CliRunner().invoke(app, [*args, "--asof", asof.isoformat()])
+    assert r.exit_code == 0, r.stdout
+    out = quiet_project / "state" / "runs" / expect.isoformat() / "US" / "AAPL" / "00_inputs.json"
+    assert out.exists()

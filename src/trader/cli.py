@@ -320,11 +320,12 @@ def collect(
             when = when.replace(tzinfo=UTC)
         deps = _build_input_deps(secrets, cfg)
         from trader.orchestrator.run_store import read_checkpoint as _rc
+        from trader.orchestrator.run_store import run_date_for as _rdf
         from trader.orchestrator.run_store import run_dir as _rd
 
         existed = (
             not force
-            and _rc(_rd(when.astimezone(KST).date(), market, ticker), "00_inputs") is not None  # type: ignore[arg-type]
+            and _rc(_rd(_rdf(market, when), market, ticker), "00_inputs") is not None  # type: ignore[arg-type]
         )
         path = _collect_and_save()(
             ticker=ticker,
@@ -444,7 +445,9 @@ def analyze(
         when = datetime.fromisoformat(asof) if asof else datetime.now(UTC)
         if when.tzinfo is None:
             when = when.replace(tzinfo=UTC)
-        day = when.astimezone(KST).date()
+        from trader.orchestrator.run_store import run_date_for
+
+        day = run_date_for(market, when)  # US 는 뉴욕 운영일 (데몬·monitor 와 같은 디렉터리)
         d = run_dir(day, market, ticker)  # type: ignore[arg-type]
         if read_checkpoint(d, "00_inputs") is None:
             if skip_collect:
@@ -623,8 +626,9 @@ def tool_collect(
         )
         errors = json.loads(path.read_text(encoding="utf-8")).get("errors", [])
         from trader.orchestrator import tools
+        from trader.orchestrator.run_store import run_date_for
 
-        day_ = when.astimezone(KST).date()
+        day_ = run_date_for(market, when)
         q = tools.ensure_quant(ctx, ticker=ticker, market=market, date=day_)  # type: ignore[arg-type]
         tools.ensure_calibration(ctx, ticker=ticker, market=market, date=day_)  # type: ignore[arg-type]
         result = {"ok": True, "path": str(path), "errors": errors, "quant": bool(q)}
@@ -1176,8 +1180,10 @@ def scan(
         when = datetime.fromisoformat(asof) if asof else datetime.now(UTC)
         if when.tzinfo is None:
             when = when.replace(tzinfo=UTC)
-        day = when.astimezone(KST).date()
         from trader.ml import ranker
+        from trader.orchestrator.run_store import run_date_for
+
+        day = run_date_for(market, when)
 
         ml = ranker.current()
         conn = db.connect()
