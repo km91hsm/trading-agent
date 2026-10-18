@@ -254,6 +254,7 @@ def insert_trigger(
     price: Decimal | None,
     decision_id: int | None,
     account_id: str | None = None,
+    created_at: str | None = None,
 ) -> int:
     cur = conn.execute(
         "INSERT INTO triggers(account_id, market, ticker, kind, detail, price, decision_id, "
@@ -266,7 +267,7 @@ def insert_trigger(
             json.dumps(detail, ensure_ascii=False, default=str),
             str(price) if price is not None else None,
             decision_id,
-            now_iso(),
+            created_at or now_iso(),
         ),
     )
     conn.commit()
@@ -285,6 +286,21 @@ def mark_trigger_handled(
         (handled_at or now_iso(), session_id, trigger_id),
     )
     conn.commit()
+
+
+def reevaluated_between(
+    conn: sqlite3.Connection, market: str, ticker: str, kind: str, lo: str, hi: str
+) -> bool:
+    """[lo, hi) 안에 같은 종류의 트리거가 재평가 세션까지 마쳤는가 (운영일 1회 제한용).
+
+    기동 실패(`session_id` 가 '실패:' 로 시작)는 세지 않아 30분 뒤 재시도할 수 있다."""
+    row = conn.execute(
+        "SELECT 1 FROM triggers WHERE market=? AND ticker=? AND kind=? "
+        "AND handled_at >= ? AND handled_at < ? "
+        "AND (session_id IS NULL OR session_id NOT LIKE '실패:%') LIMIT 1",
+        (market, ticker, kind, lo, hi),
+    ).fetchone()
+    return row is not None
 
 
 def last_trigger_handled_at(conn: sqlite3.Connection, market: str, ticker: str) -> datetime | None:

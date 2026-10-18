@@ -182,14 +182,38 @@ def test_trigger_reevaluation_rate_limited(conn):
     )  # 미처리 행 재사용
     ctx.now = lambda: NOW + timedelta(minutes=31)
     r3 = monitor.monitor_once(ctx, market="KR", today=D)
-    assert r3["reevaluated"] == 1 and len(ctx.calls) == 2
+    # 같은 운영일에 같은 종류(take_profit)로 이미 재평가했으면 조건이 지속돼도 다시 띄우지 않는다
+    # (지속 조건이 30분마다 유료 세션을 재생성해 일일 상한을 소진하던 문제)
+    assert r3["reevaluated"] == 0 and r3["triggers"] == 0 and len(ctx.calls) == 1
     rows = conn.execute("SELECT kind, handled_at FROM triggers ORDER BY id").fetchall()
-    assert rows[0]["handled_at"] is not None and len(rows) >= 2
-    ctx.now = lambda: NOW + timedelta(minutes=32)
-    r4 = monitor.monitor_once(ctx, market="KR", today=D)
-    assert (
-        r4["reevaluated"] == 0 and len(ctx.calls) == 2
-    )  # 직전 재평가가 트리거에 기록돼 1분 뒤엔 안 돈다
+    # 같은 틱의 트리거(take_profit + move_7pct)는 세션 1회가 모두 처리한 것으로 표시된다
+    assert {r["kind"] for r in rows} == {"take_profit", "move_7pct"}
+    assert all(r["handled_at"] is not None for r in rows)
+    # 다음 운영일에는 다시 1회
+    ctx.now = lambda: NOW + timedelta(days=1)
+    r5 = monitor.monitor_once(ctx, market="KR", today=D + timedelta(days=1))
+    assert r5["reevaluated"] == 1 and len(ctx.calls) == 2
+
+
+def test_failed_reevaluation_can_retry_same_day(conn):
+    """세션 기동 실패로 '실패:' 로 처리된 트리거는 하루 1회 제한에서 빼서 30분 뒤 재시도한다."""
+    _decision(conn, take_profit=80000.0)
+    calls = []
+
+    def runner(spec, *a, **kw):
+        calls.append(spec)
+        if len(calls) == 1:
+            raise RuntimeError("claude 없음")
+        from trader.orchestrator.session import SessionResult
+
+        return SessionResult(ok=True, session_id="s2", fake=True)
+
+    ctx = _ctx(conn, positions=[_pos(avg="70000", cur="80000")], price="80000", runner=runner)
+    r1 = monitor.monitor_once(ctx, market="KR", today=D)
+    assert r1["reevaluated"] == 0 and len(calls) == 1
+    ctx.now = lambda: NOW + timedelta(minutes=31)
+    r2 = monitor.monitor_once(ctx, market="KR", today=D)
+    assert r2["reevaluated"] == 1 and len(calls) == 2
 
 
 def test_reevaluation_blocked_when_paused_or_cap(conn):

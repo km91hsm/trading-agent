@@ -187,12 +187,17 @@ def monitor_once(ctx: MonitorContext, *, market: str, today: date) -> dict:
             else:
                 pending.append((account, pos, signals, latest))
     handled: set[str] = set()
+    day_lo, day_hi = repo.day_bounds(today, market)
     for account, pos, signals, latest in pending:
-        first_id: int | None = None
+        tids: list[int] = []  # 이 종목의 트리거 전부 — 재평가 세션 1회가 모두 처리한다
         for sig in signals:
+            # 같은 운영일에 같은 종류로 이미 재평가했으면 조건이 지속돼도 다시 쌓지 않는다
+            # (익절선 위에 머무는 종목이 30분마다 유료 세션을 띄워 일일 상한을 소진하지 않도록)
+            if repo.reevaluated_between(ctx.conn, market, pos.ticker, sig.kind, day_lo, day_hi):
+                continue
             existing = repo.unhandled_trigger_id(ctx.conn, market, pos.ticker, sig.kind)
             if existing is not None:  # 미처리 트리거가 있으면 다시 쌓지 않고 그 행을 쓴다
-                first_id = first_id or existing
+                tids.append(existing)
                 continue
             tid = repo.insert_trigger(
                 ctx.conn,
@@ -203,12 +208,14 @@ def monitor_once(ctx: MonitorContext, *, market: str, today: date) -> dict:
                 price=sig.price,
                 decision_id=(latest or {}).get("id"),
                 account_id=account.id,
+                created_at=ctx.now().isoformat(),
             )
-            first_id = first_id or tid
+            tids.append(tid)
             result["triggers"] += 1
-        if pos.ticker in handled:
+        if not tids or pos.ticker in handled:
             continue
         handled.add(pos.ticker)
+        first_id = tids[0]
         why = _can_reevaluate(ctx, market, pos.ticker)
         if why:
             logger.info("재평가 생략 %s %s: %s", market, pos.ticker, why)
@@ -223,7 +230,7 @@ def monitor_once(ctx: MonitorContext, *, market: str, today: date) -> dict:
                 date=today,
                 ticker=pos.ticker,
                 exchange=ctx.exchanges.get(pos.ticker),
-                trigger_id=first_id or 0,
+                trigger_id=first_id,
                 trigger={"kind": s0.kind, "price": str(s0.price), "detail": s0.detail},
                 brokers=ctx.brokers,
                 now=ctx.now,
@@ -234,15 +241,19 @@ def monitor_once(ctx: MonitorContext, *, market: str, today: date) -> dict:
             )
         except Exception as e:  # noqa: BLE001 - 세션 기동 실패가 다른 종목 점검을 막지 않는다
             logger.exception("재평가 세션 기동 실패 %s %s", market, pos.ticker)
-            if first_id:
+            for tid in tids:
                 repo.mark_trigger_handled(
                     ctx.conn,
-                    first_id,
+                    tid,
                     f"실패: {type(e).__name__}: {e}"[:200],
                     handled_at=ctx.now().isoformat(),
                 )
             ctx.notifier.send(f"[재평가 실패] {market} {pos.ticker}: {type(e).__name__}: {e}")
             continue
+        for tid in tids[1:]:  # 같은 세션이 나머지 트리거도 처리한 것으로 표시
+            repo.mark_trigger_handled(
+                ctx.conn, tid, res.session_id, handled_at=ctx.now().isoformat()
+            )
         if res.ok:
             result["reevaluated"] += 1
     return result
