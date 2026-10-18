@@ -40,6 +40,7 @@ def _order(conn, order_no, qty=3):
         order_no=order_no,
         message="",
         mode="auto",
+        created_at="2026-10-09T00:10:00+00:00",  # 09:10 KST, 체결(10:05 KST)과 같은 현지 날짜
     )
 
 
@@ -134,3 +135,31 @@ def test_order_no_match_requires_same_ticker_and_side(conn):
     )
     ext = conn.execute("SELECT * FROM orders WHERE ticker='000660'").fetchone()
     assert ext["mode"] == "external" and ext["side"] == "SELL" and ext["status"] == "filled"
+
+
+def test_fill_does_not_attach_to_old_order_with_reused_order_no(conn):
+    """KIS 주문번호는 날마다 다시 시작한다. 8일 뒤 같은 번호·종목·방향의 외부 체결이 옛 원장 주문에
+    붙어 기존 체결을 지우면 안 된다 → 같은 현지 날짜의 주문만 매칭하고, 없으면 external 행."""
+    acct = make_account("paper-main", "paper", "auto")
+    old = _order(conn, "0000000012", qty=3)
+    fills_mod.sync_fills(conn, FakeBroker(acct, fills={("KR", D): [_fill("0000000012")]}), acct, D)
+    assert conn.execute("SELECT COUNT(*) AS n FROM fills WHERE order_id=?", (old,)).fetchone()[
+        "n"
+    ] == 1
+    later = date(2026, 10, 17)
+    f2 = Fill(
+        order_no="0000000012",
+        ticker="005930",
+        market="KR",
+        side="BUY",
+        qty=5,
+        price=Decimal("72000"),
+        filled_at=datetime(2026, 10, 17, 2, 0, tzinfo=UTC),
+    )
+    r = fills_mod.sync_fills(conn, FakeBroker(acct, fills={("KR", later): [f2]}), acct, later)
+    assert r["inserted"] == 1 and r["updated"] == 0
+    rows = conn.execute("SELECT id, mode, status FROM orders ORDER BY id").fetchall()
+    assert len(rows) == 2 and rows[1]["mode"] == "external" and rows[1]["status"] == "filled"
+    # 옛 주문의 체결은 그대로
+    q = conn.execute("SELECT SUM(qty) AS q FROM fills WHERE order_id=?", (old,)).fetchone()["q"]
+    assert q == 3

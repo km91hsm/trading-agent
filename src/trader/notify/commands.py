@@ -98,7 +98,12 @@ def poll_once(ectx: Any, receiver: Any, *, echo: Callable[[str], None] = lambda 
         echo(f"{name} #{arg} → {'ok' if r['ok'] else r.get('error') or '실패'}")
         if not r["ok"]:
             ectx.notifier.send(f"[{name} 실패] {r.get('error') or r.get('order')}")
-    if updates:
-        control.set_flag(conn, "telegram_offset", max(u.update_id for u in updates) + 1)
+    # 걸러진(다른 채팅) 업데이트까지 포함한 최대 id 로 오프셋을 전진시킨다
+    ids = [u.update_id for u in updates]
+    last_raw = getattr(receiver, "last_update_id", None)
+    if last_raw is not None:
+        ids.append(int(last_raw))
+    if ids:
+        control.set_flag(conn, "telegram_offset", max(ids) + 1)
     echo(f"수신 {len(updates)}건, 명령 {handled}건")
     return {"received": len(updates), "handled": handled}

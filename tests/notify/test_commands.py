@@ -74,3 +74,20 @@ def test_real_auto_via_telegram_rejected(conn):
     control.set_account_mode(conn, ctx.accounts[1], "approve")
     commands.poll_once(ctx, Recv(["/mode real-main off"]))  # 비상 정지(하향)만 허용
     assert control.get_account_mode(conn, ctx.accounts[1]) == "off"
+
+
+def test_poll_once_advances_offset_past_filtered_updates(conn):
+    class FilteredRecv(Recv):
+        last_update_id = 50  # 원본 결과엔 50 까지 있었지만 전부 다른 채팅이라 걸러짐
+
+    sent = Sent()
+    ctx = _ctx(conn, sent)
+    r = commands.poll_once(ctx, FilteredRecv([]))
+    assert r["received"] == 0
+    assert control.get_flag(conn, "telegram_offset") == 51
+    # 유지된 업데이트가 더 뒤면 그것이 우선
+    class MixedRecv(Recv):
+        last_update_id = 1
+
+    commands.poll_once(ctx, MixedRecv(["/status", "/status"]))  # update_id 1, 2
+    assert control.get_flag(conn, "telegram_offset") == 3

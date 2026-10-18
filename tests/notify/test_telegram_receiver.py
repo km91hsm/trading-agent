@@ -46,3 +46,20 @@ def test_poll_failure_returns_empty():
 def test_make_receiver_requires_secrets():
     assert make_receiver(Secrets()) is None
     assert make_receiver(Secrets(TELEGRAM_BOT_TOKEN="t", TELEGRAM_CHAT_ID="1")) is not None
+
+
+@respx.mock
+def test_poll_tracks_last_update_id_even_when_all_filtered():
+    """다른 채팅 업데이트만 와도 update_id 를 기억해야 오프셋이 전진한다.
+
+    안 그러면 100건이 쌓인 뒤 getUpdates 가 같은 묶음만 돌려줘 /approve·/pause 가 영원히 안 온다."""
+    respx.get(API).mock(
+        return_value=httpx.Response(
+            200,
+            json={"ok": True, "result": [_upd(10, 999, "/approve 1"), _upd(11, 999, "스팸")]},
+        )
+    )
+    r = TelegramReceiver("TOKEN-SECRET", "123")
+    assert r.poll(offset=7) == [] and r.last_update_id == 11
+    respx.get(API).mock(return_value=httpx.Response(200, json={"ok": True, "result": []}))
+    assert r.poll(offset=12) == [] and r.last_update_id is None

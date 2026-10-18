@@ -19,11 +19,13 @@ logger = logging.getLogger("trader.fills")
 
 
 def _order_id_for(conn: sqlite3.Connection, account_id: str, f: Fill) -> int:
-    # KIS 주문번호(ODNO)는 날마다 다시 시작하므로 종목·방향까지 같아야 같은 주문으로 본다
+    # KIS 주문번호(ODNO)는 날마다 다시 시작하므로 종목·방향이 같고 **같은 현지 날짜**에 낸 주문만
+    # 같은 주문으로 본다 (옛 주문에 붙이면 그 주문의 기존 체결을 지워 버린다)
+    lo, hi = repo.day_bounds(_day_for(f.market, f.filled_at), f.market)
     row = conn.execute(
         "SELECT id FROM orders WHERE account_id=? AND order_no=? AND ticker=? AND side=? "
-        "ORDER BY id DESC LIMIT 1",
-        (account_id, f.order_no, f.ticker, f.side),
+        "AND created_at >= ? AND created_at < ? ORDER BY id DESC LIMIT 1",
+        (account_id, f.order_no, f.ticker, f.side, lo, hi),
     ).fetchone()
     if row:
         return int(row["id"])

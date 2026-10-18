@@ -124,6 +124,9 @@ class TelegramReceiver:
         self._url = f"https://api.telegram.org/bot{token}/getUpdates"
         self._chat_id = str(chat_id)
         self._http = http or httpx.Client(timeout=15)
+        # 마지막 poll 원본 결과(걸러진 것 포함)의 최대 update_id. 호출자가 오프셋에 반영한다.
+        # 다른 채팅 업데이트만 100건 쌓이면 getUpdates 가 같은 묶음만 돌려줘 명령이 영원히 안 온다.
+        self.last_update_id: int | None = None
 
     def poll(self, offset: int | None = None) -> list[Update]:
         params: dict[str, str] = {"timeout": "0", "allowed_updates": '["message"]'}
@@ -142,13 +145,19 @@ class TelegramReceiver:
         except ValueError:
             return []
         out: list[Update] = []
+        self.last_update_id = None
         for item in body.get("result") or []:
+            try:
+                uid = int(item["update_id"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            self.last_update_id = max(self.last_update_id or uid, uid)
             msg = item.get("message") or {}
             chat = str((msg.get("chat") or {}).get("id", ""))
             text = msg.get("text")
             if chat != self._chat_id or not isinstance(text, str):
                 continue
-            out.append(Update(update_id=int(item["update_id"]), text=text, chat_id=chat))
+            out.append(Update(update_id=uid, text=text, chat_id=chat))
         return out
 
 
