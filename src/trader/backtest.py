@@ -10,16 +10,14 @@ import json
 import sqlite3
 from datetime import date, datetime
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
+from trader.config import KST
 from trader.memory import outcomes
-
-_KST = ZoneInfo("Asia/Seoul")
 
 
 def _decided_date(iso: str) -> date | None:
     try:
-        return datetime.fromisoformat(iso).astimezone(_KST).date()
+        return datetime.fromisoformat(iso).astimezone(KST).date()
     except ValueError:
         return None
 

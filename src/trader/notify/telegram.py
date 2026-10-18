@@ -14,15 +14,11 @@ from typing import Protocol
 import httpx
 
 from trader.config import Secrets
+from trader.logging_setup import quiet_httpx
 
 logger = logging.getLogger("trader.notify")
 
 MAX_LEN = 4000
-
-
-def _quiet_httpx() -> None:
-    logging.getLogger("httpx").setLevel(logging.WARNING)
-    logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 
 class Notifier(Protocol):
@@ -64,7 +60,7 @@ def _chunks(text: str, size: int, *, escape: bool) -> list[str]:
 
 class TelegramNotifier:
     def __init__(self, token: str, chat_id: str, *, http: httpx.Client | None = None) -> None:
-        _quiet_httpx()
+        quiet_httpx()
         self._url = f"https://api.telegram.org/bot{token}/sendMessage"
         self._chat_id = chat_id
         self._http = http or httpx.Client(timeout=10)
@@ -120,7 +116,7 @@ class TelegramReceiver:
     """getUpdates 1회 폴링. 설정된 chat_id 의 메시지 텍스트만 돌려준다."""
 
     def __init__(self, token: str, chat_id: str, *, http: httpx.Client | None = None) -> None:
-        _quiet_httpx()
+        quiet_httpx()
         self._url = f"https://api.telegram.org/bot{token}/getUpdates"
         self._chat_id = str(chat_id)
         self._http = http or httpx.Client(timeout=15)

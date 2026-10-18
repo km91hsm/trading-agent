@@ -13,18 +13,12 @@ import numpy as np
 import pandas as pd
 
 from trader.ml import registry
+from trader.ml.features import zscore as _z
 from trader.ml.models import quant as quant_model
 from trader.scan import quant as scan_quant
 
 logger = logging.getLogger("trader.ml")
 ML_WEIGHT = 0.6
-
-
-def _z(s: pd.Series) -> pd.Series:
-    sd = s.std(ddof=0)
-    if not np.isfinite(sd) or sd == 0:
-        return pd.Series(0.0, index=s.index)
-    return (s - s.mean()) / sd
 
 
 def current(state: Path | None = None) -> tuple[Callable[[pd.DataFrame], pd.DataFrame], str] | None:

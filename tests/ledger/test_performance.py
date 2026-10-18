@@ -43,10 +43,10 @@ def test_nav_series_and_metrics(conn):
     _navs(conn, [100, 102, 101, 105, 95, 98])
     s = performance.nav_series(conn, "paper-main", "KR", days=60)
     assert [v for _, v in s] == [Decimal(x) for x in (100, 102, 101, 105, 95, 98)]
-    m = performance.metrics(s)
+    m = performance.metrics_of(s)
     assert m["return"] == pytest.approx(-0.02) and m["mdd"] == pytest.approx(-0.0952, abs=1e-3)
     assert m["days"] == 6 and m["start"] == DAYS[0].isoformat() and m["sortino"] is not None
-    assert performance.metrics([]) == {
+    assert performance.metrics_of([]) == {
         "return": None,
         "mdd": None,
         "sortino": None,
@@ -55,7 +55,7 @@ def test_nav_series_and_metrics(conn):
         "end": None,
     }
     assert (
-        performance.metrics(
+        performance.metrics_of(
             [(DAYS[0].isoformat(), Decimal(100)), (DAYS[1].isoformat(), Decimal(101))]
         )["sortino"]
         is None

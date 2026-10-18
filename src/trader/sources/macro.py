@@ -13,6 +13,7 @@ from typing import Any
 import httpx
 
 from trader.config import MacroCfg, Secrets
+from trader.logging_setup import quiet_httpx
 from trader.sources.base import Section, owned_client, run_section, skipped_section
 
 logger = logging.getLogger("trader.sources")
@@ -37,15 +38,9 @@ def _utc_now() -> datetime:
     return datetime.now(UTC)
 
 
-def _quiet_httpx() -> None:
-    # ECOS 는 키가 URL 경로에 들어가므로 httpx INFO 로그를 반드시 억제한다.
-    logging.getLogger("httpx").setLevel(logging.WARNING)
-    logging.getLogger("httpcore").setLevel(logging.WARNING)
-
-
 class Fred:
     def __init__(self, api_key: str, http: httpx.Client) -> None:
-        _quiet_httpx()
+        quiet_httpx()
         self._key = api_key
         self._http = http
 
@@ -75,7 +70,7 @@ class Ecos:
     def __init__(
         self, api_key: str, http: httpx.Client, *, now: Callable[[], datetime] = _utc_now
     ) -> None:
-        _quiet_httpx()
+        quiet_httpx()
         self._key = api_key
         self._http = http
         self._now = now

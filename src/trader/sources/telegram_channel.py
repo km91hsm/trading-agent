@@ -13,7 +13,8 @@ from datetime import UTC, datetime
 import httpx
 from bs4 import BeautifulSoup
 
-from trader.sources.community import USER_AGENT, _iso_to_utc, _matches, _strip
+from trader.sources.base import strip_tags as _strip
+from trader.sources.community import USER_AGENT, _iso_to_utc, _matches
 
 logger = logging.getLogger("trader.sources")
 

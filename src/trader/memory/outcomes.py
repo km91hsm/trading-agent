@@ -10,15 +10,14 @@ import json
 import logging
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 import pandas as pd
 
+from trader.config import KST
 from trader.memory import store
 from trader.ml import dataset
 
 logger = logging.getLogger("trader.memory")
-_KST = ZoneInfo("Asia/Seoul")
 WINDOW_LEAD_DAYS = 10  # 결정일 직전 거래일 탐색 여유
 SIGN = {"BUY": 1.0, "ADD": 1.0, "SELL": -1.0, "TRIM": -1.0, "HOLD": 0.0}
 
@@ -71,7 +70,7 @@ def mature(conn, *, state: Path | None, today: date, horizon_default: int = 5) -
     earliest: dict[str, date] = {}
     for r in rows:
         try:
-            d0 = datetime.fromisoformat(r["decided_at"]).astimezone(_KST).date()
+            d0 = datetime.fromisoformat(r["decided_at"]).astimezone(KST).date()
         except ValueError:
             continue
         m = r["market"]
@@ -86,7 +85,7 @@ def mature(conn, *, state: Path | None, today: date, horizon_default: int = 5) -
             )
             tables[market] = _close_table(state, market, since=since, until=today)
         try:
-            decided = datetime.fromisoformat(r["decided_at"]).astimezone(_KST).date()
+            decided = datetime.fromisoformat(r["decided_at"]).astimezone(KST).date()
         except ValueError:
             continue
         horizon = int(r["horizon_days"] or horizon_default)

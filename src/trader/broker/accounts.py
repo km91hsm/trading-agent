@@ -4,39 +4,23 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, date, datetime
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from trader.broker._parse import dec as _dec
+from trader.broker._parse import rows as _rows
+from trader.broker._parse import to_int as _int
 from trader.broker.errors import KisApiError
 from trader.broker.kis_client import KisClient
 from trader.broker.models import Cash, Fill, Market, OrderRequest, OrderResult, Position
 from trader.broker.tr_ids import path
-from trader.config import AccountConfig
+from trader.config import KST, AccountConfig
 
 logger = logging.getLogger("trader.kis")
 
 # 미확인: NASD 고정 조회에 NYS/AMS 보유분이 포함되는지는 실기에서 확인한다 (TODO).
 US_EXCHANGE_CODE = "NASD"
-
-
-def _dec(v: Any, default: str = "0") -> Decimal:
-    try:
-        return Decimal(str(v).strip() or default)
-    except InvalidOperation:
-        return Decimal(default)
-
-
-def _int(v: Any) -> int:
-    return int(_dec(v))
-
-
-def _rows(v: Any) -> list[dict]:
-    if isinstance(v, list):
-        return v
-    if isinstance(v, dict):
-        return [v]
-    return []
 
 
 class KisBroker:
@@ -200,7 +184,7 @@ class KisBroker:
                         side="SELL" if str(r.get("sll_buy_dvsn_cd")) == "01" else "BUY",
                         qty=qty,
                         price=_dec(r.get("avg_prvs")),
-                        filled_at=_local_dt(r.get("ord_dt"), r.get("ord_tmd"), _KST),
+                        filled_at=_local_dt(r.get("ord_dt"), r.get("ord_tmd"), KST),
                     )
                 )
             return out
@@ -322,7 +306,6 @@ class KisBroker:
         )
 
 
-_KST = ZoneInfo("Asia/Seoul")
 _ET = ZoneInfo("America/New_York")
 
 

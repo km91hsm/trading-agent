@@ -15,22 +15,20 @@ from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
-from zoneinfo import ZoneInfo
 
-from trader.agents import schemas
 from trader.agents.schemas import Decision
 from trader.broker.errors import KisApiError
 from trader.broker.models import OrderRequest, OrderResult
-from trader.config import AccountConfig, MemorySettings, Mode, Settings
+from trader.config import KST, AccountConfig, MemorySettings, Mode, Settings
 from trader.control import control
 from trader.ledger import repo
 from trader.notify.telegram import Notifier, NullNotifier
+from trader.orchestrator.run_store import checkpoint_payload as _wrap
 from trader.orchestrator.run_store import run_dir, write_checkpoint
 from trader.risk import rules
 from trader.risk import stance as stance_mod
 
 logger = logging.getLogger("trader.executor")
-_KST = ZoneInfo("Asia/Seoul")
 
 APPROVAL_TTL = timedelta(minutes=30)
 QUOTE_PRICE_KEY = "quote_price"  # approvals.order_json 에 덧붙이는 요청 시 현재가
@@ -152,10 +150,6 @@ def build_portfolio(
         held_since=repo.held_since(conn, account.id, tickers=list(positions)),
         trades_this_week=repo.trades_this_week(conn, account.id, today, market=market),
     )
-
-
-def _wrap(data: Any) -> dict:
-    return {"schema_version": schemas.CHECKPOINT_SCHEMA_VERSION, "data": data, "call": None}
 
 
 @dataclass
@@ -551,7 +545,7 @@ def approve(ctx: ExecContext, approval_id: int) -> dict:
     quote_price = Decimal(str(raw_quote)) if raw_quote is not None else None
     request = OrderRequest.model_validate(order)
     dec = repo.get_decision(ctx.conn, a["decision_id"]) if a["decision_id"] else None
-    day = date.fromisoformat(dec["date"]) if dec else ctx.now().astimezone(_KST).date()
+    day = date.fromisoformat(dec["date"]) if dec else ctx.now().astimezone(KST).date()
     d = run_dir(day, request.market, request.ticker, ctx.state)
     broker = ctx.brokers.get(account.id)
     if broker is None:

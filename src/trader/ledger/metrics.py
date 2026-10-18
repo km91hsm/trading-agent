@@ -5,20 +5,19 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Iterable
 from datetime import UTC, date, datetime, timedelta
-from zoneinfo import ZoneInfo
 
+from trader.config import KST
 from trader.ledger import repo
 from trader.orchestrator.summary import CONVERGENCE_GAP
 from trader.risk import stance as stance_mod
 
-_KST = ZoneInfo("Asia/Seoul")
 _SIGN = {"BULLISH": 1.0, "NEUTRAL": 0.0, "BEARISH": -1.0}
 
 
 def _since(days: int, now: datetime | None) -> str:
     """decisions.date 는 KST 날짜이므로 기준일도 KST 로 잡는다."""
     now = now or datetime.now(UTC)
-    return (now.astimezone(_KST).date() - timedelta(days=days)).isoformat()
+    return (now.astimezone(KST).date() - timedelta(days=days)).isoformat()
 
 
 def decision_distribution(

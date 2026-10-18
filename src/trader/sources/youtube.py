@@ -14,7 +14,8 @@ from datetime import UTC, datetime
 
 import httpx
 
-from trader.sources.community import _iso_to_utc, _matches, _strip
+from trader.sources.base import strip_tags as _strip
+from trader.sources.community import _iso_to_utc, _matches
 
 logger = logging.getLogger("trader.sources")
 

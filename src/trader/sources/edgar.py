@@ -15,6 +15,7 @@ from typing import Any
 
 import httpx
 
+from trader.logging_setup import quiet_httpx
 from trader.sources.dart import RATIO_KEYS, basic_ratios
 
 logger = logging.getLogger("trader.sources")
@@ -50,11 +51,6 @@ class EdgarError(RuntimeError):
     """EDGAR HTTP 실패."""
 
 
-def _quiet_httpx() -> None:
-    logging.getLogger("httpx").setLevel(logging.WARNING)
-    logging.getLogger("httpcore").setLevel(logging.WARNING)
-
-
 def _d(s: str | None) -> date | None:
     try:
         return date.fromisoformat(str(s)) if s else None
@@ -71,7 +67,7 @@ class EdgarClient:
         http: httpx.Client | None = None,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
-        _quiet_httpx()
+        quiet_httpx()
         self._headers = {"User-Agent": user_agent, "Accept-Encoding": "gzip, deflate"}
         self._cache_dir = cache_dir
         self._http = http or httpx.Client(timeout=15)

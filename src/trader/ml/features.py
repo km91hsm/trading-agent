@@ -13,18 +13,17 @@ from collections.abc import Callable
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
-from zoneinfo import ZoneInfo
 
+import numpy as np
 import pandas as pd
 
 from trader.broker.models import Candle, InvestorFlow, Market
-from trader.config import ConfigError, Universe
+from trader.config import KST, ConfigError, Universe
 from trader.platform import paths
 from trader.sources import indicators
 from trader.sources.dart import ANNUAL, basic_ratios
 
 logger = logging.getLogger("trader.ml")
-_KST = ZoneInfo("Asia/Seoul")
 
 RATIO_COLUMNS = {"op_margin": "영업이익률", "roe": "ROE", "debt_ratio": "부채비율"}
 FLOW_COLUMNS = ["flow_foreign_20d", "flow_inst_20d", "flow_indiv_20d"]
@@ -60,6 +59,17 @@ def _coerce(df: pd.DataFrame) -> pd.DataFrame:
 
 
 MAX_PAST = timedelta(hours=24)
+
+
+def zscore(s: pd.Series, *, fill: float | None = None) -> pd.Series:
+    """열별 z-score (ddof=0). 표준편차가 0·비유한이면 전부 0. 숫자가 아닌 값은 NaN 으로 바꾸고
+    fill 이 있으면 결측을 그 값으로 채운다 (정량 점수는 0, ML 랭커는 NaN 유지)."""
+    s = pd.to_numeric(s, errors="coerce")
+    sd = s.std(ddof=0)
+    if not np.isfinite(sd) or sd == 0:
+        return pd.Series(0.0, index=s.index)
+    z = (s - s.mean()) / sd
+    return z.fillna(fill) if fill is not None else z
 BACKFILL_CHUNK = 10  # 백필 때 날짜 파일을 다시 쓰는 단위(종목 수)
 
 
@@ -289,7 +299,7 @@ def counts_from_inputs(
     from trader.platform import paths
 
     base = state if state is not None else paths.state_dir()
-    d = base / "runs" / asof.astimezone(_KST).date().isoformat() / market / ticker
+    d = base / "runs" / asof.astimezone(KST).date().isoformat() / market / ticker
     inputs = read_checkpoint(d, "00_inputs") if d.is_dir() else None
     if not inputs:
         return None, None

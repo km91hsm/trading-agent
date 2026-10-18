@@ -9,42 +9,24 @@ import json
 import logging
 from collections.abc import Callable
 from datetime import UTC, date, datetime, timedelta
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from pathlib import Path
-from typing import Any
-from zoneinfo import ZoneInfo
 
+from trader.broker._parse import dec as _dec
+from trader.broker._parse import rows as _rows
+from trader.broker._parse import to_int as _int
 from trader.broker.errors import KisApiError
 from trader.broker.kis_client import KisClient
 from trader.broker.models import Candle, InvestorFlow, OrderBook, Quote
 from trader.broker.tr_ids import path
+from trader.config import KST
 from trader.platform import paths
 
 logger = logging.getLogger("trader.kis")
 
-_KST = ZoneInfo("Asia/Seoul")
 PAGE_SIZE = 100
 MAX_PAGES = 10  # 일봉 상한 약 1,000봉
 HOLIDAY_CACHE_DAYS = 7
-
-
-def _dec(v: Any) -> Decimal:
-    try:
-        return Decimal(str(v).strip() or "0")
-    except InvalidOperation:
-        return Decimal("0")
-
-
-def _int(v: Any) -> int:
-    return int(_dec(v))
-
-
-def _rows(v: Any) -> list[dict]:
-    if isinstance(v, list):
-        return [r for r in v if isinstance(r, dict) and r]
-    if isinstance(v, dict) and v:
-        return [v]
-    return []
 
 
 def _ymd(s: str) -> date:
@@ -120,7 +102,7 @@ class KisMarket:
 
     def get_name_kr(self, ticker: str) -> str | None:
         """종목명 (일봉 API output1.hts_kor_isnm). DART 가 죽었을 때의 폴백."""
-        today = self._now().astimezone(_KST).date()
+        today = self._now().astimezone(KST).date()
         data = self._client.get(
             path("DOM_DAILY"),
             "DOM_DAILY",
@@ -149,7 +131,7 @@ class KisMarket:
         체결 시각이 빈 행은 버리고, 개장 전 시각으로 내려가 전일 봉이 섞여 오면 첫 페이지의
         날짜(당일)만 남기고 멈춘다.
         """
-        hour = self._now().astimezone(_KST).strftime("%H%M%S")
+        hour = self._now().astimezone(KST).strftime("%H%M%S")
         seen: set[str] = set()
         candles: list[Candle] = []
         day: date | None = None
@@ -299,7 +281,7 @@ class KisMarket:
     def get_daily_kr(self, ticker: str, days: int = 250) -> list[Candle]:
         """KIS 는 호출당 최신 100봉(최신→과거)을 주므로 종료일을 뒤로 밀며 페이징한다."""
         by_date: dict[date, Candle] = {}
-        end = self._now().astimezone(_KST).date()
+        end = self._now().astimezone(KST).date()
         for _ in range(MAX_PAGES):
             if len(by_date) >= days:
                 break

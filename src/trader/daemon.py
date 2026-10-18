@@ -22,15 +22,15 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from trader.config import MARKET_TZ, AccountConfig, ScheduleConfig, Settings
+from trader.config import KST, MARKET_TZ, AccountConfig, ScheduleConfig, Settings
 from trader.control import control
 from trader.ledger import db
 from trader.notify.telegram import Notifier, NullNotifier
+from trader.orchestrator import run_store
 from trader.platform import paths
 from trader.platform.procs import pid_alive
 
 logger = logging.getLogger("trader.daemon")
-KST = ZoneInfo("Asia/Seoul")
 TELEGRAM_POLL_S = 30
 FILLS_SYNC_TIMES = ((16, 10), (7, 10))  # KR 마감 후, US 마감 후 (KST)
 
@@ -380,7 +380,7 @@ def _scan_body(deps: DaemonDeps, market: str) -> dict:
         "cap_hit": cap_hit,
         "ml_model": ml[1] if ml else None,
     }
-    write_checkpoint(screener.market_dir(today, market, deps.state), "_scan", out)
+    write_checkpoint(run_store.market_dir(today, market, deps.state, create=True), "_scan", out)
     return out
 
 
@@ -407,11 +407,10 @@ def _ensure_quant(deps: DaemonDeps, ticker: str, market: str, today: date) -> No
 def _analyze_body(deps: DaemonDeps, market: str) -> dict:
     from trader.orchestrator.run_store import read_checkpoint, run_date_for
     from trader.orchestrator.session import SessionSpec, run_session
-    from trader.scan import screener
     from trader.sources.inputs import collect_and_save
 
     today = run_date_for(market, deps.now())
-    scan = read_checkpoint(screener.market_dir(today, market, deps.state), "_scan") or {}
+    scan = read_checkpoint(run_store.market_dir(today, market, deps.state), "_scan") or {}
     targets = scan.get("analyze_targets") or []
     if not targets:
         logger.info("%s 분석 대상 없음 (_scan.json 없음 또는 빈 picks)", market)

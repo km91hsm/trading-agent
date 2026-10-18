@@ -9,13 +9,11 @@ from __future__ import annotations
 import sqlite3
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
-from trader.config import AccountConfig, Settings
+from trader.config import KST, AccountConfig, Settings
 from trader.ledger import performance
 from trader.memory import store
 
-_KST = ZoneInfo("Asia/Seoul")
 MIN_PAPER_DAYS = 20
 MAX_ERROR_RATE = 0.10
 MAX_FAILED_RATE = 0.10
@@ -37,7 +35,7 @@ def _paper_days(conn: sqlite3.Connection) -> int:
     days = set()
     for r in rows:
         try:
-            days.add(datetime.fromisoformat(r["started_at"]).astimezone(_KST).date())
+            days.add(datetime.fromisoformat(r["started_at"]).astimezone(KST).date())
         except ValueError:
             continue
     return len(days)

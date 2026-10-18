@@ -2,13 +2,9 @@
 
 from __future__ import annotations
 
-from zoneinfo import ZoneInfo
-
 from fastapi import HTTPException, Request
 
-from trader.config import AccountConfig
-
-KST = ZoneInfo("Asia/Seoul")
+from trader.config import KST, AccountConfig
 
 
 def deps_of(request: Request):

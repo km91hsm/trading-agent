@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import contextlib
+import html
 import logging
+import re
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 from datetime import UTC, datetime
@@ -25,8 +27,18 @@ class Section(TypedDict):
     error: str | None
 
 
-def _utc_now() -> datetime:
+def utc_now() -> datetime:
     return datetime.now(UTC)
+
+
+_utc_now = utc_now
+TAG_RE = re.compile(r"<[^>]+>")
+
+
+def strip_tags(text: str | None) -> str:
+    """HTML 태그 제거. RSS 는 이스케이프해서, 네이버는 태그 그대로 주므로 unescape 를 두 번 한다."""
+    once = html.unescape(text or "")
+    return html.unescape(TAG_RE.sub("", once)).replace("\xa0", " ").strip()
 
 
 def run_section(

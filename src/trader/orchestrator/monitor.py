@@ -16,19 +16,17 @@ from datetime import UTC, date, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 from typing import Any
-from zoneinfo import ZoneInfo
 
 from trader.agents.schemas import Decision
 from trader.broker.errors import KisApiError
 from trader.broker.models import Position
-from trader.config import MARKET_TZ, AccountConfig, Settings
+from trader.config import KST, MARKET_TZ, AccountConfig, Settings
 from trader.control import control
 from trader.ledger import repo
 from trader.notify.telegram import Notifier, NullNotifier
 from trader.orchestrator import executor, resume, tools
 
 logger = logging.getLogger("trader.monitor")
-_KST = ZoneInfo("Asia/Seoul")
 
 MOVE_PCT = Decimal("0.07")
 REEVAL_INTERVAL = timedelta(minutes=30)
@@ -289,7 +287,7 @@ def _sell_now(
 
     "같은 날" 은 시장 현지 날짜다 (US 는 KST 자정을 넘겨 장이 열려 있어 KST 날짜로 보면
     23:30 KST 에 낸 손절 매도를 00:30 KST 점검이 놓치고 다시 낸다)."""
-    local_day = ctx.now().astimezone(MARKET_TZ.get(market, _KST)).date()
+    local_day = ctx.now().astimezone(MARKET_TZ.get(market, KST)).date()
     if repo.has_open_order_today(
         ctx.conn, account.id, pos.ticker, "SELL", local_day, market=market
     ):

@@ -8,7 +8,6 @@ import sys
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING
-from zoneinfo import ZoneInfo
 
 import typer
 
@@ -17,8 +16,11 @@ from trader.broker.accounts import KisBroker
 from trader.broker.kis_auth import KisAuth
 from trader.broker.kis_client import KisClient
 from trader.broker.kis_market import KisMarket
+from trader.config import KST
 from trader.logging_setup import configure
+from trader.notify.commands import approval_line
 from trader.notify.telegram import make_notifier, make_receiver
+from trader.orchestrator import run_store
 from trader.orchestrator.session import run_session
 from trader.platform import paths
 from trader.platform.claude_bin import ClaudeNotFound
@@ -30,7 +32,6 @@ app = typer.Typer(help="LLM 멀티 에이전트 주식 자동매매", no_args_is
 kis_app = typer.Typer(help="KIS 브로커 도구", no_args_is_help=True)
 app.add_typer(kis_app, name="kis")
 
-_KST = ZoneInfo("Asia/Seoul")
 
 
 def _force_utf8() -> None:
@@ -169,7 +170,7 @@ def kis_ping(
         typer.echo(f"[실패] 시세 클라이언트 생성: {type(e).__name__}: {e}")
         market = None
     if market is not None:
-        today = datetime.now(_KST).date()
+        today = datetime.now(KST).date()
         check(f"휴장일 {today}", lambda: "휴장" if market.is_holiday(today) else "개장")
         check("005930 현재가", lambda: market.get_price_kr("005930").price)
         check("AAPL 현재가", lambda: market.get_price_us("AAPL", "NAS").price)
@@ -317,7 +318,7 @@ def collect(
 
         existed = (
             not force
-            and _rc(_rd(when.astimezone(_KST).date(), market, ticker), "00_inputs") is not None  # type: ignore[arg-type]
+            and _rc(_rd(when.astimezone(KST).date(), market, ticker), "00_inputs") is not None  # type: ignore[arg-type]
         )
         path = _collect_and_save()(
             ticker=ticker,
@@ -420,7 +421,6 @@ def analyze(
 ) -> None:
     """오케스트레이터 세션을 띄워 종목 하나를 분석하고 30_decision.json 을 만든다."""
     import json
-    from zoneinfo import ZoneInfo
 
     from trader.ledger import db
     from trader.orchestrator.run_store import read_checkpoint, run_dir
@@ -438,7 +438,7 @@ def analyze(
         when = datetime.fromisoformat(asof) if asof else datetime.now(UTC)
         if when.tzinfo is None:
             when = when.replace(tzinfo=UTC)
-        day = when.astimezone(ZoneInfo("Asia/Seoul")).date()
+        day = when.astimezone(KST).date()
         d = run_dir(day, market, ticker)  # type: ignore[arg-type]
         if read_checkpoint(d, "00_inputs") is None:
             if skip_collect:
@@ -618,7 +618,7 @@ def tool_collect(
         errors = json.loads(path.read_text(encoding="utf-8")).get("errors", [])
         from trader.orchestrator import tools
 
-        day_ = when.astimezone(_KST).date()
+        day_ = when.astimezone(KST).date()
         q = tools.ensure_quant(ctx, ticker=ticker, market=market, date=day_)  # type: ignore[arg-type]
         tools.ensure_calibration(ctx, ticker=ticker, market=market, date=day_)  # type: ignore[arg-type]
         result = {"ok": True, "path": str(path), "errors": errors, "quant": bool(q)}
@@ -758,14 +758,6 @@ def _exec_ctx():
     ), secrets
 
 
-def _approval_line(a: dict) -> str:
-    o = a["order"]
-    return (
-        f"#{a['id']} {a['account_id']} {o.get('side')} {o.get('ticker')} {o.get('qty')}주 "
-        f"@{o.get('price') or '시장가'} 만료 {a['expires_at']}"
-    )
-
-
 @approvals_app.command("list")
 def approvals_list() -> None:
     """미처리 승인 요청 목록 (만료분은 expired 로 정리)."""
@@ -787,7 +779,7 @@ def approvals_list() -> None:
     if not pending:
         typer.echo("미승인 주문 없음")
     for a in pending:
-        typer.echo(_approval_line(a))
+        typer.echo(approval_line(a))
 
 
 def _decide(approval_id: int, action: str) -> None:
@@ -1199,7 +1191,7 @@ def scan(
         when = datetime.fromisoformat(asof) if asof else datetime.now(UTC)
         if when.tzinfo is None:
             when = when.replace(tzinfo=UTC)
-        day = when.astimezone(_KST).date()
+        day = when.astimezone(KST).date()
         from trader.ml import ranker
 
         ml = ranker.current()
@@ -1239,7 +1231,7 @@ def scan(
             "cap_hit": cap_hit,
             "ml_model": ml[1] if ml else None,
         }
-        write_checkpoint(screener.market_dir(day, market), "_scan", out)
+        write_checkpoint(run_store.market_dir(day, market, create=True), "_scan", out)
     except (config.ConfigError, paths.ProjectRootNotFound, PipelineError, ValueError) as e:
         typer.echo(f"오류: {e}", err=True)
         raise typer.Exit(code=1) from e
@@ -1578,7 +1570,7 @@ def reflect_cmd(
     conn = db.connect()
     db.init_schema(conn)
     try:
-        today = datetime.now(_KST).date()
+        today = datetime.now(KST).date()
         matured = outcomes.mature(conn, state=None, today=today)
         typer.echo(f"결과 채움 {len(matured)}건")
         n_pending = len(pending(conn, market=market))
@@ -1682,7 +1674,7 @@ def readiness_cmd() -> None:
             accounts=accounts,
             settings=settings,
             state=paths.state_dir(),
-            today=datetime.now(_KST).date(),
+            today=datetime.now(KST).date(),
         )
     finally:
         conn.close()
@@ -1699,7 +1691,7 @@ def notify_test() -> None:
         typer.echo(f"오류: {e}", err=True)
         raise typer.Exit(code=1) from e
     notifier = make_notifier(secrets)
-    stamp = datetime.now(_KST).strftime("%Y-%m-%d %H:%M KST")
+    stamp = datetime.now(KST).strftime("%Y-%m-%d %H:%M KST")
     if notifier.send(f"trader 알림 테스트 {stamp}"):
         typer.echo("전송 성공")
     else:

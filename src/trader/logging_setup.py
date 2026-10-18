@@ -10,13 +10,19 @@ _HANDLER_NAME = "trader"
 _FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 
 
+def quiet_httpx() -> None:
+    """httpx/httpcore 는 INFO 에 요청 URL(토큰·키 포함 가능)을 남기므로 WARNING 으로 올린다.
+
+    configure() 가 부르고, configure 없이 쓰이는 클라이언트(테스트 등)도 생성자에서 부른다."""
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+
+
 def configure(state_dir: Path, level: str = "INFO") -> None:
     """루트 로거에 파일·콘솔 핸들러를 붙인다. 여러 번 호출해도 핸들러가 중복되지 않는다."""
     root = logging.getLogger()
     root.setLevel(level)
-    # httpx/httpcore 는 INFO 에 요청 URL(토큰·키 포함 가능)을 남기므로 억제한다.
-    logging.getLogger("httpx").setLevel(logging.WARNING)
-    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    quiet_httpx()
     reset()
     log_dir = Path(state_dir) / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)

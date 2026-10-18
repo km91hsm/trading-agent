@@ -19,6 +19,7 @@ import httpx
 from trader.broker.errors import KisApiError
 from trader.broker.tr_ids import BASE_URL, TOKEN_PATH
 from trader.config import Env
+from trader.logging_setup import quiet_httpx
 from trader.platform import paths
 
 logger = logging.getLogger("trader.kis")
@@ -29,11 +30,6 @@ FAIL_BACKOFF = timedelta(seconds=60)
 
 def _utc_now() -> datetime:
     return datetime.now(UTC)
-
-
-def _quiet_httpx() -> None:
-    logging.getLogger("httpx").setLevel(logging.WARNING)
-    logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 
 class KisAuth:
@@ -47,7 +43,7 @@ class KisAuth:
         state: Path | None = None,
         clock: Callable[[], datetime] = _utc_now,
     ) -> None:
-        _quiet_httpx()
+        quiet_httpx()
         self.env = env
         self._app_key = app_key
         self._app_secret = app_secret

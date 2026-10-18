@@ -6,16 +6,14 @@ import re
 import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
-from trader.config import AccountConfig, Settings
+from trader.config import KST, AccountConfig, Settings
 from trader.control.control import is_paused
-from trader.ledger import metrics
+from trader.ledger import metrics, repo
 from trader.orchestrator.executor import effective_mode
 from trader.platform import paths
 
 MAX_CHARS = 8000
-_KST = ZoneInfo("Asia/Seoul")
 _OPEN = re.compile(r"^\s*- \[ \]\s*(.*)$")
 _DONE = re.compile(r"^\s*- \[[xX]\]")
 
@@ -53,8 +51,7 @@ def _next_todos(todo_path: Path, limit: int = 5) -> list[str]:
 
 
 def _today_calls(conn: sqlite3.Connection, now: datetime) -> tuple[int, float]:
-    start_kst = now.astimezone(_KST).replace(hour=0, minute=0, second=0, microsecond=0)
-    start = start_kst.astimezone(UTC).isoformat()
+    start, _ = repo.day_bounds(now.astimezone(KST).date(), None)
     row = conn.execute(
         "SELECT COUNT(*) AS n, COALESCE(SUM(cost_usd), 0) AS c FROM agent_calls "
         "WHERE created_at >= ? AND COALESCE(model, '') != 'fake'",
@@ -149,7 +146,7 @@ def build_status(
     now: datetime | None = None,
 ) -> str:
     now = now or datetime.now(UTC)
-    stamp = now.astimezone(_KST).strftime("%Y-%m-%d %H:%M KST")
+    stamp = now.astimezone(KST).strftime("%Y-%m-%d %H:%M KST")
     lines = [
         f"# 시스템 상태 (생성: {stamp})",
         "",
@@ -162,7 +159,7 @@ def build_status(
         "| id | env | 모드 | 시장 | 성향 |",
         "|---|---|---|---|---|",
     ]
-    today = now.astimezone(_KST).date()
+    today = now.astimezone(KST).date()
     for a in accounts:
         by_market = metrics.stance_by_market(conn, a.id, today, a.markets)
         st = ", ".join(f"{m} {v}" for m, v in by_market.items())

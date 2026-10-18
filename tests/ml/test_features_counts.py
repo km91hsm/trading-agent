@@ -11,7 +11,7 @@ T0 = datetime(2026, 10, 17, 6, 0, tzinfo=UTC)
 
 
 def test_snapshot_fills_counts_from_inputs(project):
-    d = run_dir(T0.astimezone(features._KST).date(), "KR", "005930")
+    d = run_dir(T0.astimezone(features.KST).date(), "KR", "005930")
     write_checkpoint(
         d,
         "00_inputs",

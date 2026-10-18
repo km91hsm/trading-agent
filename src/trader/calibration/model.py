@@ -12,15 +12,15 @@ import json
 import sqlite3
 from collections.abc import Callable
 from datetime import UTC, datetime
-from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
 
 from trader.agents import schemas
+from trader.config import KST
+from trader.memory import store
 from trader.memory import vector as vec
 
-_KST = ZoneInfo("Asia/Seoul")
 SIGNAL_SIGN = {"STRONG_BUY": 1, "BUY": 1, "SELL": -1, "STRONG_SELL": -1}
 DECISION_SIGN = {"BUY": 1.0, "ADD": 1.0, "SELL": -1.0, "TRIM": -1.0, "HOLD": 0.0}
 FLAT_BAND = 0.0
@@ -111,11 +111,7 @@ def build_calibration(
     asof: str,
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> dict | None:
-    n = int(
-        conn.execute(
-            "SELECT COUNT(*) AS n FROM memory_entries WHERE outcome_at IS NOT NULL"
-        ).fetchone()["n"]
-    )
+    n = store.matured_count(conn)
     active = n >= min_decisions
     report = None
     if active:
@@ -127,13 +123,13 @@ def build_calibration(
     created_dt = now().astimezone(UTC)
     created = created_dt.isoformat()
     # 같은 KST 날짜 행이 있으면 갱신: 종목마다 1행씩 쌓이지 않도록 하루 1행
-    kst_day = created_dt.astimezone(_KST).date().isoformat()
+    kst_day = created_dt.astimezone(KST).date().isoformat()
     existing = conn.execute(
         "SELECT id, created_at FROM calibration_runs ORDER BY id DESC LIMIT 1"
     ).fetchone()
     if existing is not None:
         prev_day = (
-            datetime.fromisoformat(existing["created_at"]).astimezone(_KST).date().isoformat()
+            datetime.fromisoformat(existing["created_at"]).astimezone(KST).date().isoformat()
         )
         if prev_day != kst_day:
             existing = None

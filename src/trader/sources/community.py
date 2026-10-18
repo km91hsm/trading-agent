@@ -11,7 +11,6 @@
 
 from __future__ import annotations
 
-import html
 import logging
 import re
 import time
@@ -19,13 +18,14 @@ import xml.etree.ElementTree as ET
 from collections.abc import Callable, Iterable
 from datetime import UTC, datetime
 from typing import Any
-from zoneinfo import ZoneInfo
 
 import httpx
 from bs4 import BeautifulSoup
 
-from trader.config import CommunityCfg, Market
+from trader.config import KST, CommunityCfg, Market
 from trader.sources.base import owned_client
+from trader.sources.base import strip_tags as _strip
+from trader.sources.base import utc_now as _utc_now
 
 logger = logging.getLogger("trader.sources")
 
@@ -33,17 +33,7 @@ USER_AGENT = (
     "Mozilla/5.0 (compatible; trading-agent/0.1; +https://github.com/km91hsm/trading-agent)"
 )
 MIN_INTERVAL_S = 2.0
-_KST = ZoneInfo("Asia/Seoul")
-_TAG_RE = re.compile(r"<[^>]+>")
 _ATOM = "{http://www.w3.org/2005/Atom}"
-
-
-def _utc_now() -> datetime:
-    return datetime.now(UTC)
-
-
-def _strip(text: str | None) -> str:
-    return html.unescape(_TAG_RE.sub("", html.unescape(text or ""))).strip()
 
 
 def _iso_to_utc(s: str) -> str | None:
@@ -61,7 +51,7 @@ def _iso_to_utc(s: str) -> str | None:
 
 def _kst_to_iso(s: str, fmt: str) -> str | None:
     try:
-        return datetime.strptime(s.strip(), fmt).replace(tzinfo=_KST).astimezone(UTC).isoformat()
+        return datetime.strptime(s.strip(), fmt).replace(tzinfo=KST).astimezone(UTC).isoformat()
     except ValueError:
         return None
 

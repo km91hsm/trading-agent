@@ -19,12 +19,11 @@ from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
-from zoneinfo import ZoneInfo
 
 import httpx
 from pydantic import BaseModel
 
-from trader.config import MARKET_TZ, ConfigError, Market, Secrets, SourcesConfig
+from trader.config import KST, MARKET_TZ, ConfigError, Market, Secrets, SourcesConfig
 from trader.orchestrator.run_store import read_checkpoint, run_dir, write_checkpoint
 from trader.sources import indicators, manual_inputs
 from trader.sources.base import SKIP_REASONS, Section, run_section, skipped_section
@@ -36,7 +35,6 @@ from trader.sources.news import collect_news
 
 logger = logging.getLogger("trader.sources")
 
-_KST = ZoneInfo("Asia/Seoul")
 SCHEMA_VERSION = 2  # v2: fundamental.history (3개년 + 최근 분기) 추가
 MAX_PAST = timedelta(hours=24)
 MAX_FUTURE = timedelta(hours=24)  # 과거와 대칭. 연도 오타 같은 먼 미래만 거부
@@ -112,7 +110,7 @@ def _quote_or_raise(q: Any) -> dict:
 
 def _asof_date(market: str, asof: datetime) -> date:
     """룩어헤드 컷오프: asof 의 시장 현지 날짜. 이 날짜 뒤의 봉·수급은 수집에서 뺀다."""
-    return asof.astimezone(MARKET_TZ.get(market, _KST)).date()
+    return asof.astimezone(MARKET_TZ.get(market, KST)).date()
 
 
 def _technical(ticker, market, exchange, cfg, deps, asof: datetime) -> dict[str, Section]:
@@ -170,7 +168,7 @@ def _fundamental(ticker, market, asof, cfg, deps, technical) -> dict[str, Sectio
     now = deps.now
     quote = technical["quote"]["data"]
     price = Decimal(str(quote["price"])) if quote else None
-    day = asof.astimezone(_KST).date()
+    day = asof.astimezone(KST).date()
     keys = ("ratios", "history", "disclosures")
     if market == "KR":
         if not cfg.dart.enabled:
@@ -416,7 +414,7 @@ def collect_and_save(
         )
     if asof - deps.now() > MAX_FUTURE:
         raise ConfigError(f"미래 asof 는 허용하지 않습니다 (asof={asof.isoformat()})")
-    d = run_dir(asof.astimezone(_KST).date(), market, ticker, state)
+    d = run_dir(asof.astimezone(KST).date(), market, ticker, state)
     if not force and read_checkpoint(d, "00_inputs") is not None:
         logger.info("00_inputs 이미 존재, 건너뜀: %s", d)
         return d / "00_inputs.json"

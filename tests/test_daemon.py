@@ -12,6 +12,7 @@ from trader.broker.models import Cash
 from trader.config import ScheduleConfig, Settings
 from trader.control import control
 from trader.ledger import db
+from trader.orchestrator import run_store
 
 SCHED = ScheduleConfig.model_validate(
     {
@@ -227,11 +228,10 @@ def test_run_names_jobs_by_id(project, conn):
 def test_analyze_body_one_session_per_target_continues_on_failure(project, conn):
     from trader.orchestrator.run_store import write_checkpoint
     from trader.orchestrator.session import SessionResult
-    from trader.scan import screener
 
     deps = _deps(conn, FakeMarket(), now=lambda: datetime(2026, 10, 8, 0, 0, tzinfo=UTC))
     write_checkpoint(
-        screener.market_dir(date(2026, 10, 8), "KR"),
+        run_store.market_dir(date(2026, 10, 8), "KR", create=True),
         "_scan",
         {
             "analyze_targets": [

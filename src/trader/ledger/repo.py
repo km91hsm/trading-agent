@@ -13,17 +13,16 @@ from decimal import Decimal
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from trader.config import MARKET_TZ
+from trader.config import KST, MARKET_TZ
 from trader.ledger.db import now_iso
 
-_KST = ZoneInfo("Asia/Seoul")
 _ANALYST_RE = re.compile(r"^10_analyst_([a-z_]+)$")
 _DECISION_RE = re.compile(r"^(30_decision|31_decision_r\d+)$")
 _DEBATE_RE = re.compile(r"^20_debate_r(\d+)_(bull|bear)$")
 
 
 def _kst_day_bounds(d: date) -> tuple[str, str]:
-    return _day_bounds(d, _KST)
+    return _day_bounds(d, KST)
 
 
 def _day_bounds(d: date, tz: ZoneInfo) -> tuple[str, str]:
@@ -519,7 +518,7 @@ def _first_buy_of_current_lot(events: list[tuple[str, str, int]]) -> date | None
     for at, side, n in events:
         if side == "BUY":
             if qty <= 0:
-                since = datetime.fromisoformat(at).astimezone(_KST).date()
+                since = datetime.fromisoformat(at).astimezone(KST).date()
                 qty = 0
             qty += int(n)
         else:

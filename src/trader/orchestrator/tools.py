@@ -18,15 +18,15 @@ from datetime import UTC, date, datetime, time
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
-from zoneinfo import ZoneInfo
 
 from pydantic import ValidationError
 
 from trader.agents import schemas
-from trader.config import AccountConfig, Market, Settings
+from trader.config import KST, AccountConfig, Market, Settings
 from trader.ledger import repo
 from trader.notify.telegram import NullNotifier
 from trader.orchestrator import summary as summary_mod
+from trader.orchestrator.run_store import checkpoint_payload as _wrap
 from trader.orchestrator.run_store import (
     list_checkpoints,
     market_dir,
@@ -34,12 +34,10 @@ from trader.orchestrator.run_store import (
     run_dir,
     write_checkpoint,
 )
-from trader.platform import paths
+from trader.risk import costs
 
 logger = logging.getLogger("trader.orchestrator")
 
-_KST = ZoneInfo("Asia/Seoul")
-ROUND_TRIP_COST_BP: dict[Market, int] = {"KR": 30, "US": 50}
 MIN_REPORTS = 2
 ANALYST_ROLES = ("technical", "fundamental", "news_macro", "sentiment")
 _ANALYST_RE = re.compile(r"^10_analyst_(technical|fundamental|news_macro|sentiment)$")
@@ -123,10 +121,6 @@ def _call(agent: str | None, meta: dict | None) -> dict | None:
     return schemas.CallMeta.model_validate(base).model_dump()
 
 
-def _wrap(data: Any, call: dict | None) -> dict:
-    return {"schema_version": schemas.CHECKPOINT_SCHEMA_VERSION, "data": data, "call": call}
-
-
 # --- checkpoint -------------------------------------------------------------
 
 
@@ -148,7 +142,7 @@ def trader_context(
     return {
         "quote": quote,
         "risk_limits": ctx.settings.risk.model_dump(),
-        "costs_bp": ROUND_TRIP_COST_BP[market],
+        "costs_bp": costs.round_trip_bp(market),
         "portfolio": _portfolio_context(ctx, market),
         "quant": quant,
         **_memory_context(ctx, inputs, market),
@@ -832,9 +826,9 @@ _KST_CLOSE = time(15, 30)
 
 def _decided_at(now: datetime, run_date: date) -> datetime:
     """운영일(run date)이 오늘(KST)이면 현재 시각, 아니면 그날 장 마감(15:30 KST) 시각(UTC)."""
-    if now.astimezone(_KST).date() == run_date:
+    if now.astimezone(KST).date() == run_date:
         return now
-    return datetime.combine(run_date, _KST_CLOSE, _KST).astimezone(UTC)
+    return datetime.combine(run_date, _KST_CLOSE, KST).astimezone(UTC)
 
 
 def _record_memory(
@@ -965,11 +959,11 @@ def submit_reflection(
 def sessions_today(conn: sqlite3.Connection | None, now: datetime) -> int:
     if conn is None:
         return 0
-    start = now.astimezone(_KST).replace(hour=0, minute=0, second=0, microsecond=0)
+    start, _ = repo.day_bounds(now.astimezone(KST).date(), None)
     row = conn.execute(
         "SELECT COUNT(*) AS n FROM agent_calls WHERE agent='orchestrator' "
         "AND COALESCE(model, '') != 'fake' AND created_at >= ?",
-        (start.astimezone(UTC).isoformat(),),
+        (start,),
     ).fetchone()
     return int(row["n"])
 
@@ -977,11 +971,10 @@ def sessions_today(conn: sqlite3.Connection | None, now: datetime) -> int:
 def status(ctx: ToolContext, *, market: Market, date: date) -> dict:
     if market not in ("KR", "US"):
         return {"ok": False, "error": f"market 은 KR 또는 US: {market!r}"}
-    base = ctx.state if ctx.state is not None else paths.state_dir()
-    market_dir = base / "runs" / date.isoformat() / market
+    mdir = market_dir(date, market, ctx.state)
     tickers: dict[str, list[str]] = {}
-    if market_dir.exists():
-        for p in sorted(market_dir.iterdir()):
+    if mdir.exists():
+        for p in sorted(mdir.iterdir()):
             if p.is_dir():
                 tickers[p.name] = list_checkpoints(p)
     return {

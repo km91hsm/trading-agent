@@ -8,7 +8,7 @@ from datetime import date as _date
 from fastapi import APIRouter, HTTPException, Query, Request
 
 from trader.ledger import views
-from trader.orchestrator import tools
+from trader.orchestrator import run_store, tools
 from trader.orchestrator.run_store import list_checkpoints, read_checkpoint
 from trader.platform import paths
 from trader.web.routers._common import deps_of, require_market, today_kst
@@ -67,11 +67,10 @@ def today(request: Request, market: str | None = None, date: str | None = None) 
     m = require_market(market)
     d = _date_arg(request, date)
     deps = deps_of(request)
-    base = deps.state if deps.state is not None else paths.state_dir()
-    market_dir = base / "runs" / d.isoformat() / m
+    mdir = run_store.market_dir(d, m, deps.state)
     tickers: dict[str, list[str]] = {}
-    if market_dir.exists():
-        for p in sorted(market_dir.iterdir()):
+    if mdir.exists():
+        for p in sorted(mdir.iterdir()):
             if p.is_dir() and (stages := list_checkpoints(p)):  # 빈 디렉터리는 숨긴다
                 tickers[p.name] = stages
     return {"date": d.isoformat(), "market": m, "tickers": tickers}

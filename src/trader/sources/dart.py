@@ -17,12 +17,13 @@ from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
-from zoneinfo import ZoneInfo
 
 import httpx
 
+from trader.config import KST
+from trader.logging_setup import quiet_httpx
+
 logger = logging.getLogger("trader.sources")
-_KST = ZoneInfo("Asia/Seoul")
 
 BASE = "https://opendart.fss.or.kr/api"
 CACHE_DAYS = 7
@@ -42,11 +43,6 @@ _ACCOUNT_PATTERNS: dict[str, tuple[str, ...]] = {
 
 class DartError(RuntimeError):
     """DART 응답 status ≠ 000 (013 조회 결과 없음은 예외가 아니라 빈 결과)."""
-
-
-def _quiet_httpx() -> None:
-    logging.getLogger("httpx").setLevel(logging.WARNING)
-    logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 
 def _dec(v: Any) -> Decimal | None:
@@ -73,7 +69,7 @@ class DartClient:
         http: httpx.Client | None = None,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
-        _quiet_httpx()
+        quiet_httpx()
         self._key = api_key
         self._cache_dir = cache_dir
         self._http = http or httpx.Client(timeout=15)
@@ -232,7 +228,7 @@ class DartClient:
 
     def disclosures(self, corp_code: str, asof: datetime, days: int = 30) -> list[dict]:
         """최근 days 일 공시. 접수일이 asof 이후인 항목은 제외 (룩어헤드 방지)."""
-        asof_date = asof.astimezone(_KST).date()  # DART 접수일은 KST
+        asof_date = asof.astimezone(KST).date()  # DART 접수일은 KST
         bgn = asof_date - timedelta(days=days)
         data = self._get_json(
             "list.json",

@@ -6,9 +6,7 @@ collect_news() 는 asof 이후 발행분을 제외하고 URL 로 중복을 제�
 
 from __future__ import annotations
 
-import html
 import logging
-import re
 import xml.etree.ElementTree as ET
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -18,6 +16,8 @@ import httpx
 
 from trader.config import Market, NewsCfg, Secrets
 from trader.sources.base import owned_client
+from trader.sources.base import strip_tags as _strip
+from trader.sources.base import utc_now as _utc_now
 
 logger = logging.getLogger("trader.sources")
 
@@ -27,17 +27,6 @@ MACRO_QUERIES: dict[Market, str] = {
     "KR": "코스피 OR 금리 OR 환율 OR 경기",
     "US": "stock market OR Fed OR inflation OR Treasury yields",
 }
-_TAG_RE = re.compile(r"<[^>]+>")
-
-
-def _utc_now() -> datetime:
-    return datetime.now(UTC)
-
-
-def _strip(text: str | None) -> str:
-    """태그 제거. 네이버는 태그를 그대로, RSS 는 이스케이프해서 주므로 두 번 풀어 처리한다."""
-    once = html.unescape(text or "")
-    return html.unescape(_TAG_RE.sub("", once)).replace("\xa0", " ").strip()
 
 
 def _parse_date(s: str | None) -> str | None:

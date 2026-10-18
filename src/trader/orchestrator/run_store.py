@@ -9,12 +9,11 @@ import json
 import os
 from datetime import date, datetime, time
 from pathlib import Path
-from zoneinfo import ZoneInfo
+from typing import Any
 
-from trader.config import MARKET_TZ, Market
+from trader.config import KST, MARKET_TZ, Market
 from trader.platform import paths
 
-_KST = ZoneInfo("Asia/Seoul")
 _US_OPEN = time(9, 30)
 
 
@@ -24,10 +23,10 @@ def run_date_for(market: str, now: datetime) -> date:
     US 장은 KST 자정을 넘겨 열리므로(09:30~16:00 ET = 22:30/23:30 KST ~ 05:00/06:00 KST 다음날)
     현지 날짜의 개장 시각을 KST 로 바꾼 날짜를 쓴다. analyze(개장 전, KST 날짜 D)와 장중
     monitor·재평가(KST 자정 이후)가 같은 디렉터리·같은 주문 창을 보게 된다."""
-    tz = MARKET_TZ.get(market, _KST)
+    tz = MARKET_TZ.get(market, KST)
     local = now.astimezone(tz)
     if market == "US":
-        return datetime.combine(local.date(), _US_OPEN, tzinfo=tz).astimezone(_KST).date()
+        return datetime.combine(local.date(), _US_OPEN, tzinfo=tz).astimezone(KST).date()
     return local.date()
 
 
@@ -49,6 +48,13 @@ def market_dir(d: date, market: Market, state: Path | None = None, *, create: bo
     if create:
         p.mkdir(parents=True, exist_ok=True)
     return p
+
+
+def checkpoint_payload(data: Any, call: dict | None = None) -> dict:
+    """체크포인트 파일 봉투 {schema_version, data, call}. tools·executor 가 같은 모양으로 쓴다."""
+    from trader.agents import schemas
+
+    return {"schema_version": schemas.CHECKPOINT_SCHEMA_VERSION, "data": data, "call": call}
 
 
 def write_checkpoint(dir: Path, name: str, data: dict) -> Path:

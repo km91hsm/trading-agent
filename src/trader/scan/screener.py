@@ -11,22 +11,15 @@ from typing import Any
 
 from trader.config import AccountConfig, Settings
 from trader.control.control import split_market
+from trader.orchestrator import run_store
 from trader.orchestrator import session as session_mod
 from trader.orchestrator.run_store import read_checkpoint
-from trader.platform import paths
 
 logger = logging.getLogger("trader.scan")
 
 PICKS = 5
 PICKS_ON_CAP = 3
 PICKS_ON_HARD_CAP = 1
-
-
-def market_dir(d: date, market: str, state: Path | None = None) -> Path:
-    base = state if state is not None else paths.state_dir()
-    p = base / "runs" / d.isoformat() / market
-    p.mkdir(parents=True, exist_ok=True)
-    return p
 
 
 def run_screen(
@@ -62,7 +55,7 @@ def run_screen(
         session_result = session_mod.run_session(
             spec, settings, conn, accounts, state=state, now=now, brokers=brokers or {}
         )
-        screened = read_checkpoint(market_dir(date, market, state), "_screen") or {}
+        screened = read_checkpoint(run_store.market_dir(date, market, state), "_screen") or {}
         picks = list((screened.get("data") or {}).get("picks") or [])
         if not session_result.ok or not picks:
             logger.warning("screener 세션 실패 또는 빈 picks → 정량 상위 %d", PICKS_ON_CAP)

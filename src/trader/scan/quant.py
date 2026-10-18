@@ -25,11 +25,7 @@ VOLATILITY_DROP_Q = 0.90
 
 
 def _z(s: pd.Series) -> pd.Series:
-    s = pd.to_numeric(s, errors="coerce")
-    sd = s.std(ddof=0)
-    if not np.isfinite(sd) or sd == 0:
-        return pd.Series(0.0, index=s.index)
-    return ((s - s.mean()) / sd).fillna(0.0)
+    return features.zscore(s, fill=0.0)
 
 
 def score(df: pd.DataFrame, *, top: int = TOP_N) -> pd.DataFrame:

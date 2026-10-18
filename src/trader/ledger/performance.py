@@ -7,10 +7,9 @@ from __future__ import annotations
 
 import math
 import sqlite3
-from datetime import UTC, date, datetime, time, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 import pandas as pd
 
@@ -18,7 +17,6 @@ from trader.ledger import metrics as ledger_metrics
 from trader.ledger import repo
 from trader.ml import dataset, features
 
-_KST = ZoneInfo("Asia/Seoul")
 TRADING_DAYS = 252
 COST_BPS = (0, 10, 20, 30)
 
@@ -64,7 +62,6 @@ def metrics_of(series: list[tuple[str, Decimal]]) -> dict:
     }
 
 
-metrics = metrics_of  # noqa: F811 - 모듈 공개 이름 (테스트·라우터가 performance.metrics 로 부른다)
 
 
 def _close_table(state: Path | None, market: str, start: date, end: date) -> pd.DataFrame:
@@ -136,9 +133,9 @@ def benchmarks(
 def _orders_between(
     conn, account_id: str, market: str, start: date, end: date
 ) -> list[sqlite3.Row]:
-    # 주문 created_at 은 UTC 저장이라 KST 자정 경계를 UTC 로 바꿔 비교한다
-    lo = datetime.combine(start, time.min, _KST).astimezone(UTC).isoformat()
-    hi = datetime.combine(end + timedelta(days=1), time.min, _KST).astimezone(UTC).isoformat()
+    # 주문 created_at 은 UTC 저장이라 KST 자정 경계를 UTC 로 바꿔 비교한다 (repo.day_bounds)
+    lo, _ = repo.day_bounds(start, None)
+    _, hi = repo.day_bounds(end, None)
     return conn.execute(
         "SELECT qty, price, amount, side FROM orders WHERE account_id=? AND market=? "
         "AND status NOT IN ('rejected','cancelled','failed') "

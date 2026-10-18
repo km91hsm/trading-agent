@@ -23,7 +23,8 @@ Env = Literal["paper", "real"]
 Mode = Literal["auto", "approve", "off"]
 Market = Literal["KR", "US"]
 # 시장 현지 시간대 (주말·현지 날짜 판정, 분봉 시각, 체결 조회 날짜에 공통으로 쓴다)
-MARKET_TZ: dict[str, ZoneInfo] = {"KR": ZoneInfo("Asia/Seoul"), "US": ZoneInfo("America/New_York")}
+KST = ZoneInfo("Asia/Seoul")  # 운영 기준 시간대. 모듈마다 ZoneInfo 를 다시 만들지 않는다
+MARKET_TZ: dict[str, ZoneInfo] = {"KR": KST, "US": ZoneInfo("America/New_York")}
 
 
 class ConfigError(Exception):
