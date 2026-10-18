@@ -265,3 +265,28 @@ def test_latest_rows_keeps_feature_dtypes(project):
     df = features.latest_rows(None, "KR")
     assert str(df["sma_5"].dtype) == "Float64" and str(df["close"].dtype) == "float64"
     assert str(df["volume"].dtype) == "int64"
+
+
+def test_write_rows_tolerates_old_schema_file(project):
+    """이전 Phase 파일은 열이 적다.
+
+    latest_rows 는 reindex 로 메우지만 write_rows 가 KeyError 를 내면 snapshot 전체가 실패한다."""
+    candles = make_candles(1)
+    day = candles[0].date.isoformat()
+    d = project / "state" / "features"
+    d.mkdir(parents=True, exist_ok=True)
+    old = pd.DataFrame(
+        {
+            "date": [candles[0].date],
+            "ticker": ["000660"],
+            "market": ["KR"],
+            "close": [1.0],
+            "volume": [10],
+        }
+    )
+    old.to_parquet(d / f"{day}.parquet", index=False)
+    df = features.history_rows(ticker="005930", market="KR", candles=candles, ratios_by_year=None)
+    features.write_rows(df)
+    got = pd.read_parquet(d / f"{day}.parquet")
+    assert set(got["ticker"]) == {"000660", "005930"}
+    assert pd.isna(got.loc[got["ticker"] == "000660", "sma_5"]).all()

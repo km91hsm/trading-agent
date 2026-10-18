@@ -187,7 +187,8 @@ def write_rows(df: pd.DataFrame, state: Path | None = None) -> list[Path]:
     for day, part in df.groupby("date", sort=True):
         path = d / f"{pd.Timestamp(day).date().isoformat()}.parquet"
         if path.exists():
-            old = _coerce(pd.read_parquet(path))
+            # 이전 Phase 파일은 열이 적을 수 있다 (latest_rows 와 같은 reindex)
+            old = _coerce(pd.read_parquet(path).reindex(columns=FEATURE_COLUMNS))
             old = old[~old["ticker"].isin(part["ticker"])]
             part = pd.concat([old, part], ignore_index=True)
         tmp = path.with_suffix(".parquet.tmp")

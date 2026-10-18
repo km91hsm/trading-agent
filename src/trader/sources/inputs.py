@@ -23,7 +23,7 @@ from zoneinfo import ZoneInfo
 import httpx
 from pydantic import BaseModel
 
-from trader.config import ConfigError, Market, Secrets, SourcesConfig
+from trader.config import MARKET_TZ, ConfigError, Market, Secrets, SourcesConfig
 from trader.orchestrator.run_store import read_checkpoint, run_dir, write_checkpoint
 from trader.sources import indicators, manual_inputs
 from trader.sources.base import SKIP_REASONS, Section, run_section, skipped_section
@@ -109,25 +109,37 @@ def _quote_or_raise(q: Any) -> dict:
     return q.model_dump(mode="json")
 
 
-def _technical(ticker, market, exchange, cfg, deps) -> dict[str, Section]:
+def _asof_date(market: str, asof: datetime) -> date:
+    """룩어헤드 컷오프: asof 의 시장 현지 날짜. 이 날짜 뒤의 봉·수급은 수집에서 뺀다."""
+    return asof.astimezone(MARKET_TZ.get(market, _KST)).date()
+
+
+def _technical(ticker, market, exchange, cfg, deps, asof: datetime) -> dict[str, Section]:
     now = deps.now
     m = deps.market
     keys = ("quote", "daily", "minute", "orderbook", "indicators")
     if m is None:
         return {k: skipped_section("no market client", now=now) for k in keys}
     kr = market == "KR"
+    cutoff = _asof_date(market, asof)
     candles: list = []
 
     def daily() -> list[dict]:
         nonlocal candles
-        candles = (
+        got = (
             m.get_daily_kr(ticker, days=cfg.kis.daily_days)
             if kr
             else m.get_daily_us(ticker, exchange, days=cfg.kis.daily_days)
         )
+        # 과거 asof 재수집(24시간 안)이면 KIS 는 현재 기준 봉을 주므로 asof 뒤 봉을 잘라 낸다
+        candles = [c for c in got if c.date <= cutoff]
         if not candles:
             raise ValueError("일봉이 비어 있습니다")
         return _dump(candles)
+
+    def minute() -> list[dict]:
+        got = m.get_minute_kr(ticker) if kr else m.get_minute_us(ticker, exchange)
+        return _dump([c for c in got if c.date <= cutoff])
 
     out: dict[str, Section] = {
         "quote": run_section(
@@ -137,10 +149,7 @@ def _technical(ticker, market, exchange, cfg, deps) -> dict[str, Section]:
             now=now,
         ),
         "daily": run_section(daily, now=now),
-        "minute": run_section(
-            lambda: _dump(m.get_minute_kr(ticker) if kr else m.get_minute_us(ticker, exchange)),
-            now=now,
-        ),
+        "minute": run_section(minute, now=now),
         "orderbook": run_section(
             lambda: (
                 m.get_orderbook_kr(ticker) if kr else m.get_orderbook_us(ticker, exchange)
@@ -262,8 +271,15 @@ def _sentiment(ticker, market, name, asof, cfg, deps, secrets=None) -> dict[str,
     elif deps.market is None:
         flow = skipped_section("no market client", now=now)
     else:
+        cutoff = _asof_date(market, asof)
         flow = run_section(
-            lambda: _dump(deps.market.get_investor_kr(ticker, days=cfg.kis.investor_days)),
+            lambda: _dump(
+                [
+                    f
+                    for f in deps.market.get_investor_kr(ticker, days=cfg.kis.investor_days)
+                    if f.date <= cutoff
+                ]
+            ),
             now=now,
         )
     return {
@@ -342,7 +358,8 @@ def build_inputs(
     if market == "US" and not exchange:
         raise ConfigError("미국 종목은 exchange(거래소 코드, NAS/NYS/AMS)가 필요합니다")
     name = _name(ticker, market, deps)
-    technical = _technical(ticker, market, exchange, cfg, deps)
+    technical = _technical(ticker, market, exchange, cfg, deps, asof)
+    daily_rows = technical["daily"]["data"] or []
     result: dict[str, Any] = {
         "meta": {
             "ticker": ticker,
@@ -350,6 +367,8 @@ def build_inputs(
             "exchange": exchange,
             "name": name,
             "asof": asof.astimezone(UTC).isoformat(),
+            # 마지막 일봉 날짜 (장중이면 당일 미완성 봉). 읽는 쪽이 부분 봉 여부를 판단한다
+            "last_candle_date": daily_rows[-1]["date"] if daily_rows else None,
             "generated_at": deps.now().isoformat(),
             "schema_version": SCHEMA_VERSION,
         },

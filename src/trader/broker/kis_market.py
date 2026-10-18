@@ -321,6 +321,8 @@ class KisMarket:
                 break
             oldest: date | None = None
             for r in rows:
+                if not r.get("stck_bsop_date"):  # 상장 초기 종목은 뒤를 빈 행으로 채워 온다
+                    continue
                 d = _ymd(str(r["stck_bsop_date"]))
                 oldest = d if oldest is None or d < oldest else oldest
                 by_date.setdefault(
@@ -363,6 +365,8 @@ class KisMarket:
                 break
             oldest: date | None = None
             for r in rows:
+                if not r.get("xymd"):
+                    continue
                 d = _ymd(str(r["xymd"]))
                 oldest = d if oldest is None or d < oldest else oldest
                 by_date.setdefault(

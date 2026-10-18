@@ -280,3 +280,19 @@ def test_minute_kr_drops_previous_day_rows_and_stops(market, respx_mock):
     assert len(route.calls) == 2
     assert {c.date for c in candles} == {date(2026, 10, 8)}
     assert len(candles) == 31 and candles[0].time == "090000"
+
+
+def test_daily_skips_rows_with_blank_date(market, respx_mock):
+    """상장 100일 미만 종목은 KIS 가 뒤를 빈 행으로 채운다 → 전체 실패가 아니라 그 행만 버린다."""
+    payload = load("daily_kr_p1.json")
+    payload["output2"] = payload["output2"][:10] + [
+        {k: "" for k in payload["output2"][0]},
+        {"stck_bsop_date": None},
+    ]
+    respx_mock.get(REAL + DOM_DAILY).mock(return_value=httpx.Response(200, json=payload))
+    candles = market.get_daily_kr("005930", days=50)
+    assert len(candles) == 10 and candles[-1].date == date(2026, 10, 9)
+    us = load("daily_us.json")
+    us["output2"] = us["output2"][:5] + [{k: "" for k in us["output2"][0]}]
+    respx_mock.get(REAL + OVS_DAILY).mock(return_value=httpx.Response(200, json=us))
+    assert len(market.get_daily_us("AAPL", "NAS", days=30)) == 5

@@ -458,3 +458,28 @@ def test_events_use_dart_rcept_dt_and_seven_day_window():
     recent = ev["data"]["recent"]
     assert [r["title"] for r in recent] == ["실적 공시"]
     assert recent[0]["date"] == "2026-10-07" and recent[0]["kind"] == "earnings"
+
+
+def test_technical_sections_respect_asof(project):
+    """과거 asof 재수집(24시간 안)에서 asof 뒤 날짜의 일봉·분봉·수급이 들어가면 룩어헤드다."""
+    from datetime import date
+
+    from helpers_sources import make_candles
+
+    m = FakeMarket()
+    # 10-07(수) 10-08 10-09 10-12 10-13 — asof 는 10-09 15:00 KST 이전인 10-08 15:00 KST
+    m._candles = make_candles(5, start=date(2026, 10, 7))
+    asof = T0 - timedelta(days=1)
+    d = build_inputs(
+        ticker="005930",
+        market="KR",
+        exchange=None,
+        asof=asof,
+        cfg=cfg(),
+        secrets=Secrets(),
+        deps=deps(market=m),
+    )
+    daily = d["technical"]["daily"]["data"]
+    assert daily and daily[-1]["date"] == "2026-10-08" and len(daily) == 2
+    assert d["meta"]["last_candle_date"] == "2026-10-08"
+    assert all(r["date"] <= "2026-10-08" for r in d["sentiment"]["investor_flow"]["data"])
