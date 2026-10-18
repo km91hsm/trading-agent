@@ -694,15 +694,41 @@ def submit_decision(
         if stage in stages:
             return {"ok": False, "error": f"{stage} 이 이미 있습니다 (다음 번호를 쓰세요)"}
         resume_stage = stage
+    if ctx.conn is None:  # 30_decision 을 쓰기 전에 거부해야 재시도가 멱등 분기에 걸리지 않는다
+        return {"ok": False, "error": "원장 연결이 없어 계좌별 실행을 할 수 없음"}
     if resume_stage is None and "30_decision" in stages:
-        # 같은 날 재제출(세션 재시도·재실행)은 기존 결정을 돌려주고 실행을 반복하지 않는다 (멱등)
+        # 같은 날 재제출(세션 재시도·재실행)은 기존 결정을 돌려주고 실행을 반복하지 않는다 (멱등).
+        # 단, 판정(40_risk_check_*)이 하나도 없으면 저장 뒤 execute 가 끊긴 것이므로 실행을 마친다
+        # (executor 는 살아 있는 주문·승인으로 멱등, memory_entries 는 decision_id UNIQUE).
         existing = read_checkpoint(d, "30_decision") or {}
-        return {
+        out = {
             "ok": True,
             "already": True,
             "path": str(d / "30_decision.json"),
             "action": (existing.get("data") or {}).get("action"),
             "message": "30_decision 이 이미 있어 기존 결정을 유지함",
+        }
+        if any(s.startswith("40_risk_check_") for s in stages):
+            return out
+        try:
+            decision = schemas.Decision.model_validate(existing.get("data") or {})
+        except ValidationError as e:
+            n = e.error_count()
+            return out | {"message": f"기존 30_decision 을 해석할 수 없어 실행 생략: 오류 {n}건"}
+        inputs = read_checkpoint(d, "00_inputs") or {}
+        price = _quote_price(inputs)
+        if price is None:
+            return out | {"message": "00_inputs 에 현재가가 없어 실행을 재개하지 못함"}
+        _ingest_run(ctx, d, date, market, ticker)
+        executions, memory_entry_id = _execute_and_record(
+            ctx, d, date, market, decision, inputs, price
+        )
+        logger.warning("미실행 결정의 실행 재개 %s %s: %s", market, ticker, decision.action)
+        return out | {
+            "resumed_execution": True,
+            "message": "30_decision 은 있었지만 판정이 없어 실행을 재개함",
+            "executions": executions,
+            "memory_entry_id": memory_entry_id,
         }
     reports = [s for s in stages if _ANALYST_RE.match(s)]
     missing: list[str] = []
@@ -731,15 +757,40 @@ def submit_decision(
     stage_name = resume_stage or "30_decision"
     path = write_checkpoint(d, stage_name, _wrap(decision.model_dump(), _call(agent, call_meta)))
     _ingest_run(ctx, d, date, market, ticker)
-    if resume_stage and ctx.conn is not None:  # 재평가 결정이 최신 결정이 되도록 마지막에 적재
+    if resume_stage:  # 재평가 결정이 최신 결정이 되도록 마지막에 적재
         repo.ingest_checkpoint(
             ctx.conn, date, market, ticker, resume_stage, read_checkpoint(d, resume_stage) or {}
         )
-    # 리스크 게이트·계좌별 실행 (결정은 1회, 판정·주문은 계좌마다). 주문은 executor 안에서만.
+    executions, memory_entry_id = _execute_and_record(
+        ctx, d, date, market, decision, inputs, price
+    )
+    logger.info("결정 저장 %s %s: %s (계좌 %d)", market, ticker, decision.action, len(executions))
+    return {
+        "ok": True,
+        "path": str(path),
+        "stage": stage_name,
+        "action": decision.action,
+        "dry_run": ctx.dry_run,
+        "executions": executions,
+        "memory_entry_id": memory_entry_id,
+    }
+
+
+def _execute_and_record(
+    ctx: ToolContext,
+    d: Path,
+    date: date,
+    market: Market,
+    decision: schemas.Decision,
+    inputs: dict,
+    price: Decimal,
+) -> tuple[list[dict], int | None]:
+    """리스크 게이트·계좌별 실행(주문은 executor 안에서만) + 메모리 엔트리.
+
+    결정은 1회, 판정·주문은 계좌마다."""
     from trader.orchestrator import executor
 
-    if ctx.conn is None:
-        return {"ok": False, "error": "원장 연결이 없어 계좌별 실행을 할 수 없음"}
+    assert ctx.conn is not None
     ectx = executor.ExecContext(
         settings=ctx.settings,
         accounts=ctx.accounts,
@@ -760,17 +811,8 @@ def submit_decision(
         exchange=(inputs.get("meta") or {}).get("exchange"),
         dry_run=ctx.dry_run,
     )
-    logger.info("결정 저장 %s %s: %s (계좌 %d)", market, ticker, decision.action, len(executions))
     memory_entry_id = _record_memory(ctx, decision, market, date)
-    return {
-        "ok": True,
-        "path": str(path),
-        "stage": stage_name,
-        "action": decision.action,
-        "dry_run": ctx.dry_run,
-        "executions": executions,
-        "memory_entry_id": memory_entry_id,
-    }
+    return executions, memory_entry_id
 
 
 def _load_sizer(state: Path | None):

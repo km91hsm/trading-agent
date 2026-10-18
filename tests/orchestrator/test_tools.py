@@ -990,3 +990,61 @@ def test_ensure_calibration_query_vector_uses_run_date(ctx, project, monkeypatch
     monkeypatch.setattr(cal, "build_calibration", spy)
     tools.ensure_calibration(ctx, ticker="005930", market="KR", date=date(2026, 10, 5))
     assert seen["qv"][0] == vec.situation_vector({"roc_10": 1.0, "close": 100.0}, "KR")[0]
+
+
+def _ready_for_submit(ctx, project):
+    """보고서 2개·토론·요약·00_inputs 를 만들어 submit-decision 전제조건을 채운다."""
+    _inputs(project)
+    for role in ("technical", "fundamental"):
+        tools.checkpoint_write(
+            ctx,
+            ticker="005930",
+            market="KR",
+            date=D,
+            stage=f"10_analyst_{role}",
+            payload=ok_report(role=role),
+            agent="a",
+        )
+    for side in ("bull", "bear"):
+        tools.checkpoint_write(
+            ctx,
+            ticker="005930",
+            market="KR",
+            date=D,
+            stage=f"20_debate_r0_{side}",
+            payload=ok_turn(side),
+            agent="r",
+        )
+    tools.checkpoint_summarize(ctx, ticker="005930", market="KR", date=D)
+
+
+def test_submit_resumes_execution_when_decision_saved_but_not_executed(ctx, project):
+    """30_decision 저장 뒤 execute 가 끊겼으면 재제출이 판정·주문·메모리를 마쳐야 한다.
+
+    기존엔 already=true 로 기존 결정만 돌려주고 40_risk_check 도 risk_checks 행도 없이 끝났다."""
+    _ready_for_submit(ctx, project)
+    d = run_dir(D, "KR", "005930")
+    dec = Decision(**ok_decision())
+    run_store.write_checkpoint(d, "30_decision", {"schema_version": 1, "data": dec.model_dump()})
+    assert read_checkpoint(d, "40_risk_check_paper-main") is None
+    r = tools.submit_decision(ctx, ticker="005930", market="KR", date=D, payload=ok_decision())
+    assert r["ok"] and r["already"] is True and r["resumed_execution"] is True
+    assert r["executions"] and r["executions"][0]["account_id"] == "paper-main"
+    assert read_checkpoint(d, "40_risk_check_paper-main") is not None
+    assert ctx.conn.execute("SELECT COUNT(*) AS n FROM risk_checks").fetchone()["n"] >= 1
+    assert ctx.conn.execute("SELECT COUNT(*) AS n FROM memory_entries").fetchone()["n"] == 1
+    # 판정이 있으면 재제출은 실행을 반복하지 않는다
+    r2 = tools.submit_decision(ctx, ticker="005930", market="KR", date=D, payload=ok_decision())
+    assert r2["ok"] and r2["already"] is True and "resumed_execution" not in r2
+    assert ctx.conn.execute("SELECT COUNT(*) AS n FROM risk_checks").fetchone()["n"] == (
+        r["executions"].__len__()
+    )
+
+
+def test_submit_without_ledger_connection_does_not_leave_decision_file(ctx, project):
+    """원장 연결이 없으면 30_decision 을 쓰기 전에 거부해야 재시도가 멱등 분기에 걸리지 않는다."""
+    _ready_for_submit(ctx, project)
+    ctx.conn = None
+    r = tools.submit_decision(ctx, ticker="005930", market="KR", date=D, payload=ok_decision())
+    assert r["ok"] is False and "원장" in r["error"]
+    assert read_checkpoint(run_dir(D, "KR", "005930"), "30_decision") is None
