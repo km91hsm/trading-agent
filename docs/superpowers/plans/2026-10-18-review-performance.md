@@ -25,7 +25,7 @@
 | `init_schema`(최신 DB) 쓰기 잠금 | 8회 | 0회 |
 | 웹 첫 번들 | 470 KB | 288 KB (+ 차트 청크 175 KB, 두 페이지만) |
 | `uv run pytest` | 3분 35초 | 2분 34초 |
-| CEM 모집단 64 × 5,000스텝 평가 | 수십 초(루프) | 1초 안 (벡터화) |
+| CEM 모집단 64 × 5,000스텝 평가 | 3.6 s (루프) | 0.14 s (벡터화, 25배) |
 
 ## Global Constraints
 - `uv run pytest`·`uv run ruff check src tests` 0건. 웹은 `cd web && npm run typecheck && npm test && npm run build`.
