@@ -165,3 +165,12 @@ def test_install_darwin_unloads_before_load(tmp_path):
         project_root=tmp_path / "proj",
     )
     assert calls[0][:2] == ["launchctl", "unload"] and calls[1][:2] == ["launchctl", "load"]
+
+
+def test_render_plist_exit_timeout_covers_session(tmp_path):
+    """SIGTERM 뒤 shutdown(wait=True) 가 analyze 세션(llm.timeout_s)을 기다리므로 launchd 가
+    기본 20초 뒤 SIGKILL 하지 않도록 ExitTimeOut 을 세션 타임아웃보다 길게 둔다."""
+    text = installer.render(
+        "darwin", python=Path("/venv/bin/python"), project_root=tmp_path, exit_timeout_s=660
+    )
+    assert "<key>ExitTimeOut</key><integer>660</integer>" in text

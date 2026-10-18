@@ -492,15 +492,99 @@ def test_lock_acquire_is_atomic_against_concurrent_creation(project, monkeypatch
     """exists→write 사이에 다른 데몬이 파일을 만들면 둘 다 잠금을 얻는다. O_EXCL 생성이어야 한다."""
     p = project / "state" / "daemon.lock"
     p.parent.mkdir(parents=True, exist_ok=True)
-    real_open = os.open
+    real_link = os.link
     raced = {"done": False}
 
-    def racing_open(path, flags, *a, **kw):
-        if str(path) == str(p) and flags & os.O_EXCL and not raced["done"]:
+    def racing_link(src, dst, *a, **kw):
+        if str(dst) == str(p) and not raced["done"]:
             raced["done"] = True
             p.write_text(json.dumps({"pid": os.getpid(), "started_at": "x"}), encoding="utf-8")
-        return real_open(path, flags, *a, **kw)
+        return real_link(src, dst, *a, **kw)
 
-    monkeypatch.setattr(daemon.os, "open", racing_open)
+    monkeypatch.setattr(daemon.os, "link", racing_link)
     assert daemon.Lock(p).acquire() is False  # 살아 있는 pid 가 먼저 잡았다
     assert raced["done"]
+
+
+def test_lock_fresh_empty_file_is_not_taken_over(project):
+    """다른 데몬이 O_EXCL 로 만들고 아직 pid 를 못 쓴 빈 파일(방금 생성)은 살아 있는 잠금으로 본다.
+    pid 0 으로 읽혀 '죽은 데몬' 으로 넘겨받으면 두 데몬이 함께 돈다."""
+    p = project / "state" / "daemon.lock"
+    p.write_text("", encoding="utf-8")
+    assert daemon.Lock(p).acquire() is False
+    assert p.read_text(encoding="utf-8") == ""  # 남의 잠금을 건드리지 않았다
+
+
+def test_lock_old_empty_file_is_taken_over(project):
+    """오래된 빈 잠금(죽은 데몬이 쓰다 만 것)은 넘겨받는다."""
+    import time
+
+    p = project / "state" / "daemon.lock"
+    p.write_text("", encoding="utf-8")
+    old = time.time() - 3600
+    os.utime(p, (old, old))
+    assert daemon.Lock(p).acquire() is True
+    assert json.loads(p.read_text(encoding="utf-8"))["pid"] == os.getpid()
+
+
+def test_lock_file_appears_with_content_atomically(project, monkeypatch):
+    """잠금 파일은 내용이 채워진 채로 나타나야 한다 (생성→쓰기 두 단계 금지)."""
+    p = project / "state" / "daemon.lock"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    seen: list[str] = []
+    real_link = os.link
+
+    def spying_link(src, dst, *a, **kw):
+        real_link(src, dst, *a, **kw)
+        seen.append(open(dst, encoding="utf-8").read())
+
+    monkeypatch.setattr(daemon.os, "link", spying_link)
+    assert daemon.Lock(p).acquire() is True
+    assert seen and json.loads(seen[0])["pid"] == os.getpid()
+    assert not list(p.parent.glob("daemon.lock.*.tmp"))  # 임시 파일은 남지 않는다
+
+
+def test_signal_handler_ignores_reentrant_second_signal():
+    """shutdown(wait=True) 중 두 번째 SIGINT 가 들어와도 SystemExit 로 대기를 끊고 잠금을
+    먼저 풀면 안 된다 (잡 스레드가 아직 주문을 내는 중일 수 있다)."""
+    import pytest
+
+    sched = FakeScheduler()
+    calls = []
+    handler = daemon.make_signal_handler(sched)
+
+    def shutdown(wait=False):
+        calls.append(wait)
+        handler(2, None)  # 대기 중 재진입: 무시돼야 한다 (예외도, 두 번째 shutdown 도 없음)
+
+    sched.shutdown = shutdown
+    with pytest.raises(SystemExit):
+        handler(15, None)
+    assert calls == [True]
+
+
+def test_run_job_records_error_when_body_returns_error_dict(conn):
+    body = lambda: {"targets": 0, "error": "_scan 없음"}  # noqa: E731
+    r = daemon.run_job("kr_analyze", body, conn_factory=lambda: db.connect())
+    assert r["error"] == "_scan 없음"
+    row = conn.execute("SELECT status, error FROM runs ORDER BY id DESC LIMIT 1").fetchone()
+    assert row["status"] == "error" and "_scan" in row["error"]
+
+
+def test_analyze_body_without_scan_notifies_and_returns_error(project, conn):
+    """_scan.json 이 없으면(scan 잡 지연·실패) 조용히 ok 로 끝나지 않고 알림 + error 로 남긴다."""
+
+    class Sent:
+        def __init__(self):
+            self.msgs = []
+
+        def send(self, text, *, escape=True):
+            self.msgs.append(text)
+            return True
+
+    deps = _deps(conn, FakeMarket(), now=lambda: datetime(2026, 10, 8, 0, 0, tzinfo=UTC))
+    deps.notifier = Sent()
+    deps.session_runner = lambda *a, **kw: (_ for _ in ()).throw(AssertionError("세션 금지"))
+    r = daemon._analyze_body(deps, "KR")
+    assert r["targets"] == 0 and "_scan" in r["error"]
+    assert any("_scan" in m for m in deps.notifier.msgs)

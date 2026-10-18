@@ -1301,11 +1301,16 @@ def install_cmd(
         from trader.platform.claude_bin import find_claude
 
         extra = []
+        settings = config.load_settings()
         try:
-            extra.append(find_claude(config.load_settings().claude_bin).parent)
+            extra.append(find_claude(settings.claude_bin).parent)
         except Exception as e:  # noqa: BLE001 - claude 가 없으면 PATH 에 넣지 않고 경고만
             logging.getLogger("trader.daemon").warning("claude 실행파일을 찾지 못함: %s", e)
-        r = installer.install(dry_run=dry_run, extra_paths=extra)
+        r = installer.install(
+            dry_run=dry_run,
+            extra_paths=extra,
+            exit_timeout_s=int(settings.llm.timeout_s) + 60,  # 종료 시 analyze 세션을 기다린다
+        )
     except config.ConfigError as e:
         typer.echo(f"오류: {e}", err=True)
         raise typer.Exit(code=1) from e

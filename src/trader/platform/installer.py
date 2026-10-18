@@ -39,6 +39,7 @@ _PLIST = """<?xml version="1.0" encoding="UTF-8"?>
   </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
+  <key>ExitTimeOut</key><integer>{exit_timeout}</integer>
   <key>StandardOutPath</key><string>{out}</string>
   <key>StandardErrorPath</key><string>{err}</string>
 </dict>
@@ -68,6 +69,7 @@ _TASK_XML = """<?xml version="1.0" encoding="UTF-16"?>
 
 
 DEFAULT_PATH = ("/usr/local/bin", "/usr/bin", "/bin")
+DEFAULT_EXIT_TIMEOUT_S = 660  # settings.llm.timeout_s(600) + 여유 60초; cli 가 설정값으로 넘긴다
 
 
 def render(
@@ -77,8 +79,12 @@ def render(
     project_root: Path,
     label: str = LABEL,
     extra_paths: list[Path] | None = None,
+    exit_timeout_s: int = DEFAULT_EXIT_TIMEOUT_S,
 ) -> str:
-    """extra_paths(claude 디렉터리 등)를 launchd PATH 앞에 둔다 (launchd 는 셸 PATH 가 없다)."""
+    """extra_paths(claude 디렉터리 등)를 launchd PATH 앞에 둔다 (launchd 는 셸 PATH 가 없다).
+
+    exit_timeout_s: SIGTERM 뒤 launchd 가 SIGKILL 하기까지의 시간. 데몬은 실행 중인 analyze
+    세션(llm.timeout_s)을 기다린 뒤 잠금을 풀므로 그보다 길어야 한다 (기본 20초면 세션이 고아)."""
     logs = project_root / "state" / "logs"
     if platform == "darwin":
         dirs: list[str] = []
@@ -92,6 +98,7 @@ def render(
             out=escape(str(logs / "daemon.out")),
             err=escape(str(logs / "daemon.err")),
             path_env=escape(":".join(dirs)),
+            exit_timeout=int(exit_timeout_s),
         )
     if platform == "win32":
         return _TASK_XML.format(python=escape(str(python)), root=escape(str(project_root)))
@@ -123,13 +130,20 @@ def install(
     python: Path | None = None,
     project_root: Path | None = None,
     extra_paths: list[Path] | None = None,
+    exit_timeout_s: int = DEFAULT_EXIT_TIMEOUT_S,
 ) -> dict:
     """템플릿을 쓰고 OS 등록 명령을 실행한다. dry_run 이면 아무것도 쓰지 않고 명령만 돌려준다."""
     home = home or Path.home()
     python = python or Path(sys.executable)
     project_root = project_root or paths.project_root()
     path = _target(platform, home)
-    text = render(platform, python=python, project_root=project_root, extra_paths=extra_paths)
+    text = render(
+        platform,
+        python=python,
+        project_root=project_root,
+        extra_paths=extra_paths,
+        exit_timeout_s=exit_timeout_s,
+    )
     if platform == "darwin":
         command = ["launchctl", "load", "-w", str(path)]
     else:

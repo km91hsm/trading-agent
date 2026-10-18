@@ -3,11 +3,40 @@
 from __future__ import annotations
 
 import logging
+import os
+import time
 from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
 
 _HANDLER_NAME = "trader"
 _FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
+
+
+class SharedTimedRotatingFileHandler(TimedRotatingFileHandler):
+    """여러 프로세스(데몬·web·telegram loop)가 같은 파일을 쓸 때용.
+
+    표준 구현은 보관 파일이 이미 있으면(다른 프로세스가 먼저 회전) 스트림을 다시 열지 않고 돌아가
+    renamed 된 옛 파일에 계속 쓰고(14일 뒤 삭제돼 로그 유실), 기록마다 회전 검사를 반복한다."""
+
+    def doRollover(self) -> None:  # noqa: N802 - stdlib 이름
+        t = self.rolloverAt - self.interval
+        time_tuple = time.gmtime(t) if self.utc else time.localtime(t)
+        suffix = time.strftime(self.suffix, time_tuple)
+        dfn = self.rotation_filename(f"{self.baseFilename}.{suffix}")
+        if os.path.exists(dfn):
+            if self.stream:
+                self.stream.close()
+                self.stream = None
+            if not self.delay:
+                self.stream = self._open()
+            self.rolloverAt = self.computeRollover(int(time.time()))
+            return
+        super().doRollover()
+
+
+def file_handler(path: Path) -> SharedTimedRotatingFileHandler:
+    """자정 회전·14일 보관 파일 핸들러 (프로세스 간 공유 안전)."""
+    return SharedTimedRotatingFileHandler(path, when="midnight", backupCount=14, encoding="utf-8")
 
 
 def quiet_httpx() -> None:
@@ -27,11 +56,8 @@ def configure(state_dir: Path, level: str = "INFO") -> None:
     log_dir = Path(state_dir) / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     formatter = logging.Formatter(_FORMAT)
-    file_handler = TimedRotatingFileHandler(
-        log_dir / "trader.log", when="midnight", backupCount=14, encoding="utf-8"
-    )
     stream_handler = logging.StreamHandler()
-    for h in (file_handler, stream_handler):
+    for h in (file_handler(log_dir / "trader.log"), stream_handler):
         h.set_name(_HANDLER_NAME)
         h.setFormatter(formatter)
         root.addHandler(h)

@@ -49,30 +49,59 @@ class Lock:
         except (ValueError, OSError):
             return 0
 
-    def acquire(self) -> bool:
-        """O_EXCL 로 원자적으로 만든다 (exists→write 는 동시에 뜬 두 데몬이 둘 다 잠금을 얻는다).
-        이미 있으면 pid 생존을 확인해 죽은 데몬의 잠금만 넘겨받는다(1회 재시도)."""
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        payload = json.dumps({"pid": os.getpid(), "started_at": datetime.now(UTC).isoformat()})
-        for _ in range(2):
-            try:
-                fd = os.open(str(self.path), os.O_WRONLY | os.O_CREAT | os.O_EXCL)
-            except FileExistsError:
-                pid = self._holder_pid()
-                if pid and pid_alive(pid):  # 같은 프로세스가 두 번 잡는 것도 거부한다
-                    logger.error("데몬이 이미 실행 중입니다 (pid %s): %s", pid, self.path)
-                    return False
-                logger.warning("죽은 데몬의 잠금을 넘겨받습니다 (pid %s)", pid)
-                try:
-                    self.path.unlink()
-                except FileNotFoundError:
-                    pass
-                continue
+    FRESH_S = 10  # 내용 없는 잠금이 이 시간 안에 생겼으면 다른 데몬이 쓰는 중
+
+    def _fresh(self) -> bool:
+        try:
+            return (datetime.now(UTC).timestamp() - self.path.stat().st_mtime) < self.FRESH_S
+        except OSError:
+            return False
+
+    def _create(self, tmp: Path, payload: str) -> None:
+        """내용이 채워진 임시 파일을 잠금 이름에 원자적으로 붙인다 (os.link 는 이미 있으면 실패).
+
+        생성→쓰기 두 단계면 그 사이에 뜬 두 번째 데몬이 빈 파일(pid 0)을 죽은 잠금으로 넘겨받는다.
+        하드링크를 지원하지 않는 파일시스템이면 O_EXCL 생성 뒤 쓰기로 대신한다."""
+        try:
+            os.link(str(tmp), str(self.path))
+        except FileExistsError:
+            raise
+        except OSError:
+            fd = os.open(str(self.path), os.O_WRONLY | os.O_CREAT | os.O_EXCL)
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 f.write(payload)
-            return True
-        logger.error("잠금 경합이 반복돼 데몬을 띄우지 않습니다: %s", self.path)
-        return False
+
+    def acquire(self) -> bool:
+        """원자적으로 만든다. 이미 있으면 pid 생존을 보고 죽은 데몬의 잠금만 넘겨받는다(재시도 1회).
+        pid 를 읽을 수 없는 잠금은 방금 생긴 것이면 살아 있는 것으로(다른 데몬이 쓰는 중),
+        오래됐으면 죽은 것으로 본다."""
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        payload = json.dumps({"pid": os.getpid(), "started_at": datetime.now(UTC).isoformat()})
+        tmp = self.path.with_name(f"{self.path.name}.{os.getpid()}.tmp")
+        tmp.write_text(payload, encoding="utf-8")
+        try:
+            for _ in range(2):
+                try:
+                    self._create(tmp, payload)
+                except FileExistsError:
+                    pid = self._holder_pid()
+                    if pid and pid_alive(pid):  # 같은 프로세스가 두 번 잡는 것도 거부한다
+                        logger.error("데몬이 이미 실행 중입니다 (pid %s): %s", pid, self.path)
+                        return False
+                    if not pid and self._fresh():
+                        logger.error("다른 데몬이 잠금을 만드는 중입니다: %s", self.path)
+                        return False
+                    logger.warning("죽은 데몬의 잠금을 넘겨받습니다 (pid %s)", pid)
+                    try:
+                        self.path.unlink()
+                    except FileNotFoundError:
+                        pass
+                    continue
+                return True
+            logger.error("잠금 경합이 반복돼 데몬을 띄우지 않습니다: %s", self.path)
+            return False
+        finally:
+            tmp.unlink(missing_ok=True)
 
     def release(self) -> None:
         try:
@@ -270,10 +299,17 @@ def run_job(
         finally:
             conn.close()
         return None
+    err = result.get("error") if isinstance(result, dict) else None
+    if run_id is None and err:  # interval 잡은 오류일 때만 행을 남긴다
+        conn = conn_factory()
+        try:
+            run_id = db.start_run(conn, name, None)
+        finally:
+            conn.close()
     if run_id is not None:
         conn = conn_factory()
         try:
-            db.finish_run(conn, run_id, "ok", None)
+            db.finish_run(conn, run_id, "error" if err else "ok", str(err) if err else None)
         finally:
             conn.close()
     return result
@@ -410,10 +446,19 @@ def _analyze_body(deps: DaemonDeps, market: str) -> dict:
     from trader.sources.inputs import collect_and_save
 
     today = run_date_for(market, deps.now())
-    scan = read_checkpoint(run_store.market_dir(today, market, deps.state), "_scan") or {}
+    scan = read_checkpoint(run_store.market_dir(today, market, deps.state), "_scan")
+    if scan is None:
+        # scan 잡(10분 전 cron)이 아직 안 끝났거나 실패했다. 조용히 ok 로 끝나면 그 시장의 하루
+        # 분석이 통째로 빠진 것을 로그 말고는 알 수 없다 → 알림 + error 행
+        msg = (
+            f"[분석 생략] {market} {today}: _scan.json 없음 (scan 잡 지연·실패), 보유 재분석도 생략"
+        )
+        logger.error(msg)
+        deps.notifier.send(msg)
+        return {"targets": 0, "error": "_scan.json 없음 (scan 잡 지연·실패)"}
     targets = scan.get("analyze_targets") or []
     if not targets:
-        logger.info("%s 분석 대상 없음 (_scan.json 없음 또는 빈 picks)", market)
+        logger.info("%s 분석 대상 없음 (빈 picks·보유·관심종목)", market)
         return {"targets": 0}
     if deps.input_deps is not None and deps.sources_cfg is not None:
         for t in targets:
@@ -751,7 +796,15 @@ def make_signal_handler(scheduler: Any) -> Callable[[int, Any], None]:
     wait=False 면 잠금이 먼저 풀려 launchd KeepAlive 가 새 데몬을 띄우고 monitor·텔레그램 폴링이
     두 프로세스에서 돌 수 있다."""
 
+    state = {"shutting_down": False}
+
     def handler(signum: int, frame: Any) -> None:
+        if state["shutting_down"]:
+            # shutdown(wait=True) 대기 중 두 번째 시그널: 여기서 SystemExit 을 올리면 대기가 끊겨
+            # 잡 스레드(주문 중일 수 있음)보다 잠금이 먼저 풀리고 launchd 가 새 데몬을 띄운다
+            logger.warning("시그널 %s 재수신, 이미 종료 중입니다 (실행 중인 잡을 기다림)", signum)
+            return
+        state["shutting_down"] = True
         logger.info("시그널 %s 수신, 실행 중인 잡을 마치고 데몬을 종료합니다", signum)
         try:
             scheduler.shutdown(wait=True)
