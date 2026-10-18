@@ -144,3 +144,15 @@
 - [ ] 사용자 확인 대기: PPO 백엔드 — `uv sync --extra rl`(torch 휠 필요, 이 머신은 x86_64 Python 이라 설치가 안 될 수 있음) 후 `ml.yaml rl_sizer.backend: ppo` 로 `rl train`
 - [x] Phase 9 이연 회수(2026-10-17, 이연 회수 플랜): 섀도 관측·quant 는 `latest_rows` 부분 읽기(학습 `load_all` 은 전체 필요). 이연 유지(사용자 결정): 멀티 종목 동시 포트폴리오 환경, RL 실험 전용 페이지
 - [x] 리뷰 Minor 이연(Phase 9) 회수(2026-10-17, 이연 회수 플랜): `--seeds` 범위 1~10, `rl_shadow.applied` 는 게이트 승인 뒤 기록, 메모리 스텝 BUY/ADD 만, `/api/rl/report?market=` 검증, docstring·yaml 주석. 이연 유지: `uv.lock` torch(extra 전용), 학습/서빙 drawdown 정의(멀티 종목 환경과 함께)
+
+## 2026-10-18 전체 코드 검토 수정 (`docs/superpowers/plans/2026-10-18-review-correctness-fixes.md`)
+- [x] US 운영일 통일 (`run_store.run_date_for`: US 는 뉴욕 현지 날짜) — 데몬 scan/analyze/monitor·CLI monitor 가 쓰고 `today_buy_tickers/today_order_amount/trades_this_week` 가 시장 현지 하루 창 (KST 자정 이후 US 재평가가 `30_decision` 을 못 찾던 결함)
+- [x] 리스크 규칙: `target_weight` 를 BUY/ADD/TRIM 모두 "주문 뒤 총 비중" 으로 통일(이미 목표 이상이면 ADD 0주 거부), BUY 수량은 지정가 기준, BUY/ADD 의 `stop_loss ≥ 현재가` 거부
+- [x] `submit-decision` 멱등 분기: `30_decision` 만 있고 `40_risk_check_*` 가 없으면 실행을 재개(`resumed_execution`), 원장 연결 검사를 저장 앞으로
+- [x] 텔레그램 오프셋이 걸러진(다른 채팅) 업데이트도 반영 (`TelegramReceiver.last_update_id`)
+- [x] 체결↔주문 매칭을 같은 현지 날짜 주문으로 제한 (`repo.day_bounds`)
+- [x] 주문 접수 뒤 장부 기록 실패 보호 (`OrderBookkeepingError`: CRITICAL + 접수번호 알림, `approve` 는 failed 로)
+- [x] 같은 종류 트리거는 운영일 1회만 재평가(실패는 제외), 같은 틱 트리거는 세션 1회가 모두 처리
+- [ ] 검토 잔여(정확성, 다음 묶음): `min_cash_pct` 미사용(게이트에 `available -= min_cash_pct × NAV` 또는 필드 삭제), `readiness.INTERVAL_KINDS` 가 실제 `runs.kind`(`kr_monitor`·`us_monitor`·`fills_sync_1`)와 불일치, `/api/accounts`·`control show` 가 `effective_mode` 가 아닌 설정 모드 표시, `web --host 0.0.0.0` 이 비루프백 Host 를 400 처리, `_technical` 이 `asof` 를 안 받아 과거 재수집에 당일 봉 유입, 웹 `portfolio/refresh` 가 `memory_settings` 없이 서킷브레이커 갱신, `features.write_rows` 가 구스키마 parquet 에서 `KeyError`(`reindex(columns=FEATURE_COLUMNS)`), `realized_pnl_5d` 가 전 이력 평균매수가·float 합산, `_ymd('')` 빈 일봉 행, 토큰 캐시 쓰기 경쟁(`_mark_failure` 가 발급 전 스냅샷을 덮어씀), 데몬 `Lock.acquire` 비원자(O_EXCL)·종료 시 잠금이 세션보다 먼저 해제, `run_session` 사전 단계 실패 시 `runs` running 고착·임시 cwd 누수
+- [ ] 검토 잔여(성능, 다음 묶음): `cli.py` 최상위 `sources.inputs` import 지연(도구 서브프로세스 0.65초/회), `features.backfill` 종목×날짜 parquet 재작성(종목 프레임 모아 1회 쓰기), `latest_rows` 에 `tickers` 전달(`scan/quant.candidates`·`performance`)과 비유니버스 종목 메모이즈, 수집 절 스레드풀 병렬화, `get_positions`+`get_cash` 의 `DOM_BALANCE` 중복(`get_balance`), `held_since`·`realized_pnl_5d` 보유 종목 제한, `nav_history` SQL 날짜 창, `init_schema` 최신이면 조기 반환, 보정 N+1 JOIN, `memory.retrieve` 상위 k 만 hydrate, `outcomes.mature` 에 `since/until`, RL CEM 벡터화, SSE 연결 재사용·스냅샷에서 `agent_calls` 제외, 차트 페이지 lazy 분리, 모델 `max_iter` 설정 노출(테스트 3분→1분)
+- [ ] 검토 잔여(구조): `_quiet_httpx` 5벌·`_dec/_int/_rows` 2벌·`_KST` 5곳·KST 하루 경계 4벌·`_z` 2벌·시장 run 디렉터리 경로 4곳·`ROUND_TRIP_COST_BP` 이중 정의 통합, 죽은 코드(`repo.has_unhandled_trigger`, `tools.ANALYST_ROLES`, `LlmSettings.max_parallel`, `ranker.rank_fn_or_none`, `tr_ids.names()`·`*_PSBL_ORDER`), `cli.py` 부트스트랩 중복
