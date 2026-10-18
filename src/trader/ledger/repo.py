@@ -32,6 +32,13 @@ def _day_bounds(d: date, tz: ZoneInfo) -> tuple[str, str]:
     return start.isoformat(), (start + timedelta(days=1)).isoformat()
 
 
+def day_bounds(d: date, market: str | None) -> tuple[str, str]:
+    """시장 현지 날짜 d 하루의 UTC ISO 경계. 시장이 없거나 모르면 KST.
+
+    US 는 KST 자정을 넘겨 장이 열리므로 KST 창으로 보면 같은 세션의 주문이 두 날에 갈린다."""
+    return _day_bounds(d, MARKET_TZ[market]) if market in MARKET_TZ else _kst_day_bounds(d)
+
+
 def _dec(v: Any) -> Decimal:
     return Decimal(str(v)) if v is not None and str(v) != "" else Decimal(0)
 
@@ -337,7 +344,7 @@ def has_open_order_today(
     market 을 주면 d 를 그 시장의 현지 날짜로 보고 현지 하루 창을 쓴다 (US 모니터는 KST 자정을
     넘겨 돌므로 KST 창으로는 23:30 KST 주문을 00:30 KST 에 놓친다).
     """
-    lo, hi = _day_bounds(d, MARKET_TZ[market]) if market in MARKET_TZ else _kst_day_bounds(d)
+    lo, hi = day_bounds(d, market)
     row = conn.execute(
         "SELECT 1 FROM orders WHERE account_id=? AND ticker=? AND side=? "
         "AND status NOT IN ('rejected','cancelled','failed') "
@@ -376,22 +383,28 @@ def latest_decision(conn: sqlite3.Connection, market: str, ticker: str) -> dict 
     return d
 
 
-def today_buy_tickers(conn: sqlite3.Connection, account_id: str, d: date) -> set[str]:
-    lo, hi = _kst_day_bounds(d)
-    rows = conn.execute(
+def today_buy_tickers(
+    conn: sqlite3.Connection, account_id: str, d: date, market: str | None = None
+) -> set[str]:
+    """운영일 d(시장 현지 하루)에 낸 살아 있는 BUY 종목. 통화가 달라 market 으로도 거른다."""
+    lo, hi = day_bounds(d, market)
+    sql = (
         "SELECT DISTINCT ticker FROM orders WHERE account_id=? AND side IN ('BUY') "
         "AND status NOT IN ('rejected','cancelled','failed') "
-        "AND created_at >= ? AND created_at < ?",
-        (account_id, lo, hi),
-    ).fetchall()
-    return {r["ticker"] for r in rows}
+        "AND created_at >= ? AND created_at < ?"
+    )
+    args: list = [account_id, lo, hi]
+    if market:
+        sql += " AND market=?"
+        args.append(market)
+    return {r["ticker"] for r in conn.execute(sql, args).fetchall()}
 
 
 def today_order_amount(
     conn: sqlite3.Connection, account_id: str, d: date, market: str | None = None
 ) -> Decimal:
-    """당일 누적 매수 주문금액 (가능금액 차감용). 통화가 달라 market 으로 거른다."""
-    lo, hi = _kst_day_bounds(d)
+    """운영일 d(시장 현지 하루)의 누적 매수 주문금액. 통화가 달라 market 으로 거른다."""
+    lo, hi = day_bounds(d, market)
     sql = (
         "SELECT qty, price, amount FROM orders WHERE account_id=? AND side='BUY' "
         "AND status NOT IN ('rejected','cancelled','failed') AND created_at >= ? AND created_at < ?"
@@ -409,17 +422,23 @@ def today_order_amount(
     return total
 
 
-def trades_this_week(conn: sqlite3.Connection, account_id: str, d: date) -> dict[str, int]:
+def trades_this_week(
+    conn: sqlite3.Connection, account_id: str, d: date, market: str | None = None
+) -> dict[str, int]:
+    """운영일 d 가 속한 주(월요일 ~ d, 시장 현지 하루 경계)의 종목별 살아 있는 주문 수."""
     monday = d - timedelta(days=d.weekday())
-    lo, _ = _kst_day_bounds(monday)
-    _, hi = _kst_day_bounds(d)
-    rows = conn.execute(
+    lo, _ = day_bounds(monday, market)
+    _, hi = day_bounds(d, market)
+    sql = (
         "SELECT ticker, COUNT(*) AS n FROM orders WHERE account_id=? "
         "AND status NOT IN ('rejected','cancelled','failed') "
-        "AND created_at >= ? AND created_at < ? "
-        "GROUP BY ticker",
-        (account_id, lo, hi),
-    ).fetchall()
+        "AND created_at >= ? AND created_at < ?"
+    )
+    args: list = [account_id, lo, hi]
+    if market:
+        sql += " AND market=?"
+        args.append(market)
+    rows = conn.execute(sql + " GROUP BY ticker", args).fetchall()
     return {r["ticker"]: int(r["n"]) for r in rows}
 
 

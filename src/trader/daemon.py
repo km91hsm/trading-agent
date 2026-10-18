@@ -323,11 +323,11 @@ def monitor_job(deps: DaemonDeps, market: str, fn: Callable[[], Any]) -> dict | 
 def _scan_body(deps: DaemonDeps, market: str) -> dict:
     from trader.config import load_universe
     from trader.orchestrator import tools
-    from trader.orchestrator.run_store import write_checkpoint
+    from trader.orchestrator.run_store import run_date_for, write_checkpoint
     from trader.scan import quant, screener
 
     universe = deps.universe or load_universe()
-    today = _today(deps)
+    today = run_date_for(market, deps.now())
     from trader.ml import ranker
 
     ml = ranker.current(deps.state)
@@ -391,12 +391,12 @@ def _ensure_quant(deps: DaemonDeps, ticker: str, market: str, today: date) -> No
 
 
 def _analyze_body(deps: DaemonDeps, market: str) -> dict:
-    from trader.orchestrator.run_store import read_checkpoint
+    from trader.orchestrator.run_store import read_checkpoint, run_date_for
     from trader.orchestrator.session import SessionSpec, run_session
     from trader.scan import screener
     from trader.sources.inputs import collect_and_save
 
-    today = _today(deps)
+    today = run_date_for(market, deps.now())
     scan = read_checkpoint(screener.market_dir(today, market, deps.state), "_scan") or {}
     targets = scan.get("analyze_targets") or []
     if not targets:
@@ -456,6 +456,7 @@ def _analyze_body(deps: DaemonDeps, market: str) -> dict:
 
 def _monitor_body(deps: DaemonDeps, market: str) -> dict:
     from trader.orchestrator import monitor as monitor_mod
+    from trader.orchestrator.run_store import run_date_for
     from trader.orchestrator.session import run_session
 
     if deps.market_client is None:
@@ -475,7 +476,7 @@ def _monitor_body(deps: DaemonDeps, market: str) -> dict:
             state=deps.state,
             exchanges={u.symbol: u.exchange for u in (deps.universe.us if deps.universe else [])},
         )
-        return monitor_mod.monitor_once(ctx, market=market, today=_today(deps))
+        return monitor_mod.monitor_once(ctx, market=market, today=run_date_for(market, deps.now()))
     finally:
         conn.close()
 

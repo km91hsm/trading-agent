@@ -1236,6 +1236,7 @@ def monitor_cmd(
 
     from trader.ledger import db
     from trader.orchestrator import monitor as monitor_mod
+    from trader.orchestrator.run_store import run_date_for
     from trader.orchestrator.session import run_session
 
     try:
@@ -1269,7 +1270,7 @@ def monitor_cmd(
     n = 0
     try:
         while True:
-            today = datetime.now(_KST).date()
+            today = run_date_for(market, datetime.now(UTC))
             r = monitor_mod.monitor_once(ctx, market=market, today=today)
             typer.echo(
                 json.dumps({"market": market, "date": today.isoformat(), **r}, ensure_ascii=False)

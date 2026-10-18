@@ -143,10 +143,10 @@ def build_portfolio(
         cash_available=cash.available,
         positions=positions,
         today_pnl_pct=today_pnl,
-        today_buy_tickers=repo.today_buy_tickers(conn, account.id, today),
+        today_buy_tickers=repo.today_buy_tickers(conn, account.id, today, market=market),
         today_order_amount=repo.today_order_amount(conn, account.id, today, market=market),
         held_since=repo.held_since(conn, account.id),
-        trades_this_week=repo.trades_this_week(conn, account.id, today),
+        trades_this_week=repo.trades_this_week(conn, account.id, today, market=market),
     )
 
 

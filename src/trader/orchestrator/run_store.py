@@ -7,11 +7,28 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import date
+from datetime import date, datetime, time
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
-from trader.config import Market
+from trader.config import MARKET_TZ, Market
 from trader.platform import paths
+
+_KST = ZoneInfo("Asia/Seoul")
+_US_OPEN = time(9, 30)
+
+
+def run_date_for(market: str, now: datetime) -> date:
+    """시장의 운영일(run 디렉터리 날짜). KR 은 KST 날짜.
+
+    US 장은 KST 자정을 넘겨 열리므로(09:30~16:00 ET = 22:30/23:30 KST ~ 05:00/06:00 KST 다음날)
+    현지 날짜의 개장 시각을 KST 로 바꾼 날짜를 쓴다. analyze(개장 전, KST 날짜 D)와 장중
+    monitor·재평가(KST 자정 이후)가 같은 디렉터리·같은 주문 창을 보게 된다."""
+    tz = MARKET_TZ.get(market, _KST)
+    local = now.astimezone(tz)
+    if market == "US":
+        return datetime.combine(local.date(), _US_OPEN, tzinfo=tz).astimezone(_KST).date()
+    return local.date()
 
 
 def run_dir(d: date, market: Market, ticker: str, state: Path | None = None) -> Path:

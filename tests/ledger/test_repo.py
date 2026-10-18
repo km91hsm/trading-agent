@@ -463,3 +463,25 @@ def test_has_open_order_today_uses_market_local_day(conn):
         )
         is False
     )
+
+
+def test_today_windows_use_market_local_day(conn):
+    """US 주문 창은 뉴욕 현지 하루다. 11:00 ET(15:00 UTC, 00:00 KST 다음날) 주문이
+    US 운영일 D 에 들어가고, KST 창(D+1)으로는 잡히지 않아야 한다."""
+    d = date(2026, 10, 19)
+    _order(
+        conn,
+        side="BUY",
+        qty=1,
+        created_at="2026-10-19T15:00:00+00:00",
+        order_no="1",
+        ticker="AAPL",
+    )
+    conn.execute("UPDATE orders SET market='US'")
+    conn.commit()
+    assert repo.today_buy_tickers(conn, "paper-main", d, market="US") == {"AAPL"}
+    assert repo.today_buy_tickers(conn, "paper-main", date(2026, 10, 20), market="US") == set()
+    assert repo.today_order_amount(conn, "paper-main", d, market="US") == Decimal("100")
+    assert repo.trades_this_week(conn, "paper-main", d, market="US") == {"AAPL": 1}
+    # KST 창(기본)으로는 2026-10-20 00:00 KST 주문이라 D 에 안 잡힌다
+    assert repo.today_buy_tickers(conn, "paper-main", d) == set()

@@ -464,3 +464,24 @@ def test_reflect_body_continues_after_market_error(conn, monkeypatch):
     r = daemon._reflect_body(deps)
     assert calls == ["KR", "US"] and len(r["errors"]) == 1 and "KR" in r["errors"][0]
     assert any("reflect 실패" in m for m in sent)
+
+
+def test_monitor_body_uses_market_run_date(conn, monkeypatch):
+    """US 모니터는 KST 자정을 넘겨도 운영일(뉴욕 현지 날짜)을 넘긴다 (재평가가 30_decision 을 찾도록)."""
+    from zoneinfo import ZoneInfo
+
+    from trader.orchestrator import monitor as monitor_mod
+
+    seen = {}
+
+    def fake_once(ctx, *, market, today):
+        seen["today"] = today
+        return {}
+
+    monkeypatch.setattr(monitor_mod, "monitor_once", fake_once)
+    kst = ZoneInfo("Asia/Seoul")
+    deps = _deps(conn, FakeMarket(), now=lambda: datetime(2026, 10, 20, 0, 30, tzinfo=kst))
+    daemon._monitor_body(deps, "US")
+    assert seen["today"] == date(2026, 10, 19)
+    daemon._monitor_body(deps, "KR")
+    assert seen["today"] == date(2026, 10, 20)
