@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import logging
 import os
 import sys
@@ -39,6 +40,22 @@ def _force_utf8() -> None:
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8", errors="replace")
+
+
+def _config_errors(fn):
+    """설정·프로젝트 루트 오류를 '오류: …' 한 줄과 exit 1 로 바꾼다 (명령마다 반복되던 try/except).
+
+    functools.wraps 로 시그니처를 보존해 typer 옵션 파싱이 그대로 동작한다."""
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except (config.ConfigError, paths.ProjectRootNotFound) as e:
+            typer.echo(f"오류: {e}", err=True)
+            raise typer.Exit(code=1) from e
+
+    return wrapper
 
 
 @app.callback()
@@ -108,41 +125,35 @@ def _build_brokers(
 
 
 @app.command()
+@_config_errors
 def status() -> None:
     """설정·원장·TODO 를 읽어 state/STATUS.md 를 재생성한다."""
     from trader import status as status_mod
     from trader.ledger import db
 
+    configure(paths.state_dir())
+    settings = config.load_settings()
+    accounts = config.load_accounts()
+    conn = db.connect()
     try:
-        configure(paths.state_dir())
-        settings = config.load_settings()
-        accounts = config.load_accounts()
-        conn = db.connect()
-        try:
-            db.init_schema(conn)
-            db.sync_accounts(conn, accounts)
-            text = status_mod.build_status(conn, settings, accounts, paths.docs_dir() / "TODO.md")
-        finally:
-            conn.close()
-        out = status_mod.write_status(text)
-    except (config.ConfigError, paths.ProjectRootNotFound) as e:
-        typer.echo(f"오류: {e}", err=True)
-        raise typer.Exit(code=1) from e
+        db.init_schema(conn)
+        db.sync_accounts(conn, accounts)
+        text = status_mod.build_status(conn, settings, accounts, paths.docs_dir() / "TODO.md")
+    finally:
+        conn.close()
+    out = status_mod.write_status(text)
     typer.echo(f"저장: {out}")
 
 
 @kis_app.command("ping")
+@_config_errors
 def kis_ping(
     account: str | None = typer.Option(None, "--account", help="특정 계좌 id 만 점검"),
 ) -> None:
     """KIS 시세(005930·AAPL)·휴장일·계좌별 현금을 점검한다. 실패가 있으면 exit 1."""
-    try:
-        configure(paths.state_dir())
-        secrets = config.load_secrets()
-        accounts = config.load_accounts()
-    except (config.ConfigError, paths.ProjectRootNotFound) as e:
-        typer.echo(f"오류: {e}", err=True)
-        raise typer.Exit(code=1) from e
+    configure(paths.state_dir())
+    secrets = config.load_secrets()
+    accounts = config.load_accounts()
     if account:
         accounts = [a for a in accounts if a.id == account]
         if not accounts:
@@ -207,18 +218,15 @@ def _tick_size_kr(price: Decimal) -> Decimal:
 
 
 @kis_app.command("order-test")
+@_config_errors
 def kis_order_test(
     account: str = typer.Option(..., "--account", help="모의 계좌 id (실전 거부)"),
     ticker: str = typer.Option("005930", "--ticker", help="KR 종목코드"),
 ) -> None:
     """Phase 4 실기 전용: 모의 계좌에 현재가 10% 아래 1주 지정가 매수 → 즉시 취소 (원장 미기록)."""
-    try:
-        configure(paths.state_dir())
-        secrets = config.load_secrets()
-        accounts = config.load_accounts()
-    except (config.ConfigError, paths.ProjectRootNotFound) as e:
-        typer.echo(f"오류: {e}", err=True)
-        raise typer.Exit(code=1) from e
+    configure(paths.state_dir())
+    secrets = config.load_secrets()
+    accounts = config.load_accounts()
     acct = next((a for a in accounts if a.id == account), None)
     if acct is None:
         typer.echo(f"오류: 계좌 id 를 찾을 수 없습니다: {account}", err=True)
@@ -757,16 +765,13 @@ def _exec_ctx():
 
 
 @approvals_app.command("list")
+@_config_errors
 def approvals_list() -> None:
     """미처리 승인 요청 목록 (만료분은 expired 로 정리)."""
     from trader.ledger import repo
     from trader.orchestrator import executor
 
-    try:
-        ectx, _ = _exec_ctx()
-    except (config.ConfigError, paths.ProjectRootNotFound) as e:
-        typer.echo(f"오류: {e}", err=True)
-        raise typer.Exit(code=1) from e
+    ectx, _ = _exec_ctx()
     try:
         expired = executor.expire_approvals(ectx)
         pending = repo.pending_approvals(ectx.conn)
@@ -780,14 +785,11 @@ def approvals_list() -> None:
         typer.echo(approval_line(a))
 
 
+@_config_errors
 def _decide(approval_id: int, action: str) -> None:
     from trader.orchestrator import executor
 
-    try:
-        ectx, _ = _exec_ctx()
-    except (config.ConfigError, paths.ProjectRootNotFound) as e:
-        typer.echo(f"오류: {e}", err=True)
-        raise typer.Exit(code=1) from e
+    ectx, _ = _exec_ctx()
     try:
         r = (
             executor.approve(ectx, approval_id)
@@ -833,16 +835,13 @@ def telegram_loop(
     _telegram_run(interval=interval, max_iterations=max_iterations)
 
 
+@_config_errors
 def _telegram_run(*, interval: int, max_iterations: int | None) -> None:
     import time
 
     from trader.notify.commands import poll_once
 
-    try:
-        ectx, secrets = _exec_ctx()
-    except (config.ConfigError, paths.ProjectRootNotFound) as e:
-        typer.echo(f"오류: {e}", err=True)
-        raise typer.Exit(code=1) from e
+    ectx, secrets = _exec_ctx()
     receiver = make_receiver(secrets)
     if receiver is None:
         ectx.conn.close()
@@ -879,6 +878,7 @@ def _daemon_snapshot_fn(secrets: config.Secrets, universe, market_client):
 
 
 @app.command("daemon")
+@_config_errors
 def daemon_cmd(
     no_web: bool = typer.Option(False, "--no-web", help="웹 서버를 띄우지 않음"),
     dry_run: bool = typer.Option(False, "--dry-run", help="세션·monitor 를 dry_run 으로"),
@@ -887,17 +887,13 @@ def daemon_cmd(
     from trader import daemon as daemon_mod
     from trader.ledger import db
 
-    try:
-        configure(paths.state_dir())
-        settings = config.load_settings()
-        schedule = config.load_schedule()
-        accounts = config.load_accounts()
-        secrets = config.load_secrets()
-        universe = config.load_universe()
-        sources_cfg = config.load_sources()
-    except (config.ConfigError, paths.ProjectRootNotFound) as e:
-        typer.echo(f"오류: {e}", err=True)
-        raise typer.Exit(code=1) from e
+    configure(paths.state_dir())
+    settings = config.load_settings()
+    schedule = config.load_schedule()
+    accounts = config.load_accounts()
+    secrets = config.load_secrets()
+    universe = config.load_universe()
+    sources_cfg = config.load_sources()
     try:
         market_client = _build_market(secrets)
     except Exception as e:  # noqa: BLE001
@@ -1000,15 +996,12 @@ def _control_conn():
 
 
 @control_app.command("show")
+@_config_errors
 def control_show() -> None:
     """일시정지 여부와 계좌별 실효 모드를 보여준다."""
     from trader.control import control
 
-    try:
-        conn, accounts = _control_conn()
-    except (config.ConfigError, paths.ProjectRootNotFound) as e:
-        typer.echo(f"오류: {e}", err=True)
-        raise typer.Exit(code=1) from e
+    conn, accounts = _control_conn()
     try:
         typer.echo(f"일시정지: {'예' if control.is_paused(conn) else '아니오'}")
         from trader.orchestrator.executor import effective_mode
@@ -1023,6 +1016,7 @@ def control_show() -> None:
 
 
 @control_app.command("mode")
+@_config_errors
 def control_mode(
     account: str = typer.Argument(..., help="계좌 id"),
     mode: str = typer.Argument(..., help="auto | approve | off"),
@@ -1031,11 +1025,7 @@ def control_mode(
     """계좌 실행 모드를 바꾼다. 실전 auto 는 --confirm LIVE 가 있어야 하며 확인 기록을 남긴다."""
     from trader.control import control
 
-    try:
-        conn, accounts = _control_conn()
-    except (config.ConfigError, paths.ProjectRootNotFound) as e:
-        typer.echo(f"오류: {e}", err=True)
-        raise typer.Exit(code=1) from e
+    conn, accounts = _control_conn()
     try:
         acct = next((a for a in accounts if a.id == account), None)
         if acct is None:
@@ -1115,6 +1105,7 @@ def _web_deps():
 
 
 @app.command("web")
+@_config_errors
 def web(
     host: str | None = typer.Option(None, "--host", help="바인드 주소 (기본 settings.web.bind)"),
     port: int | None = typer.Option(None, "--port", help="포트 (기본 settings.web.port)"),
@@ -1124,11 +1115,7 @@ def web(
 
     from trader.web.app import create_app
 
-    try:
-        deps = _web_deps()
-    except (config.ConfigError, paths.ProjectRootNotFound) as e:
-        typer.echo(f"오류: {e}", err=True)
-        raise typer.Exit(code=1) from e
+    deps = _web_deps()
     bind = host or deps.settings.web.bind
     extra = _hosts_for_bind(bind)
     if extra:
@@ -1335,6 +1322,7 @@ app.add_typer(ml_app, name="ml")
 
 
 @ml_app.command("train")
+@_config_errors
 def ml_train(
     market: str | None = typer.Option(None, "--market", help="KR|US (기본 전체)"),
     min_rows: int = typer.Option(100, "--min-rows", help="학습 최소 라벨 행 수"),
@@ -1344,14 +1332,10 @@ def ml_train(
 
     from trader.ml import train as train_mod
 
-    try:
-        configure(paths.state_dir())
-        cfg = config.load_ml()
-        if market is not None and market not in ("KR", "US"):
-            raise config.ConfigError(f"시장은 KR 또는 US: {market}")
-    except (config.ConfigError, paths.ProjectRootNotFound) as e:
-        typer.echo(f"오류: {e}", err=True)
-        raise typer.Exit(code=1) from e
+    configure(paths.state_dir())
+    cfg = config.load_ml()
+    if market is not None and market not in ("KR", "US"):
+        raise config.ConfigError(f"시장은 KR 또는 US: {market}")
     r = train_mod.train_quant(cfg, market=market, min_rows=min_rows)
     typer.echo(json.dumps(r, ensure_ascii=False, default=str))
 
@@ -1419,6 +1403,7 @@ def _rl_version_exists(version: str) -> bool:
 
 
 @rl_app.command("train")
+@_config_errors
 def rl_train(
     market: str | None = typer.Option(None, "--market", help="KR|US (기본 전체)"),
     seeds: int | None = typer.Option(None, "--seeds", min=1, max=10, help="시드 수 (기본 ml.yaml)"),
@@ -1429,25 +1414,21 @@ def rl_train(
     from trader.ledger import db
     from trader.ml.rl import train as rl_train_mod
 
+    configure(paths.state_dir())
+    cfg = config.load_ml()
+    if market is not None and market not in ("KR", "US"):
+        raise config.ConfigError(f"시장은 KR 또는 US: {market}")
+    if seeds is not None:
+        rl_cfg = cfg.models.rl_sizer.model_copy(update={"seeds": seeds})
+        cfg = cfg.model_copy(
+            update={"models": cfg.models.model_copy(update={"rl_sizer": rl_cfg})}
+        )
+    conn = db.connect()
+    db.init_schema(conn)
     try:
-        configure(paths.state_dir())
-        cfg = config.load_ml()
-        if market is not None and market not in ("KR", "US"):
-            raise config.ConfigError(f"시장은 KR 또는 US: {market}")
-        if seeds is not None:
-            rl_cfg = cfg.models.rl_sizer.model_copy(update={"seeds": seeds})
-            cfg = cfg.model_copy(
-                update={"models": cfg.models.model_copy(update={"rl_sizer": rl_cfg})}
-            )
-        conn = db.connect()
-        db.init_schema(conn)
-        try:
-            r = rl_train_mod.train_sizer(cfg, conn, market=market)
-        finally:
-            conn.close()
-    except (config.ConfigError, paths.ProjectRootNotFound) as e:
-        typer.echo(f"오류: {e}", err=True)
-        raise typer.Exit(code=1) from e
+        r = rl_train_mod.train_sizer(cfg, conn, market=market)
+    finally:
+        conn.close()
     typer.echo(json.dumps(r, ensure_ascii=False, default=str))
 
 
@@ -1473,6 +1454,7 @@ def rl_models() -> None:
 
 
 @rl_app.command("report")
+@_config_errors
 def rl_report(
     account: str = typer.Option("paper-main", "--account", help="모의 계좌 id"),
     weeks: int = typer.Option(8, "--weeks", min=1, max=52),
@@ -1484,20 +1466,16 @@ def rl_report(
     from trader.ledger import db
     from trader.ml.rl import report
 
+    configure(paths.state_dir())
+    accounts = config.load_accounts()
+    if not any(a.id == account for a in accounts):
+        raise config.ConfigError(f"알 수 없는 계좌: {account}")
+    conn = db.connect()
+    db.init_schema(conn)
     try:
-        configure(paths.state_dir())
-        accounts = config.load_accounts()
-        if not any(a.id == account for a in accounts):
-            raise config.ConfigError(f"알 수 없는 계좌: {account}")
-        conn = db.connect()
-        db.init_schema(conn)
-        try:
-            r = report.comparison(conn, None, account_id=account, market=market, weeks=weeks)
-        finally:
-            conn.close()
-    except (config.ConfigError, paths.ProjectRootNotFound) as e:
-        typer.echo(f"오류: {e}", err=True)
-        raise typer.Exit(code=1) from e
+        r = report.comparison(conn, None, account_id=account, market=market, weeks=weeks)
+    finally:
+        conn.close()
     typer.echo(json.dumps(r, ensure_ascii=False, default=str))
 
 
@@ -1547,6 +1525,7 @@ def tool_submit_reflection(
 
 
 @app.command("reflect")
+@_config_errors
 def reflect_cmd(
     market: str = typer.Option("KR", "--market", help="KR 또는 US"),
     dry_run: bool = typer.Option(False, "--dry-run", help="결과 채우기까지만 (세션 없음)"),
@@ -1557,15 +1536,11 @@ def reflect_cmd(
     from trader.orchestrator.reflect import pending, run_reflect
     from trader.orchestrator.session import PipelineError
 
-    try:
-        configure(paths.state_dir())
-        if market not in ("KR", "US"):
-            raise config.ConfigError(f"시장은 KR 또는 US 여야 합니다: {market}")
-        settings = config.load_settings()
-        accounts = config.load_accounts()
-    except (config.ConfigError, paths.ProjectRootNotFound) as e:
-        typer.echo(f"오류: {e}", err=True)
-        raise typer.Exit(code=1) from e
+    configure(paths.state_dir())
+    if market not in ("KR", "US"):
+        raise config.ConfigError(f"시장은 KR 또는 US 여야 합니다: {market}")
+    settings = config.load_settings()
+    accounts = config.load_accounts()
     conn = db.connect()
     db.init_schema(conn)
     try:
@@ -1651,6 +1626,7 @@ def backtest_cmd(
 
 
 @app.command("readiness")
+@_config_errors
 def readiness_cmd() -> None:
     """실전 전환 준비도 점검(읽기 전용). 모드는 바꾸지 않는다 — docs/runbook-live-transition.md."""
     import json
@@ -1658,13 +1634,9 @@ def readiness_cmd() -> None:
     from trader import readiness
     from trader.ledger import db
 
-    try:
-        configure(paths.state_dir())
-        settings = config.load_settings()
-        accounts = config.load_accounts()
-    except (config.ConfigError, paths.ProjectRootNotFound) as e:
-        typer.echo(f"오류: {e}", err=True)
-        raise typer.Exit(code=1) from e
+    configure(paths.state_dir())
+    settings = config.load_settings()
+    accounts = config.load_accounts()
     conn = db.connect()
     db.init_schema(conn)
     try:
@@ -1681,14 +1653,11 @@ def readiness_cmd() -> None:
 
 
 @app.command("notify-test")
+@_config_errors
 def notify_test() -> None:
     """텔레그램으로 테스트 메시지를 보낸다 (미설정이면 NullNotifier 로 성공)."""
-    try:
-        configure(paths.state_dir())
-        secrets = config.load_secrets()
-    except (config.ConfigError, paths.ProjectRootNotFound) as e:
-        typer.echo(f"오류: {e}", err=True)
-        raise typer.Exit(code=1) from e
+    configure(paths.state_dir())
+    secrets = config.load_secrets()
     notifier = make_notifier(secrets)
     stamp = datetime.now(KST).strftime("%Y-%m-%d %H:%M KST")
     if notifier.send(f"trader 알림 테스트 {stamp}"):
