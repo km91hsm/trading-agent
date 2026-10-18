@@ -93,15 +93,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - 계좌 모드(control 테이블)를 임의로 변경하지 않는다 (`trader control mode` 는 사용자가 쓴다).
 - `uv run trader analyze` 를 `FAKE_CLAUDE=1` 없이 돌리면 구독 호출이 발생한다. 사용자 요청 없이 실제 세션을 띄우지 않는다.
 - 셸 스크립트(.sh/.bat/.ps1)를 추가하지 않는다. 훅·설치·유틸은 전부 파이썬.
+- 같은 헬퍼를 모듈마다 다시 쓰지 않는다. 정본 위치: KIS 응답 파싱 `broker/_parse`(dec·to_int·rows), 수집 문자열 `sources/base`(strip_tags·utc_now), z-score `ml/features.zscore`, 하루 경계 `ledger/repo.day_bounds`, run 경로·체크포인트 봉투 `orchestrator/run_store`(market_dir·checkpoint_payload), 왕복 비용 `risk/costs.round_trip_bp`, 승인 한 줄 `notify/commands.approval_line`. CLI 의 설정 오류 처리는 `cli._config_errors` 데코레이터.
 - `state/` 파일을 직접 편집하지 않는다 (STATUS.md 는 `uv run trader status` 로만 갱신).
 - 커뮤니티·뉴스 수집기의 기본 on/off 는 스펙 §0.3 정책을 따른다. 사용자 결정 없이 off 소스를 켜지 않는다.
 
 ## 코딩 규칙
 - 경로는 전부 `pathlib`, 하드코딩 절대경로 금지, 루트는 `platform/paths` 로만 얻는다(`TRADER_HOME` → 없으면 cwd 에서 위로 `pyproject.toml` 탐색). OS 분기는 `platform/` 만.
-- 파일명에 `:` 금지 (타임스탬프는 `YYYYMMDD_HHMMSS`). 저장 시각은 UTC ISO8601, 표시만 KST/ET. 타임존은 `zoneinfo` + `tzdata`. 콘솔 출력 UTF-8 강제.
+- 파일명에 `:` 금지 (타임스탬프는 `YYYYMMDD_HHMMSS`). 저장 시각은 UTC ISO8601, 표시만 KST/ET. 타임존은 `zoneinfo` + `tzdata` 이고 KST 는 `config.KST`(모듈마다 `ZoneInfo("Asia/Seoul")` 를 만들지 않는다). 콘솔 출력 UTF-8 강제.
 - subprocess 는 `shell=False, encoding="utf-8", errors="replace"` 고정 (cp949 의존 금지). SessionStart 훅은 표준 라이브러리만.
 - SQLite 는 WAL 모드, 쓰기 타임아웃 30초, 스키마 버전 + 순서 마이그레이션(`init_schema` 는 최신이면 쓰기 잠금 없이 반환). 패키지 관리는 `uv`. 의존성은 Windows 휠이 있는 라이브러리만.
 - 금액은 `Decimal`. pydantic 모델은 `extra="forbid"` (yaml 키를 추가하면 모델도 같이 바꾼다).
-- 사용자 대면 메시지·로그·docstring 은 한국어. 로거 이름은 `trader.<계층>`.
+- 사용자 대면 메시지·로그·docstring 은 한국어. 로거 이름은 `trader.<계층>`, httpx 로그 억제는 `logging_setup.quiet_httpx` 하나.
 - TDD: 실패 테스트 먼저. 테스트는 `tmp_path` 만 쓰고 네트워크는 `respx` 로 막는다. Phase 마다 커밋하고 `docs/TODO.md` 를 갱신한다.
 - 커밋 트레일러: `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`

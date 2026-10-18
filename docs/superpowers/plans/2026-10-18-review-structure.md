@@ -23,26 +23,26 @@
 ---
 
 ### Task S1: 공용 헬퍼 통합
-- [ ] `config.KST` 추가(`MARKET_TZ["KR"]` 와 같은 객체). 24개 모듈의 `_KST = ZoneInfo("Asia/Seoul")`/`KST = …` 를 `from trader.config import KST` 로.
-- [ ] `logging_setup.quiet_httpx()` 공개, 5벌 `_quiet_httpx` 제거.
-- [ ] `broker/_parse.py`: `dec(v, default="0")`, `to_int(v)`, `rows(v)`(빈 dict 제외). `kis_market`·`accounts` 가 import.
-- [ ] `sources/base.py`: `utc_now()`, `strip_tags(text)` (HTML 두 번 unescape). `news`·`community`·`youtube`·`telegram_channel` 이 import.
-- [ ] `ml/features.zscore(s, *, fill=None)`; `ranker`·`scan/quant` 가 쓴다.
-- [ ] `repo.day_bounds` 를 `performance._orders_between`·`status._today_calls`·`tools.sessions_today` 에서 쓴다.
-- [ ] `run_store.market_dir` 로 `screener.market_dir`·`tools.status`·`web/routers/runs.today` 통일(`screener.market_dir` 삭제).
-- [ ] `run_store.checkpoint_payload(data, call=None)` 로 `tools._wrap`·`executor._wrap` 통일.
-- [ ] `tools` 의 `ROUND_TRIP_COST_BP` → `costs.round_trip_bp(market)`. `cli._approval_line` → `commands.approval_line`. `performance.metrics` 별칭 제거(호출자는 `metrics_of`). `calibration.build_calibration` 의 COUNT → `store.matured_count`.
-- [ ] 커밋 `refactor: 공용 헬퍼 통합 (KST·quiet_httpx·KIS 파싱·태그 제거·zscore·날짜 창·market_dir·체크포인트 봉투)`
+- [x] `config.KST` 추가(`MARKET_TZ["KR"]` 와 같은 객체). 24개 모듈의 `_KST = ZoneInfo("Asia/Seoul")`/`KST = …` 를 `from trader.config import KST` 로.
+- [x] `logging_setup.quiet_httpx()` 공개, 5벌 `_quiet_httpx` 제거.
+- [x] `broker/_parse.py`: `dec(v, default="0")`, `to_int(v)`, `rows(v)`(빈 dict 제외). `kis_market`·`accounts` 가 import.
+- [x] `sources/base.py`: `utc_now()`, `strip_tags(text)` (HTML 두 번 unescape). `news`·`community`·`youtube`·`telegram_channel` 이 import.
+- [x] `ml/features.zscore(s, *, fill=None)`; `ranker`·`scan/quant` 가 쓴다.
+- [x] `repo.day_bounds` 를 `performance._orders_between`·`status._today_calls`·`tools.sessions_today` 에서 쓴다.
+- [x] `run_store.market_dir` 로 `screener.market_dir`·`tools.status`·`web/routers/runs.today` 통일(`screener.market_dir` 삭제).
+- [x] `run_store.checkpoint_payload(data, call=None)` 로 `tools._wrap`·`executor._wrap` 통일.
+- [x] `tools` 의 `ROUND_TRIP_COST_BP` → `costs.round_trip_bp(market)`. `cli._approval_line` → `commands.approval_line`. `performance.metrics` 별칭 제거(호출자는 `metrics_of`). `calibration.build_calibration` 의 COUNT → `store.matured_count`.
+- [x] 커밋 `refactor: 공용 헬퍼 통합 (KST·quiet_httpx·KIS 파싱·태그 제거·zscore·날짜 창·market_dir·체크포인트 봉투)`
 
 ### Task S2: 죽은 코드·시그니처 정리
-- [ ] 삭제: `repo.has_unhandled_trigger`, `tools.ANALYST_ROLES`, `ranker.rank_fn_or_none`(테스트는 `ranker.current()` 로), `tr_ids.names()`·`DOM/OVS_PSBL_ORDER`, `LlmSettings.max_parallel`(+`settings.yaml`·테스트), `run_session(claude_bin_path=)`(테스트는 `claude_bin=`).
-- [ ] `cli._session_brokers(accounts)` 로 축소, `cli.scan` 의 `get_watchlist` 1회, `tools.checkpoint_write(model=)` → `schema_model` 아닌 의미 명확한 이름 `model_name`.
-- [ ] 커밋 `refactor: 죽은 코드·중복 인자 제거`
+- [x] 삭제: `repo.has_unhandled_trigger`, `tools.ANALYST_ROLES`, `ranker.rank_fn_or_none`(테스트는 `ranker.current()` 로), `tr_ids.names()`·`DOM/OVS_PSBL_ORDER`, `LlmSettings.max_parallel`(+`settings.yaml`·테스트), `run_session(claude_bin_path=)`(테스트는 `claude_bin=`).
+- [x] `cli._session_brokers(accounts)` 로 축소, `cli.scan` 의 `get_watchlist` 1회, `tools.checkpoint_write(model=)` → `schema_model` 아닌 의미 명확한 이름 `model_name`.
+- [x] 커밋 `refactor: 죽은 코드·중복 인자 제거`
 
 ### Task S3: `cli.py` 설정 오류 처리 데코레이터
-- [ ] `_config_errors(fn)`: `ConfigError`·`ProjectRootNotFound` 를 받아 `오류: …` 출력 + `Exit(1)`. `functools.wraps` 로 typer 시그니처 유지. 단일 except 만 있는 try 블록 18곳 중 패턴이 정확히 맞는 곳을 데코레이터로 바꾼다.
-- [ ] 테스트: 설정이 없는 프로젝트에서 `trader status`·`kis ping` 이 exit 1 + "오류:" (기존 테스트 유지 확인).
-- [ ] 커밋 `refactor(cli): 설정 오류 처리를 데코레이터로`
+- [x] `_config_errors(fn)`: `ConfigError`·`ProjectRootNotFound` 를 받아 `오류: …` 출력 + `Exit(1)`. `functools.wraps` 로 typer 시그니처 유지. 단일 except 만 있는 try 블록 18곳 중 패턴이 정확히 맞는 곳을 데코레이터로 바꾼다.
+- [x] 테스트: 설정이 없는 프로젝트에서 `trader status`·`kis ping` 이 exit 1 + "오류:" (기존 테스트 유지 확인).
+- [x] 커밋 `refactor(cli): 설정 오류 처리를 데코레이터로`
 
 ### Task S4: 마무리
-- [ ] `uv run pytest`, `ruff`, TODO.md 체크, CLAUDE.md 갱신, PR (`perf/review-performance` 대상).
+- [x] `uv run pytest`, `ruff`, TODO.md 체크, CLAUDE.md 갱신, PR (`perf/review-performance` 대상).
