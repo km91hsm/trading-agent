@@ -206,3 +206,19 @@ def test_record_decision_requires_decision_id(conn):
             row=None,
             horizon_days=5,
         )
+
+
+def test_retrieve_hydrates_only_top_k(conn):
+    """점수 계산엔 벡터·시각·층·importance 만 필요하다. 전 행의 decision·reflection JSON 을 파싱하지
+    않고 상위 k 만 복원해도 결과(순서·점수·필드)는 같다."""
+    for i in range(1, 56):
+        _entry(conn, i, vec=[0.5, -0.5] * 6, decided_at=NOW - timedelta(days=200))
+    best = _entry(conn, 60, vec=VEC, decided_at=NOW - timedelta(days=8))
+    stmts: list[str] = []
+    conn.set_trace_callback(stmts.append)
+    r = store.retrieve(conn, vector=VEC, now=NOW, settings=SET, k=3)
+    conn.set_trace_callback(None)
+    assert [e["id"] for e in r["entries"]][0] == best and len(r["entries"]) == 3
+    assert all("decision" in e and "situation_vector" in e and "score" in e for e in r["entries"])
+    full = [s for s in stmts if "SELECT *" in s]
+    assert full and all("IN (" in s for s in full)  # 전 행 SELECT * 없음

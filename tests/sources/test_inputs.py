@@ -483,3 +483,46 @@ def test_technical_sections_respect_asof(project):
     assert daily and daily[-1]["date"] == "2026-10-08" and len(daily) == 2
     assert d["meta"]["last_candle_date"] == "2026-10-08"
     assert all(r["date"] <= "2026-10-08" for r in d["sentiment"]["investor_flow"]["data"])
+
+
+def test_build_inputs_runs_sections_concurrently(project):
+    """fundamental·news_macro·sentiment 는 서로 독립이라 동시에 돈다 (KR 수집 1회 HTTP 27~31회)."""
+    import threading
+    import time
+
+    from trader.sources import inputs as inputs_mod
+
+    active = {"n": 0, "max": 0}
+    lock = threading.Lock()
+
+    def slow(name):
+        def wrapper(*a, **kw):
+            with lock:
+                active["n"] += 1
+                active["max"] = max(active["max"], active["n"])
+            time.sleep(0.05)
+            with lock:
+                active["n"] -= 1
+            return {}
+
+        return wrapper
+
+    import pytest
+
+    mp = pytest.MonkeyPatch()
+    mp.setattr(inputs_mod, "_fundamental", slow("fundamental"))
+    mp.setattr(inputs_mod, "_news_macro", slow("news"))
+    mp.setattr(inputs_mod, "_sentiment", slow("sentiment"))
+    try:
+        build_inputs(
+            ticker="005930",
+            market="KR",
+            exchange=None,
+            asof=T0,
+            cfg=cfg(),
+            secrets=Secrets(),
+            deps=deps(),
+        )
+    finally:
+        mp.undo()
+    assert active["max"] >= 2

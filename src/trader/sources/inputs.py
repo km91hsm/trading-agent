@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
@@ -373,10 +374,18 @@ def build_inputs(
             "schema_version": SCHEMA_VERSION,
         },
         "technical": technical,
-        "fundamental": _fundamental(ticker, market, asof, cfg, deps, technical),
-        "news_macro": _news_macro(ticker, market, name, asof, cfg, secrets, deps),
-        "sentiment": _sentiment(ticker, market, name, asof, cfg, deps, secrets),
     }
+    # 세 절은 서로 독립(fundamental 만 technical 의 현재가를 쓴다)이고 네트워크 대기가 대부분이라
+    # 동시에 돈다. KIS 클라이언트는 RateLimiter 락, httpx.Client 는 스레드 안전, DART 지연 초기화는
+    # 자체 락. 각 절은 run_section 이 예외를 절 안에 가두므로 결과 조립은 그대로다.
+    with ThreadPoolExecutor(max_workers=3, thread_name_prefix="collect") as pool:
+        futures = {
+            "fundamental": pool.submit(_fundamental, ticker, market, asof, cfg, deps, technical),
+            "news_macro": pool.submit(_news_macro, ticker, market, name, asof, cfg, secrets, deps),
+            "sentiment": pool.submit(_sentiment, ticker, market, name, asof, cfg, deps, secrets),
+        }
+        for key, fut in futures.items():
+            result[key] = fut.result()
     result["news_macro"]["events"] = _events(result["fundamental"], asof, deps.now)
     result = _jsonable(result)
     result["errors"] = _collect_errors(result)

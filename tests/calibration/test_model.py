@@ -99,3 +99,14 @@ def test_build_calibration_day_key_is_kst(conn):
         now=lambda: datetime(2026, 10, 17, 10, tzinfo=UTC),  # 10-17 19:00 KST → 다른 날
     )
     assert conn.execute("SELECT COUNT(*) FROM calibration_runs").fetchone()[0] == 2
+
+
+def test_signal_hits_single_query(conn):
+    """만기 엔트리마다 analyst_reports 를 한 번씩 조회(N+1)하지 않고 JOIN 1회로 같은 결과를 낸다."""
+    seed_matured(conn, 12, hit_rate=0.6)
+    stmts: list[str] = []
+    conn.set_trace_callback(stmts.append)
+    df = model.signal_hits(conn)
+    conn.set_trace_callback(None)
+    assert len(df) == 48
+    assert sum("analyst_reports" in s for s in stmts) == 1

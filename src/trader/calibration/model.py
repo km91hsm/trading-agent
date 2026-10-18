@@ -38,35 +38,37 @@ def _price_sign(entry_realized: float, action: str) -> int:
 
 
 def signal_hits(conn: sqlite3.Connection) -> pd.DataFrame:
+    """만기 엔트리 × 그날 애널리스트 보고서를 JOIN 1회로 (엔트리마다 질의하던 N+1 제거).
+
+    analyst_reports.date 는 KST 운영일, decided_at 은 UTC ISO 라 SQLite 의 '+9 hours' 로 맞춘다."""
     rows = []
+    sign_cache: dict[int, tuple[int, list]] = {}
     for e in conn.execute(
-        "SELECT id, ticker, market, decided_at, decision, realized_return, price_return, "
-        "situation_vector "
-        "FROM memory_entries WHERE outcome_at IS NOT NULL"
+        "SELECT m.id, m.decision, m.realized_return, m.price_return, m.situation_vector, "
+        "a.role, a.signal "
+        "FROM memory_entries m JOIN analyst_reports a "
+        "ON a.market = m.market AND a.ticker = m.ticker "
+        "AND a.date = date(m.decided_at, '+9 hours') "
+        "WHERE m.outcome_at IS NOT NULL ORDER BY m.id, a.role"
     ).fetchall():
-        try:
-            day = datetime.fromisoformat(e["decided_at"]).astimezone(_KST).date().isoformat()
-        except ValueError:
-            continue
-        action = str((json.loads(e["decision"] or "{}") or {}).get("action") or "HOLD").upper()
-        if e["price_return"] is not None:
-            realized_sign = _price_sign(float(e["price_return"]), "BUY")
-        else:
-            realized_sign = _price_sign(float(e["realized_return"] or 0.0), action)
-        vector = json.loads(e["situation_vector"] or "[]")
-        for a in conn.execute(
-            "SELECT role, signal FROM analyst_reports WHERE date=? AND market=? AND ticker=?",
-            (day, e["market"], e["ticker"]),
-        ).fetchall():
-            rows.append(
-                {
-                    "decision_id": int(e["id"]),
-                    "role": a["role"],
-                    "signal": SIGNAL_SIGN.get(str(a["signal"] or ""), 0),
-                    "realized_sign": realized_sign,
-                    "vector": vector,
-                }
-            )
+        eid = int(e["id"])
+        if eid not in sign_cache:
+            action = str((json.loads(e["decision"] or "{}") or {}).get("action") or "HOLD").upper()
+            if e["price_return"] is not None:
+                realized_sign = _price_sign(float(e["price_return"]), "BUY")
+            else:
+                realized_sign = _price_sign(float(e["realized_return"] or 0.0), action)
+            sign_cache[eid] = (realized_sign, json.loads(e["situation_vector"] or "[]"))
+        realized_sign, vector = sign_cache[eid]
+        rows.append(
+            {
+                "decision_id": eid,
+                "role": e["role"],
+                "signal": SIGNAL_SIGN.get(str(e["signal"] or ""), 0),
+                "realized_sign": realized_sign,
+                "vector": vector,
+            }
+        )
     return pd.DataFrame(rows, columns=["decision_id", "role", "signal", "realized_sign", "vector"])
 
 

@@ -290,3 +290,28 @@ def test_write_rows_tolerates_old_schema_file(project):
     got = pd.read_parquet(d / f"{day}.parquet")
     assert set(got["ticker"]) == {"000660", "005930"}
     assert pd.isna(got.loc[got["ticker"] == "000660", "sma_5"]).all()
+
+
+def test_backfill_writes_in_chunks_not_per_ticker(project, monkeypatch):
+    """종목마다 write_rows 를 부르면 날짜 파일을 종목 × 날짜 만큼 읽고 다시 쓴다(30종목 × 750일 ≈
+    22,500회). 종목 프레임을 모아 묶음으로 쓴다."""
+    calls = {"n": 0}
+    real = features.write_rows
+
+    def counting(df, state=None):
+        calls["n"] += 1
+        return real(df, state)
+
+    monkeypatch.setattr(features, "write_rows", counting)
+    universe = Universe(kr=[f"0000{i:02d}" for i in range(25)])
+    n = features.backfill(
+        market_client=FakeMarket(candles=5),
+        dart=None,
+        universe=universe,
+        markets=["KR"],
+        years=1,
+        progress=lambda s: None,
+    )
+    assert n == 125 and calls["n"] <= 3  # CHUNK=10 → 3회
+    got = pd.concat(pd.read_parquet(f) for f in (project / "state" / "features").glob("*.parquet"))
+    assert len(got) == 125 and got["ticker"].nunique() == 25

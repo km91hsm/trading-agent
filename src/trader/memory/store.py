@@ -215,7 +215,11 @@ def retrieve(
         return {"entries": [], "warmup": False, "breaker": breaker}
     if matured_count(conn) < settings.warmup:
         return {"entries": [], "warmup": True, "breaker": None}
-    sql = "SELECT * FROM memory_entries WHERE outcome_at IS NOT NULL"
+    # 점수에 필요한 열만 읽어 순위를 매기고, 상위 k 만 전체 행(decision·reflection JSON)으로 복원
+    sql = (
+        "SELECT id, decided_at, tier, importance, situation_vector FROM memory_entries "
+        "WHERE outcome_at IS NOT NULL"
+    )
     args: list = []
     if market:
         sql += " AND market=?"
@@ -225,25 +229,38 @@ def retrieve(
         "mid": settings.half_lives.mid,
         "long": settings.half_lives.long,
     }
-    scored = []
+    scores: list[tuple[float, int]] = []
     for row in conn.execute(sql, args).fetchall():
-        e = _hydrate(row)
         try:
-            age_days = (now - datetime.fromisoformat(e["decided_at"]).astimezone(UTC)).days
+            age_days = (now - datetime.fromisoformat(row["decided_at"]).astimezone(UTC)).days
         except ValueError:
             age_days = 0
-        hl = half.get(e["tier"], settings.half_lives.short)
+        hl = half.get(row["tier"], settings.half_lives.short)
         recency = 2 ** (-max(age_days, 0) / hl)
-        relevance = max(0.0, vec.cosine(vector, e["situation_vector"]))
+        relevance = max(0.0, vec.cosine(vector, json.loads(row["situation_vector"] or "[]")))
         score = (
             W_RECENCY * recency
             + W_RELEVANCE * relevance
-            + W_IMPORTANCE * float(e["importance"] or 0)
+            + W_IMPORTANCE * float(row["importance"] or 0)
         )
-        e["score"] = round(score, 4)
-        scored.append(e)
-    scored.sort(key=lambda e: e["score"], reverse=True)
-    return {"entries": scored[:k], "warmup": False, "breaker": None}
+        scores.append((round(score, 4), int(row["id"])))
+    scores.sort(key=lambda t: (-t[0], t[1]))
+    top = scores[:k]
+    if not top:
+        return {"entries": [], "warmup": False, "breaker": None}
+    by_id = {
+        int(r["id"]): _hydrate(r)
+        for r in conn.execute(
+            f"SELECT * FROM memory_entries WHERE id IN ({','.join('?' * len(top))})",
+            [i for _, i in top],
+        ).fetchall()
+    }
+    entries = []
+    for score, i in top:
+        e = by_id[i]
+        e["score"] = score
+        entries.append(e)
+    return {"entries": entries, "warmup": False, "breaker": None}
 
 
 def promote_and_prune(conn: sqlite3.Connection, *, now: datetime, settings: MemorySettings) -> dict:

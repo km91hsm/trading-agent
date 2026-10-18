@@ -60,6 +60,7 @@ def _coerce(df: pd.DataFrame) -> pd.DataFrame:
 
 
 MAX_PAST = timedelta(hours=24)
+BACKFILL_CHUNK = 10  # 백필 때 날짜 파일을 다시 쓰는 단위(종목 수)
 
 
 def _features_dir(state: Path | None) -> Path:
@@ -245,6 +246,18 @@ def backfill(
     if years * 252 > MAX_DAYS:
         logger.warning("일봉 상한 %d봉으로 제한합니다 (요청 %d년)", MAX_DAYS, years)
     total = 0
+    frames: list[pd.DataFrame] = []
+
+    def flush() -> None:
+        # 종목마다 write_rows 를 부르면 날짜 파일을 종목 × 날짜 만큼 읽고 다시 쓴다 → 묶음으로 1회
+        nonlocal total
+        if not frames:
+            return
+        batch = pd.concat(frames, ignore_index=True)
+        frames.clear()
+        write_rows(batch, state)
+        total += len(batch)
+
     for ticker, market, exchange in _targets(universe, markets):
         try:
             candles = (
@@ -257,12 +270,14 @@ def backfill(
             fy_years = sorted({_effective_fy(c.date) for c in candles})
             ratios = _ratios_by_year_kr(dart, ticker, fy_years) if market == "KR" and dart else None
             df = history_rows(ticker=ticker, market=market, candles=candles, ratios_by_year=ratios)
-            write_rows(df, state)
-            total += len(df)
+            frames.append(df)
             progress(f"{market} {ticker}: {len(df)}행")
+            if len(frames) >= BACKFILL_CHUNK:
+                flush()
         except Exception as e:  # noqa: BLE001 - 종목 단위 격리
             logger.warning("백필 실패 %s %s: %s: %s", market, ticker, type(e).__name__, e)
             progress(f"{market} {ticker}: 실패 ({type(e).__name__})")
+    flush()
     return total
 
 

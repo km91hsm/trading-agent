@@ -9,6 +9,7 @@ import io
 import json
 import logging
 import re
+import threading
 import xml.etree.ElementTree as ET
 import zipfile
 from collections.abc import Callable
@@ -78,6 +79,7 @@ class DartClient:
         self._http = http or httpx.Client(timeout=15)
         self._now = now
         self._corp_map: dict[str, dict[str, str]] | None = None
+        self._map_lock = threading.Lock()  # 수집 절이 병렬로 돌 때 고유번호 맵을 한 번만 받는다
 
     # --- 공통 ---------------------------------------------------------------
 
@@ -100,14 +102,19 @@ class DartClient:
     def _load_corp_map(self) -> dict[str, dict[str, str]]:
         if self._corp_map is not None:
             return self._corp_map
+        with self._map_lock:
+            if self._corp_map is None:
+                self._corp_map = self._fetch_corp_map()
+            return self._corp_map
+
+    def _fetch_corp_map(self) -> dict[str, dict[str, str]]:
         cache = self._cache_dir / "dart_corpcode.json"
         now = self._now()
         try:
             cached = json.loads(cache.read_text(encoding="utf-8"))
             fetched = datetime.fromisoformat(cached["fetched_at"])
             if now - fetched < timedelta(days=CACHE_DAYS):
-                self._corp_map = cached["map"]
-                return self._corp_map
+                return cached["map"]
         except (OSError, ValueError, KeyError, TypeError):
             pass
         resp = self._http.get(f"{BASE}/corpCode.xml", params={"crtfc_key": self._key})
@@ -142,7 +149,6 @@ class DartClient:
             encoding="utf-8",
         )
         tmp.replace(cache)
-        self._corp_map = mapping
         return mapping
 
     def corp_code(self, ticker: str) -> str | None:

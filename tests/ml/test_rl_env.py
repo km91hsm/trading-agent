@@ -80,3 +80,27 @@ def test_env_uses_per_row_horizon_column():
     _, r1, *_ = env.step(0.25)
     _, r2, *_ = env.step(0.25)
     assert r1 == pytest.approx(0.025) and r2 == pytest.approx(0.025 / 5)
+
+
+def test_population_rewards_match_episode_loop():
+    """CEM 모집단 평가를 한 스텝 루프로 벡터화해도 보상이 루프 구현과 같아야 한다."""
+    import numpy as np
+
+    from trader.ml.rl import learners
+    from trader.ml.rl.policy import LinearPolicy
+
+    rng = np.random.default_rng(0)
+    rets = rng.normal(0, 0.02, 60)
+    steps = _steps(rets)
+    steps["ticker"] = ["A", "B", "C"] * 20
+    env = SizingEnv(steps, max_weight=0.25, drawdown_penalty=1.0, cost_bp=30, horizon_days=5)
+    mean, std = learners.obs_stats(steps)
+    pop = rng.normal(0, 1, size=(6, OBS_SIZE + 1))
+    fast = learners.population_rewards(env, pop, mean=mean, std=std, max_weight=0.25)
+    slow = np.array(
+        [
+            learners._episode_reward(env, LinearPolicy(th, 0.25, mean=mean, std=std))
+            for th in pop
+        ]
+    )
+    assert np.allclose(fast, slow, atol=1e-9)

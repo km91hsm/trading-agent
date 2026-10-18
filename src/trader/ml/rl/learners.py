@@ -43,6 +43,54 @@ def _episode_reward(env: SizingEnv, policy: Policy) -> float:
     return total
 
 
+def population_rewards(
+    env: SizingEnv,
+    pop: np.ndarray,
+    *,
+    mean: np.ndarray,
+    std: np.ndarray,
+    max_weight: float,
+) -> np.ndarray:
+    """모집단 전체의 에피소드 보상 합을 한 스텝 루프로 (LinearPolicy + SizingEnv.step 과 동치).
+
+    정책의 정적 부분(관측 14열)은 행렬곱 1회로 미리 계산하고, 궤적에 의존하는 두 항(직전 비중·
+    드로다운)만 스텝마다 더한다. 순수 파이썬 스텝 루프(13.6 µs/스텝 × 모집단 64 × 반복 30)가 기본
+    설정에서 1~3시간
+    걸리던 것을 모집단 크기와 무관한 루프 1회로 줄인다."""
+    pop = np.asarray(pop, dtype="float64")
+    n_static = OBS_SIZE - 2
+    z_static = (env.obs_matrix - mean[:n_static]) / std[:n_static]  # (T, 14)
+    lin = z_static @ pop[:, :n_static].T  # (T, P)
+    th_w, th_dd, bias = pop[:, n_static], pop[:, n_static + 1], pop[:, -1]
+    p_n = pop.shape[0]
+    nav = np.ones(p_n)
+    peak = np.ones(p_n)
+    dd = np.zeros(p_n)
+    total = np.zeros(p_n)
+    last_w: dict[str, np.ndarray] = {}
+    zeros = np.zeros(p_n)
+    for i in range(len(env.returns)):
+        ticker = env.tickers[i]
+        w_prev = last_w.get(ticker, zeros)
+        z = (
+            lin[i]
+            + th_w * ((w_prev - mean[n_static]) / std[n_static])
+            + th_dd * ((dd - mean[n_static + 1]) / std[n_static + 1])
+            + bias
+        )
+        w = np.clip(max_weight / (1.0 + np.exp(-z)), 0.0, env.max_weight)
+        scale = float(env.scale[i])
+        pnl = w * float(env.returns[i]) * scale
+        nav = nav * (1.0 + pnl)
+        peak = np.maximum(peak, nav)
+        dd_new = np.where(peak > 0, nav / peak - 1.0, 0.0)
+        total += pnl - env.cost * np.abs(w - w_prev) * scale
+        total -= env.drawdown_penalty * np.maximum(0.0, dd - dd_new)
+        last_w[ticker] = w
+        dd = dd_new
+    return total
+
+
 def obs_stats(steps: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
     """학습 스텝 관측 14열의 평균·표준편차(0 이면 1). 뒤 2차원(비중·드로다운)은 0·1 로 둔다."""
     m = np.asarray([list(o) for o in steps["obs"]], dtype="float64")
@@ -69,7 +117,7 @@ def fit_cem(steps: pd.DataFrame, cfg: RlSizerCfg, *, seed: int) -> LinearPolicy:
 
     for _ in range(cfg.cem_iterations):
         pop = rng.normal(mean, std, size=(cfg.cem_population, dim))
-        scores = np.array([_episode_reward(env, policy(th)) for th in pop])
+        scores = population_rewards(env, pop, mean=o_mean, std=o_std, max_weight=cfg.max_weight)
         elite = pop[np.argsort(scores)[::-1][:n_elite]]
         mean = elite.mean(axis=0)
         std = np.maximum(elite.std(axis=0), CEM_MIN_STD)
