@@ -161,9 +161,14 @@ def test_stale_approvals_ignores_unexpired(project, conn):
 
 def test_run_error_rate_ignores_interval_jobs(conn, project):
     _runs(conn, 9, 1)  # cron 잡(analyze): ok 9 + error 1
-    _runs(conn, 0, 5, kind="monitor")  # interval 잡은 오류일 때만 기록 → 분모에서 제외
+    # interval 잡(데몬 job.id = kr_monitor·us_monitor·telegram_poll·fills_sync[_n])은 오류일 때만
+    # 기록되므로 분모에서 제외한다. 재평가 세션(run_session kind='monitor')은 ok 도 기록되니 포함.
+    _runs(conn, 0, 5, kind="kr_monitor")
+    _runs(conn, 0, 2, kind="fills_sync_1")
+    _runs(conn, 0, 1, kind="telegram_poll")
+    _runs(conn, 10, 0, kind="monitor")
     r = readiness.check(
         conn, accounts=[], settings=Settings(), state=project / "state", today=TODAY
     )
     item = next(i for i in r["items"] if i["key"] == "run_error_rate")
-    assert item["value"] == pytest.approx(0.1)
+    assert item["value"] == pytest.approx(1 / 20)

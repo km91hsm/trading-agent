@@ -9,8 +9,9 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from trader.config import AccountConfig, Settings
-from trader.control.control import get_account_mode, is_paused
+from trader.control.control import is_paused
 from trader.ledger import metrics
+from trader.orchestrator.executor import effective_mode
 from trader.platform import paths
 
 MAX_CHARS = 8000
@@ -165,9 +166,9 @@ def build_status(
     for a in accounts:
         by_market = metrics.stance_by_market(conn, a.id, today, a.markets)
         st = ", ".join(f"{m} {v}" for m, v in by_market.items())
-        lines.append(
-            f"| {a.id} | {a.env} | {get_account_mode(conn, a)} | {','.join(a.markets)} | {st} |"
-        )
+        mode, note = effective_mode(conn, a)
+        shown = f"{mode} (강등: 확인 기록 없음)" if note else mode
+        lines.append(f"| {a.id} | {a.env} | {shown} | {','.join(a.markets)} | {st} |")
     lines += ["", "## 마지막 실행"]
     rows = conn.execute(
         "SELECT kind, market, started_at, status FROM runs ORDER BY id DESC LIMIT 5"

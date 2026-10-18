@@ -1008,10 +1008,13 @@ def control_show() -> None:
         raise typer.Exit(code=1) from e
     try:
         typer.echo(f"일시정지: {'예' if control.is_paused(conn) else '아니오'}")
+        from trader.orchestrator.executor import effective_mode
+
         for a in accounts:
-            mode = control.get_account_mode(conn, a)
+            mode, note = effective_mode(conn, a)
             src = "control" if control.get_flag(conn, f"mode:{a.id}") is not None else "yaml"
-            typer.echo(f"{a.id} ({a.env}): {mode} [{src}]")
+            suffix = f" — {note}" if note else ""
+            typer.echo(f"{a.id} ({a.env}): {mode} [{src}]{suffix}")
     finally:
         conn.close()
 
@@ -1124,17 +1127,25 @@ def web(
         typer.echo(f"오류: {e}", err=True)
         raise typer.Exit(code=1) from e
     bind = host or deps.settings.web.bind
-    if bind not in ("127.0.0.1", "localhost", "::1"):
+    extra = _hosts_for_bind(bind)
+    if extra:
         logging.getLogger("trader.web").warning(
-            "루프백이 아닌 주소(%s)에 바인드: 조회 API 는 토큰 없이 열립니다", bind
+            "루프백이 아닌 주소(%s)에 바인드: 조회 API 가 토큰 없이 열리고 Host 제한이 꺼집니다",
+            bind,
         )
-        deps.extra_hosts.append(bind)
+        deps.extra_hosts.extend(extra)
     uvicorn.run(
         create_app(deps),
         host=bind,
         port=port or deps.settings.web.port,
         log_level="info",
     )
+
+
+def _hosts_for_bind(bind: str) -> list[str]:
+    """루프백이면 추가 허용 없음. 그 밖(0.0.0.0·LAN IP)이면 클라이언트가 LAN IP·호스트명을 Host 로
+    보내므로 바인드 주소를 허용 목록에 넣는 것으로는 전부 400 이 난다 → 모든 Host 허용."""
+    return [] if bind in ("127.0.0.1", "localhost", "::1") else ["*"]
 
 
 @tool_app.command("submit-screen")

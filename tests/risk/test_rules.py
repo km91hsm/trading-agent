@@ -207,3 +207,30 @@ def test_min_hold_skips_holidays():
     assert (
         rules._trading_days_between(date(2026, 10, 6), date(2026, 10, 9), {date(2026, 10, 8)}) == 2
     )
+
+
+def test_min_cash_pct_reserves_cash():
+    """risk.min_cash_pct 는 가능금액에서 NAV × 비율을 유보한다 (게이트가 무시하던 설정 필드)."""
+    lim = RiskLimits(min_cash_pct=0.5)
+    # 가능 1천만 − 유보 500만 = 500만 ≥ 목표 100만 → 수량 불변(14주), 사유 없음
+    v = rules.evaluate(
+        Decision(**ok_decision(target_weight=0.1, limit_price=None, order_type="MARKET")),
+        _portfolio(),
+        limits=lim,
+        stance="normal",
+        market="KR",
+        price=Decimal("70000"),
+        today=D,
+    )
+    assert v.approved and v.adjusted_qty == 14 and not any("유보" in r for r in v.reasons)
+    # 현금 200만, 하한 10%(100만) → 가능 100만, 목표 250만 → 100만/7만 = 14주 + 사유
+    v = rules.evaluate(
+        Decision(**ok_decision(target_weight=0.25, limit_price=None, order_type="MARKET")),
+        _portfolio(cash_available=Decimal("2000000")),
+        limits=RiskLimits(min_cash_pct=0.1),
+        stance="normal",
+        market="KR",
+        price=Decimal("70000"),
+        today=D,
+    )
+    assert v.approved and v.adjusted_qty == 14 and any("유보" in r for r in v.reasons)

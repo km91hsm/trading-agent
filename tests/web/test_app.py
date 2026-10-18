@@ -78,3 +78,16 @@ def test_foreign_host_rejected(client):
     r = client.get("/api/system/health", headers={"Host": "evil.example"})
     assert r.status_code == 400
     assert client.get("/api/system/health", headers={"Host": "localhost:8787"}).status_code == 200
+
+
+def test_hosts_for_bind_and_wildcard_allows_lan_host(project, conn):
+    """--host 0.0.0.0 이면 클라이언트는 LAN IP 를 Host 로 보내므로 바인드 주소를 허용 목록에 넣는
+    것으론 전부 400 이 난다. 비루프백 바인드는 모든 Host 를 허용한다(경고는 CLI 가 남긴다)."""
+    from trader.cli import _hosts_for_bind
+
+    assert _hosts_for_bind("127.0.0.1") == [] and _hosts_for_bind("localhost") == []
+    assert _hosts_for_bind("0.0.0.0") == ["*"] and _hosts_for_bind("192.168.0.10") == ["*"]
+    deps = make_deps(project)
+    deps.extra_hosts.extend(_hosts_for_bind("0.0.0.0"))
+    c = TestClient(create_app(deps))
+    assert c.get("/api/system/health", headers={"Host": "192.168.0.10:8787"}).status_code == 200

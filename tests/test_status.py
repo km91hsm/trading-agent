@@ -154,3 +154,14 @@ def test_status_has_rl_sizer_line(conn, project):
     p = project / "docs" / "TODO.md"
     p.write_text(TODO, encoding="utf-8")
     assert "rl_sizer 없음" in status.build_status(conn, Settings(), [], p)
+
+
+def test_status_shows_effective_mode_for_unconfirmed_real_auto(conn, project):
+    from trader.control import control
+
+    accounts = [make_account("real-main", "real", "off")]
+    control.set_flag(conn, "mode:real-main", "auto")
+    now = datetime(2026, 10, 9, tzinfo=UTC)
+    md = status.build_status(conn, Settings(), accounts, project / "docs" / "TODO.md", now=now)
+    row = next(line for line in md.splitlines() if line.startswith("| real-main"))
+    assert "| off" in row and "강등" in row

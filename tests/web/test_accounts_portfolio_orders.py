@@ -68,3 +68,31 @@ def test_portfolio_refresh_requires_token_and_snapshots(client, conn):
         ).status_code
         == 400
     )
+
+
+def test_accounts_show_effective_mode_not_raw_control(client, conn):
+    """실전 auto 는 live_confirmed 없이는 executor 가 off 로 강등한다.
+
+    화면도 실효 모드를 보여야 운영자가 '실전 자동 매매 중' 으로 오해하지 않는다."""
+    from trader.control import control
+
+    control.set_flag(conn, "mode:real-main", "auto")  # 확인 기록 없이 control 에 직접 쓴 상황
+    rows = {a["id"]: a for a in client.get("/api/accounts").json()}
+    assert rows["real-main"]["mode"] == "off" and "live_confirmed" in rows["real-main"]["mode_note"]
+    assert rows["paper-main"]["mode"] == "auto" and rows["paper-main"]["mode_note"] is None
+
+
+def test_portfolio_refresh_passes_memory_settings(client, conn, monkeypatch):
+    """refresh 가 memory_settings 없이 build_portfolio 를 부르면 브레이커가 기본값으로 갱신된다."""
+    from trader.orchestrator import executor
+
+    seen = {}
+    real = executor.build_portfolio
+
+    def spy(conn_, broker, acct, market, today, memory_settings=None):
+        seen["memory_settings"] = memory_settings
+        return real(conn_, broker, acct, market, today, memory_settings=memory_settings)
+
+    monkeypatch.setattr(executor, "build_portfolio", spy)
+    r = client.post("/api/portfolio/refresh?account_id=paper-main&market=KR", headers=AUTH)
+    assert r.status_code == 200 and seen["memory_settings"] is not None

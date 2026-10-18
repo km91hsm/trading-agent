@@ -40,7 +40,9 @@ def refresh(request: Request, account_id: str | None = None, market: str | None 
         raise HTTPException(status_code=400, detail=f"계좌 {acct.id} 브로커 없음(앱키 미설정)")
     with closing(deps.conn_factory()) as conn:
         try:
-            build_portfolio(conn, broker, acct, m, today_kst(request))
+            build_portfolio(
+                conn, broker, acct, m, today_kst(request), memory_settings=deps.settings.memory
+            )
         except (KisApiError, ValueError) as e:
             raise HTTPException(status_code=502, detail=f"잔고 조회 실패: {e}") from None
         snap = views.latest_positions(conn, acct.id, m)

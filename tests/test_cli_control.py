@@ -63,3 +63,15 @@ def test_control_pause_resume(project):
     conn = db.connect()
     assert not control.is_paused(conn)
     conn.close()
+
+
+def test_control_show_reports_effective_mode(project):
+    _accounts(project)
+    conn = db.connect()
+    db.init_schema(conn)
+    control.set_flag(conn, "mode:real-main", "auto")  # 확인 기록 없음
+    conn.close()
+    r = CliRunner().invoke(app, ["control", "show"])
+    assert r.exit_code == 0, r.stdout
+    line = next(x for x in r.stdout.splitlines() if x.startswith("real-main"))
+    assert "off" in line and "live_confirmed" in line
