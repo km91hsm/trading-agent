@@ -136,4 +136,4 @@
 
 - [x] `uv run pytest`, `uv run ruff check src tests`.
 - [x] `docs/TODO.md` 에 이 플랜 항목 추가·체크, CLAUDE.md 의 어긋난 규칙 문장(운영일·목표 비중·오프셋) 갱신.
-- [ ] 커밋 후 PR (`main` 대상).
+- [x] 커밋 후 PR (`main` 대상): https://github.com/km91hsm/trading-agent/pull/16
