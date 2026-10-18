@@ -59,3 +59,13 @@ def synthetic_features(
         if c not in df.columns:
             df[c] = np.nan
     return df[feat.FEATURE_COLUMNS]
+
+
+def fast_cfg(**over):
+    """테스트용 MlConfig: 부스팅 반복을 줄여(기본 200 → 40) 학습 테스트를 빠르게 한다."""
+    from trader.config import MlConfig
+
+    data = {"models": {"quant": {"max_iter": 40, **over.pop("quant", {})}}}
+    for k, v in over.items():
+        data.setdefault(k, {}).update(v) if isinstance(v, dict) else data.__setitem__(k, v)
+    return MlConfig.model_validate(data)

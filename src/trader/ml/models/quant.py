@@ -38,7 +38,12 @@ def align(df: pd.DataFrame, features: list[str]) -> np.ndarray:
 
 class QuantModel:
     def __init__(
-        self, features: list[str], *, random_state: int = 0, backend: str = "sklearn"
+        self,
+        features: list[str],
+        *,
+        random_state: int = 0,
+        backend: str = "sklearn",
+        max_iter: int = 200,
     ) -> None:
         for c in features:
             if c in dataset.TARGET_COLUMNS:
@@ -56,7 +61,7 @@ class QuantModel:
             self.backend = "lightgbm"
             self._est: Any = LGBMClassifier(
                 objective="multiclass",
-                n_estimators=200,
+                n_estimators=max_iter,
                 learning_rate=0.05,
                 num_leaves=15,
                 random_state=random_state,
@@ -67,7 +72,10 @@ class QuantModel:
 
             self.backend = "sklearn"
             self._est = HistGradientBoostingClassifier(
-                max_iter=200, learning_rate=0.05, max_leaf_nodes=15, random_state=random_state
+                max_iter=max_iter,
+                learning_rate=0.05,
+                max_leaf_nodes=15,
+                random_state=random_state,
             )
 
     def fit(self, X: np.ndarray, y: np.ndarray) -> QuantModel:
@@ -123,13 +131,14 @@ def evaluate_walkforward(df: pd.DataFrame, cfg: MlConfig, *, features: list[str]
     class_counts = np.zeros(N_CLASSES, dtype=int)
     alphas: list[float] = []
     backend = cfg.models.quant.backend
+    max_iter = cfg.models.quant.max_iter
     for f in fs:
         train, test = walkforward.split(df, f)
         if train.empty or test.empty or train["label"].nunique() < 2:
             continue
         Xtr, ytr = dataset.split_xy(train, features)
         Xte, yte = dataset.split_xy(test, features)
-        model = QuantModel(features, backend=backend).fit(Xtr, ytr)
+        model = QuantModel(features, backend=backend, max_iter=max_iter).fit(Xtr, ytr)
         pred = model.predict(Xte)
         acc = float((pred == yte).mean())
         baseline = float(np.bincount(yte, minlength=N_CLASSES).max() / len(yte))

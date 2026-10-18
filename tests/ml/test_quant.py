@@ -43,10 +43,20 @@ def test_future_leak_column_is_rejected():
 
 
 def test_evaluate_walkforward_reports_folds():
+    from helpers_ml import fast_cfg
+
     df = _labeled(signal=True)
-    cfg = MlConfig()
+    cfg = fast_cfg()
     r = quant.evaluate_walkforward(df, cfg, features=dataset.feature_columns(df))
     assert len(r["folds"]) == 6 and r["n_test"] > 0
     f = r["folds"][0]
     assert {"index", "train_rows", "test_rows", "accuracy", "baseline", "alpha"} <= set(f)
     assert 0 <= r["accuracy"] <= 1 and 0 <= r["baseline"] <= 1
+
+
+def test_quant_model_max_iter_is_configurable():
+
+    m = quant.QuantModel(["roc_10"], backend="sklearn", max_iter=7)
+    assert m._est.max_iter == 7
+    cfg = MlConfig.model_validate({"models": {"quant": {"max_iter": 30}}})
+    assert cfg.models.quant.max_iter == 30 and MlConfig().models.quant.max_iter == 200

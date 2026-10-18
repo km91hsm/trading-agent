@@ -113,6 +113,10 @@ class FakeBroker:
         self._record("get_positions")
         return [p for p in self.positions if p.market == market]
 
+    def get_balance(self, market: Market) -> tuple[list[Position], Cash]:
+        self._record("get_balance")
+        return self.get_positions(market), self.get_cash(market)
+
     def get_cash(self, market: Market) -> Cash:
         self._record("get_cash")
         if market not in self.cash:

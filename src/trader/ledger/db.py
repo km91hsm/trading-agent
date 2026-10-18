@@ -232,8 +232,12 @@ def current_version(conn: sqlite3.Connection) -> int:
 def init_schema(conn: sqlite3.Connection) -> None:
     """현재 버전보다 큰 마이그레이션만 순서대로 적용한다. 멱등이며 동시 실행에 안전하다."""
     check_migrations(MIGRATIONS)
-    current_version(conn)  # schema_version 테이블 보장
+    version = current_version(conn)  # schema_version 테이블 보장
     conn.commit()
+    if version >= SCHEMA_VERSION:
+        # 최신이면 읽기만으로 끝낸다. 버전마다 BEGIN IMMEDIATE(쓰기 잠금)를 잡으면 tool 프로세스가
+        # 데몬의 긴 쓰기 트랜잭션에 막힌다.
+        return
     for target, statements in MIGRATIONS:
         conn.execute("BEGIN IMMEDIATE")  # 쓰기 잠금 안에서 버전을 다시 읽는다
         try:

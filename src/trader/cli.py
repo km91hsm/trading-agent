@@ -7,6 +7,7 @@ import os
 import sys
 from datetime import UTC, date, datetime
 from decimal import Decimal
+from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
 import typer
@@ -21,7 +22,9 @@ from trader.notify.telegram import make_notifier, make_receiver
 from trader.orchestrator.session import run_session
 from trader.platform import paths
 from trader.platform.claude_bin import ClaudeNotFound
-from trader.sources.inputs import InputDeps, collect_and_save
+
+if TYPE_CHECKING:
+    from trader.sources.inputs import InputDeps
 
 app = typer.Typer(help="LLM 멀티 에이전트 주식 자동매매", no_args_is_help=True)
 kis_app = typer.Typer(help="KIS 브로커 도구", no_args_is_help=True)
@@ -260,10 +263,20 @@ def kis_order_test(
         raise typer.Exit(code=1) from e
 
 
+def _collect_and_save():
+    from trader.sources.inputs import collect_and_save
+
+    return collect_and_save
+
+
 def _build_input_deps(secrets: config.Secrets, cfg: config.SourcesConfig) -> InputDeps:
-    """수집용 클라이언트를 조립한다. 시세 클라이언트를 못 만들면 해당 절만 건너뛴다."""
+    """수집용 클라이언트를 조립한다. 시세 클라이언트를 못 만들면 해당 절만 건너뛴다.
+
+    `trader.sources.inputs` 는 pandas/pyarrow 를 끌어와 import 에 0.6 초가 들므로 수집 명령 안에서만
+    불러온다 (`python -m trader tool …` 서브프로세스가 세션당 20여 회 뜬다)."""
     from trader.sources.dart import DartClient
     from trader.sources.edgar import EdgarClient
+    from trader.sources.inputs import InputDeps
 
     cache = paths.state_dir() / "cache"
     try:
@@ -306,7 +319,7 @@ def collect(
             not force
             and _rc(_rd(when.astimezone(_KST).date(), market, ticker), "00_inputs") is not None  # type: ignore[arg-type]
         )
-        path = collect_and_save(
+        path = _collect_and_save()(
             ticker=ticker,
             market=market,
             exchange=exchange,
@@ -431,7 +444,7 @@ def analyze(
             if skip_collect:
                 raise config.ConfigError(f"00_inputs 가 없습니다: {d} (--skip-collect 해제)")
             cfg = config.load_sources()
-            collect_and_save(
+            _collect_and_save()(
                 ticker=ticker,
                 market=market,
                 exchange=exchange,
@@ -593,7 +606,7 @@ def tool_collect(
         when = datetime.fromisoformat(asof) if asof else ctx.now()
         if when.tzinfo is None:
             when = when.replace(tzinfo=UTC)
-        path = collect_and_save(
+        path = _collect_and_save()(
             ticker=ticker,
             market=market,
             exchange=exchange,

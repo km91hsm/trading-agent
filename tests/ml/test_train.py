@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 
-from helpers_ml import synthetic_features
+from helpers_ml import fast_cfg, synthetic_features
 
 from trader.config import MlConfig
 from trader.ml import features, registry, train
@@ -14,7 +14,7 @@ def _write(signal: bool, n_days=320, n_tickers=6):
 
 def test_train_promotes_on_signal_and_not_on_noise(project):
     _write(signal=True)
-    r = train.train_quant(MlConfig(), now=lambda: NOW)
+    r = train.train_quant(fast_cfg(), now=lambda: NOW)
     assert r["status"] == "trained" and r["promoted"] is True and r["rows"] > 1000
     assert r["metrics"]["accuracy"] >= 0.40 and len(r["features"]) >= 5
     assert registry.latest("quant")[1]["version"] == r["version"]
@@ -23,7 +23,7 @@ def test_train_promotes_on_signal_and_not_on_noise(project):
 
 def test_train_not_promoted_on_noise(project):
     _write(signal=False, n_tickers=3, n_days=200)
-    cfg = MlConfig.model_validate({"models": {"quant": {"promote_min_accuracy": 0.9}}})
+    cfg = fast_cfg(quant={"promote_min_accuracy": 0.9})
     r = train.train_quant(cfg, now=lambda: NOW)
     assert r["status"] == "trained" and r["promoted"] is False and "정확도" in r["promote_reason"]
     assert registry.latest("quant") is None
@@ -31,16 +31,16 @@ def test_train_not_promoted_on_noise(project):
 
 def test_not_promoted_when_below_threshold(project):
     _write(signal=True)
-    cfg = MlConfig.model_validate({"models": {"quant": {"promote_min_accuracy": 0.99}}})
+    cfg = fast_cfg(quant={"promote_min_accuracy": 0.99})
     assert train.train_quant(cfg, now=lambda: NOW)["promoted"] is False
 
 
 def test_train_reports_insufficient_data(project):
     _write(signal=False, n_tickers=1, n_days=30)
-    r = train.train_quant(MlConfig(), now=lambda: NOW)
+    r = train.train_quant(fast_cfg(), now=lambda: NOW)
     assert r["status"] == "insufficient_data" and r["version"] is None
     assert (
-        train.train_quant(MlConfig(), now=lambda: NOW, market="US")["status"] == "insufficient_data"
+        train.train_quant(fast_cfg(), now=lambda: NOW, market="US")["status"] == "insufficient_data"
     )
 
 
@@ -105,20 +105,20 @@ def test_promotion_requires_beating_baseline_and_positive_alpha():
 def test_noise_is_not_promoted_under_default_config_across_seeds(project):
     for seed in range(4):
         features.write_rows(synthetic_features(5, 260, signal=False, seed=seed))
-        r = train.train_quant(MlConfig(), now=lambda: NOW)
+        r = train.train_quant(fast_cfg(), now=lambda: NOW)
         assert r["status"] == "trained" and r["promoted"] is False, (seed, r["promote_reason"])
 
 
 def test_train_window_years_limits_rows(project):
     features.write_rows(synthetic_features(2, 600, signal=False))
-    cfg = MlConfig.model_validate({"train": {"window_years": 1}})
+    cfg = fast_cfg(train={"window_years": 1})
     r = train.train_quant(cfg, now=lambda: datetime(2027, 5, 1, tzinfo=UTC))
     assert r["rows"] < 2 * 300  # 최근 1년치만 (600 거래일 ≈ 2.4년)
 
 
 def test_importances_come_from_holdout_fold(project):
     features.write_rows(synthetic_features(5, 320, signal=True))
-    r = train.train_quant(MlConfig(), now=lambda: NOW)
+    r = train.train_quant(fast_cfg(), now=lambda: NOW)
     meta = registry.list_models("quant")[0]
     assert meta["importances_scope"] == "last_fold_holdout" and meta["importances"]
     assert r["metrics"]["folds"][0]["up_count"] >= 0

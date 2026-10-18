@@ -529,17 +529,26 @@ def _first_buy_of_current_lot(events: list[tuple[str, str, int]]) -> date | None
     return since if qty > 0 else None
 
 
-def held_since(conn: sqlite3.Connection, account_id: str) -> dict[str, date]:
+def held_since(
+    conn: sqlite3.Connection, account_id: str, tickers: list[str] | None = None
+) -> dict[str, date]:
     """종목별 현재 보유 묶음의 첫 매수일 (최소 보유기간용). 전량 매도 뒤 재매수면 그 날부터.
 
     체결 기록이 있는 종목은 체결로, 없는 종목은 접수된 주문(매수 +, 매도 −)으로 계산한다.
-    보유가 0 인 종목은 돌려주지 않는다.
+    보유가 0 인 종목은 돌려주지 않는다. tickers 를 주면 그 종목만 읽는다 (판정마다 계좌 전체
+    이력을 읽지 않도록 build_portfolio 가 브로커 보유 종목을 넘긴다; 결과는 같다).
     """
+    if tickers is not None and not tickers:
+        return {}
+    scope, scope_args = "", []
+    if tickers:
+        scope = f" AND o.ticker IN ({','.join('?' * len(tickers))})"
+        scope_args = list(tickers)
     by_ticker: dict[str, list[tuple[str, str, int]]] = {}
     for r in conn.execute(
         "SELECT o.ticker, o.side, f.qty, f.filled_at FROM fills f JOIN orders o ON o.id=f.order_id "
-        "WHERE f.account_id=? ORDER BY f.filled_at, f.id",
-        (account_id,),
+        f"WHERE f.account_id=?{scope} ORDER BY f.filled_at, f.id",
+        (account_id, *scope_args),
     ).fetchall():
         by_ticker.setdefault(r["ticker"], []).append((r["filled_at"], r["side"], r["qty"]))
     out: dict[str, date] = {}
@@ -549,9 +558,9 @@ def held_since(conn: sqlite3.Connection, account_id: str) -> dict[str, date]:
             out[t] = since
     fallback: dict[str, list[tuple[str, str, int]]] = {}
     for r in conn.execute(
-        "SELECT ticker, side, qty, created_at FROM orders WHERE account_id=? "
-        "AND status NOT IN ('rejected','cancelled','failed') ORDER BY created_at, id",
-        (account_id,),
+        "SELECT ticker, side, qty, created_at FROM orders o WHERE account_id=? "
+        f"AND status NOT IN ('rejected','cancelled','failed'){scope} ORDER BY created_at, id",
+        (account_id, *scope_args),
     ).fetchall():
         if r["ticker"] in by_ticker:
             continue  # 체결 기록이 있는 종목은 체결이 정본
@@ -622,19 +631,24 @@ def nav_history(
 
     스냅샷 개수가 아니라 날짜 창이다: 운영이 띄엄띄엄이어도 오래된 값이 섞이지 않는다.
     """
+    if today is None:  # 스냅샷은 판정마다 종목 수만큼 쌓이므로 전 행을 읽지 않고 창만 SQL 로 자른다
+        row = conn.execute(
+            "SELECT MAX(date) AS d FROM positions_snapshot WHERE account_id=? AND market=? "
+            "AND nav IS NOT NULL",
+            (account_id, market),
+        ).fetchone()
+        if not row or not row["d"]:
+            return []
+        end = date.fromisoformat(row["d"])
+    else:
+        end = today
+    lo = (end - timedelta(days=days)).isoformat()
     rows = conn.execute(
         "SELECT date, nav FROM positions_snapshot WHERE account_id=? AND market=? "
-        "AND nav IS NOT NULL ORDER BY date, id",
-        (account_id, market),
+        "AND nav IS NOT NULL AND date >= ? GROUP BY date HAVING id = MAX(id) ORDER BY date",
+        (account_id, market, lo),
     ).fetchall()
-    by_date: dict[str, Decimal] = {}
-    for r in rows:
-        by_date[r["date"]] = _dec(r["nav"])
-    if not by_date:
-        return []
-    end = today or date.fromisoformat(max(by_date))
-    lo = (end - timedelta(days=days)).isoformat()
-    return [(d, by_date[d]) for d in sorted(by_date) if d >= lo]
+    return [(r["date"], _dec(r["nav"])) for r in rows]
 
 
 def latest_nav_before(

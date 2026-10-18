@@ -90,9 +90,11 @@ def score(df: pd.DataFrame, *, top: int = TOP_N) -> pd.DataFrame:
     return out[cols].reset_index(drop=True)
 
 
-def latest_features(market: str, *, state: Path | None = None) -> pd.DataFrame:
-    """피처 스토어의 종목별 최신 행 (최신 파일부터 부분 읽기)."""
-    return features.latest_rows(state, market)
+def latest_features(
+    market: str, *, state: Path | None = None, tickers: list[str] | None = None
+) -> pd.DataFrame:
+    """피처 스토어의 종목별 최신 행 (최신 파일부터 부분 읽기, tickers 가 전부 모이면 중단)."""
+    return features.latest_rows(state, market, tickers=tickers)
 
 
 def candidates(
@@ -119,7 +121,7 @@ def candidates(
             ids.append((wt, None))
     ids = [(t, e) for t, e in ids if t not in excl]
     exch = dict(ids)
-    df = latest_features(market, state=state)
+    df = latest_features(market, state=state, tickers=list(exch))
     df = df[df["ticker"].isin(exch)] if not df.empty else df
     scored = (rank_fn or score)(df) if not df.empty else pd.DataFrame()
     out: list[dict] = []

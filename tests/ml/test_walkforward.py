@@ -67,18 +67,18 @@ def test_shuffled_labels_give_chance_accuracy():
     """라벨을 섞으면 정확도가 기준선 근처로 떨어진다(라벨과 무관하게 정확도를 올리는 요소 없음),
     신호 데이터에서는 학습된다. 피처 누출 자체는 NON_FEATURE_COLUMNS 거부·스토어 스키마가 막는다."""
     import numpy as np
+    from helpers_ml import fast_cfg
 
-    from trader.config import MlConfig
     from trader.ml.models import quant
 
     df = synthetic_features(6, 320, signal=True)
     df = dataset.make_labels(df, horizon_days=H, up=0.02, down=-0.02)
     cols = dataset.feature_columns(df)
-    real = quant.evaluate_walkforward(df, MlConfig(), features=cols)
+    real = quant.evaluate_walkforward(df, fast_cfg(), features=cols)
     shuffled = df.copy()
     rng = np.random.default_rng(1)
     mask = shuffled["label"].notna()
     shuffled.loc[mask, "label"] = rng.permutation(shuffled.loc[mask, "label"].to_numpy())
-    fake = quant.evaluate_walkforward(shuffled, MlConfig(), features=cols)
+    fake = quant.evaluate_walkforward(shuffled, fast_cfg(), features=cols)
     assert real["accuracy"] > fake["accuracy"] + 0.05
     assert abs(fake["accuracy"] - fake["baseline"]) < 0.12

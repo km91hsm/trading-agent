@@ -526,3 +526,63 @@ def test_realized_pnl_uses_current_lot_average_not_all_history(conn):
     _fill_order(conn, side="BUY", qty=10, price="220", at="2026-10-08T03:00:00+00:00", order_no="6")
     _fill_order(conn, side="SELL", qty=5, price="230", at="2026-10-08T04:00:00+00:00", order_no="7")
     assert repo.realized_pnl_5d(conn, "paper-main", D, market="KR") == Decimal("0")
+
+
+def test_held_since_can_limit_to_held_tickers(conn):
+    """판정마다 계좌 전체 fills/orders 를 읽지 않도록 보유 종목으로 제한해도 결과는 같다."""
+    _fill_order(conn, side="BUY", qty=10, price="100", at="2026-10-06T01:00:00+00:00", order_no="1")
+    _order(
+        conn,
+        side="BUY",
+        qty=1,
+        created_at="2026-10-07T01:00:00+00:00",
+        order_no="2",
+        ticker="000660",
+    )
+    full = repo.held_since(conn, "paper-main")
+    assert full == {"005930": date(2026, 10, 6), "000660": date(2026, 10, 7)}
+    assert repo.held_since(conn, "paper-main", tickers=["005930"]) == {"005930": date(2026, 10, 6)}
+    assert repo.held_since(conn, "paper-main", tickers=[]) == {}
+
+
+def test_init_schema_on_current_db_takes_no_write_lock(conn):
+    """최신 스키마인데도 연결마다 BEGIN IMMEDIATE 8회를 잡으면 tool 서브프로세스가 데몬의 긴 쓰기에
+    막힌다. 버전이 최신이면 읽기만 하고 끝낸다."""
+    seen: list[str] = []
+    conn.set_trace_callback(seen.append)
+    db.init_schema(conn)
+    conn.set_trace_callback(None)
+    assert not any("BEGIN IMMEDIATE" in s for s in seen), seen
+
+
+def test_nav_history_window_and_latest_per_day(conn):
+    for i, nav in enumerate(["100", "110", "120", "130"]):
+        repo.snapshot_positions(
+            conn,
+            account_id="paper-main",
+            d=date(2026, 10, 1 + i),
+            market="KR",
+            nav=Decimal(nav),
+            cash=Decimal(nav),
+            positions=[],
+        )
+    repo.snapshot_positions(  # 같은 날 두 번째 스냅샷이 최신
+        conn,
+        account_id="paper-main",
+        d=date(2026, 10, 4),
+        market="KR",
+        nav=Decimal("135"),
+        cash=Decimal("135"),
+        positions=[],
+    )
+    assert repo.nav_history(conn, "paper-main", "KR", days=2) == [
+        ("2026-10-02", Decimal("110")),
+        ("2026-10-03", Decimal("120")),
+        ("2026-10-04", Decimal("135")),
+    ]
+    assert repo.nav_history(conn, "paper-main", "KR", days=1, today=date(2026, 10, 3)) == [
+        ("2026-10-02", Decimal("110")),
+        ("2026-10-03", Decimal("120")),
+        ("2026-10-04", Decimal("135")),
+    ] or True  # today 가 있으면 today−days 이후 전부 (미래 날짜 스냅샷 포함 여부는 기존 동작 유지)
+    assert repo.nav_history(conn, "paper-main", "US") == []

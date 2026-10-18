@@ -7,7 +7,14 @@ from trader.cli import app
 from trader.ml import features, registry
 
 
+def _fast_ml_yaml(project):
+    (project / "config" / "ml.yaml").write_text(
+        "models:\n  quant: {max_iter: 40}\n", encoding="utf-8"
+    )
+
+
 def test_cli_ml_train_models_promote(project):
+    _fast_ml_yaml(project)
     features.write_rows(synthetic_features(6, 320, signal=True))
     runner = CliRunner()
     r = runner.invoke(app, ["ml", "train", "--market", "KR"])
@@ -29,6 +36,7 @@ def test_cli_ml_train_insufficient(project):
 
 
 def test_cli_ml_demote(project):
+    _fast_ml_yaml(project)
     features.write_rows(synthetic_features(6, 320, signal=True))
     runner = CliRunner()
     out = json.loads(runner.invoke(app, ["ml", "train"]).stdout.strip().splitlines()[-1])

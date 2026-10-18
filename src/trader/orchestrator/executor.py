@@ -110,8 +110,12 @@ def build_portfolio(
     memory_settings: MemorySettings | None = None,
 ) -> rules.Portfolio:
     """브로커 잔고·현금 + 원장 집계로 Portfolio 를 만들고 positions_snapshot 을 남긴다."""
-    positions = {p.ticker: p for p in broker.get_positions(market)}
-    cash = broker.get_cash(market)
+    get_balance = getattr(broker, "get_balance", None)
+    if get_balance is not None:  # KR 은 잔고 API 1회로 보유·예수금을 함께 (모의 2/s)
+        pos_list, cash = get_balance(market)
+    else:
+        pos_list, cash = broker.get_positions(market), broker.get_cash(market)
+    positions = {p.ticker: p for p in pos_list}
     nav = cash.total + sum((p.eval_amount for p in positions.values()), Decimal(0))
     prev = repo.latest_nav_before(conn, account.id, today, market=market)
     today_pnl = float(nav / prev - 1) if prev else 0.0
@@ -145,7 +149,7 @@ def build_portfolio(
         today_pnl_pct=today_pnl,
         today_buy_tickers=repo.today_buy_tickers(conn, account.id, today, market=market),
         today_order_amount=repo.today_order_amount(conn, account.id, today, market=market),
-        held_since=repo.held_since(conn, account.id),
+        held_since=repo.held_since(conn, account.id, tickers=list(positions)),
         trades_this_week=repo.trades_this_week(conn, account.id, today, market=market),
     )
 

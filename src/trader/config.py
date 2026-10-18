@@ -413,6 +413,7 @@ class QuantModelCfg(BaseModel):
     promote_min_alpha: float = 0.0
     backend: Literal["auto", "sklearn", "lightgbm"] = "sklearn"  # 플랫폼 간 동일 동작을 위해 고정
     min_up_predictions: int = 5  # 폴드마다 up 예측 최소 건수 (알파 추정 노이즈 방지)
+    max_iter: int = Field(default=200, ge=1, le=5000)  # 부스팅 반복(트리 수). 테스트는 작게
 
 
 class RankerCfg(BaseModel):

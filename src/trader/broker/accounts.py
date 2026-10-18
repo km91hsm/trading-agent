@@ -80,27 +80,49 @@ class KisBroker:
         }
         return self._client.get(path("OVS_BALANCE"), "OVS_BALANCE", params)
 
+    def get_balance(self, market: Market) -> tuple[list[Position], Cash]:
+        """(보유 종목, 예수금) 을 한 번에. KR 은 inquire-balance 응답 하나(output1·output2)에서 둘을
+        뽑아 같은 API 를 두 번 부르지 않는다(모의 2/s). US 는 잔고·예수금 API 가 달라 두 번."""
+        self._check_market(market)
+        if market == "KR":
+            data = self._balance_kr()
+            return self._positions_kr(data), self._cash_kr(data)
+        return self.get_positions(market), self.get_cash(market)
+
+    def _positions_kr(self, data: dict) -> list[Position]:
+        out: list[Position] = []
+        for r in _rows(data.get("output1")):
+            qty = _int(r.get("hldg_qty"))
+            if qty <= 0:
+                continue
+            out.append(
+                Position(
+                    ticker=str(r["pdno"]),
+                    market="KR",
+                    qty=qty,
+                    avg_price=_dec(r.get("pchs_avg_pric")),
+                    current_price=_dec(r.get("prpr")),
+                    eval_amount=_dec(r.get("evlu_amt")),
+                    pnl_pct=float(_dec(r.get("evlu_pfls_rt"))) / 100,
+                )
+            )
+        return out
+
+    def _cash_kr(self, data: dict) -> Cash:
+        rows = _rows(data.get("output2"))
+        summary = rows[0] if rows else {}
+        return Cash(
+            currency="KRW",
+            available=_dec(summary.get("prvs_rcdl_excc_amt", summary.get("dnca_tot_amt"))),
+            total=_dec(summary.get("dnca_tot_amt")),
+        )
+
     def get_positions(self, market: Market) -> list[Position]:
         """보유 종목 (수량 0 제외)."""
         self._check_market(market)
         out: list[Position] = []
         if market == "KR":
-            for r in _rows(self._balance_kr().get("output1")):
-                qty = _int(r.get("hldg_qty"))
-                if qty <= 0:
-                    continue
-                out.append(
-                    Position(
-                        ticker=str(r["pdno"]),
-                        market="KR",
-                        qty=qty,
-                        avg_price=_dec(r.get("pchs_avg_pric")),
-                        current_price=_dec(r.get("prpr")),
-                        eval_amount=_dec(r.get("evlu_amt")),
-                        pnl_pct=float(_dec(r.get("evlu_pfls_rt"))) / 100,
-                    )
-                )
-            return out
+            return self._positions_kr(self._balance_kr())
         for r in _rows(self._balance_us().get("output1")):
             qty = _int(r.get("ovrs_cblc_qty"))
             if qty <= 0:
@@ -122,13 +144,7 @@ class KisBroker:
         """예수금. KR 은 잔고 응답의 예수금·D+2 정산금, US 는 주문가능외화금액."""
         self._check_market(market)
         if market == "KR":
-            rows = _rows(self._balance_kr().get("output2"))
-            summary = rows[0] if rows else {}
-            return Cash(
-                currency="KRW",
-                available=_dec(summary.get("prvs_rcdl_excc_amt", summary.get("dnca_tot_amt"))),
-                total=_dec(summary.get("dnca_tot_amt")),
-            )
+            return self._cash_kr(self._balance_kr())
         # 주문가능금액 API(inquire-psamount)는 종목코드가 필수라 현금 조회엔 못 쓴다 (실기 확인).
         params = {
             **self._acct(),

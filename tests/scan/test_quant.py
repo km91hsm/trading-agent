@@ -106,3 +106,17 @@ def test_candidates_scope_watch_to_market(project):
     us = [c["ticker"] for c in quant.candidates(uni, "US")]
     assert kr == ["005930", "000660", "000270"]
     assert us == ["AAPL", "MSFT"]
+
+
+def test_candidates_reads_only_universe_tickers(project, monkeypatch):
+    """latest_rows 에 종목을 넘기지 않으면 파일 60개를 전부 읽는다(1초). 유니버스를 넘긴다."""
+    seen = {}
+
+    def fake_latest_rows(state, market, *, tickers=None, asof=None, max_files=60):
+        seen["tickers"] = tickers
+        return pd.DataFrame(columns=quant.features.FEATURE_COLUMNS)
+
+    monkeypatch.setattr(quant.features, "latest_rows", fake_latest_rows)
+    universe = Universe(kr=["005930", "000660"], watch=["KR:035420"])
+    quant.candidates(universe, "KR")
+    assert set(seen["tickers"]) == {"005930", "000660", "035420"}

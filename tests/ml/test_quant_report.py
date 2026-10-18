@@ -81,3 +81,31 @@ def test_latest_row_respects_asof(project):
     capped = quant_report.latest_row("T00", "KR", asof=date(2025, 1, 10))
     assert newest["date"] > capped["date"] and capped["date"] <= "2025-01-10"
     assert quant_report.latest_row("T00", "KR", asof=date(2024, 1, 1)) is None
+
+
+def test_latest_row_is_memoized_per_process(project, monkeypatch):
+    """같은 tool 서브프로세스 안에서 같은 종목을 3번 조회한다(메모리·보정·05_quant). 피처 스토어에
+    없는 종목은 조회마다 60파일(0.9초)을 읽으므로 (종목·시장·asof·최신 파일) 키로 메모이즈한다."""
+    from helpers_ml import synthetic_features
+
+    from trader.ml import features
+
+    features.write_rows(synthetic_features(1, 30, signal=False))
+    calls = {"n": 0}
+    real = features.latest_rows
+
+    def counting(*a, **kw):
+        calls["n"] += 1
+        return real(*a, **kw)
+
+    monkeypatch.setattr(quant_report.features, "latest_rows", counting)
+    quant_report.latest_row.cache_clear()
+    r1 = quant_report.latest_row("T00", "KR")
+    r2 = quant_report.latest_row("T00", "KR")
+    assert r1 == r2 and r1 is not None and calls["n"] == 1
+    assert quant_report.latest_row("NOPE", "KR") is None
+    assert quant_report.latest_row("NOPE", "KR") is None and calls["n"] == 2
+    # 새 파일이 생기면 키가 바뀌어 다시 읽는다
+    features.write_rows(synthetic_features(1, 31, signal=False))
+    quant_report.latest_row("T00", "KR")
+    assert calls["n"] == 3

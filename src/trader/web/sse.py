@@ -10,7 +10,6 @@ import json
 import sqlite3
 import time
 from collections.abc import AsyncIterator
-from contextlib import closing
 
 import anyio
 from fastapi import APIRouter, Request
@@ -37,7 +36,7 @@ def snapshot(conn: sqlite3.Connection) -> dict:
         "approvals_pending": int(pending),
         "approvals": _max("approvals"),
         "runs": _max("runs"),
-        "calls": _max("agent_calls"),
+        # agent_calls 는 분석 세션 중 서브에이전트 호출마다 늘어 change 가 쏟아지므로 넣지 않는다
         "decisions": _max("decisions"),
         "triggers": _max("triggers"),
         "watchlist": ",".join(control.get_watchlist(conn)),
@@ -45,19 +44,23 @@ def snapshot(conn: sqlite3.Connection) -> dict:
     }
 
 
-def _snapshot_now(deps) -> dict:
-    with closing(deps.conn_factory()) as conn:
-        return snapshot(conn)
-
-
 async def stream(
     deps, *, interval_s: float = 2.0, max_events: int | None = None
 ) -> AsyncIterator[str]:
+    conn = deps.conn_factory()  # 스트림당 연결 1개 (틱마다 열지 않는다; check_same_thread=False)
+    try:
+        async for item in _ticks(conn, interval_s, max_events):
+            yield item
+    finally:
+        conn.close()
+
+
+async def _ticks(conn, interval_s: float, max_events: int | None) -> AsyncIterator[str]:
     last: dict | None = None
     sent = 0
     last_ping = time.monotonic()
     while True:
-        snap = await run_in_threadpool(_snapshot_now, deps)
+        snap = await run_in_threadpool(snapshot, conn)
         if snap != last:
             last = snap
             sent += 1

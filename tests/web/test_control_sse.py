@@ -1,3 +1,4 @@
+from contextlib import closing
 from datetime import date
 from decimal import Decimal
 
@@ -188,3 +189,35 @@ def test_sse_snapshot_includes_triggers_and_watchlist(conn):
     assert "triggers" in s0 and "watchlist" in s0
     control.set_watchlist(conn, ["AAPL"])
     assert sse.snapshot(conn) != s0
+
+
+def test_sse_snapshot_excludes_agent_calls_and_stream_reuses_connection(deps, monkeypatch):
+    """세션 중 서브에이전트 호출마다 agent_calls 가 늘어 change 가 쏟아지고(프런트 전 페이지 재조회)
+    틱마다 새 SQLite 연결을 열었다. 스냅샷에서 calls 를 빼고 스트림당 연결 1개를 쓴다."""
+    import anyio
+
+    from trader.web import sse
+
+    with closing(deps.conn_factory()) as conn:
+        assert "calls" not in sse.snapshot(conn)
+    opened = {"n": 0}
+    real_factory = deps.conn_factory
+
+    def counting():
+        opened["n"] += 1
+        return real_factory()
+
+    deps.conn_factory = counting
+    tick = {"n": 0}
+
+    def changing(conn):
+        tick["n"] += 1
+        return {"tick": tick["n"]}
+
+    monkeypatch.setattr(sse, "snapshot", changing)
+
+    async def run():
+        return [e async for e in sse.stream(deps, interval_s=0, max_events=3)]
+
+    events = anyio.run(run)
+    assert len(events) == 3 and opened["n"] == 1

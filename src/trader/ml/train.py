@@ -90,6 +90,7 @@ def train_quant(
             f"라벨 종류 {labeled['label'].nunique()}",
         }
     backend = cfg.models.quant.backend
+    max_iter = cfg.models.quant.max_iter
     metrics = quant.evaluate_walkforward(df, cfg, features=cols)
     # 피처 중요도는 마지막 폴드의 홀드아웃(그 폴드까지만 학습한 모델)로 계산한다
     days = sorted(df["date"].dt.date.unique())
@@ -107,12 +108,14 @@ def train_quant(
                 Xa, ya = dataset.split_xy(train_df, cols)
                 Xt, yt = dataset.split_xy(test_df, cols)
                 importances = (
-                    quant.QuantModel(cols, backend=backend).fit(Xa, ya).importances(Xt, yt)
+                    quant.QuantModel(cols, backend=backend, max_iter=max_iter)
+                    .fit(Xa, ya)
+                    .importances(Xt, yt)
                 )
             except Exception as e:  # noqa: BLE001 - 중요도 계산 실패는 메타만 비운다
                 logger.warning("피처 중요도 계산 실패: %s", e)
     X, y = dataset.split_xy(df, cols)
-    model = quant.QuantModel(cols, backend=backend).fit(X, y)
+    model = quant.QuantModel(cols, backend=backend, max_iter=max_iter).fit(X, y)
     promoted, reason = promotion_decision(metrics, cfg)
     meta = {
         "market": market,

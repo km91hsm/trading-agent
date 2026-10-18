@@ -91,3 +91,20 @@ def test_mature_waits_for_today(conn, project):
     assert outcomes.mature(conn, state=None, today=DAYS[2]) == []
     assert store.get_entry(conn, eid)["outcome_at"] is None
     assert len(outcomes.mature(conn, state=None, today=DAYS[7])) == 1
+
+
+def test_mature_reads_only_window_files(conn, project, monkeypatch):
+    """reflect 가 스토어 전체 parquet 를 읽지 않도록 미결 엔트리의 최소 결정일 이후만 읽는다."""
+    _store({"005930": [100.0 + i for i in range(30)]})
+    _decision(conn, 1, "005930", "BUY", DAYS[3])
+    seen = {}
+    real = outcomes.dataset.load_all
+
+    def spy(state=None, *, market=None, since=None, until=None):
+        seen.update(market=market, since=since, until=until)
+        return real(state, market=market, since=since, until=until)
+
+    monkeypatch.setattr(outcomes.dataset, "load_all", spy)
+    outcomes.mature(conn, state=None, today=DAYS[10])
+    assert seen["market"] == "KR" and seen["until"] == DAYS[10]
+    assert seen["since"] is not None and seen["since"] <= DAYS[3]

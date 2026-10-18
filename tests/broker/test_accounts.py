@@ -89,3 +89,30 @@ def test_market_not_in_account_rejected(paper_client):
     broker = KisBroker(make_account("paper-main", "paper", "auto", ["KR"]), paper_client)
     with pytest.raises(ValueError, match="US"):
         broker.get_positions("US")
+
+
+def test_get_balance_kr_single_request(paper_client, respx_mock):
+    """build_portfolio 가 get_positions + get_cash 를 따로 부르면 같은 inquire-balance 를 2번 친다
+    (모의 2/s). 한 응답에서 둘을 뽑는다."""
+    from conftest_broker import load
+
+    route = _route(
+        respx_mock, "/uapi/domestic-stock/v1/trading/inquire-balance", "balance_kr.json", load
+    )
+    b = KisBroker(make_account("paper-main", "paper", "auto"), paper_client)
+    positions, cash = b.get_balance("KR")
+    assert route.call_count == 1
+    assert [p.ticker for p in positions] == [p.ticker for p in b.get_positions("KR")]
+    assert cash == b.get_cash("KR")
+
+
+def test_fake_broker_get_balance():
+    from decimal import Decimal as D
+
+    from trader.broker.fake import FakeBroker
+    from trader.broker.models import Cash
+
+    a = make_account("paper-main", "paper", "auto")
+    cash = {"KR": Cash(currency="KRW", available=D(1), total=D(1))}
+    fb = FakeBroker(a, cash=cash)
+    assert fb.get_balance("KR") == ([], cash["KR"])
