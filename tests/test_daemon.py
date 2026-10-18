@@ -467,7 +467,7 @@ def test_reflect_body_continues_after_market_error(conn, monkeypatch):
 
 
 def test_monitor_body_uses_market_run_date(conn, monkeypatch):
-    """US 모니터는 KST 자정을 넘겨도 운영일(뉴욕 현지 날짜)을 넘긴다 (재평가가 30_decision 을 찾도록)."""
+    """US 모니터는 KST 자정을 넘겨도 운영일(뉴욕 현지 날짜)을 넘긴다."""
     from zoneinfo import ZoneInfo
 
     from trader.orchestrator import monitor as monitor_mod
