@@ -69,9 +69,7 @@ def _build_market(secrets: config.Secrets) -> KisMarket:
     return KisMarket(_build_client(secrets, "real"))
 
 
-def _session_brokers(
-    secrets: config.Secrets, accounts: list[config.AccountConfig], *, dry_run: bool
-) -> dict:
+def _session_brokers(accounts: list[config.AccountConfig]) -> dict:
     """세션용 브로커 맵. FAKE 모드만 가짜 브로커(현금 1천만원/1만달러)를 준다."""
     from trader.orchestrator.session import is_fake
 
@@ -472,7 +470,7 @@ def analyze(
                 settings,
                 conn,
                 accounts,
-                brokers=_session_brokers(secrets, accounts, dry_run=dry_run),
+                brokers=_session_brokers(accounts),
                 notifier=make_notifier(secrets),
             )
         finally:
@@ -1198,12 +1196,13 @@ def scan(
         conn = db.connect()
         db.init_schema(conn)
         try:
-            watch = [*universe.watch, *control.get_watchlist(conn, market=market)]
+            runtime_watch = control.get_watchlist(conn, market=market)
+            watch = [*universe.watch, *runtime_watch]
             cands = quant.candidates(
                 universe,
                 market,
                 rank_fn=ml[0] if ml else None,  # type: ignore[arg-type]
-                watch_extra=control.get_watchlist(conn, market=market),
+                watch_extra=runtime_watch,
             )
             cap_hit = dry_run or tools.sessions_today(conn, when) >= settings.llm.daily_session_cap
             brokers = {b.account.id: b for b in _build_brokers(secrets, accounts)}

@@ -58,7 +58,3 @@ def current(state: Path | None = None) -> tuple[Callable[[pd.DataFrame], pd.Data
 
     return rank_fn, label
 
-
-def rank_fn_or_none(state: Path | None = None) -> Callable[[pd.DataFrame], pd.DataFrame] | None:
-    c = current(state)
-    return c[0] if c else None

@@ -49,7 +49,6 @@ class LlmSettings(BaseModel):
 
     budget_usd: float = 5.0
     timeout_s: int = 600
-    max_parallel: int = 4
     daily_session_cap: int = 12
 
 

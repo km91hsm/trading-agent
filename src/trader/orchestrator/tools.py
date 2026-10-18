@@ -39,7 +39,6 @@ from trader.risk import costs
 logger = logging.getLogger("trader.orchestrator")
 
 MIN_REPORTS = 2
-ANALYST_ROLES = ("technical", "fundamental", "news_macro", "sentiment")
 _ANALYST_RE = re.compile(r"^10_analyst_(technical|fundamental|news_macro|sentiment)$")
 _DEBATE_RE = re.compile(r"^20_debate_r(\d+)_(bull|bear)$")
 _RESUME_RE = re.compile(r"^31_decision_r(\d+)$")
@@ -443,11 +442,11 @@ def checkpoint_write(
         return {"ok": False, "error": "30_decision 은 submit-decision 도구로만 제출할 수 있습니다"}
     if not any(p.match(stage) for p in _LLM_WRITABLE):
         return {"ok": False, "error": f"알 수 없는 단계이거나 LLM 이 쓰는 단계가 아닙니다: {stage}"}
-    model = schemas.schema_for(stage)
-    if model is None:
+    schema = schemas.schema_for(stage)
+    if schema is None:
         return {"ok": False, "error": f"알 수 없는 단계이거나 LLM 이 쓰는 단계가 아닙니다: {stage}"}
     try:
-        validated = model.model_validate(_unescape(payload))
+        validated = schema.model_validate(_unescape(payload))
     except ValidationError as e:
         msgs = "; ".join(
             f"{'.'.join(str(x) for x in err['loc'])}: {err['msg']}" for err in e.errors()

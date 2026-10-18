@@ -27,7 +27,6 @@ claude_bin: null      # null 이면 PATH 에서 claude 탐색
 llm:
   budget_usd: 5.0        # 세션당 --max-budget-usd (전문 전달 세션은 $2~3, 실기 확인)
   timeout_s: 600         # 세션 타임아웃
-  max_parallel: 4        # 동시 claude -p 세션 상한
   daily_session_cap: 12  # 하루 세션 수 상한 (초과 시 데몬이 띄우지 않고 알림)
 
 web:

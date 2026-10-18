@@ -193,7 +193,6 @@ def run_session(
     accounts: list[AccountConfig],
     *,
     runner: Callable[..., subprocess.CompletedProcess] = subprocess.run,
-    claude_bin_path: Path | None = None,
     claude_bin: Path | None = None,
     agents_dir: Path | None = None,
     state: Path | None = None,
@@ -204,7 +203,7 @@ def run_session(
     """오케스트레이터 세션 1회. 실패해도 체크포인트는 그대로 남아 재실행 시 이어간다."""
     if settings.anonymize:
         raise ConfigError("settings.anonymize=true 는 Phase 6 전까지 지원하지 않습니다")
-    bin_override = claude_bin if claude_bin is not None else claude_bin_path
+    bin_override = claude_bin
     ctx = tools.ToolContext(
         settings=settings,
         accounts=accounts,

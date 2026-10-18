@@ -381,10 +381,6 @@ def unhandled_trigger_id(
     return int(row["id"]) if row else None
 
 
-def has_unhandled_trigger(conn: sqlite3.Connection, market: str, ticker: str, kind: str) -> bool:
-    return unhandled_trigger_id(conn, market, ticker, kind) is not None
-
-
 def latest_decision(conn: sqlite3.Connection, market: str, ticker: str) -> dict | None:
     """종목의 가장 최근 결정 행 (json → data). monitor 가 손절선·익절·무효화 조건을 읽는다."""
     row = conn.execute(

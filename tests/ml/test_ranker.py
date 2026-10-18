@@ -10,7 +10,7 @@ NOW = datetime(2026, 10, 17, tzinfo=UTC)
 
 
 def test_rank_fn_falls_back_without_model(project):
-    assert ranker.rank_fn_or_none() is None
+    assert ranker.current() is None
 
 
 def test_rank_fn_reorders_by_p_up(project):
@@ -23,8 +23,9 @@ def test_rank_fn_reorders_by_p_up(project):
         "quant", quant.QuantModel(cols).fit(X, y), {"features": cols}, now=lambda: NOW
     )
     registry.promote("quant", v)
-    fn = ranker.rank_fn_or_none()
-    assert fn is not None
+    cur = ranker.current()
+    assert cur is not None
+    fn = cur[0]
     latest = df.sort_values("date").groupby("ticker", as_index=False).tail(1).reset_index(drop=True)
     out = fn(latest)
     assert set(out.columns) >= {"ticker", "market", "score", "reasons", "p_up"}

@@ -376,7 +376,7 @@ def test_session_cwd_is_temp_and_removed(project, conn, accounts, monkeypatch):
         conn,
         accounts,
         runner=runner,
-        claude_bin_path=Path("/x/claude"),
+        claude_bin=Path("/x/claude"),
         agents_dir=REPO_AGENTS,
     )
     assert res.ok and seen["existed"]
