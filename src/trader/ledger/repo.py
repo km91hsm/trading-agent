@@ -461,37 +461,52 @@ def trades_this_week(
 def realized_pnl_5d(
     conn: sqlite3.Connection, account_id: str, d: date, market: str | None = None
 ) -> Decimal:
-    """최근 5거래일(달력 7일 근사) 실현손익: 매도 체결금액 − 해당 수량의 평균 매수가.
+    """최근 5거래일(달력 7일 근사) 실현손익: 매도 체결금액 − **현재 보유 묶음의 평균 매수가**.
 
-    fills 는 Phase 6 체결 동기화 전까지 비어 있어 0 이다. 통화가 섞이지 않게 market 으로 거른다.
+    창 안에 SELL 체결이 있는 종목만 전체 체결을 시간순으로 걸어 평균가를 갱신한다(보유 0 이면 리셋).
+    전 이력 BUY 평균을 쓰면 전량 매도 뒤 재매수한 종목의 손익 부호가 뒤집혀 성향 판정이 틀린다.
+    금액은 Decimal 로만 계산한다. 통화가 섞이지 않게 market 으로 거른다.
     """
     lo, _ = _kst_day_bounds(d - timedelta(days=7))
     _, hi = _kst_day_bounds(d)
     sql = (
-        "SELECT o.ticker, f.qty, f.price FROM fills f JOIN orders o ON o.id=f.order_id "
+        "SELECT DISTINCT o.ticker FROM fills f JOIN orders o ON o.id=f.order_id "
         "WHERE f.account_id=? AND o.side='SELL' AND f.filled_at >= ? AND f.filled_at < ?"
     )
     args: list = [account_id, lo, hi]
     if market:
         sql += " AND o.market=?"
         args.append(market)
-    sells = conn.execute(sql, args).fetchall()
-    if not sells:
+    tickers = [r["ticker"] for r in conn.execute(sql, args).fetchall()]
+    if not tickers:
         return Decimal(0)
-    # 종목별 평균 매수가는 한 번만 구한다 (매도 체결마다 다시 조회하지 않음)
-    avg_buy: dict[str, Decimal] = {}
-    for b in conn.execute(
-        "SELECT o.ticker, SUM(f.qty) AS q, SUM(f.qty * CAST(f.price AS REAL)) AS amt "
-        "FROM fills f JOIN orders o ON o.id=f.order_id "
-        "WHERE f.account_id=? AND o.side='BUY' GROUP BY o.ticker",
-        (account_id,),
-    ).fetchall():
-        q = Decimal(b["q"] or 0)
-        avg_buy[b["ticker"]] = (Decimal(str(b["amt"])) / q) if q else Decimal(0)
+    marks = ",".join("?" * len(tickers))
+    rows = conn.execute(
+        "SELECT o.ticker, o.side, f.qty, f.price, f.filled_at FROM fills f "
+        "JOIN orders o ON o.id=f.order_id "
+        f"WHERE f.account_id=? AND o.ticker IN ({marks}) ORDER BY f.filled_at, f.id",
+        (account_id, *tickers),
+    ).fetchall()
     total = Decimal(0)
-    for s in sells:
-        avg = avg_buy.get(s["ticker"], Decimal(0))
-        total += Decimal(s["qty"]) * (_dec(s["price"]) - avg)
+    qty: dict[str, int] = {}
+    cost: dict[str, Decimal] = {}
+    for r in rows:
+        t = r["ticker"]
+        q = int(r["qty"])
+        px = _dec(r["price"])
+        if r["side"] == "BUY":
+            qty[t] = qty.get(t, 0) + q
+            cost[t] = cost.get(t, Decimal(0)) + px * q
+            continue
+        held = qty.get(t, 0)
+        avg = cost.get(t, Decimal(0)) / held if held > 0 else Decimal(0)
+        if lo <= r["filled_at"] < hi:
+            total += (px - avg) * q
+        remaining = held - q
+        if remaining <= 0:
+            qty[t], cost[t] = 0, Decimal(0)
+        else:
+            qty[t], cost[t] = remaining, avg * remaining
     return total
 
 

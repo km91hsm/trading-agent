@@ -206,7 +206,8 @@ def test_signal_handler_shuts_down_and_exits():
     handler = daemon.make_signal_handler(sched)
     with pytest.raises(SystemExit):
         handler(15, None)
-    assert calls == [False]
+    # 실행 중인 잡(analyze 세션)이 끝나길 기다린 뒤 종료해야 잠금 해제가 세션보다 늦다
+    assert calls == [True]
 
 
 def test_run_names_jobs_by_id(project, conn):
@@ -485,3 +486,21 @@ def test_monitor_body_uses_market_run_date(conn, monkeypatch):
     assert seen["today"] == date(2026, 10, 19)
     daemon._monitor_body(deps, "KR")
     assert seen["today"] == date(2026, 10, 20)
+
+
+def test_lock_acquire_is_atomic_against_concurrent_creation(project, monkeypatch):
+    """exists→write 사이에 다른 데몬이 파일을 만들면 둘 다 잠금을 얻는다. O_EXCL 생성이어야 한다."""
+    p = project / "state" / "daemon.lock"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    real_open = os.open
+    raced = {"done": False}
+
+    def racing_open(path, flags, *a, **kw):
+        if str(path) == str(p) and flags & os.O_EXCL and not raced["done"]:
+            raced["done"] = True
+            p.write_text(json.dumps({"pid": os.getpid(), "started_at": "x"}), encoding="utf-8")
+        return real_open(path, flags, *a, **kw)
+
+    monkeypatch.setattr(daemon.os, "open", racing_open)
+    assert daemon.Lock(p).acquire() is False  # 살아 있는 pid 가 먼저 잡았다
+    assert raced["done"]

@@ -42,23 +42,37 @@ class Lock:
     def __init__(self, path: Path) -> None:
         self.path = path
 
+    def _holder_pid(self) -> int:
+        try:
+            data = json.loads(self.path.read_text(encoding="utf-8"))
+            return int(data.get("pid", 0))
+        except (ValueError, OSError):
+            return 0
+
     def acquire(self) -> bool:
-        if self.path.exists():
-            try:
-                data = json.loads(self.path.read_text(encoding="utf-8"))
-                pid = int(data.get("pid", 0))
-            except (ValueError, OSError):
-                pid = 0
-            if pid and pid_alive(pid):  # 같은 프로세스가 두 번 잡는 것도 거부한다
-                logger.error("데몬이 이미 실행 중입니다 (pid %s): %s", pid, self.path)
-                return False
-            logger.warning("죽은 데몬의 잠금을 넘겨받습니다 (pid %s)", pid)
+        """O_EXCL 로 원자적으로 만든다 (exists→write 는 동시에 뜬 두 데몬이 둘 다 잠금을 얻는다).
+        이미 있으면 pid 생존을 확인해 죽은 데몬의 잠금만 넘겨받는다(1회 재시도)."""
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(
-            json.dumps({"pid": os.getpid(), "started_at": datetime.now(UTC).isoformat()}),
-            encoding="utf-8",
-        )
-        return True
+        payload = json.dumps({"pid": os.getpid(), "started_at": datetime.now(UTC).isoformat()})
+        for _ in range(2):
+            try:
+                fd = os.open(str(self.path), os.O_WRONLY | os.O_CREAT | os.O_EXCL)
+            except FileExistsError:
+                pid = self._holder_pid()
+                if pid and pid_alive(pid):  # 같은 프로세스가 두 번 잡는 것도 거부한다
+                    logger.error("데몬이 이미 실행 중입니다 (pid %s): %s", pid, self.path)
+                    return False
+                logger.warning("죽은 데몬의 잠금을 넘겨받습니다 (pid %s)", pid)
+                try:
+                    self.path.unlink()
+                except FileNotFoundError:
+                    pass
+                continue
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(payload)
+            return True
+        logger.error("잠금 경합이 반복돼 데몬을 띄우지 않습니다: %s", self.path)
+        return False
 
     def release(self) -> None:
         try:
@@ -732,12 +746,16 @@ def run(
 
 
 def make_signal_handler(scheduler: Any) -> Callable[[int, Any], None]:
-    """SIGINT/SIGTERM → 스케줄러 중단 후 SystemExit (finally 의 잠금 해제가 돌도록)."""
+    """SIGINT/SIGTERM → 실행 중인 잡이 끝나길 기다려 스케줄러를 멈춘 뒤 SystemExit.
+
+    wait=True 라야 analyze 세션(최대 llm.timeout_s)이 끝난 뒤 finally 의 잠금 해제가 돈다.
+    wait=False 면 잠금이 먼저 풀려 launchd KeepAlive 가 새 데몬을 띄우고 monitor·텔레그램 폴링이
+    두 프로세스에서 돌 수 있다."""
 
     def handler(signum: int, frame: Any) -> None:
-        logger.info("시그널 %s 수신, 데몬을 종료합니다", signum)
+        logger.info("시그널 %s 수신, 실행 중인 잡을 마치고 데몬을 종료합니다", signum)
         try:
-            scheduler.shutdown(wait=False)
+            scheduler.shutdown(wait=True)
         except Exception:  # noqa: BLE001 - 종료 중 오류는 무시
             pass
         raise SystemExit(0)

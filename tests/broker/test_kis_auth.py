@@ -116,3 +116,22 @@ def test_secret_not_in_error_message(project):
         make_auth(project, lambda: T0).token()
     assert e.value.msg_cd == "NETWORK"
     assert "APPKEY-SECRET-1" not in str(e.value) and "APPSECRET-X" not in str(e.value)
+
+
+@respx.mock
+def test_failed_issue_does_not_overwrite_token_written_by_other_process(project):
+    """데몬(A)과 tool 서브프로세스(B)가 같은 갱신 창에서 발급을 시도하는 경우.
+
+    A 가 NEW 를 쓴 뒤 B 가 거부되면 B 는 읽어 둔 OLD 스냅샷을 다시 써서 NEW 를 지웠다.
+    실패 기록은 다시 읽은 캐시에 덧붙여야 한다."""
+    a = make_auth(project, lambda: T0)
+    respx.post(TOKEN_URL).mock(return_value=token_response("NEW"))
+    assert a.token() == "NEW"
+    b = make_auth(project, lambda: T0)
+    stale = {"token": "OLD", "expires_at": T0 + timedelta(minutes=30)}
+    respx.post(TOKEN_URL).mock(return_value=httpx.Response(403, json={"msg": "1분 1회"}))
+    with pytest.raises(KisApiError):
+        b._issue(stale)
+    cache = json.loads(a.cache_path.read_text(encoding="utf-8"))
+    assert cache["access_token"] == "NEW" and cache.get("failed_at")
+    assert a.token() == "NEW"

@@ -404,3 +404,26 @@ def test_runner_oserror_is_recorded_not_left_running(project, conn, accounts, mo
     assert res.ok is False and "FileNotFoundError" in (res.error or "")
     assert conn.execute("SELECT status FROM agent_calls").fetchone()["status"] == "error"
     assert conn.execute("SELECT status FROM runs").fetchone()["status"] == "error"
+
+
+def test_prestage_failure_closes_run_and_removes_cwd(project, conn, accounts, monkeypatch):
+    """find_claude·agents.json 생성 등 세션 기동 전 단계가 실패하면 runs 행이 running 으로 남고
+    임시 cwd 가 누수됐다. 예외는 그대로 올리되 행을 error 로 닫고 디렉터리를 지운다."""
+    import tempfile
+
+    monkeypatch.delenv("FAKE_CLAUDE", raising=False)
+    _inputs()
+    before = set(Path(tempfile.gettempdir()).glob("trader-claude-*"))
+    with pytest.raises(Exception):  # noqa: B017 - 종류(ConfigError 등)는 호출자가 구분한다
+        run_session(
+            spec(),
+            Settings(),
+            conn,
+            accounts,
+            claude_bin=Path("/x/claude"),
+            agents_dir=project / "no-such-agents-dir",
+            now=lambda: T0,
+        )
+    row = conn.execute("SELECT status, error FROM runs").fetchone()
+    assert row["status"] == "error" and row["error"]
+    assert set(Path(tempfile.gettempdir()).glob("trader-claude-*")) == before

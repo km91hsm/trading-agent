@@ -143,7 +143,10 @@ class KisAuth:
         return token
 
     def _mark_failure(self, cache: dict, now: datetime) -> None:
-        self._write_cache(self._cache_payload(cache, failed_at=now.isoformat()))
+        # 발급 전 스냅샷(cache)이 아니라 **지금 파일에 있는 것**에 failed_at 만 덧붙인다.
+        # 다른 프로세스가 같은 갱신 창에서 막 발급한 새 토큰을 옛 스냅샷으로 덮어쓰지 않도록.
+        del cache
+        self._write_cache(self._cache_payload(self._read_cache(), failed_at=now.isoformat()))
 
     def token(self) -> str:
         cache = self._read_cache()

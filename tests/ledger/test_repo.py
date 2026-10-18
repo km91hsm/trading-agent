@@ -485,3 +485,44 @@ def test_today_windows_use_market_local_day(conn):
     assert repo.trades_this_week(conn, "paper-main", d, market="US") == {"AAPL": 1}
     # KST 창(기본)으로는 2026-10-20 00:00 KST 주문이라 D 에 안 잡힌다
     assert repo.today_buy_tickers(conn, "paper-main", d) == set()
+
+
+def _fill_order(conn, *, side, qty, price, at, order_no):
+    oid = repo.insert_order(
+        conn,
+        decision_id=None,
+        account_id="paper-main",
+        ticker="005930",
+        market="KR",
+        side=side,
+        qty=qty,
+        order_type="LIMIT",
+        price=Decimal(price),
+        status="filled",
+        order_no=order_no,
+        message="",
+        mode="auto",
+        created_at=at,
+    )
+    repo.insert_fill(
+        conn, order_id=oid, account_id="paper-main", qty=qty, price=Decimal(price), filled_at=at
+    )
+
+
+def test_realized_pnl_uses_current_lot_average_not_all_history(conn):
+    """10@100 매수 → 10@150 매도(창 밖, +500) 뒤 10@200 재매수 → 10@190 매도(창 안)는 −100 이다.
+    전 이력 BUY 평균(150)으로 계산하면 +400 이 되어 성향이 잘못 normal 로 남는다."""
+    _fill_order(conn, side="BUY", qty=10, price="100", at="2026-09-01T01:00:00+00:00", order_no="1")
+    _fill_order(
+        conn, side="SELL", qty=10, price="150", at="2026-09-02T01:00:00+00:00", order_no="2"
+    )
+    _fill_order(conn, side="BUY", qty=10, price="200", at="2026-10-06T01:00:00+00:00", order_no="3")
+    _fill_order(
+        conn, side="SELL", qty=10, price="190", at="2026-10-08T01:00:00+00:00", order_no="4"
+    )
+    assert repo.realized_pnl_5d(conn, "paper-main", D, market="KR") == Decimal("-100")
+    # 부분 매도: 10@200 + 10@220 보유(평균 210) 중 5@230 매도 → +100 (Decimal 정확)
+    _fill_order(conn, side="BUY", qty=10, price="200", at="2026-10-08T02:00:00+00:00", order_no="5")
+    _fill_order(conn, side="BUY", qty=10, price="220", at="2026-10-08T03:00:00+00:00", order_no="6")
+    _fill_order(conn, side="SELL", qty=5, price="230", at="2026-10-08T04:00:00+00:00", order_no="7")
+    assert repo.realized_pnl_5d(conn, "paper-main", D, market="KR") == Decimal("0")

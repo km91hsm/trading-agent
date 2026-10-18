@@ -280,34 +280,48 @@ def run_session(
             stages_written=written,
         )
 
-    # 호출자가 경로를 넘기면(테스트·dry-run) 그대로 쓰고, 아니면 settings/PATH 에서 찾는다
-    bin_path = bin_override if bin_override else claude_bin_mod.find_claude(settings.claude_bin)
-    # cwd 는 저장소 밖 임시 디렉터리: claude 가 상위 CLAUDE.md·settings 를 탐색하지 못하게 한다
-    cwd = Path(tempfile.mkdtemp(prefix="trader-claude-"))
-    agents_file = cwd / "agents.json"
-    names = {
-        "screen": registry.SCREEN_AGENTS,
-        "reflect": registry.REFLECT_AGENTS,
-    }.get(spec.kind, registry.AGENTS)
-    agents_file.write_text(
-        json.dumps(registry.agents_json(names, settings, agents_dir), ensure_ascii=False),
-        encoding="utf-8",
-    )
-    prompt = registry.orchestrator_prompt(settings, agents_dir)
-    session_id = str(uuid.uuid4())
-    cmd = build_command(spec, settings, bin_path, agents_file, session_id=session_id, prompt=prompt)
-    # `python -m trader tool …` 이 venv 의 python 으로 풀리도록 실행파일 디렉터리를 PATH 앞에 둔다
-    venv_bin = str(Path(sys.executable).parent)
-    env = {
-        **os.environ,
-        "CLAUDE_CODE_RETRY_WATCHDOG": "1",
-        # tool 서브프로세스가 상속한다. "0" 일 때만 실제 주문·승인 요청 (LLM 인자에 의존하지 않음)
-        "TRADER_DRY_RUN": "1" if spec.dry_run else "0",
-        "TRADER_HOME": str(paths.project_root()),
-        "PATH": venv_bin + os.pathsep + os.environ.get("PATH", ""),
-    }
-    model = settings.models.get("orchestrator", "sonnet")
-    call_id = _start_call(conn, run_id, spec, session_id=session_id, model=model)
+    cwd: Path | None = None
+    try:
+        # 호출자가 경로를 넘기면(테스트·dry-run) 그대로 쓰고, 아니면 settings/PATH 에서 찾는다
+        bin_path = (
+            bin_override if bin_override else claude_bin_mod.find_claude(settings.claude_bin)
+        )
+        # cwd 는 저장소 밖 임시 디렉터리 (claude 가 상위 CLAUDE.md·settings 를 탐색하지 못하게)
+        cwd = Path(tempfile.mkdtemp(prefix="trader-claude-"))
+        agents_file = cwd / "agents.json"
+        names = {
+            "screen": registry.SCREEN_AGENTS,
+            "reflect": registry.REFLECT_AGENTS,
+        }.get(spec.kind, registry.AGENTS)
+        agents_file.write_text(
+            json.dumps(registry.agents_json(names, settings, agents_dir), ensure_ascii=False),
+            encoding="utf-8",
+        )
+        prompt = registry.orchestrator_prompt(settings, agents_dir)
+        session_id = str(uuid.uuid4())
+        cmd = build_command(
+            spec, settings, bin_path, agents_file, session_id=session_id, prompt=prompt
+        )
+        # `python -m trader tool …` 이 venv 의 python 으로 풀리도록 실행파일 디렉터리를 PATH 앞에
+        venv_bin = str(Path(sys.executable).parent)
+        env = {
+            **os.environ,
+            "CLAUDE_CODE_RETRY_WATCHDOG": "1",
+            # tool 서브프로세스가 상속한다. "0" 일 때만 실제 주문·승인 요청 (LLM 인자 의존 없음)
+            "TRADER_DRY_RUN": "1" if spec.dry_run else "0",
+            "TRADER_HOME": str(paths.project_root()),
+            "PATH": venv_bin + os.pathsep + os.environ.get("PATH", ""),
+        }
+        model = settings.models.get("orchestrator", "sonnet")
+        call_id = _start_call(conn, run_id, spec, session_id=session_id, model=model)
+    except Exception as e:
+        # 기동 전 단계(실행파일·에이전트 md·프롬프트) 실패: runs 행이 running 으로 남고 임시 cwd 가
+        # 누수되지 않게 닫고 지운 뒤 그대로 올린다 (호출자가 ClaudeNotFound·ConfigError 를 구분한다)
+        if cwd is not None:
+            shutil.rmtree(cwd, ignore_errors=True)
+        if run_id is not None and conn is not None:
+            db.finish_run(conn, run_id, "error", f"세션 준비 실패: {type(e).__name__}: {e}")
+        raise
     asof = spec.asof or started
 
     def fail(err: str) -> SessionResult:
