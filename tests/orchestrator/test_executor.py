@@ -587,3 +587,46 @@ def test_approved_market_order_records_amount_for_cash_deduction(ectx):
     row = ectx.conn.execute("SELECT amount, price FROM orders").fetchone()
     assert row["price"] is None and row["amount"] == str(Decimal(13) * PRICE)
     assert repo.today_order_amount(ectx.conn, "paper-main", D, market="KR") == Decimal(13) * PRICE
+
+
+class RaisingNotifier(FakeNotifier):
+    def send(self, text: str, *, escape: bool = True) -> bool:
+        super().send(text)
+        raise RuntimeError("텔레그램 다운")
+
+
+def test_place_keeps_ledger_row_when_notify_fails(ectx):
+    """주문이 접수된 뒤 알림이 실패해도 orders 행·50_order 는 남고 결과가 돌아와야 한다
+    (행이 없으면 재실행 때 has_open_order_or_approval 이 비어 같은 주문을 다시 낸다)."""
+    ectx.notifier = RaisingNotifier()
+    results = _run(ectx)
+    r = next(x for x in results if x["account_id"] == "paper-main")
+    assert r["order"]["accepted"] and len(ectx.brokers["paper-main"].orders) == 1
+    n = ectx.conn.execute("SELECT COUNT(*) AS n FROM orders WHERE status='accepted'").fetchone()
+    assert n["n"] == 1
+    assert read_checkpoint(run_dir(D, "KR", "005930"), "50_order_paper-main") is not None
+
+
+def test_place_insert_failure_is_critical_and_notified(ectx, monkeypatch):
+    """접수 뒤 insert_order 가 실패하면 접수번호를 알림에 남기고 예외를 올린다."""
+
+    def boom(*a, **kw):
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(repo, "insert_order", boom)
+    with pytest.raises(RuntimeError):
+        _run(ectx)
+    assert any("FAKE-1" in s and "기록 실패" in s for s in ectx.notifier.sent)
+
+
+def test_approve_bookkeeping_failure_marks_failed_not_stuck(ectx, monkeypatch):
+    """승인 뒤 주문 기록이 예외로 끊기면 승인이 approved 로 굳지 않고 failed 가 돼야 한다."""
+    aid = _pending(ectx)
+
+    def boom(*a, **kw):
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(repo, "insert_order", boom)
+    r = executor.approve(ectx, aid)
+    assert r["ok"] is False and "FAKE-1" in r["error"]
+    assert repo.get_approval(ectx.conn, aid)["status"] == "failed"

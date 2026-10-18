@@ -432,37 +432,78 @@ def _place(
         status = "failed"
         logger.warning("주문 요청 오류 %s %s: %s", account.id, request.ticker, e)
     sizing_price = request.price if request.price is not None else quote_price
-    repo.insert_order(
-        ctx.conn,
-        decision_id=decision_id,
-        account_id=account.id,
-        ticker=request.ticker,
-        market=request.market,
-        side=request.side,
-        qty=request.qty,
-        order_type=request.order_type,
-        price=request.price,
-        status=status,
-        order_no=result.order_no,
-        message=result.message,
-        mode=mode,
-        created_at=ctx.now().isoformat(),
-        amount=Decimal(request.qty) * sizing_price if sizing_price is not None else None,
-        org_no=result.org_no,
-    )
+    # orders 행은 멱등의 근거(has_open_order_or_approval)라 접수 뒤 반드시 남아야 한다.
+    # 기록이 실패하면 접수번호를 알림·CRITICAL 로그에 남기고 올린다
+    # (조용히 묻히면 재실행 때 같은 주문을 다시 낸다).
+    try:
+        repo.insert_order(
+            ctx.conn,
+            decision_id=decision_id,
+            account_id=account.id,
+            ticker=request.ticker,
+            market=request.market,
+            side=request.side,
+            qty=request.qty,
+            order_type=request.order_type,
+            price=request.price,
+            status=status,
+            order_no=result.order_no,
+            message=result.message,
+            mode=mode,
+            created_at=ctx.now().isoformat(),
+            amount=Decimal(request.qty) * sizing_price if sizing_price is not None else None,
+            org_no=result.org_no,
+        )
+    except Exception as e:
+        logger.critical(
+            "주문 기록 실패 %s %s %s %d주 접수번호 %s: %s",
+            account.id,
+            request.side,
+            request.ticker,
+            request.qty,
+            result.order_no,
+            e,
+        )
+        _notify_quietly(
+            ctx,
+            f"[긴급: 주문 기록 실패] {account.id} {request.side} {request.ticker} {request.qty}주 "
+            f"접수번호 {result.order_no or '-'} ({status}) — 원장에 없으니 수동 확인 필요: {e}",
+        )
+        raise OrderBookkeepingError(result.order_no, e) from e
     payload = {
         "request": request.model_dump(mode="json"),
         "result": result.model_dump(mode="json"),
         "mode": mode,
         "status": status,
     }
-    write_checkpoint(d, f"{order_stage}_{account.id}", _wrap(payload))
+    # 체크포인트·알림 실패는 원장에 이미 기록됐으므로 경고만 남긴다
+    try:
+        write_checkpoint(d, f"{order_stage}_{account.id}", _wrap(payload))
+    except OSError as e:
+        logger.warning("주문 체크포인트 기록 실패 %s %s: %s", account.id, request.ticker, e)
     head = "[주문]" if result.accepted else "[주문 실패]"
-    ctx.notifier.send(
+    _notify_quietly(
+        ctx,
         f"{head} {account.id} {request.side} {request.ticker} {request.qty}주 "
-        f"({mode}) 접수번호 {result.order_no or '-'} {result.message}"
+        f"({mode}) 접수번호 {result.order_no or '-'} {result.message}",
     )
     return payload["result"] | {"status": status}
+
+
+class OrderBookkeepingError(RuntimeError):
+    """브로커가 접수한 뒤 원장 기록이 실패했다. order_no 로 수동 대조한다."""
+
+    def __init__(self, order_no: str | None, cause: Exception) -> None:
+        super().__init__(f"주문 기록 실패 (접수번호 {order_no or '-'}): {cause}")
+        self.order_no = order_no
+
+
+def _notify_quietly(ctx: ExecContext, text: str) -> None:
+    """알림 실패가 주문 흐름을 끊지 않도록 예외를 경고로 바꾼다."""
+    try:
+        ctx.notifier.send(text)
+    except Exception as e:  # noqa: BLE001 - 알림 채널 장애는 주문 결과와 무관
+        logger.warning("알림 전송 실패: %s", type(e).__name__)
 
 
 # --- 승인 처리 (approve 모드) ---------------------------------------------------
@@ -519,9 +560,17 @@ def approve(ctx: ExecContext, approval_id: int) -> dict:
         ctx.conn, approval_id, "approved", decided_at=ctx.now().isoformat()
     ):
         return {"ok": False, "error": f"승인 요청 #{approval_id} 은 이미 다른 프로세스가 처리함"}
-    result = _place(
-        ctx, d, account, broker, a["decision_id"] or None, request, "approve", quote_price
-    )
+    try:
+        result = _place(
+            ctx, d, account, broker, a["decision_id"] or None, request, "approve", quote_price
+        )
+    except OrderBookkeepingError as e:  # 접수 뒤 기록 실패: approved 로 굳지 않게 failed 로 남긴다
+        repo.decide_approval(ctx.conn, approval_id, "failed", expect="approved")
+        return {
+            "ok": False,
+            "approval_id": approval_id,
+            "error": f"주문 기록 실패(접수번호 {e.order_no or '-'}): {e.__cause__}",
+        }
     if not result["accepted"]:
         repo.decide_approval(ctx.conn, approval_id, "failed", expect="approved")
     return {"ok": bool(result["accepted"]), "approval_id": approval_id, "order": result}
