@@ -13,7 +13,7 @@ from pathlib import Path
 from xml.sax.saxutils import escape
 
 from trader.config import ConfigError
-from trader.platform import paths
+from trader.platform import bundle, paths
 
 LABEL = "com.trader.daemon"
 TASK_NAME = "trader-daemon"
@@ -25,10 +25,7 @@ _PLIST = """<?xml version="1.0" encoding="UTF-8"?>
   <key>Label</key><string>{label}</string>
   <key>ProgramArguments</key>
   <array>
-    <string>{python}</string>
-    <string>-m</string>
-    <string>trader</string>
-    <string>daemon</string>
+{program_args}
   </array>
   <key>WorkingDirectory</key><string>{root}</string>
   <key>EnvironmentVariables</key>
@@ -59,8 +56,8 @@ _TASK_XML = """<?xml version="1.0" encoding="UTF-16"?>
   </Settings>
   <Actions Context="Author">
     <Exec>
-      <Command>{python}</Command>
-      <Arguments>-m trader daemon</Arguments>
+      <Command>{command}</Command>
+      <Arguments>{arguments}</Arguments>
       <WorkingDirectory>{root}</WorkingDirectory>
     </Exec>
   </Actions>
@@ -75,25 +72,27 @@ DEFAULT_EXIT_TIMEOUT_S = 660  # settings.llm.timeout_s(600) + 여유 60초; cli 
 def render(
     platform: str,
     *,
-    python: Path,
+    program: list[str],
     project_root: Path,
     label: str = LABEL,
     extra_paths: list[Path] | None = None,
     exit_timeout_s: int = DEFAULT_EXIT_TIMEOUT_S,
 ) -> str:
-    """extra_paths(claude 디렉터리 등)를 launchd PATH 앞에 둔다 (launchd 는 셸 PATH 가 없다).
+    """program 은 데몬 argv (`[python, "-m", "trader", "daemon"]` 또는 번들 `[exe, "daemon"]`,
+    기본은 `bundle.daemon_argv()`). extra_paths(claude 디렉터리 등)를 launchd PATH 앞에 둔다
+    (launchd 는 셸 PATH 가 없다).
 
     exit_timeout_s: SIGTERM 뒤 launchd 가 SIGKILL 하기까지의 시간. 데몬은 실행 중인 analyze
     세션(llm.timeout_s)을 기다린 뒤 잠금을 풀므로 그보다 길어야 한다 (기본 20초면 세션이 고아)."""
     logs = project_root / "state" / "logs"
     if platform == "darwin":
         dirs: list[str] = []
-        for d in [*(extra_paths or []), python.parent, *map(Path, DEFAULT_PATH)]:
+        for d in [*(extra_paths or []), Path(program[0]).parent, *map(Path, DEFAULT_PATH)]:
             if str(d) not in dirs:
                 dirs.append(str(d))
         return _PLIST.format(
             label=escape(label),
-            python=escape(str(python)),
+            program_args="\n".join(f"    <string>{escape(a)}</string>" for a in program),
             root=escape(str(project_root)),
             out=escape(str(logs / "daemon.out")),
             err=escape(str(logs / "daemon.err")),
@@ -101,7 +100,11 @@ def render(
             exit_timeout=int(exit_timeout_s),
         )
     if platform == "win32":
-        return _TASK_XML.format(python=escape(str(python)), root=escape(str(project_root)))
+        return _TASK_XML.format(
+            command=escape(program[0]),
+            arguments=escape(" ".join(program[1:])),
+            root=escape(str(project_root)),
+        )
     raise ConfigError(f"지원하지 않는 플랫폼입니다: {platform} (macOS·Windows 만)")
 
 
@@ -127,19 +130,19 @@ def install(
     run: Callable[..., object] = subprocess.run,
     platform: str = sys.platform,
     home: Path | None = None,
-    python: Path | None = None,
+    program: list[str] | None = None,
     project_root: Path | None = None,
     extra_paths: list[Path] | None = None,
     exit_timeout_s: int = DEFAULT_EXIT_TIMEOUT_S,
 ) -> dict:
     """템플릿을 쓰고 OS 등록 명령을 실행한다. dry_run 이면 아무것도 쓰지 않고 명령만 돌려준다."""
     home = home or Path.home()
-    python = python or Path(sys.executable)
+    program = program or bundle.daemon_argv()
     project_root = project_root or paths.project_root()
     path = _target(platform, home)
     text = render(
         platform,
-        python=python,
+        program=program,
         project_root=project_root,
         extra_paths=extra_paths,
         exit_timeout_s=exit_timeout_s,

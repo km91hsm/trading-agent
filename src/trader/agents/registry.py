@@ -116,8 +116,8 @@ def agents_json(names: tuple[str, ...], settings: Settings, base: Path | None = 
 def orchestrator_prompt(settings: Settings, base: Path | None = None) -> str:
     """orchestrator.md 본문 + 런타임 설정(토론 라운드·스키마 요약).
 
-    md 의 `python -m trader tool` 은 실제 도구 명령(`bundle.tool_command()`, 번들은 `trader tool`)으로
-    바꾼다 — `--allowedTools` 와 같은 문자열이어야 LLM 이 도구를 부를 수 있다."""
+    md 의 `python -m trader tool` 은 실제 도구 명령(`bundle.tool_command()`)으로 바꾼다
+    (번들은 `trader tool`) — `--allowedTools` 와 같은 문자열이어야 LLM 이 도구를 부를 수 있다."""
     from trader.platform import bundle
 
     body = load_agent(ORCHESTRATOR, base).prompt.replace(
