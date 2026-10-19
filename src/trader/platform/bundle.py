@@ -2,7 +2,7 @@
 
 - 실행파일 폴더가 TRADER_HOME 이다 (config/ secrets/ state/ docs/ 하위 폴더, 폴더째 이동 가능).
 - 런타임 리소스(에이전트 md·웹 dist·설정 템플릿)는 `_internal/`(sys._MEIPASS) 아래에 있다.
-- 세션이 LLM 에게 허용하는 도구 명령은 frozen 이면 `trader tool`, 개발 환경이면 `python -m trader tool`.
+- 세션의 도구 명령: frozen 이면 `trader tool`, 개발 환경이면 `python -m trader tool`.
 """
 
 from __future__ import annotations

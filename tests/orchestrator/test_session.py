@@ -1,4 +1,5 @@
 import json
+import os
 from datetime import date
 from pathlib import Path
 from subprocess import CompletedProcess
@@ -479,3 +480,42 @@ def test_session_records_num_turns(project, conn):
     assert res.ok and res.num_turns == 7
     row = conn.execute("SELECT num_turns FROM agent_calls ORDER BY id DESC LIMIT 1").fetchone()
     assert row["num_turns"] == 7
+
+
+def test_frozen_session_allows_trader_tool_and_rewrites_prompt(project, monkeypatch):
+    """번들에서는 LLM 이 `trader tool …` 만 쓸 수 있어야 한다: --allowedTools 와 프롬프트의 명령
+    문자열이 같지 않으면 도구 전제조건 게이트를 LLM 이 통과할 수 없다."""
+    from trader.agents.registry import orchestrator_prompt
+    from trader.platform import bundle
+
+    monkeypatch.setattr(bundle, "tool_command", lambda: "trader tool")
+    prompt = orchestrator_prompt(Settings(), REPO_AGENTS)
+    assert "python -m trader tool" not in prompt and "trader tool status" in prompt
+    cmd = build_command(
+        spec(), Settings(), Path("/x/claude"), Path("/tmp/a.json"), session_id="s", prompt=prompt
+    )
+    pairs = {cmd[i]: cmd[i + 1] for i in range(2, len(cmd) - 1)}
+    assert pairs["--allowedTools"] == "Bash(trader tool *)"
+
+
+def test_session_env_path_starts_with_tool_bin_dir(project, conn, monkeypatch):
+    from trader.platform import bundle
+
+    monkeypatch.setattr(bundle, "tool_bin_dir", lambda: Path("/bundle/dir"))
+    seen = {}
+
+    def runner(cmd, **kw):
+        seen["path"] = kw["env"]["PATH"]
+        return _ok_result()
+
+    run_session(
+        spec(),
+        Settings(),
+        conn,
+        [],
+        runner=runner,
+        claude_bin=Path("/x/claude"),
+        agents_dir=REPO_AGENTS,
+        now=lambda: T0,
+    )
+    assert seen["path"].split(os.pathsep)[0] == "/bundle/dir"

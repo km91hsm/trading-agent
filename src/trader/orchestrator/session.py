@@ -19,7 +19,6 @@ import shutil
 import signal
 import sqlite3
 import subprocess
-import sys
 import tempfile
 import uuid
 from collections.abc import Callable
@@ -32,8 +31,8 @@ from trader.agents import fake, registry
 from trader.config import AccountConfig, ConfigError, Settings
 from trader.ledger import db
 from trader.orchestrator import tools
+from trader.platform import bundle, paths
 from trader.platform import claude_bin as claude_bin_mod
-from trader.platform import paths
 
 logger = logging.getLogger("trader.orchestrator")
 
@@ -93,7 +92,7 @@ def build_command(
         "--tools",
         "Bash,Agent",
         "--allowedTools",
-        "Bash(python -m trader tool *)",
+        f"Bash({bundle.tool_command()} *)",  # 프롬프트의 명령 문자열과 같아야 한다
         "--permission-mode",
         "dontAsk",
         "--setting-sources",
@@ -334,8 +333,8 @@ def run_session(
         cmd = build_command(
             spec, settings, bin_path, agents_file, session_id=session_id, prompt=prompt
         )
-        # `python -m trader tool …` 이 venv 의 python 으로 풀리도록 실행파일 디렉터리를 PATH 앞에
-        venv_bin = str(Path(sys.executable).parent)
+        # 도구 명령(`python -m trader tool`·번들 `trader tool`)이 풀리도록 그 디렉터리를 PATH 앞에
+        venv_bin = str(bundle.tool_bin_dir())
         env = {
             **os.environ,
             "CLAUDE_CODE_RETRY_WATCHDOG": "1",
