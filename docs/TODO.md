@@ -119,7 +119,7 @@
 - [x] Phase 7 이연(리뷰, Phase 8 회수): close 대비 비율 피처 `sma_5/20/60_rel·bb_pos·atr_pct·macd_hist_rel` 추가(옛 parquet 행은 NaN → `features backfill` 재실행 후 `ml train`). 중요도는 마지막 폴드 홀드아웃 기준
 - [x] Phase 7 이연: `features snapshot` 은 데몬 reflect 잡 앞에서 매일 실행(`DaemonDeps.snapshot_fn`, 실패는 통보). 재학습은 사용자 실기(`features backfill --years 3` → `ml train`)
 - [x] 3년 백필 후 `ml train` 재실행(2026-10-20): `features backfill --years 3` → 피처 파일 802일(2023-09~2026-10), 21,924+7,560행. KR 정확도 0.343 / 기준선 0.354 / 알파 +0.0023, US 0.385 / 0.399 / +0.0020 → **둘 다 미승격**(정확도 < 0.40, 기준선 이하). 승격 전까지 05_quant·ML 랭킹은 비활성 유지. 백필 중 EGW00201 1회 재시도로 종목이 빠져 재시도를 3회 백오프로 보강, WMT 는 KIS 가 NAS 코드로만 줘 유니버스 수정
-- [ ] 리뷰 Minor 이연(이연 회수 플랜): stale running 정리는 상태 표시·오류율 정확성용(세션 상한 `sessions_today` 는 created_at 기준이라 그대로), 신호 결측으로 제외된 종목이 `candidates` 에서 "피처 없음" 으로 표시, `scan --asof` 가 `latest_features` 에 전달되지 않음(과거 asof 스캔은 최신 파일)
+- [x] 리뷰 Minor 이연(이연 회수 플랜): stale running 정리는 상태 표시·오류율 정확성용(세션 상한 `sessions_today` 는 created_at 기준이라 그대로), 신호 결측으로 제외된 종목이 `candidates` 에서 "피처 없음" 으로 표시, `scan --asof` 가 `latest_features` 에 전달되지 않음(과거 asof 스캔은 최신 파일) → 2026-10-20 전부 처리(후속 플랜 Task F: stale running 매일 정리, '피처는 있으나 필터·신호 결측으로 제외' 표시, `scan --asof` 를 `quant.candidates(asof=)` 로 전달)
 - [ ] Phase 7 이연 유지(별도 Phase·사용자 결정): US 연도별 재무비율·동종업 중앙값 비율(데이터 설계 필요), 피처 행 탐색 UI, 하이퍼파라미터 탐색
 
 ## Phase 8 학습·평가·보정
