@@ -1101,7 +1101,7 @@ def _web_deps(log_name: str | None = None):
         brokers={b.account.id: b for b in _build_brokers(secrets, accounts)},
         market=market,
         token=secrets.WEB_TOKEN or None,
-        dist=paths.project_root() / "web" / "dist",
+        dist=paths.web_dist(),
         notifier=make_notifier(secrets),
     )
 

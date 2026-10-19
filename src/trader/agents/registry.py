@@ -40,7 +40,7 @@ class Agent:
 
 
 def agents_dir(base: Path | None = None) -> Path:
-    return base if base is not None else paths.project_root() / ".claude" / "agents"
+    return base if base is not None else paths.agents_dir()
 
 
 def _split_frontmatter(text: str) -> tuple[dict, str]:
