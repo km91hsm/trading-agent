@@ -1,0 +1,42 @@
+# 전역 설정. 키를 추가하면 src/trader/config.py 의 Settings 모델도 함께 바꾼다.
+markets: [KR, US]
+
+# 리스크 한도 (공격적 기본값, 스펙 §0.2 #5). 파이썬 risk/rules 가 강제한다.
+risk:
+  max_position_pct: 0.25
+  max_positions: 5
+  daily_loss_stop_pct: -0.05
+  stop_loss_pct: -0.15
+  min_cash_pct: 0.0
+
+# 역할별 모델 (스펙 §4.1). researcher_bear 는 백본 편향 상쇄용 이종 모델.
+models:
+  orchestrator: sonnet
+  screener: haiku
+  analyst: sonnet
+  researcher_bull: sonnet
+  researcher_bear: opus
+  trader: opus
+  reflector: sonnet
+
+debate_rounds: 1      # 0~2. 독립 의견(라운드 0) + 반박 라운드 수
+anonymize: false      # true 면 프롬프트 직전 종목명·티커 치환
+claude_bin: null      # null 이면 PATH 에서 claude 탐색
+
+# 오케스트레이터 세션 예산·동시성 (스펙 §4.1)
+llm:
+  budget_usd: 5.0        # 세션당 --max-budget-usd (전문 전달 세션은 $2~3, 실기 확인)
+  timeout_s: 600         # 세션 타임아웃
+  daily_session_cap: 12  # 하루 세션 수 상한 (초과 시 데몬이 띄우지 않고 알림)
+
+web:
+  bind: 127.0.0.1
+  port: 8787
+
+# 메모리 검색 (스펙 §6.5): 3층 반감기(일), 워밍업 건수, 서킷브레이커 기준
+memory:
+  half_lives: {short: 14, mid: 90, long: 365}
+  warmup: 50
+  drawdown_stop_pct: -0.10
+  vix_spike_pct: 0.30
+  top_k: 5

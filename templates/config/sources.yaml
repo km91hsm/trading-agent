@@ -1,0 +1,44 @@
+# 수집 소스 on/off. 키를 추가하면 src/trader/config.py 의 SourcesConfig 도 함께 바꾼다.
+# 기본값은 스펙 §0.3 정책: robots·약관이 허용하는 소스만 on. off 소스를 켜는 책임은 사용자에게 있다.
+
+kis:
+  daily_days: 260      # high_52w_pos(252봉)·sma_120 워밍업 때문에 260 미만이면 지표가 None 이 된다
+  investor_days: 20
+
+news:
+  enabled: true
+  google_rss: true     # 키 불필요
+  naver: true          # NAVER_CLIENT_ID/SECRET 필요, 없으면 건너뜀
+  max_items: 20
+  macro_items: 10
+
+macro:
+  enabled: true
+  fred: true           # FRED_API_KEY
+  ecos: true           # ECOS_API_KEY
+
+dart:
+  enabled: true        # DART_API_KEY
+
+edgar:
+  enabled: true
+  user_agent: "trading-agent km91hsm@gmail.com"   # SEC 요구 형식: "<이름> <이메일>"
+
+community:
+  enabled: true
+  reddit: true         # 서브레딧 RSS → OAuth (공식 API)
+  clien: true          # 게시판 목록 1페이지만 (robots 허용 범위)
+  dcinside: false      # HTML 수집 가능하나 robots 가 AI 크롤러를 차단 (회색지대)
+  fmkorea: false       # 위와 같음
+  toss: false          # SPA, 내부 API 는 Phase 6 에서 조사
+  naver_board: false   # SPA, robots 전면 차단. Phase 6 조사
+  max_posts: 50
+
+# Phase 6: YouTube 채널 ID, 텔레그램 공개채널명
+channels:
+  youtube: []
+  telegram: []
+
+# 자동 수집 불가로 확인된 사이트 (기록용). 세이브티커는 Cloudflare 봇 검증으로 403.
+disabled_sites:
+  - "https://www.saveticker.com/news"   # Cloudflare 봇 검증으로 403, 2026-10-09 확인

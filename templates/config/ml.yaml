@@ -1,0 +1,14 @@
+# ML 설정. 로더는 Phase 7 에서 추가한다.
+label:
+  horizon_days: 5
+  thresholds: {up: 0.02, down: -0.02}
+  embargo_days: 5
+train:
+  window_years: 3
+  walk_forward_folds: 6
+models:
+  quant: {enabled: true, promote_min_accuracy: 0.40, promote_min_alpha: 0.0}
+  ranker: {enabled: true}
+  calibration: {enabled: true, min_decisions: 60}
+  # rl_sizer.horizon_days 는 학습 때 label.horizon_days 로 덮인다(보상 정규화용). 승격은 `trader rl promote` 수동.
+  rl_sizer: {enabled: false, seeds: 3, mode: shadow, backend: auto}

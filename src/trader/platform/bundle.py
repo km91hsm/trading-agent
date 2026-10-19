@@ -55,3 +55,37 @@ def daemon_argv() -> list[str]:
     if is_frozen():
         return [str(executable()), "daemon"]
     return [sys.executable, "-m", "trader", "daemon"]
+
+
+def templates_dir() -> Path:
+    """첫 실행 템플릿(config yaml·.env.example): 번들은 `_internal/templates`, 개발은 `templates/`."""
+    if is_frozen():
+        return resource_dir() / "templates"
+    return Path(__file__).resolve().parents[3] / "templates"
+
+
+def first_run_init(root: Path) -> list[str]:
+    """`config/ secrets/ state/ docs/` 를 만들고 템플릿 중 **없는 파일만** 복사한다 (기존 설정 불변).
+
+    번들 `_internal/docs/*` 가 있으면 docs/ 로도 복사한다. 반환은 새로 만든 파일의 상대경로."""
+    import shutil
+
+    created: list[str] = []
+    for d in ("config", "secrets", "state", "docs"):
+        (root / d).mkdir(parents=True, exist_ok=True)
+    sources = [(templates_dir(), root)]
+    bundled_docs = resource_dir() / "docs"
+    if is_frozen() and bundled_docs.is_dir():
+        sources.append((bundled_docs, root / "docs"))
+    for src_root, dst_root in sources:
+        if not src_root.is_dir():
+            continue
+        for src in sorted(p for p in src_root.rglob("*") if p.is_file()):
+            rel = src.relative_to(src_root)
+            dst = dst_root / rel
+            if dst.exists():
+                continue
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dst)
+            created.append(dst.relative_to(root).as_posix())
+    return created

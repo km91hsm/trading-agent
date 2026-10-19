@@ -900,6 +900,18 @@ def daemon_cmd(
 ) -> None:
     """스케줄 데몬: schedule.yaml 대로 scan/analyze/monitor·텔레그램·체결 동기화 + web (§10.1)."""
     from trader import daemon as daemon_mod
+
+    deps = _daemon_deps(dry_run=dry_run)
+    r = daemon_mod.run(deps, web=not no_web)
+    if not r.get("ok"):
+        typer.echo(f"오류: {r.get('error')}", err=True)
+        raise typer.Exit(code=1)
+    typer.echo("데몬 종료")
+
+
+def _daemon_deps(*, dry_run: bool = False):
+    """데몬 의존성 조립 (daemon·app 명령 공용)."""
+    from trader import daemon as daemon_mod
     from trader.ledger import db
 
     boot = _boot(settings=True, accounts=True, secrets=True, conn=True)
@@ -921,7 +933,7 @@ def daemon_cmd(
 
         return create_app(_web_deps())
 
-    deps = daemon_mod.DaemonDeps(
+    return daemon_mod.DaemonDeps(
         settings=settings,
         schedule=schedule,
         accounts=accounts,
@@ -938,11 +950,50 @@ def daemon_cmd(
         dry_run=dry_run,
         snapshot_fn=_daemon_snapshot_fn(secrets, universe, market_client),
     )
-    r = daemon_mod.run(deps, web=not no_web)
+
+
+@app.command("init")
+@_config_errors
+def init_cmd() -> None:
+    """첫 실행 초기화: config/ secrets/ state/ docs/ 를 만들고 템플릿 중 없는 파일만 채운다."""
+    from trader.platform import bundle
+
+    created = bundle.first_run_init(paths.project_root())
+    typer.echo("생성: " + (", ".join(created) or "없음 (이미 초기화됨)"))
+    if not paths.secrets_path().exists():
+        typer.echo("다음: secrets/.env.example 을 secrets/.env 로 복사해 키를 넣고, "
+                   "config/accounts.yaml 의 계좌번호를 채우세요")
+
+
+@app.command("app")
+@_config_errors
+def app_cmd(
+    no_browser: bool = typer.Option(False, "--no-browser", help="브라우저를 열지 않음"),
+    browser_delay: float = typer.Option(1.5, "--browser-delay", help="웹 기동 뒤 브라우저까지 초"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="세션·monitor 를 dry_run 으로"),
+) -> None:
+    """번들 더블클릭 진입점: 초기화 → 데몬(스케줄 + 웹 UI) → 브라우저 (§10.2)."""
+    import threading
+    import webbrowser
+
+    from trader import daemon as daemon_mod
+    from trader.platform import bundle
+
+    created = bundle.first_run_init(paths.project_root())
+    if created:
+        typer.echo("초기화: " + ", ".join(created))
+    deps = _daemon_deps(dry_run=dry_run)
+    url = f"http://{deps.settings.web.bind}:{deps.settings.web.port}"
+    typer.echo(f"웹 UI: {url}  (종료: Ctrl+C)")
+    if not no_browser:
+        if browser_delay <= 0:
+            webbrowser.open(url)
+        else:
+            threading.Timer(browser_delay, webbrowser.open, args=(url,)).start()
+    r = daemon_mod.run(deps, web=True)
     if not r.get("ok"):
         typer.echo(f"오류: {r.get('error')}", err=True)
         raise typer.Exit(code=1)
-    typer.echo("데몬 종료")
 
 
 # --- 체결 동기화 (Phase 6) ------------------------------------------------------
