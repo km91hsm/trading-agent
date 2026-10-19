@@ -22,7 +22,7 @@ from trader.sources.base import utc_now as _utc_now
 logger = logging.getLogger("trader.sources")
 
 GOOGLE_RSS = "https://news.google.com/rss/search"
-# 네이버 검색 API 는 NAVER API HUB(네이버 클라우드)로 이관됐다 (2026-06 출시, 개발자센터 방식은
+# 네이버 검색 API 는 NAVER API HUB(네이버 클라우드)로 이관됐다 (2026-06 출시, 개발자센터는
 # 2027-06 종료). 키는 NCP 콘솔 > NAVER API HUB 앱의 Client ID/Secret 이며 개발자센터 키와 호환 안 됨.
 NAVER_NEWS = "https://naverapihub.apigw.ntruss.com/search/v1/news"
 NAVER_HEADER_ID = "X-NCP-APIGW-API-KEY-ID"
