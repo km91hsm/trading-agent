@@ -101,14 +101,11 @@ def test_egw00201_as_http500_retries_once(paper_client, respx_mock, monkeypatch)
 
 
 def test_http500_with_kis_code_keeps_code(real_client, respx_mock, monkeypatch):
-    """HTTP≠200 이라도 KIS 본문의 msg_cd 를 유지한다. EGW00201 2연속이면 그 코드로 끝난다."""
+    """HTTP≠200 이라도 KIS 본문의 msg_cd 를 유지한다. EGW00201 이 재시도 상한(3회)을 넘겨 계속되면
+    그 코드로 끝난다."""
     monkeypatch.setattr(real_client, "_sleep", lambda s: None)
-    respx_mock.get(REAL + PRICE).mock(
-        side_effect=[
-            httpx.Response(500, json={"rt_cd": "1", "msg_cd": "EGW00201", "msg1": "초과"}),
-            httpx.Response(500, json={"rt_cd": "1", "msg_cd": "EGW00201", "msg1": "초과"}),
-        ]
-    )
+    limited = httpx.Response(500, json={"rt_cd": "1", "msg_cd": "EGW00201", "msg1": "초과"})
+    respx_mock.get(REAL + PRICE).mock(side_effect=[limited, limited, limited, limited])
     with pytest.raises(KisApiError) as e:
         real_client.get(PRICE, "DOM_PRICE", {})
     assert e.value.msg_cd == "EGW00201"
@@ -182,3 +179,20 @@ def test_timeout_after_send_is_unknown_response_not_network(real_client, respx_m
     with pytest.raises(KisApiError) as e2:
         real_client.post("/uapi/domestic-stock/v1/trading/order-cash", "DOM_ORDER_BUY", {})
     assert e2.value.msg_cd == "NETWORK"
+
+
+def test_egw00201_backs_off_up_to_three_times(real_client, respx_mock, monkeypatch):
+    """백필(실전 20/s)에서 한 번 재시도로는 모자라 종목이 통째로 빠졌다(실기 10-20: 034730·AMZN).
+    0.5 → 1.0 → 2.0 초로 최대 3회 물러난 뒤에도 초과면 그때 올린다."""
+    slept = []
+    monkeypatch.setattr(real_client, "_sleep", lambda s: slept.append(s))
+    limited = httpx.Response(200, json={"rt_cd": "1", "msg_cd": "EGW00201", "msg1": "초과"})
+    route = respx_mock.get(REAL + PRICE).mock(
+        side_effect=[limited, limited, limited, ok({"stck_prpr": "1"})]
+    )
+    assert real_client.get(PRICE, "DOM_PRICE", {})["output"]["stck_prpr"] == "1"
+    assert route.call_count == 4 and slept == [0.5, 1.0, 2.0]
+    respx_mock.get(REAL + PRICE).mock(side_effect=[limited, limited, limited, limited])
+    with pytest.raises(KisApiError) as e:
+        real_client.get(PRICE, "DOM_PRICE", {})
+    assert e.value.msg_cd == "EGW00201"

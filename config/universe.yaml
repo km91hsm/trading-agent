@@ -30,6 +30,6 @@ us:
   - {symbol: TSLA, exchange: NAS}
   - {symbol: JPM, exchange: NYS}
   - {symbol: XOM, exchange: NYS}
-  - {symbol: WMT, exchange: NYS}
+  - {symbol: WMT, exchange: NAS}  # KIS 시세·일봉은 NAS 코드로만 온다 (NYS 는 빈 응답, 실기 2026-10-20)
 exclude: []   # 스크리닝 제외 종목
 watch: []     # 수동 관심종목 (항상 분석 대상)

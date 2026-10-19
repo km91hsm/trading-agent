@@ -22,6 +22,7 @@ RATE_PER_SEC: dict[Env, int] = {"real": 20, "paper": 2}
 RETRY_CODE = "EGW00201"  # 초당 거래건수 초과 (HTTP 200·500 양쪽으로 온다, 실기 확인)
 TOKEN_ERROR_CODES = frozenset({"EGW00123", "EGW00121"})  # 만료·유효하지 않은 토큰
 RETRY_WAIT_S = 0.5
+RETRY_MAX = 3  # 0.5 → 1.0 → 2.0 초
 # 요청이 서버에 닿은 뒤 응답을 못 받은 실패 → UNKNOWN_RESPONSE_CODE (ConnectError 는 NETWORK)
 _SENT_BUT_NO_RESPONSE = (
     httpx.ReadTimeout,
@@ -118,19 +119,27 @@ class KisClient:
         raise KisApiError("INVALID_JSON", "응답이 JSON 객체가 아닙니다", tr)
 
     def _request(self, method: str, path: str, tr_name: str, **kw: Any) -> dict:
+        """초당 한도(EGW00201)는 0.5·1.0·2.0초로 최대 RETRY_MAX 회 물러나 재시도하고(백필처럼 연속
+        호출에선 한 번으로 모자랐다), 토큰 오류는 캐시를 지우고 1회 재발급 뒤 재시도한다."""
         tr = tr_id(tr_name, self.env)
-        try:
-            return self._once(method, path, tr, **kw)
-        except KisApiError as e:
-            if e.msg_cd == RETRY_CODE:
-                logger.warning("KIS 초당 한도 초과(%s), %.1f초 후 재시도", tr, RETRY_WAIT_S)
-                self._sleep(RETRY_WAIT_S)
-            elif e.msg_cd in TOKEN_ERROR_CODES:
-                logger.warning("KIS 토큰 오류 %s(%s), 캐시 무효화 후 재발급", e.msg_cd, tr)
-                self._auth.invalidate()
-            else:
+        wait = RETRY_WAIT_S
+        token_retried = False
+        for attempt in range(RETRY_MAX + 1):
+            try:
+                return self._once(method, path, tr, **kw)
+            except KisApiError as e:
+                if e.msg_cd == RETRY_CODE and attempt < RETRY_MAX:
+                    logger.warning("KIS 초당 한도 초과(%s), %.1f초 후 재시도", tr, wait)
+                    self._sleep(wait)
+                    wait *= 2
+                    continue
+                if e.msg_cd in TOKEN_ERROR_CODES and not token_retried:
+                    logger.warning("KIS 토큰 오류 %s(%s), 캐시 무효화 후 재발급", e.msg_cd, tr)
+                    self._auth.invalidate()
+                    token_retried = True
+                    continue
                 raise
-        return self._once(method, path, tr, **kw)
+        raise AssertionError("unreachable")  # pragma: no cover
 
     def get(self, path: str, tr_name: str, params: dict[str, Any]) -> dict:
         return self._request("GET", path, tr_name, params=params)
