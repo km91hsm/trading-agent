@@ -15,6 +15,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 
 from trader.broker.errors import KisApiError
 from trader.config import MARKET_TZ
+from trader.ledger import repo
 from trader.orchestrator import tools
 from trader.web.routers._common import KST, deps_of, require_market
 
@@ -123,7 +124,7 @@ def charts(
             )
         sql = (
             "SELECT account_id, side, qty, price, status, created_at FROM orders "
-            "WHERE market=? AND ticker=? AND status NOT IN ('rejected','cancelled','failed')"
+            f"WHERE market=? AND ticker=? AND status NOT IN ({repo.dead_status_sql()})"
         )
         args: list = [m, ticker]
         if account_id:
@@ -210,7 +211,7 @@ def _intraday_markers(deps, m, ticker, account_id, session_date, tz) -> list[dic
     with closing(deps.conn_factory()) as conn:
         sql = (
             "SELECT account_id, side, qty, price, created_at FROM orders "
-            "WHERE market=? AND ticker=? AND status NOT IN ('rejected','cancelled','failed')"
+            f"WHERE market=? AND ticker=? AND status NOT IN ({repo.dead_status_sql()})"
         )
         args: list = [m, ticker]
         if account_id:

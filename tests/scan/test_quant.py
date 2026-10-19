@@ -120,3 +120,32 @@ def test_candidates_reads_only_universe_tickers(project, monkeypatch):
     universe = Universe(kr=["005930", "000660"], watch=["KR:035420"])
     quant.candidates(universe, "KR")
     assert set(seen["tickers"]) == {"005930", "000660", "035420"}
+
+
+def test_candidates_pass_asof_to_feature_store(project, monkeypatch):
+    """`scan --asof` 의 운영일이 피처 조회에 전달돼야 과거 시점 스캔이 최신 파일을 보지 않는다."""
+    from datetime import date
+
+    seen = {}
+
+    def fake_latest_rows(state, market, *, tickers=None, asof=None, max_files=60):
+        seen["asof"] = asof
+        return pd.DataFrame(columns=quant.features.FEATURE_COLUMNS)
+
+    monkeypatch.setattr(quant.features, "latest_rows", fake_latest_rows)
+    quant.candidates(Universe(kr=["005930"]), "KR", asof=date(2026, 10, 1))
+    assert seen["asof"] == date(2026, 10, 1)
+
+
+def test_candidates_labels_signal_missing_distinct_from_no_features(project, monkeypatch):
+    """피처 행은 있지만 신호 결측·필터로 빠진 종목은 '피처 없음' 이 아니라 그렇게 표시한다."""
+    df = _df()
+    df.loc[df["ticker"] == "T05", "roc_10"] = float("nan")
+
+    def fake_latest_rows(state, market, *, tickers=None, asof=None, max_files=60):
+        return df
+
+    monkeypatch.setattr(quant.features, "latest_rows", fake_latest_rows)
+    out = {c["ticker"]: c for c in quant.candidates(Universe(kr=[*df["ticker"], "999999"]), "KR")}
+    assert out["T05"]["score"] is None and "피처 없음" not in out["T05"]["reasons"]
+    assert out["999999"]["reasons"] == ["피처 없음"]

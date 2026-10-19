@@ -1203,6 +1203,7 @@ def scan(
                 market,
                 rank_fn=ml[0] if ml else None,  # type: ignore[arg-type]
                 watch_extra=runtime_watch,
+                asof=day,  # 과거 시점 스캔이 그 뒤 피처 파일을 보지 않도록
             )
             cap_hit = dry_run or tools.sessions_today(conn, when) >= settings.llm.daily_session_cap
             brokers = {b.account.id: b for b in _build_brokers(secrets, accounts)}

@@ -674,3 +674,9 @@ def test_realized_pnl_ignores_sell_without_known_cost_and_filters_market(conn):
         filled_at="2026-10-01T15:00:00+00:00",
     )
     assert repo.realized_pnl_5d(conn, "paper-main", D, market="KR") == Decimal(0)
+
+
+def test_dead_statuses_shared_and_include_expired():
+    """살아 있는 주문 판정은 한 곳(repo.DEAD_STATUSES)에서 정의한다. expired 도 죽은 주문."""
+    assert set(repo.DEAD_STATUSES) == {"rejected", "cancelled", "failed", "expired"}
+    assert "'expired'" in repo.dead_status_sql()

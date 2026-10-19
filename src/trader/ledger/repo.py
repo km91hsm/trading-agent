@@ -18,6 +18,16 @@ from trader.ledger.db import now_iso
 
 _ANALYST_RE = re.compile(r"^10_analyst_([a-z_]+)$")
 _DECISION_RE = re.compile(r"^(30_decision|31_decision_r\d+)$")
+
+# 살아 있지 않은 주문 상태 (중복 방지·당일 매수·주문금액·보유 폴백·차트 마커가 모두 이 목록을 쓴다).
+# expired 는 체결 동기화가 마감 뒤 체결 없는 accepted·unknown 주문에 붙인다 (`fills.sync_fills`).
+DEAD_STATUSES = ("rejected", "cancelled", "failed", "expired")
+
+
+def dead_status_sql() -> str:
+    """`status NOT IN (…)` 에 넣을 목록 문자열."""
+    return ",".join(f"'{s}'" for s in DEAD_STATUSES)
+
 _DEBATE_RE = re.compile(r"^20_debate_r(\d+)_(bull|bear)$")
 
 
@@ -327,7 +337,7 @@ def has_open_order_or_approval(
     """
     sql = (
         "SELECT 1 FROM orders WHERE decision_id=? AND account_id=? "
-        "AND status NOT IN ('rejected','cancelled','failed')"
+        f"AND status NOT IN ({dead_status_sql()})"
     )
     args: list = [decision_id, account_id]
     if side:
@@ -363,7 +373,7 @@ def has_open_order_today(
     손절을 막으면 안 된다; 체결된 주문은 더 이상 "살아 있는" 주문이 아니다).
     """
     lo, hi = day_bounds(d, market)
-    excluded = "'rejected','cancelled','failed'" + (",'filled'" if exclude_filled else "")
+    excluded = dead_status_sql() + (",'filled'" if exclude_filled else "")
     row = conn.execute(
         "SELECT 1 FROM orders WHERE account_id=? AND ticker=? AND side=? "
         f"AND status NOT IN ({excluded}) "
@@ -405,7 +415,7 @@ def today_buy_tickers(
     lo, hi = day_bounds(d, market)
     sql = (
         "SELECT DISTINCT ticker FROM orders WHERE account_id=? AND side IN ('BUY') "
-        "AND status NOT IN ('rejected','cancelled','failed') "
+        f"AND status NOT IN ({dead_status_sql()}) "
         "AND created_at >= ? AND created_at < ?"
     )
     args: list = [account_id, lo, hi]
@@ -422,7 +432,7 @@ def today_order_amount(
     lo, hi = day_bounds(d, market)
     sql = (
         "SELECT qty, price, amount FROM orders WHERE account_id=? AND side='BUY' "
-        "AND status NOT IN ('rejected','cancelled','failed') AND created_at >= ? AND created_at < ?"
+        f"AND status NOT IN ({dead_status_sql()}) AND created_at >= ? AND created_at < ?"
     )
     args: list = [account_id, lo, hi]
     if market:
@@ -446,7 +456,7 @@ def trades_this_week(
     _, hi = day_bounds(d, market)
     sql = (
         "SELECT ticker, COUNT(*) AS n FROM orders WHERE account_id=? "
-        "AND status NOT IN ('rejected','cancelled','failed') "
+        f"AND status NOT IN ({dead_status_sql()}) "
         "AND created_at >= ? AND created_at < ?"
     )
     args: list = [account_id, lo, hi]
@@ -572,7 +582,7 @@ def held_since(
     fallback: dict[str, list[tuple[str, str, int]]] = {}
     for r in conn.execute(
         "SELECT ticker, market, side, qty, created_at FROM orders o WHERE account_id=? "
-        f"AND status NOT IN ('rejected','cancelled','failed'){scope} ORDER BY created_at, id",
+        f"AND status NOT IN ({dead_status_sql()}){scope} ORDER BY created_at, id",
         (account_id, *scope_args),
     ).fetchall():
         if r["ticker"] in by_ticker:
@@ -749,7 +759,7 @@ def decide_approval(
 def close_stale_running(conn: sqlite3.Connection, *, older_than_iso: str) -> int:
     """older_than 이전에 시작해 아직 running 인 agent_calls 를 error 로 닫는다(재기동 정리)."""
     cur = conn.execute(
-        "UPDATE agent_calls SET status='error', error='stale: 데몬 재기동으로 정리' "
+        "UPDATE agent_calls SET status='error', error='stale: 1시간 넘게 running' "
         "WHERE status='running' AND created_at < ?",
         (older_than_iso,),
     )

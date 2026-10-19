@@ -55,9 +55,15 @@
 ### Task E: 마무리
 - [x] `uv run pytest`(781 passed) · `ruff` 0건, TODO.md, CLAUDE.md 갱신, 푸시.
 
+### Task F: 사용자 결정 반영 (2026-10-20)
+- [x] F1 `fills.sync_fills(now=)`: 시장별 조회 성공 + 그날 정규장 종료(`MARKET_CLOSE` 현지)면 `expire_unfilled` 로 체결 없는 `accepted`·`unknown` → `expired`. 장중·조회 실패는 불변. `repo.DEAD_STATUSES`/`dead_status_sql()` 로 죽은 상태 목록을 한 곳에.
+- [x] F2 `build_jobs`: `<시장>_scan_analyze` 단일 cron(scan 시각). `_scan_analyze_body` 는 stale running 정리 → scan(실패 시 통보) → analyze. `market_job` 이 본체 결과를 돌려줘 `error` 키가 runs 에 닿는다.
+- [x] F3 `quant.candidates(asof=)` ← CLI scan 운영일·데몬 `today`. 신호 결측·필터 제외 종목은 "피처는 있으나 필터·신호 결측으로 제외".
+- [x] 커밋 `fix(fills, daemon, scan): 미체결 만료·scan→analyze 단일 잡·stale 정리·asof 전달`
+
 ## 범위 조정
 | 제외 항목 | 이유 | 재개 |
 |---|---|---|
-| `unknown` 주문의 당일 마감 뒤 자동 만료(`expired`) | 체결 동기화가 없는 날의 접수 주문을 잘못 만료시킬 수 있어 상태 머신 설계가 필요 | 사용자 결정 |
-| scan 부재 시 analyze 가 scan 을 인라인 실행 | screener 세션 이중 실행 위험(두 잡이 동시에 돎) | 사용자 결정 |
 | 로그 파일 프로세스별 분리 | 공유 핸들러로 유실은 막음. 파일 분리는 운영 편의 문제 | 사용자 결정 |
+| 고아 `claude` 프로세스 killpg | 세션을 프로세스 그룹으로 띄우는 구조 변경 필요 | 별도 작업 |
+| 퀀트 벤치마크 `latest_rows` 유니버스 전달 | 웹 요청 성능 문제, 운영 중 체감되면 | 사용자 결정 |

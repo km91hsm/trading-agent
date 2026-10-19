@@ -219,7 +219,7 @@ def should_skip(
 @dataclass
 class Job:
     id: str
-    kind: str  # scan | analyze | monitor | reflect | ml_train | telegram_poll | fills_sync
+    kind: str  # scan_analyze | monitor | reflect | ml_train | telegram_poll | fills_sync
     market: str | None = None
     cron: dict | None = None
     interval_s: int | None = None
@@ -230,20 +230,14 @@ def build_jobs(schedule: ScheduleConfig, settings: Settings, *, markets: list[st
     for m in markets:
         ms = schedule.kr if m == "KR" else schedule.us
         lo = m.lower()
+        # scan → analyze 는 한 잡으로 이어서 돈다: cron 두 개면 screener 세션이 늦을 때 analyze 가
+        # _scan.json 없이 떠서 하루 분석이 통째로 빠지고, analyze 가 scan 을 인라인으로 돌리면 아직
+        # 도는 scan 과 세션이 겹친다. 시각은 schedule 의 scan (analyze 시각은 더 쓰지 않는다).
         h, mi = ms.scan_hm()
         jobs.append(
             Job(
-                f"{lo}_scan",
-                "scan",
-                m,
-                cron={"hour": h, "minute": mi, "day_of_week": "mon-fri", "timezone": ms.tz},
-            )
-        )
-        h, mi = ms.analyze_hm()
-        jobs.append(
-            Job(
-                f"{lo}_analyze",
-                "analyze",
+                f"{lo}_scan_analyze",
+                "scan_analyze",
                 m,
                 cron={"hour": h, "minute": mi, "day_of_week": "mon-fri", "timezone": ms.tz},
             )
@@ -356,8 +350,7 @@ def market_job(deps: DaemonDeps, market: str, kind: str, fn: Callable[[], Any]) 
     if why:
         logger.info("%s %s 건너뜀: %s", market, kind, why)
         return {"skipped": why}
-    fn()
-    return None
+    return fn()
 
 
 def monitor_job(deps: DaemonDeps, market: str, fn: Callable[[], Any]) -> dict | None:
@@ -390,6 +383,7 @@ def _scan_body(deps: DaemonDeps, market: str) -> dict:
             state=deps.state,
             rank_fn=ml[0] if ml else None,
             watch_extra=runtime_watch,
+            asof=today,
         )
         cap_hit = tools.sessions_today(conn, deps.now()) >= deps.settings.llm.daily_session_cap
         r = screener.run_screen(
@@ -684,14 +678,25 @@ def _rl_train(deps: DaemonDeps) -> dict | None:
     return r
 
 
+def _scan_analyze_body(deps: DaemonDeps, market: str) -> dict:
+    """scan 뒤 바로 analyze. scan 이 예외로 죽어도 통보하고 analyze 를 시도한다(_analyze_body 가
+    `_scan.json` 없음을 알림·error 로 남긴다). 세션을 세기 전에 stale running 을 정리한다."""
+    _close_stale_sessions(deps)
+    try:
+        _scan_body(deps, market)
+    except Exception as e:  # noqa: BLE001 - scan 실패가 analyze 시도를 막지 않는다
+        logger.exception("scan 실패 %s", market)
+        deps.notifier.send(f"[scan 실패] {market}: {type(e).__name__}: {e}")
+    return _analyze_body(deps, market)
+
+
 def job_body(deps: DaemonDeps, job: Job) -> Callable[[], Any]:
-    if job.kind == "scan":
+    if job.kind == "scan_analyze":
         return lambda: market_job(
-            deps, job.market or "KR", "scan", lambda: _scan_body(deps, job.market or "KR")
-        )
-    if job.kind == "analyze":
-        return lambda: market_job(
-            deps, job.market or "KR", "analyze", lambda: _analyze_body(deps, job.market or "KR")
+            deps,
+            job.market or "KR",
+            "scan_analyze",
+            lambda: _scan_analyze_body(deps, job.market or "KR"),
         )
     if job.kind == "monitor":
         return lambda: monitor_job(
@@ -724,7 +729,8 @@ STALE_SESSION_AGE = timedelta(hours=1)
 
 
 def _close_stale_sessions(deps: DaemonDeps) -> int:
-    """이전 데몬이 SIGKILL 로 죽으면 agent_calls 에 running 행이 남아 세션 상한에 집계된다."""
+    """1시간 넘게 running 인 agent_calls 를 error 로 닫는다. 데몬이 SIGKILL 로 죽거나 세션이
+    중간에 죽으면 running 이 남아 상태 표시·오류율을 흐린다 → 기동 때와 매일 scan·analyze 앞에서."""
     from trader.ledger import repo
 
     conn = deps.conn_factory()

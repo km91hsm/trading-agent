@@ -138,7 +138,7 @@ def _orders_between(
     _, hi = repo.day_bounds(end, None)
     return conn.execute(
         "SELECT qty, price, amount, side FROM orders WHERE account_id=? AND market=? "
-        "AND status NOT IN ('rejected','cancelled','failed') "
+        f"AND status NOT IN ({repo.dead_status_sql()}) "
         "AND created_at >= ? AND created_at < ?",
         (account_id, market, lo, hi),
     ).fetchall()

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from datetime import date
 from pathlib import Path
 
 import numpy as np
@@ -87,10 +88,14 @@ def score(df: pd.DataFrame, *, top: int = TOP_N) -> pd.DataFrame:
 
 
 def latest_features(
-    market: str, *, state: Path | None = None, tickers: list[str] | None = None
+    market: str,
+    *,
+    state: Path | None = None,
+    tickers: list[str] | None = None,
+    asof: date | None = None,
 ) -> pd.DataFrame:
-    """피처 스토어의 종목별 최신 행 (최신 파일부터 부분 읽기, tickers 가 전부 모이면 중단)."""
-    return features.latest_rows(state, market, tickers=tickers)
+    """피처 스토어의 종목별 최신 행 (asof 이하; 최신 파일부터 부분 읽기, tickers 가 모이면 중단)."""
+    return features.latest_rows(state, market, tickers=tickers, asof=asof)
 
 
 def candidates(
@@ -101,8 +106,11 @@ def candidates(
     rank_fn: Callable[[pd.DataFrame], pd.DataFrame] | None = None,
     exclude: set[str] | None = None,
     watch_extra: list[str] | None = None,
+    asof: date | None = None,
 ) -> list[dict]:
-    """유니버스(+watch+런타임 관심종목) 를 점수순으로. 피처 없는 종목은 점수 None 으로 끝에."""
+    """유니버스(+watch+런타임 관심종목) 를 점수순으로. 피처 없는 종목은 점수 None 으로 끝에.
+
+    asof 는 운영일: 과거 시점 스캔(`scan --asof`)이 그 뒤 피처 파일을 보지 않도록 조회에 넘긴다."""
     excl = set(universe.exclude) | (exclude or set())
     if market == "KR":
         ids = [(t, None) for t in universe.kr]
@@ -117,7 +125,7 @@ def candidates(
             ids.append((wt, None))
     ids = [(t, e) for t, e in ids if t not in excl]
     exch = dict(ids)
-    df = latest_features(market, state=state, tickers=list(exch))
+    df = latest_features(market, state=state, tickers=list(exch), asof=asof)
     df = df[df["ticker"].isin(exch)] if not df.empty else df
     scored = (rank_fn or score)(df) if not df.empty else pd.DataFrame()
     out: list[dict] = []
@@ -132,7 +140,9 @@ def candidates(
             }
         )
         seen.add(str(r["ticker"]))
+    present = set(df["ticker"].astype(str)) if not df.empty else set()
     for t, e in ids:
         if t not in seen:
-            out.append({"ticker": t, "exchange": e, "score": None, "reasons": ["피처 없음"]})
+            why = "피처는 있으나 필터·신호 결측으로 제외" if t in present else "피처 없음"
+            out.append({"ticker": t, "exchange": e, "score": None, "reasons": [why]})
     return out

@@ -1,6 +1,6 @@
 import json
 import os
-from datetime import UTC, date, datetime, time
+from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
@@ -87,28 +87,27 @@ def test_should_skip_weekend_holiday_paused(conn):
 def test_build_jobs_registers_expected_ids_and_times():
     jobs = {j.id: j for j in daemon.build_jobs(SCHED, Settings(), markets=["KR", "US"])}
     assert {
-        "kr_scan",
-        "kr_analyze",
+        "kr_scan_analyze",
         "kr_monitor",
-        "us_scan",
-        "us_analyze",
+        "us_scan_analyze",
         "us_monitor",
         "reflect",
         "ml_train",
         "telegram_poll",
         "fills_sync",
     } <= set(jobs)
-    assert jobs["kr_scan"].cron == {
+    assert jobs["kr_scan_analyze"].cron == {
         "hour": 7,
         "minute": 30,
         "day_of_week": "mon-fri",
         "timezone": "Asia/Seoul",
     }
-    assert jobs["us_analyze"].cron["hour"] == 21 and jobs["us_analyze"].cron["minute"] == 40
+    us = jobs["us_scan_analyze"].cron
+    assert us["hour"] == 21 and us["minute"] == 30
     assert jobs["kr_monitor"].interval_s == 60 and jobs["telegram_poll"].interval_s == 30
     assert jobs["ml_train"].cron == {"hour": 10, "minute": 0, "day_of_week": "sat"}
     jobs_kr = {j.id for j in daemon.build_jobs(SCHED, Settings(markets=["KR"]), markets=["KR"])}
-    assert "us_scan" not in jobs_kr
+    assert "us_scan_analyze" not in jobs_kr
 
 
 def test_run_job_logs_exception_without_raising(conn):
@@ -183,9 +182,9 @@ def test_daemon_run_registers_jobs_with_fake_scheduler(project, conn):
     sched = FakeScheduler()
     deps = _deps(conn, FakeMarket(), now=lambda: datetime.now(UTC))
     r = daemon.run(deps, web=False, scheduler_factory=lambda: sched)
-    assert sched.started and r["jobs"] >= 10
+    assert sched.started and r["jobs"] >= 8
     ids = {j[0] for j in sched.jobs}
-    assert {"kr_scan", "us_monitor", "telegram_poll"} <= ids
+    assert {"kr_scan_analyze", "us_monitor", "telegram_poll"} <= ids
     assert not (project / "state" / "daemon.lock").exists()  # start 반환 후 해제
 
 
@@ -300,7 +299,7 @@ def test_monitor_window_in_market_timezone(conn):
     deps.now = lambda: datetime(2026, 10, 8, 21, 0, tzinfo=UTC)  # 17:00 EDT
     assert daemon.monitor_job(deps, "US", lambda: ran.append(1)) == {"skipped": "창 밖"}
     jobs = {j.id: j for j in daemon.build_jobs(sched, Settings(), markets=["US"])}
-    assert jobs["us_scan"].cron["timezone"] == "America/New_York"
+    assert jobs["us_scan_analyze"].cron["timezone"] == "America/New_York"
 
 
 def test_monitor_body_without_market_client_skips(conn):
@@ -588,3 +587,76 @@ def test_analyze_body_without_scan_notifies_and_returns_error(project, conn):
     r = daemon._analyze_body(deps, "KR")
     assert r["targets"] == 0 and "_scan" in r["error"]
     assert any("_scan" in m for m in deps.notifier.msgs)
+
+
+def test_build_jobs_merges_scan_and_analyze_into_one_job():
+    """scan 과 analyze 는 한 잡으로 이어서 돈다 (10분 간격 cron 두 개면 scan 이 늦을 때 analyze 가
+    _scan.json 없이 떠서 하루 분석이 빠진다; 인라인 scan 은 screener 세션 이중 실행 위험)."""
+    jobs = {j.id: j for j in daemon.build_jobs(SCHED, Settings(), markets=["KR", "US"])}
+    assert "kr_scan_analyze" in jobs and "us_scan_analyze" in jobs
+    assert "kr_analyze" not in jobs and "kr_scan" not in jobs
+    assert jobs["kr_scan_analyze"].kind == "scan_analyze"
+    kr = jobs["kr_scan_analyze"].cron
+    assert kr["hour"] == 7 and kr["minute"] == 30
+
+
+def test_scan_analyze_body_runs_scan_then_analyze(conn, monkeypatch):
+    order = []
+    def scan(deps, m):
+        order.append(("scan", m))
+        return {"ok": 1}
+
+    def analyze(deps, m):
+        order.append(("analyze", m))
+        return {"targets": 2}
+
+    monkeypatch.setattr(daemon, "_scan_body", scan)
+    monkeypatch.setattr(daemon, "_analyze_body", analyze)
+    deps = _deps(conn, FakeMarket(), now=lambda: datetime(2026, 10, 8, 0, 0, tzinfo=UTC))
+    r = daemon._scan_analyze_body(deps, "KR")
+    assert order == [("scan", "KR"), ("analyze", "KR")] and r["targets"] == 2
+
+
+def test_scan_analyze_body_scan_failure_still_runs_analyze_and_notifies(conn, monkeypatch):
+    """scan 이 예외로 죽어도 analyze 는 돈다 (보유 재분석은 _scan 없이는 못 하지만 _analyze_body 가
+    알림·error 를 남긴다). scan 실패도 통보한다."""
+
+    class Sent:
+        def __init__(self):
+            self.msgs = []
+
+        def send(self, text, *, escape=True):
+            self.msgs.append(text)
+            return True
+
+    def boom(deps, m):
+        raise RuntimeError("screener 실패")
+
+    called = []
+    monkeypatch.setattr(daemon, "_scan_body", boom)
+    def analyze(deps, m):
+        called.append(m)
+        return {"targets": 0, "error": "_scan 없음"}
+
+    monkeypatch.setattr(daemon, "_analyze_body", analyze)
+    deps = _deps(conn, FakeMarket(), now=lambda: datetime(2026, 10, 8, 0, 0, tzinfo=UTC))
+    deps.notifier = Sent()
+    r = daemon._scan_analyze_body(deps, "KR")
+    assert called == ["KR"] and r["error"] and any("scan" in m.lower() for m in deps.notifier.msgs)
+
+
+def test_scan_analyze_job_closes_stale_running_before_sessions(conn, monkeypatch):
+    """1시간 넘게 running 인 agent_calls 는 기동 때만이 아니라 매일 scan·analyze 앞에서도 정리한다
+    (낮에 죽은 세션이 다음 재기동까지 running 으로 남아 상태 표시·오류율을 흐린다)."""
+    now = datetime(2026, 10, 8, 0, 0, tzinfo=UTC)
+    conn.execute(
+        "INSERT INTO agent_calls(agent, status, created_at) VALUES ('orchestrator','running',?)",
+        ((now - timedelta(hours=2)).isoformat(),),
+    )
+    conn.commit()
+    monkeypatch.setattr(daemon, "_scan_body", lambda deps, m: {"ok": 1})
+    monkeypatch.setattr(daemon, "_analyze_body", lambda deps, m: {"targets": 0})
+    deps = _deps(conn, FakeMarket(), now=lambda: now)
+    daemon._scan_analyze_body(deps, "KR")
+    row = conn.execute("SELECT status FROM agent_calls").fetchone()
+    assert row["status"] == "error"

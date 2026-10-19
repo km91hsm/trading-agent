@@ -1,13 +1,17 @@
 """체결 동기화 (Phase 6): 브로커 체결 조회 → fills 멱등 적재 → orders.status 갱신.
 
 주문번호가 원장에 없는 체결(앱·HTS 수동 주문)은 mode='external' 주문 행을 만들어 붙인다.
+그날 체결 조회를 마친 뒤(마감 이후) 체결이 없는 accepted·unknown 주문은 expired 로 바꾼다 —
+당일 주문은 마감에 소멸하므로 "조회 성공 + 체결 없음" 이 곧 "주문이 죽었다" 이고, 그래야 미체결
+주문이 중복 방지 조건에 영구히 남지 않는다. 장중 수동 실행이나 조회 실패 때는 건드리지 않는다.
 """
 
 from __future__ import annotations
 
 import logging
 import sqlite3
-from datetime import date, datetime
+from collections.abc import Callable
+from datetime import UTC, date, datetime, time
 from decimal import Decimal
 from typing import Any
 
@@ -16,6 +20,8 @@ from trader.config import MARKET_TZ, AccountConfig
 from trader.ledger import repo
 
 logger = logging.getLogger("trader.fills")
+
+MARKET_CLOSE: dict[str, time] = {"KR": time(15, 30), "US": time(16, 0)}  # 현지 정규장 마감
 
 
 def _order_id_for(conn: sqlite3.Connection, account_id: str, f: Fill) -> int:
@@ -82,15 +88,47 @@ def _day_for(market: str, d: date | datetime) -> date:
     return d
 
 
+def _session_closed(market: str, day: date, now: datetime) -> bool:
+    """day 의 정규장이 끝났는가 (시장 현지 기준)."""
+    local = now.astimezone(MARKET_TZ[market])
+    if local.date() > day:
+        return True
+    return local.date() == day and local.time() >= MARKET_CLOSE.get(market, time(23, 59))
+
+
+def expire_unfilled(
+    conn: sqlite3.Connection, account_id: str, market: str, day: date
+) -> int:
+    """day(현지)의 체결 없는 accepted·unknown 주문을 expired 로 (마감 뒤인지는 호출자가 본다)."""
+    lo, hi = repo.day_bounds(day, market)
+    cur = conn.execute(
+        "UPDATE orders SET status='expired' WHERE account_id=? AND market=? "
+        "AND status IN ('accepted','unknown') AND created_at >= ? AND created_at < ? "
+        "AND id NOT IN (SELECT order_id FROM fills)",
+        (account_id, market, lo, hi),
+    )
+    conn.commit()
+    if cur.rowcount:
+        logger.info("미체결 주문 %d건 만료 처리 %s %s %s", cur.rowcount, account_id, market, day)
+    return cur.rowcount
+
+
 def sync_fills(
-    conn: sqlite3.Connection, broker: Any, account: AccountConfig, d: date | datetime
+    conn: sqlite3.Connection,
+    broker: Any,
+    account: AccountConfig,
+    d: date | datetime,
+    *,
+    now: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> dict:
     """계좌의 시장별 체결을 적재한다. 같은 체결은 두 번 들어가지 않는다 (fills 유니크 인덱스).
 
     d 가 datetime 이면 시장마다 현지 날짜로 조회한다 (US 는 ET: 07:10 KST 동기화는 전날 ET).
+    조회가 성공했고 그날 정규장이 끝났으면 체결 없는 accepted·unknown 주문을 expired 로 바꾼다.
     """
     inserted = 0
     replaced = 0
+    expired = 0
     updated: set[int] = set()
     days = {m: _day_for(m, d) for m in account.markets}
     for market in account.markets:
@@ -124,6 +162,8 @@ def sync_fills(
                 inserted += 1
             if _refresh_status(conn, oid):
                 updated.add(oid)
+        if _session_closed(market, days[market], now()):
+            expired += expire_unfilled(conn, account.id, market, days[market])
     return {
         "account_id": account.id,
         "date": (
@@ -134,4 +174,5 @@ def sync_fills(
         "inserted": inserted - replaced,
         "updated": replaced,
         "orders_updated": len(updated),
+        "expired": expired,
     }

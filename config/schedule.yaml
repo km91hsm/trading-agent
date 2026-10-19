@@ -1,4 +1,5 @@
 # 루프 실행 시각. 시장별 tz(기본 Asia/Seoul). US 는 뉴욕 시간으로 적어 서머타임을 자동 반영한다.
+# scan 시각에 scan → analyze 가 한 잡으로 이어서 돈다. analyze 키는 호환용으로 남아 있고 쓰지 않는다.
 kr:
   scan: "07:30"
   analyze: "07:40"
