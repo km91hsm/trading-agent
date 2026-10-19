@@ -1,4 +1,4 @@
-# 시스템 상태 (생성: 2026-10-20 08:02 KST)
+# 시스템 상태 (생성: 2026-10-20 08:08 KST)
 
 ## 실행 제어
 - 일시정지: 아니오
@@ -46,7 +46,7 @@
 ## 구현 진행도
 - Phase 0 골격: 8/9
 - Phase 1 브로커: 9/9
-- Phase 2 수집: 9/10
+- Phase 2 수집: 10/10
 - Phase 3 에이전트: 15/18
 - Phase 4 리스크·계좌별 실행: 8/11
 - Phase 5 웹 UI: 11/12
@@ -58,7 +58,7 @@
 
 ## 다음 할 일
 - 완료 기준: Windows 에서 `uv sync` 후 `uv run trader status` 동일 동작 (사용자 확인 대기)
-- 사용자 확인 대기: 네이버 검색 API 401(errorCode 024 인증 실패) — 2026-10-20 확인: 이 저장소와 `../Stock/.env` 의 키 쌍 **둘 다** 직접 호출에서 401. 네이버 개발자센터에서 애플리케이션에 '검색' API 가 등록돼 있는지·Client Secret 을 재발급해 `secrets/.env` 에 넣고 `uv run trader collect --ticker 005930 --force` 재실행 (현재 secrets 의 `NAVER_CLIENT_SECRET` 은 Stock 값으로 교체됨, 백업 없음)
 - 실기(사용자 확인 대기): 처음부터 끝까지 bundle 경로로 1회 실행해 리서처 라운드 0·1 묶음이 Agent 프롬프트에 전문으로 들어가는지 세션 기록으로 확인 (`uv run trader analyze --ticker 005930 --dry-run`, 체크포인트 비운 뒤, 약 $2.5)
 - 완료 기준: Windows 에서 FAKE_CLAUDE dry-run 동일 동작 (사용자 확인 대기)
 - 사용자 확인 대기(Windows): `claude.cmd` 가 다줄 9KB `--append-system-prompt` 를 cmd.exe 재해석 없이 받는지 실제 `claude -p` 1회. 깨지면 `claude.exe` 우선 또는 `--agent` 파일 전달로 전환
+- 실기(사용자 확인 대기, 영업일 09:00~15:30 KST): `uv run trader kis order-test --account paper-main` → 1주 지정가(현재가 −10%) 접수·취소 메시지 확인

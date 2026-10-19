@@ -6,7 +6,7 @@ from trader.config import NewsCfg, Secrets
 from trader.sources.news import GoogleNewsRss, NaverNews, collect_news
 
 GOOGLE = "https://news.google.com/rss/search"
-NAVER = "https://openapi.naver.com/v1/search/news.json"
+NAVER = "https://naverapihub.apigw.ntruss.com/search/v1/news"
 
 
 def test_google_rss_parsed(respx_mock):
@@ -41,7 +41,7 @@ def test_naver_parsed_with_header_keys(respx_mock):
     assert items[0]["published_at"] == "2026-10-09T01:00:00+00:00"
     assert items[0]["url"] == "https://www.example.com/n1"
     req = route.calls[0].request
-    assert req.headers["X-Naver-Client-Id"] == "CID-SECRET"
+    assert req.headers["X-NCP-APIGW-API-KEY-ID"] == "CID-SECRET"
     assert "CID-SECRET" not in str(req.url)
 
 
@@ -146,3 +146,34 @@ def test_collect_news_closes_self_made_client(respx_mock, monkeypatch):
         cfg, Secrets(), ticker="005930", name="삼성전자", market="KR", asof=T0, now=lambda: T0
     )
     assert len(made) == 1 and made[0].is_closed
+
+
+def test_naver_uses_api_hub_endpoint_and_headers(respx_mock):
+    """네이버 검색 API 는 NAVER API HUB(네이버 클라우드)로 이관됐다 — 새 호스트·경로·인증 헤더.
+    개발자센터 키/호스트를 섞어 쓰면 401 (실기 2026-10-20: 두 저장소 키 모두 401 의 원인)."""
+    from trader.sources.news import NaverNews
+
+    route = respx_mock.get("https://naverapihub.apigw.ntruss.com/search/v1/news").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "items": [
+                    {
+                        "title": "삼성전자 <b>실적</b>",
+                        "originallink": "https://ex.com/a",
+                        "link": "https://n.news.naver.com/a",
+                        "description": "요약",
+                        "pubDate": "Thu, 08 Oct 2026 10:00:00 +0900",
+                    }
+                ]
+            },
+        )
+    )
+    client = NaverNews("HUB-ID", "HUB-SECRET-40CHARS", httpx.Client())
+    items = client.search("삼성전자", max_items=5)
+    assert len(items) == 1 and items[0]["url"] == "https://ex.com/a"
+    req = route.calls[0].request
+    assert req.headers["X-NCP-APIGW-API-KEY-ID"] == "HUB-ID"
+    assert req.headers["X-NCP-APIGW-API-KEY"] == "HUB-SECRET-40CHARS"
+    assert "X-Naver-Client-Id" not in req.headers
+    assert req.url.params["display"] == "5" and req.url.params["sort"] == "date"

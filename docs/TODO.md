@@ -31,7 +31,7 @@
 - [x] 00_inputs 조립 (섹션 격리·received_at·asof 필터) + `collect` 명령
 - [x] 피처 스토어 + 3년 과거 적재
 - [x] 완료 기준: 1종목 00_inputs.json, state/features/ parquet, 수집기 단위테스트 (2026-10-09 확인: 005930·AAPL 수집, KR 1년 백필 5,040행. DART 는 점검(800)으로 절 오류 기록, 네이버 뉴스 API 는 401)
-- [ ] 사용자 확인 대기: 네이버 검색 API 401(errorCode 024 인증 실패) — 2026-10-20 확인: 이 저장소와 `../Stock/.env` 의 키 쌍 **둘 다** 직접 호출에서 401. 네이버 개발자센터에서 애플리케이션에 '검색' API 가 등록돼 있는지·Client Secret 을 재발급해 `secrets/.env` 에 넣고 `uv run trader collect --ticker 005930 --force` 재실행 (현재 secrets 의 `NAVER_CLIENT_SECRET` 은 Stock 값으로 교체됨, 백업 없음)
+- [x] 네이버 검색 API 401 해결(2026-10-20): 원인은 키가 아니라 **API 이관** — 네이버 검색 API 가 NAVER API HUB(네이버 클라우드)로 옮겨가 호스트 `naverapihub.apigw.ntruss.com/search/v1/news`·헤더 `X-NCP-APIGW-API-KEY-ID/-KEY` 를 써야 한다. `sources/news.py` 전환 후 `collect --force` 오류 절 0건. `secrets/.env` 의 `NAVER_CLIENT_ID/SECRET` 는 Stock 의 HUB 키(`trader secrets import` 로 복사). 개발자센터 방식은 2027-06 종료
 - [x] DART 점검 종료 확인(2026-10-20, `collect --force` 재무 절 정상) → `features backfill --years 3` 실행 (결과는 아래 ml train 항목)
 
 ## Phase 3 에이전트

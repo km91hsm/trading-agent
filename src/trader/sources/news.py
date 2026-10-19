@@ -22,7 +22,11 @@ from trader.sources.base import utc_now as _utc_now
 logger = logging.getLogger("trader.sources")
 
 GOOGLE_RSS = "https://news.google.com/rss/search"
-NAVER_NEWS = "https://openapi.naver.com/v1/search/news.json"
+# 네이버 검색 API 는 NAVER API HUB(네이버 클라우드)로 이관됐다 (2026-06 출시, 개발자센터 방식은
+# 2027-06 종료). 키는 NCP 콘솔 > NAVER API HUB 앱의 Client ID/Secret 이며 개발자센터 키와 호환 안 됨.
+NAVER_NEWS = "https://naverapihub.apigw.ntruss.com/search/v1/news"
+NAVER_HEADER_ID = "X-NCP-APIGW-API-KEY-ID"
+NAVER_HEADER_SECRET = "X-NCP-APIGW-API-KEY"
 MACRO_QUERIES: dict[Market, str] = {
     "KR": "코스피 OR 금리 OR 환율 OR 경기",
     "US": "stock market OR Fed OR inflation OR Treasury yields",
@@ -85,7 +89,10 @@ class NaverNews:
     ) -> None:
         if not client_id or not client_secret:
             raise ValueError("네이버 검색 API 키가 없습니다")
-        self._headers = {"X-Naver-Client-Id": client_id, "X-Naver-Client-Secret": client_secret}
+        self._headers = {
+            NAVER_HEADER_ID: client_id.strip(),
+            NAVER_HEADER_SECRET: client_secret.strip(),
+        }
         self._http = http
         self._now = now
 
