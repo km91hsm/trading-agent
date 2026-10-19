@@ -1,4 +1,4 @@
-# 시스템 상태 (생성: 2026-10-20 05:19 KST)
+# 시스템 상태 (생성: 2026-10-20 06:34 KST)
 
 ## 실행 제어
 - 일시정지: 아니오
@@ -52,7 +52,7 @@
 - Phase 7 ML 1단계: 10/14
 - Phase 8 학습·평가·보정: 8/10
 - Phase 9 RL 사이징(실험): 7/9
-- 2026-10-18 전체 코드 검토 수정 (`docs/superpowers/plans/2026-10-18-review-correctness-fixes.md`): 11/11
+- 2026-10-18 전체 코드 검토 수정 (`docs/superpowers/plans/2026-10-18-review-correctness-fixes.md`): 12/12
 
 ## 다음 할 일
 - 완료 기준: Windows 에서 `uv sync` 후 `uv run trader status` 동일 동작 (사용자 확인 대기)
