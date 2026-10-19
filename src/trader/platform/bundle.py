@@ -58,14 +58,14 @@ def daemon_argv() -> list[str]:
 
 
 def templates_dir() -> Path:
-    """첫 실행 템플릿(config yaml·.env.example): 번들은 `_internal/templates`, 개발은 `templates/`."""
+    """첫 실행 템플릿(config yaml·.env.example). 번들 `_internal/templates`, 개발 `templates/`."""
     if is_frozen():
         return resource_dir() / "templates"
     return Path(__file__).resolve().parents[3] / "templates"
 
 
 def first_run_init(root: Path) -> list[str]:
-    """`config/ secrets/ state/ docs/` 를 만들고 템플릿 중 **없는 파일만** 복사한다 (기존 설정 불변).
+    """`config/ secrets/ state/ docs/` 를 만들고 템플릿 중 **없는 파일만** 복사한다 (기존 불변).
 
     번들 `_internal/docs/*` 가 있으면 docs/ 로도 복사한다. 반환은 새로 만든 파일의 상대경로."""
     import shutil

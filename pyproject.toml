@@ -39,6 +39,9 @@ dev = [
     "respx>=0.23.1",
     "ruff>=0.16.10",
 ]
+build = [
+    "pyinstaller>=6.11",
+]
 
 [build-system]
 requires = ["hatchling"]
