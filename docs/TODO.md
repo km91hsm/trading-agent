@@ -118,7 +118,7 @@
 - [ ] 사용자 확인 대기: LightGBM 을 쓰려면 `brew install libomp` → `uv sync --extra lightgbm` → `config/ml.yaml` 의 `models.quant.backend: lightgbm`(기본은 플랫폼 동일 동작을 위해 `sklearn`)
 - [x] Phase 7 이연(리뷰, Phase 8 회수): close 대비 비율 피처 `sma_5/20/60_rel·bb_pos·atr_pct·macd_hist_rel` 추가(옛 parquet 행은 NaN → `features backfill` 재실행 후 `ml train`). 중요도는 마지막 폴드 홀드아웃 기준
 - [x] Phase 7 이연: `features snapshot` 은 데몬 reflect 잡 앞에서 매일 실행(`DaemonDeps.snapshot_fn`, 실패는 통보). 재학습은 사용자 실기(`features backfill --years 3` → `ml train`)
-- [ ] 사용자 확인 대기: 3년 백필(`uv run trader features backfill --years 3`, DART 정상 시) 후 `ml train` 재실행 — 1년·20종목으로는 기준선을 못 넘음. 승격 전까지 05_quant·ML 랭킹은 비활성
+- [x] 3년 백필 후 `ml train` 재실행(2026-10-20): `features backfill --years 3` → 피처 파일 802일(2023-09~2026-10), 21,924+7,560행. KR 정확도 0.343 / 기준선 0.354 / 알파 +0.0023, US 0.385 / 0.399 / +0.0020 → **둘 다 미승격**(정확도 < 0.40, 기준선 이하). 승격 전까지 05_quant·ML 랭킹은 비활성 유지. 백필 중 EGW00201 1회 재시도로 종목이 빠져 재시도를 3회 백오프로 보강, WMT 는 KIS 가 NAS 코드로만 줘 유니버스 수정
 - [ ] 리뷰 Minor 이연(이연 회수 플랜): stale running 정리는 상태 표시·오류율 정확성용(세션 상한 `sessions_today` 는 created_at 기준이라 그대로), 신호 결측으로 제외된 종목이 `candidates` 에서 "피처 없음" 으로 표시, `scan --asof` 가 `latest_features` 에 전달되지 않음(과거 asof 스캔은 최신 파일)
 - [ ] Phase 7 이연 유지(별도 Phase·사용자 결정): US 연도별 재무비율·동종업 중앙값 비율(데이터 설계 필요), 피처 행 탐색 UI, 하이퍼파라미터 탐색
 
@@ -131,7 +131,7 @@
 - [x] 실전 approve 전환 절차 (사용자 수동): `docs/runbook-live-transition.md` + `trader readiness`(읽기 전용) + `trader backtest --since`
 - [x] 실기: `FAKE_CLAUDE=1 analyze --ticker 000660 --dry-run` → `memory_entries` 1행(워밍업·`35_calibration` 없음), `reflect --dry-run` 0건, `backtest --since 2026-10-01` n=0, `readiness` 불합격 항목 표시·모드 불변, `/api/performance` 200 (2026-10-17 확인)
 - [ ] 완료 기준(사용자 확인 대기): 모의 4주 이상 성과 리포트(웹 `/performance`·`trader readiness` 통과), 보정 모델 활성(만기 결정 60건), 사용자 판단으로 실전 approve(`docs/runbook-live-transition.md`)
-- [ ] 사용자 확인 대기: 파생 비율 피처 반영 재학습 — `features backfill --years 3` → `ml train` 으로 기준선 초과 여부 확인
+- [x] 파생 비율 피처 반영 재학습(2026-10-20): 위 항목과 같은 실행 — op_margin·roe·debt_ratio 가 KR 피처에 포함됐으나 기준선 미달. 다음 시도는 유니버스 확대 또는 라벨·피처 설계 변경이 필요(사용자 결정)
 - [x] 리뷰 Minor 이연(Phase 8) 회수(2026-10-17, 이연 회수 플랜): `decided_at` 운영일 규칙(오늘이면 now, 아니면 15:30 KST), 상황 벡터·05_quant 는 run date 이하 피처 행, `cost_sensitivity`·`nav_history` KST 날짜 창, `outcomes.mature(today)` 로 만기 봉 날짜 제한, 백테스트 HOLD 적중 = |가격수익| ≤ 2%, `/watch` 사용법(이미), 관심종목 시장 구분(`KR:`/`US:` 접두사·코드 형식 추정), `submit_*` 디렉터리는 `run_store.market_dir`, `calibration_runs` 하루 1행, `sma_*_rel` 부호 통일(close/sma−1), `record_decision(decision_id=None)` 거부, reflect 잡 시장별 격리, `run_error_rate` 분모에서 interval 잡 제외
 
 ## Phase 9 RL 사이징(실험)

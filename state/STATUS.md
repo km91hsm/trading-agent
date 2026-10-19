@@ -1,4 +1,4 @@
-# 시스템 상태 (생성: 2026-10-20 07:45 KST)
+# 시스템 상태 (생성: 2026-10-20 08:02 KST)
 
 ## 실행 제어
 - 일시정지: 아니오
@@ -31,6 +31,8 @@
 - real-main KR:  MDD  (1일)
 
 ## ML 모델
+- quant 20261019_230148: 정확도 0.3853 / 기준선 0.3991 / 알파 0.001965 · 미승격
+- quant 20261019_230133: 정확도 0.3425 / 기준선 0.3541 / 알파 0.002322 · 미승격
 - quant 20261016_225858: 정확도 0.3151 / 기준선 0.4646 / 알파 -0.003313 · 미승격
 - rl_sizer 20261017_065953: RL -0.001304 / 고정 0.003331 / LLM 0.0 · 미승격
 
@@ -44,19 +46,19 @@
 ## 구현 진행도
 - Phase 0 골격: 8/9
 - Phase 1 브로커: 9/9
-- Phase 2 수집: 8/10
+- Phase 2 수집: 9/10
 - Phase 3 에이전트: 15/18
 - Phase 4 리스크·계좌별 실행: 8/11
 - Phase 5 웹 UI: 11/12
 - Phase 6 scan·monitor·데몬: 19/23
-- Phase 7 ML 1단계: 10/14
-- Phase 8 학습·평가·보정: 8/10
+- Phase 7 ML 1단계: 11/14
+- Phase 8 학습·평가·보정: 9/10
 - Phase 9 RL 사이징(실험): 7/9
 - 2026-10-18 전체 코드 검토 수정 (`docs/superpowers/plans/2026-10-18-review-correctness-fixes.md`): 15/15
 
 ## 다음 할 일
 - 완료 기준: Windows 에서 `uv sync` 후 `uv run trader status` 동일 동작 (사용자 확인 대기)
-- 사용자 확인 대기: 네이버 검색 API 키가 401 — 애플리케이션에 '검색' API 권한이 있는지, 키 값이 맞는지 확인 후 `uv run trader collect --ticker 005930 --force` 재실행
-- 사용자 확인 대기: DART 점검 종료 후 `collect`·`features backfill --years 3` 재실행으로 재무비율 적재
+- 사용자 확인 대기: 네이버 검색 API 401(errorCode 024 인증 실패) — 2026-10-20 확인: 이 저장소와 `../Stock/.env` 의 키 쌍 **둘 다** 직접 호출에서 401. 네이버 개발자센터에서 애플리케이션에 '검색' API 가 등록돼 있는지·Client Secret 을 재발급해 `secrets/.env` 에 넣고 `uv run trader collect --ticker 005930 --force` 재실행 (현재 secrets 의 `NAVER_CLIENT_SECRET` 은 Stock 값으로 교체됨, 백업 없음)
 - 실기(사용자 확인 대기): 처음부터 끝까지 bundle 경로로 1회 실행해 리서처 라운드 0·1 묶음이 Agent 프롬프트에 전문으로 들어가는지 세션 기록으로 확인 (`uv run trader analyze --ticker 005930 --dry-run`, 체크포인트 비운 뒤, 약 $2.5)
 - 완료 기준: Windows 에서 FAKE_CLAUDE dry-run 동일 동작 (사용자 확인 대기)
+- 사용자 확인 대기(Windows): `claude.cmd` 가 다줄 9KB `--append-system-prompt` 를 cmd.exe 재해석 없이 받는지 실제 `claude -p` 1회. 깨지면 `claude.exe` 우선 또는 `--agent` 파일 전달로 전환
