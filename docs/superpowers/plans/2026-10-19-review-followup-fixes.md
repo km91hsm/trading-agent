@@ -77,7 +77,13 @@
 - [x] H3 `logging_setup.configure(name=)`: `trader web`→`trader-web.log`, `telegram loop`→`trader-telegram.log`, `monitor`→`trader-monitor.log`. 데몬·짧은 명령은 `trader.log`.
 - [x] 커밋 `fix: 세션 프로세스 그룹 kill·퀀트 벤치마크 유니버스·장기 명령 로그 분리`
 
+### Task I: 순수 정리 3건 (2026-10-20)
+- [x] I1 `cli._boot(settings|accounts|secrets|conn, log_name)`: 로깅·설정·계좌·시크릿·스키마 적용 원장 연결을 한 곳에. status·kis ping·order-test·tool ctx·exec ctx·daemon·fills·control·web·scan·analyze·monitor·rl report·reflect 가 쓴다.
+- [x] I2 `agent_calls.num_turns`(마이그레이션 v9): 세션 결과의 턴 수를 기록 (`/api/calls` 에 그대로 노출).
+- [x] I3 `repo._hydrate_decision`: `get_decision(hydrate=True)`·`latest_decision`·`views.get_decision` 이 같은 복원을 쓴다.
+- [x] 커밋 `refactor: CLI 부트스트랩 헬퍼·num_turns 기록·결정 hydrate 공유`
+
 ## 범위 조정
 | 제외 항목 | 이유 | 재개 |
 |---|---|---|
-| (없음) 이전 체인 순수 정리(`cli.py` 부트스트랩 묶기·`SessionResult.num_turns`·hydrate 공유)와 Phase 7 별도 Phase 항목은 TODO 에 그대로 | 동작 변화 없음·데이터 설계 필요 | 사용자 결정 |
+| Phase 7 별도 Phase 항목(US 재무비율·동종업 중앙값·피처 탐색 UI·하이퍼파라미터 탐색) | 데이터 설계 필요 | 사용자 결정 |

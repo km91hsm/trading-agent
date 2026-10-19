@@ -191,6 +191,10 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
             "CREATE INDEX IF NOT EXISTS ix_memory_outcome ON memory_entries(outcome_at, market)",
         ],
     ),
+    (
+        9,  # 세션 턴 수 (비용·실패 원인 분석 단서). 세션 1회 = agent_calls 1행
+        ["ALTER TABLE agent_calls ADD COLUMN num_turns INTEGER"],
+    ),
 ]
 
 

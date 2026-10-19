@@ -175,13 +175,14 @@ def _finish_call(
     cost: float | None,
     duration_ms: int | None,
     error: str | None,
+    num_turns: int | None = None,
 ) -> None:
     if conn is None:
         return
     conn.execute(
         "UPDATE agent_calls SET status=?, session_id=COALESCE(?, session_id), cost_usd=?, "
-        "duration_ms=?, error=? WHERE id=?",
-        (status, session_id, cost, duration_ms, error, call_id),
+        "duration_ms=?, error=?, num_turns=? WHERE id=?",
+        (status, session_id, cost, duration_ms, error, num_turns, call_id),
     )
     conn.commit()
     db.finish_run(conn, run_id, status, error)
@@ -406,6 +407,7 @@ def run_session(
         cost=cost,
         duration_ms=duration,
         error=error,
+        num_turns=data.get("num_turns"),
     )
     logger.info(
         "세션 %s %s: %s cost=%s dur=%sms",

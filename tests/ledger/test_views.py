@@ -165,3 +165,14 @@ def test_snapshot_same_day_removes_sold_positions(conn):
     assert [p["ticker"] for p in views.latest_positions(conn, "paper-main", "US")["positions"]] == [
         "AAPL"
     ]
+
+
+def test_decision_hydrate_is_shared_between_repo_and_views(conn):
+    """결정 행의 json→data 복원은 repo 한 곳(get_decision(hydrate=True)·latest_decision)이고
+    views.get_decision 은 그것을 그대로 쓴다."""
+    dec_id = _decision(conn)
+    a = repo.get_decision(conn, dec_id, hydrate=True)
+    b = views.get_decision(conn, dec_id)
+    c = repo.latest_decision(conn, "KR", "005930")
+    assert a == b == c and a["data"]["action"] == "BUY" and "json" not in a
+    assert "json" in repo.get_decision(conn, dec_id)  # 기본은 원시 행

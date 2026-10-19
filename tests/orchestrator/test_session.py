@@ -462,3 +462,20 @@ def test_default_runner_kills_process_group_on_timeout(tmp_path):
     else:
         os.kill(pid, 9)
         pytest.fail("손자 프로세스가 살아 있다 (프로세스 그룹 kill 안 됨)")
+
+
+def test_session_records_num_turns(project, conn):
+    """claude 결과의 num_turns 를 agent_calls 에 남긴다 (턴 수가 비용·실패 원인 분석의 단서)."""
+    res = run_session(
+        spec(),
+        Settings(),
+        conn,
+        [],
+        runner=lambda cmd, **kw: _ok_result(num_turns=7),
+        claude_bin=Path("/x/claude"),
+        agents_dir=REPO_AGENTS,
+        now=lambda: T0,
+    )
+    assert res.ok and res.num_turns == 7
+    row = conn.execute("SELECT num_turns FROM agent_calls ORDER BY id DESC LIMIT 1").fetchone()
+    assert row["num_turns"] == 7

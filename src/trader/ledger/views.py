@@ -98,11 +98,7 @@ def list_decisions(
 
 
 def get_decision(conn: sqlite3.Connection, decision_id: int) -> dict | None:
-    d = repo.get_decision(conn, decision_id)
-    if d is None:
-        return None
-    d["data"] = json.loads(d.pop("json"))
-    return d
+    return repo.get_decision(conn, decision_id, hydrate=True)
 
 
 def decision_outcomes(conn: sqlite3.Connection, decision_id: int) -> list[dict]:

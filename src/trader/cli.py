@@ -6,9 +6,10 @@ import functools
 import logging
 import os
 import sys
+from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from decimal import Decimal
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import typer
 
@@ -56,6 +57,40 @@ def _config_errors(fn):
             raise typer.Exit(code=1) from e
 
     return wrapper
+
+
+@dataclass
+class _Boot:
+    settings: config.Settings | None = None
+    accounts: list[config.AccountConfig] | None = None
+    secrets: config.Secrets | None = None
+    conn: Any | None = None
+
+
+def _boot(
+    *,
+    settings: bool = False,
+    accounts: bool = False,
+    secrets: bool = False,
+    conn: bool = False,
+    log_name: str | None = None,
+) -> _Boot:
+    """명령 공통 부트스트랩: 로깅 → 요청한 설정·계좌·시크릿 로드 → (요청 시) 스키마 적용 원장 연결.
+    명령마다 반복하던 4~6줄을 한 곳에 둔다. conn 은 호출자가 닫는다."""
+    from trader.ledger import db
+
+    configure(paths.state_dir(), name=log_name)
+    out = _Boot()
+    if settings:
+        out.settings = config.load_settings()
+    if accounts:
+        out.accounts = config.load_accounts()
+    if secrets:
+        out.secrets = config.load_secrets()
+    if conn:
+        out.conn = db.connect()
+        db.init_schema(out.conn)
+    return out
 
 
 @app.callback()
@@ -131,12 +166,9 @@ def status() -> None:
     from trader import status as status_mod
     from trader.ledger import db
 
-    configure(paths.state_dir())
-    settings = config.load_settings()
-    accounts = config.load_accounts()
-    conn = db.connect()
+    boot = _boot(settings=True, accounts=True, conn=True)
+    settings, accounts, conn = boot.settings, boot.accounts, boot.conn
     try:
-        db.init_schema(conn)
         db.sync_accounts(conn, accounts)
         text = status_mod.build_status(conn, settings, accounts, paths.docs_dir() / "TODO.md")
     finally:
@@ -151,9 +183,8 @@ def kis_ping(
     account: str | None = typer.Option(None, "--account", help="특정 계좌 id 만 점검"),
 ) -> None:
     """KIS 시세(005930·AAPL)·휴장일·계좌별 현금을 점검한다. 실패가 있으면 exit 1."""
-    configure(paths.state_dir())
-    secrets = config.load_secrets()
-    accounts = config.load_accounts()
+    boot = _boot(secrets=True, accounts=True)
+    secrets, accounts = boot.secrets, boot.accounts
     if account:
         accounts = [a for a in accounts if a.id == account]
         if not accounts:
@@ -209,9 +240,8 @@ def kis_order_test(
     ticker: str = typer.Option("005930", "--ticker", help="KR 종목코드"),
 ) -> None:
     """Phase 4 실기 전용: 모의 계좌에 현재가 10% 아래 1주 지정가 매수 → 즉시 취소 (원장 미기록)."""
-    configure(paths.state_dir())
-    secrets = config.load_secrets()
-    accounts = config.load_accounts()
+    boot = _boot(secrets=True, accounts=True)
+    secrets, accounts = boot.secrets, boot.accounts
     acct = next((a for a in accounts if a.id == account), None)
     if acct is None:
         typer.echo(f"오류: 계좌 id 를 찾을 수 없습니다: {account}", err=True)
@@ -421,7 +451,6 @@ def analyze(
     """오케스트레이터 세션을 띄워 종목 하나를 분석하고 30_decision.json 을 만든다."""
     import json
 
-    from trader.ledger import db
     from trader.orchestrator.run_store import read_checkpoint, run_dir
     from trader.orchestrator.session import PipelineError, SessionSpec
 
@@ -431,9 +460,8 @@ def analyze(
             raise config.ConfigError(f"시장은 KR 또는 US 여야 합니다: {market}")
         if market == "US" and not exchange:
             raise config.ConfigError("미국 종목은 --exchange(거래소 코드)가 필요합니다")
-        settings = config.load_settings()
-        accounts = config.load_accounts()
-        secrets = config.load_secrets()
+        boot = _boot(settings=True, accounts=True, secrets=True, conn=True)
+        settings, accounts, secrets, conn = boot.settings, boot.accounts, boot.secrets, boot.conn
         when = datetime.fromisoformat(asof) if asof else datetime.now(UTC)
         if when.tzinfo is None:
             when = when.replace(tzinfo=UTC)
@@ -454,8 +482,6 @@ def analyze(
                 secrets=secrets,
                 deps=_build_input_deps(secrets, cfg),
             )
-        conn = db.connect()
-        db.init_schema(conn)
         try:
             from trader.orchestrator import tools as _tools
 
@@ -518,19 +544,15 @@ tool_app.add_typer(checkpoint_app, name="checkpoint")
 
 
 def _tool_ctx():
-    from trader.ledger import db
     from trader.orchestrator.tools import ToolContext
 
-    configure(paths.state_dir())
+    boot = _boot(secrets=True, accounts=True, conn=True)
     logging.getLogger().handlers = [
         h
         for h in logging.getLogger().handlers
         if not isinstance(h, logging.StreamHandler) or isinstance(h, logging.FileHandler)
     ]  # stdout 은 JSON 전용이므로 콘솔 핸들러 제거
-    conn = db.connect()
-    db.init_schema(conn)
-    secrets = config.load_secrets()
-    accounts = config.load_accounts()
+    conn, secrets, accounts = boot.conn, boot.secrets, boot.accounts
     # 세션이 env 로 넘긴 값. 없으면 안전하게 dry_run(주문·승인 요청 없음).
     dry_run = os.environ.get("TRADER_DRY_RUN", "1") != "0"
     # dry_run 도 잔고로 판정은 한다(주문·승인 요청만 생략). 브로커 생성은 네트워크를 쓰지 않는다.
@@ -743,16 +765,12 @@ app.add_typer(telegram_app, name="telegram")
 
 def _exec_ctx():
     """CLI 용 ExecContext. 브로커는 앱키가 있는 계좌만 (없으면 승인 시 실패로 기록)."""
-    from trader.ledger import db
     from trader.orchestrator.executor import ExecContext
 
-    configure(paths.state_dir())
-    secrets = config.load_secrets()
-    accounts = config.load_accounts()
-    conn = db.connect()
-    db.init_schema(conn)
+    boot = _boot(settings=True, secrets=True, accounts=True, conn=True)
+    secrets, accounts, conn = boot.secrets, boot.accounts, boot.conn
     return ExecContext(
-        settings=config.load_settings(),
+        settings=boot.settings,
         accounts=accounts,
         conn=conn,
         brokers={b.account.id: b for b in _build_brokers(secrets, accounts)},
@@ -884,11 +902,10 @@ def daemon_cmd(
     from trader import daemon as daemon_mod
     from trader.ledger import db
 
-    configure(paths.state_dir())
-    settings = config.load_settings()
+    boot = _boot(settings=True, accounts=True, secrets=True, conn=True)
+    settings, accounts, secrets = boot.settings, boot.accounts, boot.secrets
+    boot.conn.close()  # 스키마 마이그레이션만 (잡은 conn_factory 로 각자 연다)
     schedule = config.load_schedule()
-    accounts = config.load_accounts()
-    secrets = config.load_secrets()
     universe = config.load_universe()
     sources_cfg = config.load_sources()
     try:
@@ -898,9 +915,6 @@ def daemon_cmd(
             "시세 클라이언트 없음(휴장일·monitor 비활성): %s", e
         )
         market_client = None
-    conn = db.connect()
-    db.init_schema(conn)
-    conn.close()
 
     def web_app():
         from trader.web.app import create_app
@@ -947,21 +961,17 @@ def fills_sync(
     """계좌별 체결을 원장에 적재한다 (멱등)."""
     from datetime import date as _date
 
-    from trader.ledger import db
     from trader.orchestrator.fills import sync_fills
 
     try:
-        configure(paths.state_dir())
-        secrets = config.load_secrets()
-        accounts = config.load_accounts()
+        boot = _boot(secrets=True, accounts=True, conn=True)
+        secrets, accounts, conn = boot.secrets, boot.accounts, boot.conn
         d = _date.fromisoformat(date) if date else datetime.now(UTC)
     except (config.ConfigError, paths.ProjectRootNotFound, ValueError) as e:
         typer.echo(f"오류: {e}", err=True)
         raise typer.Exit(code=1) from e
     if account:
         accounts = [a for a in accounts if a.id == account]
-    conn = db.connect()
-    db.init_schema(conn)
     try:
         for b in _build_brokers(secrets, accounts):
             r = sync_fills(conn, b, b.account, d)
@@ -983,13 +993,9 @@ app.add_typer(control_app, name="control")
 
 
 def _control_conn():
-    from trader.ledger import db
 
-    configure(paths.state_dir())
-    accounts = config.load_accounts()
-    conn = db.connect()
-    db.init_schema(conn)
-    return conn, accounts
+    boot = _boot(accounts=True, conn=True)
+    return boot.conn, boot.accounts
 
 
 @control_app.command("show")
@@ -1077,10 +1083,9 @@ def _web_deps(log_name: str | None = None):
     from trader.ledger import db
     from trader.web.app import WebDeps
 
-    configure(paths.state_dir(), name=log_name)
-    settings = config.load_settings()
-    accounts = config.load_accounts()
-    secrets = config.load_secrets()
+    boot = _boot(settings=True, accounts=True, secrets=True, conn=True, log_name=log_name)
+    settings, accounts, secrets = boot.settings, boot.accounts, boot.secrets
+    boot.conn.close()  # 스키마 마이그레이션만 (라우터는 conn_factory 로 각자 연다)
     log = logging.getLogger("trader.web")
     try:
         market = _build_market(secrets)
@@ -1089,9 +1094,6 @@ def _web_deps(log_name: str | None = None):
         market = None
     if not secrets.WEB_TOKEN:
         log.warning("WEB_TOKEN 미설정: 제어 API 비활성(401)")
-    conn = db.connect()
-    db.init_schema(conn)
-    conn.close()
     return WebDeps(
         settings=settings,
         accounts=accounts,
@@ -1159,19 +1161,16 @@ def scan(
     import json
 
     from trader.control import control
-    from trader.ledger import db
     from trader.orchestrator import tools
     from trader.orchestrator.run_store import write_checkpoint
     from trader.orchestrator.session import PipelineError
     from trader.scan import quant, screener
 
     try:
-        configure(paths.state_dir())
+        boot = _boot(settings=True, accounts=True, secrets=True, conn=True)
         if market not in ("KR", "US"):
             raise config.ConfigError(f"시장은 KR 또는 US 여야 합니다: {market}")
-        settings = config.load_settings()
-        accounts = config.load_accounts()
-        secrets = config.load_secrets()
+        settings, accounts, secrets, conn = boot.settings, boot.accounts, boot.secrets, boot.conn
         universe = config.load_universe()
         when = datetime.fromisoformat(asof) if asof else datetime.now(UTC)
         if when.tzinfo is None:
@@ -1182,8 +1181,6 @@ def scan(
         day = run_date_for(market, when)
 
         ml = ranker.current()
-        conn = db.connect()
-        db.init_schema(conn)
         try:
             runtime_watch = control.get_watchlist(conn, market=market)
             watch = [*universe.watch, *runtime_watch]
@@ -1239,18 +1236,16 @@ def monitor_cmd(
     import json
     import time
 
-    from trader.ledger import db
     from trader.orchestrator import monitor as monitor_mod
     from trader.orchestrator.run_store import run_date_for
     from trader.orchestrator.session import run_session
 
     try:
-        configure(paths.state_dir(), name="monitor")  # 데몬과 다른 로그 파일 (오래 사는 명령)
+        # 데몬과 다른 로그 파일 (오래 사는 명령)
+        boot = _boot(settings=True, accounts=True, secrets=True, conn=True, log_name="monitor")
         if market not in ("KR", "US"):
             raise config.ConfigError(f"시장은 KR 또는 US 여야 합니다: {market}")
-        settings = config.load_settings()
-        accounts = config.load_accounts()
-        secrets = config.load_secrets()
+        settings, accounts, secrets, conn = boot.settings, boot.accounts, boot.secrets, boot.conn
         universe = config.load_universe()
         market_client = _build_market(secrets)
     except (config.ConfigError, paths.ProjectRootNotFound) as e:
@@ -1259,8 +1254,6 @@ def monitor_cmd(
     except Exception as e:  # noqa: BLE001 - 시세 클라이언트 없이는 monitor 를 돌릴 수 없다
         typer.echo(f"오류: 시세 클라이언트 생성 실패: {e}", err=True)
         raise typer.Exit(code=1) from e
-    conn = db.connect()
-    db.init_schema(conn)
     ctx = monitor_mod.MonitorContext(
         settings=settings,
         accounts=accounts,
@@ -1476,15 +1469,13 @@ def rl_report(
     """모델 요약 + 최근 N주 섀도 실적(제안 vs LLM 비중의 가상 실현수익) JSON 1줄."""
     import json
 
-    from trader.ledger import db
     from trader.ml.rl import report
 
-    configure(paths.state_dir())
-    accounts = config.load_accounts()
+    boot = _boot(accounts=True, conn=True)
+    accounts, conn = boot.accounts, boot.conn
     if not any(a.id == account for a in accounts):
+        conn.close()
         raise config.ConfigError(f"알 수 없는 계좌: {account}")
-    conn = db.connect()
-    db.init_schema(conn)
     try:
         r = report.comparison(conn, None, account_id=account, market=market, weeks=weeks)
     finally:
@@ -1546,18 +1537,15 @@ def reflect_cmd(
     dry_run: bool = typer.Option(False, "--dry-run", help="결과 채우기까지만 (세션 없음)"),
 ) -> None:
     """만기 결정의 결과를 채우고(피처 스토어 종가) reflector 세션으로 복기를 받는다 (스펙 §6.5)."""
-    from trader.ledger import db
     from trader.memory import outcomes, store
     from trader.orchestrator.reflect import pending, run_reflect
     from trader.orchestrator.session import PipelineError
 
-    configure(paths.state_dir())
+    boot = _boot(settings=True, accounts=True, conn=True)
     if market not in ("KR", "US"):
+        boot.conn.close()
         raise config.ConfigError(f"시장은 KR 또는 US 여야 합니다: {market}")
-    settings = config.load_settings()
-    accounts = config.load_accounts()
-    conn = db.connect()
-    db.init_schema(conn)
+    settings, accounts, conn = boot.settings, boot.accounts, boot.conn
     try:
         today = datetime.now(KST).date()
         matured = outcomes.mature(conn, state=None, today=today)

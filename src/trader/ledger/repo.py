@@ -142,9 +142,21 @@ def ingest_checkpoint(
     return None
 
 
-def get_decision(conn: sqlite3.Connection, decision_id: int) -> dict | None:
+def _hydrate_decision(row: sqlite3.Row) -> dict:
+    """decisions 행의 json 열을 data 로 복원 (get_decision(hydrate=True)·latest_decision 공통)."""
+    d = dict(row)
+    d["data"] = json.loads(d.pop("json"))
+    return d
+
+
+def get_decision(
+    conn: sqlite3.Connection, decision_id: int, *, hydrate: bool = False
+) -> dict | None:
+    """결정 행. hydrate=True 면 json 열을 data 로 복원한다 (웹·모니터가 같은 모양을 쓴다)."""
     row = conn.execute("SELECT * FROM decisions WHERE id=?", (decision_id,)).fetchone()
-    return dict(row) if row else None
+    if row is None:
+        return None
+    return _hydrate_decision(row) if hydrate else dict(row)
 
 
 def decision_id(conn: sqlite3.Connection, d: date, market: str, ticker: str) -> int | None:
@@ -414,11 +426,7 @@ def latest_decision(conn: sqlite3.Connection, market: str, ticker: str) -> dict 
         "SELECT * FROM decisions WHERE market=? AND ticker=? ORDER BY date DESC, id DESC LIMIT 1",
         (market, ticker),
     ).fetchone()
-    if row is None:
-        return None
-    d = dict(row)
-    d["data"] = json.loads(d.pop("json"))
-    return d
+    return _hydrate_decision(row) if row is not None else None
 
 
 def today_buy_tickers(
