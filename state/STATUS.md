@@ -1,4 +1,4 @@
-# 시스템 상태 (생성: 2026-10-20 08:08 KST)
+# 시스템 상태 (생성: 2026-10-20 08:45 KST)
 
 ## 실행 제어
 - 일시정지: 아니오
@@ -51,10 +51,11 @@
 - Phase 4 리스크·계좌별 실행: 8/11
 - Phase 5 웹 UI: 11/12
 - Phase 6 scan·monitor·데몬: 19/23
-- Phase 7 ML 1단계: 11/14
+- Phase 7 ML 1단계: 12/14
 - Phase 8 학습·평가·보정: 9/10
 - Phase 9 RL 사이징(실험): 7/9
 - 2026-10-18 전체 코드 검토 수정 (`docs/superpowers/plans/2026-10-18-review-correctness-fixes.md`): 15/15
+- Phase 10 번들 배포 (`docs/superpowers/plans/2026-10-20-phase10-bundle.md`): 5/6
 
 ## 다음 할 일
 - 완료 기준: Windows 에서 `uv sync` 후 `uv run trader status` 동일 동작 (사용자 확인 대기)
