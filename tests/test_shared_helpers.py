@@ -69,3 +69,11 @@ def test_macro_uses_shared_utc_now():
 
     assert not hasattr(macro, "_utc_now") and not hasattr(base, "_utc_now")
     assert macro.utc_now is base.utc_now
+
+
+def test_tick_table_single_source():
+    from trader import cli
+    from trader.risk import ticks
+
+    assert not hasattr(cli, "_tick_size_kr")
+    assert ticks.tick_size("KR", Decimal("70000")) == Decimal("100")

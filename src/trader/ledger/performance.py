@@ -193,6 +193,17 @@ def turnover(conn, account_id: str, market: str, start: date, end: date) -> floa
     return _turnover_of(traded, nav)
 
 
+def _universe(market: str) -> list[str] | None:
+    """퀀트 벤치마크 후보 = universe.yaml 의 그 시장 종목. 설정이 없으면 None(전체 읽기)."""
+    try:
+        from trader.config import load_universe
+
+        u = load_universe()
+    except Exception:  # noqa: BLE001 - 유니버스가 없으면 조기 종료 없이 읽는다
+        return None
+    return list(u.kr) if market == "KR" else [x.symbol for x in u.us]
+
+
 def report(conn, state: Path | None, account_id: str, market: str, *, days: int = 30) -> dict:
     series = nav_series(conn, account_id, market, days=days)
     m = metrics_of(series)
@@ -214,8 +225,8 @@ def report(conn, state: Path | None, account_id: str, market: str, *, days: int 
 
         cur = ranker.current(state)
         if cur is not None:
-            # 종목별 최신 행은 latest_rows 로만 (전체 스토어를 읽지 않는다, 이연 회수 규칙)
-            latest = features.latest_rows(state, market, asof=end)
+            # 종목별 최신 행은 latest_rows 로만, 유니버스를 넘겨 파일을 전부 읽지 않는다 (이연 회수)
+            latest = features.latest_rows(state, market, tickers=_universe(market), asof=end)
             if not latest.empty:
                 ranked = cur[0](latest.reset_index(drop=True))
                 quant_top = list(ranked["ticker"].head(5))

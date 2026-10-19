@@ -82,3 +82,29 @@ def test_frontmatter_parse(tmp_path):
     )
     a = registry.load_agent("x", tmp_path)
     assert a.description == "설명" and a.prompt.startswith("# 역할")
+
+
+def test_agents_json_appends_schema_when_md_lacks_it():
+    """서브에이전트 프롬프트는 md 본문뿐이다. screener·reflector md 에 스키마가 없으면 런타임에
+    정본(schemas.py) 스키마를 덧붙인다 — 트레이더처럼 md 에 이미 있으면 두 번 넣지 않는다."""
+    j = agents_json(("screener", "reflector", "trader"), Settings(), REPO_AGENTS)
+    for n in ("screener", "reflector", "trader"):
+        assert '"type":"object"' in j[n]["prompt"], n
+        assert j[n]["prompt"].count("스키마:") == 1, n
+    assert '"picks"' in j["screener"]["prompt"] and '"signal_review"' in j["reflector"]["prompt"]
+
+
+def test_common_rules_identical_prefix_across_all_agents():
+    """공통 규칙 6문장은 괄호 보충 전까지 모든 md(10개)에서 같아야 한다."""
+    import re
+
+    names = [*AGENTS, *registry.SCREEN_AGENTS, *registry.REFLECT_AGENTS, registry.ORCHESTRATOR]
+    canon = None
+    for name in names:
+        body = load_agent(name, REPO_AGENTS).prompt
+        tail = body.split("# 공통 규칙", 1)[1]
+        lines = [ln for ln in tail.splitlines() if re.match(r"^\d\. ", ln)]
+        assert len(lines) == 6, name
+        prefixes = [ln.split("(", 1)[0].strip().rstrip(".") for ln in lines]
+        canon = canon or prefixes
+        assert prefixes == canon, name

@@ -47,8 +47,11 @@ def quiet_httpx() -> None:
     logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 
-def configure(state_dir: Path, level: str = "INFO") -> None:
-    """루트 로거에 파일·콘솔 핸들러를 붙인다. 여러 번 호출해도 핸들러가 중복되지 않는다."""
+def configure(state_dir: Path, level: str = "INFO", *, name: str | None = None) -> None:
+    """루트 로거에 파일·콘솔 핸들러를 붙인다. 여러 번 호출해도 핸들러가 중복되지 않는다.
+
+    name 을 주면 `trader-<name>.log` 에 쓴다 — 데몬과 함께 오래 사는 명령(web·telegram loop·monitor)
+    이 같은 파일을 두고 회전·뒤섞임을 겪지 않도록. 짧은 CLI 명령은 기본 trader.log 를 쓴다."""
     root = logging.getLogger()
     root.setLevel(level)
     quiet_httpx()
@@ -57,7 +60,8 @@ def configure(state_dir: Path, level: str = "INFO") -> None:
     log_dir.mkdir(parents=True, exist_ok=True)
     formatter = logging.Formatter(_FORMAT)
     stream_handler = logging.StreamHandler()
-    for h in (file_handler(log_dir / "trader.log"), stream_handler):
+    fname = f"trader-{name}.log" if name else "trader.log"
+    for h in (file_handler(log_dir / fname), stream_handler):
         h.set_name(_HANDLER_NAME)
         h.setFormatter(formatter)
         root.addHandler(h)

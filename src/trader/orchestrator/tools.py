@@ -420,6 +420,8 @@ def checkpoint_read(
         out = _compact_section(section, out)
         errors = [e for e in data.get("errors", []) if e.startswith(section + ".")]
         out = {**out, "input_errors": errors, "meta": data.get("meta")}
+        if section in ("fundamental", "sentiment"):  # md: "함께 오는 quote 는 현재가다"
+            out["quote"] = (body.get("technical") or {}).get("quote")
     return {"ok": True, "data": out}
 
 
@@ -582,6 +584,15 @@ def _shrink(obj: dict, limit: int, *, drop_evidence: bool = False) -> dict:
     return cut
 
 
+def _latest_decision_stage(d: Path) -> str | None:
+    """오늘의 최신 결정 단계 (31_decision_r<n> 중 n 최대, 없으면 30_decision, 둘 다 없으면 None)."""
+    stages = list_checkpoints(d)
+    rounds = [int(m.group(1)) for s in stages if (m := _RESUME_RE.match(s))]
+    if rounds:
+        return f"31_decision_r{max(rounds)}"
+    return "30_decision" if "30_decision" in stages else None
+
+
 def _brief_turn(t: dict) -> dict:
     """우선순위가 아닌 쪽 라운드의 턴은 핵심만 남긴다 (트레이더 묶음 크기 절감)."""
     return {
@@ -647,9 +658,13 @@ def checkpoint_bundle(
         if summ is None:
             return {"ok": False, "error": "25_research_summary 없음 (summarize 먼저)"}
         inputs = read_checkpoint(d, "00_inputs") or {}
+        prev_stage = _latest_decision_stage(d)
+        prev = (read_checkpoint(d, prev_stage) or {}).get("data") if prev_stage else None
         data = {
             "ticker": ticker,
             "reports": reports,
+            "previous_decision": prev,  # 재평가(resume) 때 트레이더가 전제로 삼는 원래·최신 결정
+            "previous_decision_stage": prev_stage,
             "research_summary": _trader_summary(summ.get("data", summ)),
             "context": trader_context(
                 ctx,
@@ -742,6 +757,11 @@ def submit_decision(
         return {"ok": False, "error": f"ticker 불일치: {decision.ticker} ≠ {ticker}"}
     inputs = read_checkpoint(d, "00_inputs") or {}
     price = _quote_price(inputs)
+    if resume_stage:
+        # 재평가의 현재가는 아침 시세가 아니라 장중 트리거 가격이다 (트레이더 md 의 "현재가")
+        trig = repo.latest_trigger_price(ctx.conn, market, ticker, date)
+        if trig is not None:
+            price = trig
     if price is None:
         return {
             "ok": False,
@@ -781,6 +801,7 @@ def submit_decision(
         "path": str(path),
         "stage": stage_name,
         "action": decision.action,
+        "price": str(price),
         "dry_run": ctx.dry_run,
         "executions": executions,
         "memory_entry_id": memory_entry_id,

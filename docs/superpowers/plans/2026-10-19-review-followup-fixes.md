@@ -61,9 +61,23 @@
 - [x] F3 `quant.candidates(asof=)` ← CLI scan 운영일·데몬 `today`. 신호 결측·필터 제외 종목은 "피처는 있으나 필터·신호 결측으로 제외".
 - [x] 커밋 `fix(fills, daemon, scan): 미체결 만료·scan→analyze 단일 잡·stale 정리·asof 전달`
 
+### Task G: 후속 수정 독립 리뷰 + 리뷰 공백(웹·프롬프트·설정) 반영 (2026-10-20, 18건)
+- [x] G1 손절 dedupe 가 장중 체결을 못 보는 문제: 막힐 때 그 계좌 체결을 1회 동기화(`monitor._blocked_by_open_sell`).
+- [x] G2 `DaemonDeps.stop_event`: 시그널 핸들러가 세우고 `_analyze_body` 가 남은 종목 세션을 띄우지 않음(`stopped`). scan 실패는 `_analyze_body` 가 원인과 함께 알림 1건·error 1건.
+- [x] G3 `MarketSchedule.analyze` 선택(yaml 에서 제거), `_tick_size_kr` 제거(`risk/ticks`), unknown 주문의 "[주문 실패]" 덧알림 제거.
+- [x] G4 재평가의 현재가 = 그날 최신 트리거 가격(`repo.latest_trigger_price`; 손절선 검사·게이트), 트레이더 묶음에 `previous_decision(_stage)`, 섹션 읽기(fundamental·sentiment)에 `quote` 동봉.
+- [x] G5 `registry.agents_json` 이 md 에 스키마가 없으면 정본 스키마를 덧붙임(screener·reflector). 공통 규칙 6문장 접두 비교를 10개 md 전부로 확장.
+- [x] G6 md 갱신: trader(계좌별 portfolio·memory·memory_ids_used·trigger.price), analyst-fundamental/sentiment(quote 사본·manual_inputs), analyst-news-macro(events), orchestrator(previous_decision).
+- [x] G7 웹: `/api/today`·`/api/checkpoint` 기본 날짜와 `portfolio/refresh` 스냅샷 날짜를 `run_date_for`, Performance 페이지 시장 초기화.
+- [x] 커밋 `fix: 후속 수정 독립 리뷰·웹/프롬프트/설정 리뷰 반영`
+
+### Task H: 남은 보완 3건 (2026-10-20)
+- [x] H1 `session.run_claude`: 새 프로세스 그룹(`start_new_session`)으로 띄우고 타임아웃이면 `os.killpg` (고아 `trader tool` 서브프로세스 방지; Windows 는 자식만).
+- [x] H2 `performance.report` 퀀트 벤치마크가 `universe.yaml` 종목을 `latest_rows(tickers=)` 로 넘긴다.
+- [x] H3 `logging_setup.configure(name=)`: `trader web`→`trader-web.log`, `telegram loop`→`trader-telegram.log`, `monitor`→`trader-monitor.log`. 데몬·짧은 명령은 `trader.log`.
+- [x] 커밋 `fix: 세션 프로세스 그룹 kill·퀀트 벤치마크 유니버스·장기 명령 로그 분리`
+
 ## 범위 조정
 | 제외 항목 | 이유 | 재개 |
 |---|---|---|
-| 로그 파일 프로세스별 분리 | 공유 핸들러로 유실은 막음. 파일 분리는 운영 편의 문제 | 사용자 결정 |
-| 고아 `claude` 프로세스 killpg | 세션을 프로세스 그룹으로 띄우는 구조 변경 필요 | 별도 작업 |
-| 퀀트 벤치마크 `latest_rows` 유니버스 전달 | 웹 요청 성능 문제, 운영 중 체감되면 | 사용자 결정 |
+| (없음) 이전 체인 순수 정리(`cli.py` 부트스트랩 묶기·`SessionResult.num_turns`·hydrate 공유)와 Phase 7 별도 Phase 항목은 TODO 에 그대로 | 동작 변화 없음·데이터 설계 필요 | 사용자 결정 |

@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import shutil
+import signal
 import sqlite3
 import subprocess
 import sys
@@ -186,13 +187,44 @@ def _finish_call(
     db.finish_run(conn, run_id, status, error)
 
 
+def run_claude(cmd: list[str], **kw: Any) -> subprocess.CompletedProcess:
+    """subprocess.run 과 같은 인터페이스. 새 프로세스 그룹으로 띄우고 타임아웃이면 그룹을 통째로
+    죽인다 — subprocess.run 의 kill 은 claude 만 죽여 그 자식(`trader tool` 서브프로세스)이 고아로
+    남아 결정·주문을 계속 낼 수 있다. Windows 는 프로세스 그룹 신호가 없어 자식만 죽인다."""
+    timeout = kw.pop("timeout", None)
+    stdin = kw.pop("input", None)
+    kw.pop("capture_output", None)
+    posix = os.name == "posix"
+    proc = subprocess.Popen(
+        cmd,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=posix,
+        **kw,
+    )
+    try:
+        out, err = proc.communicate(stdin, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        if posix:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        else:
+            proc.kill()
+        proc.communicate()
+        raise
+    return subprocess.CompletedProcess(cmd, proc.returncode, out, err)
+
+
 def run_session(
     spec: SessionSpec,
     settings: Settings,
     conn: sqlite3.Connection | None,
     accounts: list[AccountConfig],
     *,
-    runner: Callable[..., subprocess.CompletedProcess] = subprocess.run,
+    runner: Callable[..., subprocess.CompletedProcess] | None = None,
     claude_bin: Path | None = None,
     agents_dir: Path | None = None,
     state: Path | None = None,
@@ -337,7 +369,7 @@ def run_session(
         return SessionResult(ok=False, session_id=session_id, error=err, duration_ms=elapsed_ms())
 
     try:
-        proc = runner(
+        proc = (runner or run_claude)(
             cmd,
             input=_stdin_payload(spec, asof),
             capture_output=True,

@@ -427,3 +427,38 @@ def test_prestage_failure_closes_run_and_removes_cwd(project, conn, accounts, mo
     row = conn.execute("SELECT status, error FROM runs").fetchone()
     assert row["status"] == "error" and row["error"]
     assert set(Path(tempfile.gettempdir()).glob("trader-claude-*")) == before
+
+
+def test_default_runner_kills_process_group_on_timeout(tmp_path):
+    """세션이 타임아웃되면 claude 뿐 아니라 그 자식(tool 서브프로세스)도 죽어야 한다.
+    subprocess.run 의 kill 은 직접 자식만 죽여 고아 프로세스가 주문을 계속 낼 수 있다."""
+    import os
+    import subprocess
+    import sys
+    import time
+
+    import pytest
+
+    from trader.orchestrator import session
+
+    if sys.platform == "win32":
+        pytest.skip("POSIX 프로세스 그룹 전용")
+    marker = tmp_path / "grandchild.pid"
+    child = (
+        "import subprocess, sys, time, pathlib; "
+        f"p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']); "
+        f"pathlib.Path({str(marker)!r}).write_text(str(p.pid)); time.sleep(60)"
+    )
+    with pytest.raises(subprocess.TimeoutExpired):
+        session.run_claude([sys.executable, "-c", child], input="", timeout=2, cwd=str(tmp_path))
+    pid = int(marker.read_text())
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.1)
+    else:
+        os.kill(pid, 9)
+        pytest.fail("손자 프로세스가 살아 있다 (프로세스 그룹 kill 안 됨)")

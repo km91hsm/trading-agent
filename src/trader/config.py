@@ -318,7 +318,7 @@ class MarketSchedule(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     scan: str
-    analyze: str
+    analyze: str | None = None  # 호환용. scan 뒤 바로 analyze 가 이어지므로 쓰지 않는다
     monitor: MonitorWindow
     tz: str = "Asia/Seoul"
 
@@ -333,16 +333,13 @@ class MarketSchedule(BaseModel):
             raise ValueError(f"알 수 없는 시간대: {v!r}") from None
         return v
 
-    @field_validator("scan", "analyze")
+    @field_validator("scan")
     @classmethod
     def _v(cls, v: str) -> str:
         return _check_hm(v)
 
     def scan_hm(self) -> tuple[int, int]:
         return _hm(self.scan)
-
-    def analyze_hm(self) -> tuple[int, int]:
-        return _hm(self.analyze)
 
 
 class WeeklyJob(BaseModel):

@@ -169,3 +169,50 @@ def test_resume_stage_writes_round_specific_risk_and_order_checkpoints(conn):
     stages = list_checkpoints(d)
     assert "41_risk_check_r1_paper-main" in stages
     assert (d / "40_risk_check_paper-main.json").read_text(encoding="utf-8") == before
+
+
+def test_resume_uses_trigger_price_for_stop_loss_check_and_gate(conn):
+    """재평가는 장중 트리거 가격이 현재가다. 아침 00_inputs 시세로 손절선을 검사하면 '현재가 아래'
+    규칙을 지킨 트레이더의 결정(아침 가격보다 높은 손절선)이 거부된다."""
+    ctx, accounts, brokers = _prepare(conn)  # 아침 시세 71500
+    dec_id = repo.decision_id(conn, D, "KR", "005930")
+    repo.insert_trigger(
+        conn,
+        market="KR",
+        ticker="005930",
+        kind="take_profit",
+        detail={},
+        price=Decimal("80000"),
+        decision_id=dec_id,
+        account_id="paper-main",
+        created_at=NOW.isoformat(),
+    )
+    r = tools.submit_decision(
+        ctx,
+        ticker="005930",
+        market="KR",
+        date=D,
+        stage="31_decision_r1",
+        payload=ok_decision(action="HOLD", target_weight=0.0, stop_loss=75000.0),
+    )
+    assert r["ok"], r
+    assert r.get("price") == "80000"
+
+
+def test_trader_bundle_carries_previous_decision_in_resume(conn):
+    """트리거 재평가의 트레이더 입력에는 원래 결정(30_decision·최신 31_)이 들어가야 한다.
+    md 가 '원래 결정을 전제로' 라고 하는데 묶음에 없으면 트레이더가 아침 리포트로 다시 추측한다."""
+    ctx, accounts, brokers = _prepare(conn)
+    b = tools.checkpoint_bundle(ctx, ticker="005930", market="KR", date=D, kind="trader")
+    assert b["ok"] and b["data"]["previous_decision"]["action"] == "BUY"
+    tools.submit_decision(
+        ctx,
+        ticker="005930",
+        market="KR",
+        date=D,
+        stage="31_decision_r1",
+        payload=ok_decision(action="TRIM", target_weight=0.05),
+    )
+    b2 = tools.checkpoint_bundle(ctx, ticker="005930", market="KR", date=D, kind="trader")
+    assert b2["data"]["previous_decision"]["action"] == "TRIM"
+    assert b2["data"]["previous_decision_stage"] == "31_decision_r1"

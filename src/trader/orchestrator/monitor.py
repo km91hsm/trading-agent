@@ -295,6 +295,26 @@ def _cached_quote(
     return quotes[ticker]
 
 
+def _blocked_by_open_sell(
+    ctx: MonitorContext, account: AccountConfig, market: str, ticker: str, local_day: date
+) -> bool:
+    """같은 현지 날짜의 살아 있는 SELL 이 있으면 True. 원장 status 는 fills sync(마감 뒤)가 바꾸므로
+    장중엔 체결된 TRIM 도 accepted 로 남아 손절을 막는다 → 막힐 때만 그 계좌의 체결을 한 번 동기화해
+    (KIS 1회) filled 로 바뀌면 막지 않는다."""
+    kw = {"market": market, "exclude_filled": True}
+    if not repo.has_open_order_today(ctx.conn, account.id, ticker, "SELL", local_day, **kw):
+        return False
+    broker = ctx.brokers.get(account.id)
+    if broker is not None:
+        try:
+            from trader.orchestrator.fills import sync_fills
+
+            sync_fills(ctx.conn, broker, account, local_day, now=ctx.now)
+        except Exception as e:  # noqa: BLE001 - 체결 조회 실패면 보수적으로 막힌 채로 둔다
+            logger.warning("손절 전 체결 동기화 실패 %s %s: %s", account.id, ticker, e)
+    return repo.has_open_order_today(ctx.conn, account.id, ticker, "SELL", local_day, **kw)
+
+
 def _sell_now(
     ctx: MonitorContext,
     account: AccountConfig,
@@ -310,9 +330,7 @@ def _sell_now(
     "같은 날" 은 시장 현지 날짜다 (US 는 KST 자정을 넘겨 장이 열려 있어 KST 날짜로 보면
     23:30 KST 에 낸 손절 매도를 00:30 KST 점검이 놓치고 다시 낸다)."""
     local_day = ctx.now().astimezone(MARKET_TZ.get(market, KST)).date()
-    if repo.has_open_order_today(
-        ctx.conn, account.id, pos.ticker, "SELL", local_day, market=market, exclude_filled=True
-    ):
+    if _blocked_by_open_sell(ctx, account, market, pos.ticker, local_day):
         return 0
     unrecorded = f"sl_unrecorded:{account.id}:{market}:{pos.ticker}:{local_day.isoformat()}"
     if control.get_flag(ctx.conn, unrecorded):

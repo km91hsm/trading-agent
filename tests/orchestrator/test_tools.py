@@ -1067,3 +1067,19 @@ def test_submit_rejects_stop_loss_at_or_above_price_for_any_action(ctx, project)
         assert r["ok"] is False and "손절선" in r["error"], action
     assert read_checkpoint(run_dir(D, "KR", "005930"), "30_decision") is None
     assert ctx.conn.execute("SELECT COUNT(*) AS n FROM decisions").fetchone()["n"] == 0
+
+
+def test_bundle_without_decision_has_no_previous_decision(ctx, project):
+    _ready_for_submit(ctx, project)
+    b = tools.checkpoint_bundle(ctx, ticker="005930", market="KR", date=D, kind="trader")
+    assert b["ok"] and b["data"].get("previous_decision") is None
+
+
+def test_section_read_for_fundamental_and_sentiment_includes_quote(ctx, project):
+    """두 md 가 '함께 오는 quote 는 현재가' 라고 하므로 절 출력에 현재가를 실어 준다."""
+    _inputs(project)
+    for section in ("fundamental", "sentiment"):
+        r = tools.checkpoint_read(
+            ctx, ticker="005930", market="KR", date=D, stage="00_inputs", section=section
+        )
+        assert r["ok"] and r["data"]["quote"]["data"]["price"] == "71500", section

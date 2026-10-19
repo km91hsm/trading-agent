@@ -653,6 +653,8 @@ def test_unknown_network_result_is_recorded_as_unknown_and_counts_as_live(ectx):
     assert repo.has_open_order_today(ectx.conn, "paper-main", "005930", "BUY", D, market="KR")
     assert "005930" in repo.today_buy_tickers(ectx.conn, "paper-main", D, market="KR")
     assert any("미확인" in m for m in ectx.notifier.sent)
+    # "살아 있을 수 있다" 고 알린 주문을 뒤이어 "[주문 실패]" 로 또 알리면 운영자가 재주문한다
+    assert not any("주문 실패" in m for m in ectx.notifier.sent)
 
 
 def test_approve_rejected_when_account_mode_is_no_longer_approve(ectx):

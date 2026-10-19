@@ -383,6 +383,19 @@ def has_open_order_today(
     return row is not None
 
 
+def latest_trigger_price(
+    conn: sqlite3.Connection, market: str, ticker: str, d: date
+) -> Decimal | None:
+    """운영일 d 의 가장 최근 트리거 가격 (재평가의 '현재가'). 없으면 None."""
+    lo, hi = day_bounds(d, market)
+    row = conn.execute(
+        "SELECT price FROM triggers WHERE market=? AND ticker=? AND price IS NOT NULL "
+        "AND created_at >= ? AND created_at < ? ORDER BY id DESC LIMIT 1",
+        (market, ticker, lo, hi),
+    ).fetchone()
+    return _dec(row["price"]) if row else None
+
+
 def unhandled_trigger_id(
     conn: sqlite3.Connection, market: str, ticker: str, kind: str
 ) -> int | None:

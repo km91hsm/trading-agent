@@ -159,3 +159,25 @@ def test_orders_window_uses_kst_day(conn):
         conn, "paper-main", "KR", date(2026, 10, 17), date(2026, 10, 17)
     )
     assert [r["amount"] for r in rows] == ["500"]
+
+
+def test_report_quant_benchmark_passes_universe_to_latest_rows(conn, project, monkeypatch):
+    """퀀트 벤치마크의 최신 행 조회는 유니버스 종목을 넘겨 파일 60개를 전부 읽지 않는다."""
+    import yaml
+
+    from trader.ml import features, ranker
+
+    (project / "config" / "universe.yaml").write_text(
+        yaml.safe_dump({"kr": ["A", "B"], "us": [], "watch": [], "exclude": []}), encoding="utf-8"
+    )
+    seen = {}
+
+    def fake_latest_rows(state, market, *, tickers=None, asof=None, max_files=60):
+        seen["tickers"] = tickers
+        return pd.DataFrame()
+
+    monkeypatch.setattr(features, "latest_rows", fake_latest_rows)
+    monkeypatch.setattr(ranker, "current", lambda state=None: (lambda df: df, "v1"))
+    _navs(conn, [100, 110])
+    performance.report(conn, None, "paper-main", "KR", days=30)
+    assert seen["tickers"] == ["A", "B"]

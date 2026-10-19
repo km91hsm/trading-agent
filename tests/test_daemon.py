@@ -606,7 +606,7 @@ def test_scan_analyze_body_runs_scan_then_analyze(conn, monkeypatch):
         order.append(("scan", m))
         return {"ok": 1}
 
-    def analyze(deps, m):
+    def analyze(deps, m, **kw):
         order.append(("analyze", m))
         return {"targets": 2}
 
@@ -634,7 +634,7 @@ def test_scan_analyze_body_scan_failure_still_runs_analyze_and_notifies(conn, mo
 
     called = []
     monkeypatch.setattr(daemon, "_scan_body", boom)
-    def analyze(deps, m):
+    def analyze(deps, m, **kw):
         called.append(m)
         return {"targets": 0, "error": "_scan 없음"}
 
@@ -642,7 +642,7 @@ def test_scan_analyze_body_scan_failure_still_runs_analyze_and_notifies(conn, mo
     deps = _deps(conn, FakeMarket(), now=lambda: datetime(2026, 10, 8, 0, 0, tzinfo=UTC))
     deps.notifier = Sent()
     r = daemon._scan_analyze_body(deps, "KR")
-    assert called == ["KR"] and r["error"] and any("scan" in m.lower() for m in deps.notifier.msgs)
+    assert called == ["KR"] and r["error"]  # 알림은 _analyze_body 가 원인과 함께 1건만
 
 
 def test_scan_analyze_job_closes_stale_running_before_sessions(conn, monkeypatch):
@@ -655,8 +655,70 @@ def test_scan_analyze_job_closes_stale_running_before_sessions(conn, monkeypatch
     )
     conn.commit()
     monkeypatch.setattr(daemon, "_scan_body", lambda deps, m: {"ok": 1})
-    monkeypatch.setattr(daemon, "_analyze_body", lambda deps, m: {"targets": 0})
+    monkeypatch.setattr(daemon, "_analyze_body", lambda deps, m, **kw: {"targets": 0})
     deps = _deps(conn, FakeMarket(), now=lambda: now)
     daemon._scan_analyze_body(deps, "KR")
     row = conn.execute("SELECT status FROM agent_calls").fetchone()
     assert row["status"] == "error"
+
+
+def test_analyze_body_stops_launching_sessions_after_shutdown_signal(project, conn):
+    """SIGTERM 뒤 shutdown(wait=True) 가 잡을 기다리는 동안 남은 종목 세션을 계속 띄우면
+    launchd ExitTimeOut(세션 1회 기준) 안에 못 끝나 SIGKILL 된다 → 종료 플래그를 보고 멈춘다."""
+    from trader.orchestrator.run_store import write_checkpoint
+    from trader.orchestrator.session import SessionResult
+
+    deps = _deps(conn, FakeMarket(), now=lambda: datetime(2026, 10, 8, 0, 0, tzinfo=UTC))
+    write_checkpoint(
+        run_store.market_dir(date(2026, 10, 8), "KR", create=True),
+        "_scan",
+        {"analyze_targets": [{"ticker": t, "exchange": None} for t in ("A", "B", "C")]},
+    )
+    seen = []
+
+    def runner(spec, settings, conn_, accounts_, **kw):
+        seen.append(spec.tickers[0]["ticker"])
+        handler = daemon.make_signal_handler(FakeScheduler(), deps.stop_event)
+        try:
+            handler(15, None)  # 첫 세션 도중 SIGTERM
+        except SystemExit:
+            pass
+        return SessionResult(ok=True, session_id="s", cost_usd=1.0)
+
+    deps.session_runner = runner
+    r = daemon._analyze_body(deps, "KR")
+    assert seen == ["A"] and r["ok"] == 1 and r.get("stopped") is True
+    assert deps.stop_event.is_set()
+
+
+def test_scan_failure_is_reported_once_with_cause(conn, monkeypatch):
+    """scan 예외와 그로 인한 '_scan 없음' 이 알림 두 번·error 두 번이 되면 안 된다. 원인 하나."""
+
+    class Sent:
+        def __init__(self):
+            self.msgs = []
+
+        def send(self, text, *, escape=True):
+            self.msgs.append(text)
+            return True
+
+    def boom(deps, m):
+        raise ValueError("screener 폭발")
+
+    monkeypatch.setattr(daemon, "_scan_body", boom)
+    deps = _deps(conn, FakeMarket(), now=lambda: datetime(2026, 10, 8, 0, 0, tzinfo=UTC))
+    deps.notifier = Sent()
+    r = daemon._scan_analyze_body(deps, "KR")
+    assert len(deps.notifier.msgs) == 1 and "screener 폭발" in deps.notifier.msgs[0]
+    assert "screener 폭발" in r["error"]
+
+
+def test_schedule_analyze_key_is_optional():
+    """analyze 시각은 더 쓰지 않으므로 yaml 에서 지워도 로드돼야 한다."""
+    data = SCHED.model_dump()
+    data["kr"].pop("analyze")
+    data["us"].pop("analyze")
+    sched = ScheduleConfig.model_validate(data)
+    assert sched.kr.analyze is None and not hasattr(sched.kr, "analyze_hm")
+    jobs = {j.id for j in daemon.build_jobs(sched, Settings(), markets=["KR"])}
+    assert "kr_scan_analyze" in jobs

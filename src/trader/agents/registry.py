@@ -78,6 +78,27 @@ def model_for(name: str, settings: Settings, default: str) -> str:
     return settings.models.get(key, default)
 
 
+def schema_model_for(name: str) -> type | None:
+    """에이전트가 출력하는 스키마의 정본 모델."""
+    if name.startswith("analyst-"):
+        return schemas.AnalystReport
+    if name.startswith("researcher-"):
+        return schemas.DebateTurn
+    return {
+        "trader": schemas.Decision,
+        "screener": schemas.Screened,
+        "reflector": schemas.Reflection,
+    }.get(name)
+
+
+def _with_schema(name: str, prompt: str) -> str:
+    """md 에 스키마 전문이 없으면 정본(schemas.py)에서 만들어 덧붙인다 (md 사본은 설명용)."""
+    model = schema_model_for(name)
+    if model is None or '"type":"object"' in prompt:
+        return prompt
+    return prompt.rstrip("\n") + "\n\n스키마: " + schemas.json_schema(model) + "\n"
+
+
 def agents_json(names: tuple[str, ...], settings: Settings, base: Path | None = None) -> dict:
     """`claude --agents <json>` 형식: {name: {description, prompt, tools, model}}."""
     out: dict[str, dict] = {}
@@ -85,7 +106,7 @@ def agents_json(names: tuple[str, ...], settings: Settings, base: Path | None = 
         a = load_agent(n, base)
         out[n] = {
             "description": a.description,
-            "prompt": a.prompt,
+            "prompt": _with_schema(n, a.prompt),
             "tools": [],
             "model": model_for(n, settings, a.model),
         }

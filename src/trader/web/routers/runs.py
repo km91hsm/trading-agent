@@ -16,8 +16,11 @@ from trader.web.routers._common import deps_of, require_market, today_kst
 router = APIRouter(tags=["runs"])
 
 
-def _date_arg(request: Request, value: str | None) -> _date:
+def _date_arg(request: Request, value: str | None, market: str | None = None) -> _date:
     if not value:
+        # US 는 KST 자정 뒤에도 전날 뉴욕 운영일 디렉터리에 실행이 있다 → run_date_for
+        if market in ("KR", "US"):
+            return run_store.run_date_for(market, deps_of(request).now())
         return today_kst(request)
     try:
         return _date.fromisoformat(value)
@@ -65,7 +68,7 @@ def _is_today(deps, created_at: str) -> bool:
 @router.get("/today")
 def today(request: Request, market: str | None = None, date: str | None = None) -> dict:
     m = require_market(market)
-    d = _date_arg(request, date)
+    d = _date_arg(request, date, m)
     deps = deps_of(request)
     mdir = run_store.market_dir(d, m, deps.state)
     tickers: dict[str, list[str]] = {}
@@ -85,7 +88,7 @@ def checkpoint(
     stage: str | None = None,
 ) -> dict:
     _ids(ticker, market, stage or "")
-    d = _date_arg(request, date)
+    d = _date_arg(request, date, market)
     deps = deps_of(request)
     base = deps.state if deps.state is not None else paths.state_dir()
     # run_dir 은 디렉터리를 만들므로 조회에서는 경로만 조립한다 (존재하지 않으면 404)

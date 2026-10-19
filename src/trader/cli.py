@@ -202,21 +202,6 @@ def kis_ping(
         raise typer.Exit(code=1)
 
 
-def _tick_size_kr(price: Decimal) -> Decimal:
-    """KRX 호가단위 (2023-01 개편 기준)."""
-    for limit, tick in (
-        (2000, 1),
-        (5000, 5),
-        (20000, 10),
-        (50000, 50),
-        (200000, 100),
-        (500000, 500),
-    ):
-        if price < limit:
-            return Decimal(tick)
-    return Decimal(1000)
-
-
 @kis_app.command("order-test")
 @_config_errors
 def kis_order_test(
@@ -241,8 +226,10 @@ def kis_order_test(
     from trader.broker.models import OrderRequest
 
     try:
+        from trader.risk.ticks import tick_size
+
         price = _build_market(secrets).get_price_kr(ticker).price
-        tick = _tick_size_kr(price)
+        tick = tick_size("KR", price)  # 호가단위 정본 (체결되지 않게 내림)
         limit = (price * Decimal("0.9") // tick) * tick
         req = OrderRequest(
             ticker=ticker,
@@ -851,6 +838,7 @@ def _telegram_run(*, interval: int, max_iterations: int | None) -> None:
     from trader.notify.commands import poll_once
 
     ectx, secrets = _exec_ctx()
+    configure(paths.state_dir(), name="telegram")  # 데몬과 다른 파일 (오래 사는 명령)
     receiver = make_receiver(secrets)
     if receiver is None:
         ectx.conn.close()
@@ -1084,11 +1072,12 @@ def control_resume() -> None:
 # --- 웹 UI (Phase 5) ------------------------------------------------------------
 
 
-def _web_deps():
+def _web_deps(log_name: str | None = None):
+    """log_name="web" 은 단독 `trader web` 용 (데몬 안의 web 스레드는 데몬 로그를 그대로 쓴다)."""
     from trader.ledger import db
     from trader.web.app import WebDeps
 
-    configure(paths.state_dir())
+    configure(paths.state_dir(), name=log_name)
     settings = config.load_settings()
     accounts = config.load_accounts()
     secrets = config.load_secrets()
@@ -1126,7 +1115,7 @@ def web(
 
     from trader.web.app import create_app
 
-    deps = _web_deps()
+    deps = _web_deps(log_name="web")
     bind = host or deps.settings.web.bind
     extra = _hosts_for_bind(bind)
     if extra:
@@ -1256,7 +1245,7 @@ def monitor_cmd(
     from trader.orchestrator.session import run_session
 
     try:
-        configure(paths.state_dir())
+        configure(paths.state_dir(), name="monitor")  # 데몬과 다른 로그 파일 (오래 사는 명령)
         if market not in ("KR", "US"):
             raise config.ConfigError(f"시장은 KR 또는 US 여야 합니다: {market}")
         settings = config.load_settings()

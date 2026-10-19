@@ -506,3 +506,38 @@ def test_parse_price_conditions_ignores_volume_and_picks_price_number():
         "RSI 80 초과 과열",
     ]
     assert monitor.parse_price_conditions(conds) == [("<", Decimal("65000"))]
+
+
+def test_stop_loss_refreshes_fill_status_before_dedupe(conn):
+    """원장 status 는 fills sync(마감 뒤)만 바꾸므로 오전에 체결된 TRIM 이 장중엔 accepted 로 남아
+    손절을 막는다 → 막힐 때 그 계좌의 체결을 한 번 동기화해 filled 면 손절을 낸다."""
+    from trader.broker.models import Fill
+
+    dec = _decision(conn, stop_loss=65000.0)
+    dec_id = repo.decision_id(conn, D, "KR", "005930")
+    repo.insert_order(
+        conn,
+        decision_id=dec_id,
+        account_id="paper-main",
+        ticker=dec.ticker,
+        market="KR",
+        side="SELL",
+        qty=5,
+        order_type="MARKET",
+        price=None,
+        status="accepted",  # 체결됐지만 원장은 아직 모른다
+        order_no="T1",
+        message="TRIM",
+        mode="auto",
+        created_at=(NOW - timedelta(hours=1)).isoformat(),
+    )
+    ctx = _ctx(conn, positions=[_pos(cur="63000", qty=5)], price="63000")
+    fill = Fill(
+        order_no="T1", ticker="005930", market="KR", side="SELL", qty=5,
+        price=Decimal("70500"), filled_at=NOW - timedelta(minutes=50),
+    )
+    ctx.brokers["paper-main"].fills = {("KR", D): [fill]}
+    r = monitor.monitor_once(ctx, market="KR", today=D)
+    assert r["stop_loss_orders"] == 1 and len(ctx.brokers["paper-main"].orders) == 1
+    st = conn.execute("SELECT status FROM orders WHERE order_no='T1'").fetchone()["status"]
+    assert st == "filled"

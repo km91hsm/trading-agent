@@ -334,6 +334,7 @@ class DaemonDeps:
     snapshot_fn: Callable[[list[str]], int] | None = (
         None  # reflect 전 피처 스냅샷(시장 목록 → 행 수)
     )
+    stop_event: threading.Event = field(default_factory=threading.Event)  # SIGTERM 뒤 세션 중단
 
 
 def _today(deps: DaemonDeps) -> date:
@@ -434,7 +435,7 @@ def _ensure_quant(deps: DaemonDeps, ticker: str, market: str, today: date) -> No
         conn.close()
 
 
-def _analyze_body(deps: DaemonDeps, market: str) -> dict:
+def _analyze_body(deps: DaemonDeps, market: str, *, scan_error: str | None = None) -> dict:
     from trader.orchestrator.run_store import read_checkpoint, run_date_for
     from trader.orchestrator.session import SessionSpec, run_session
     from trader.sources.inputs import collect_and_save
@@ -442,14 +443,13 @@ def _analyze_body(deps: DaemonDeps, market: str) -> dict:
     today = run_date_for(market, deps.now())
     scan = read_checkpoint(run_store.market_dir(today, market, deps.state), "_scan")
     if scan is None:
-        # scan 잡(10분 전 cron)이 아직 안 끝났거나 실패했다. 조용히 ok 로 끝나면 그 시장의 하루
-        # 분석이 통째로 빠진 것을 로그 말고는 알 수 없다 → 알림 + error 행
-        msg = (
-            f"[분석 생략] {market} {today}: _scan.json 없음 (scan 잡 지연·실패), 보유 재분석도 생략"
-        )
+        # scan 이 실패했거나 결과가 없다. 조용히 ok 로 끝나면 그 시장의 하루 분석이 통째로 빠진
+        # 것을 로그 말고는 알 수 없다 → 원인을 담은 알림 1건 + error 행
+        cause = f"scan 실패: {scan_error}" if scan_error else "_scan.json 없음 (scan 지연·실패)"
+        msg = f"[분석 생략] {market} {today}: {cause}, 보유 재분석도 생략"
         logger.error(msg)
         deps.notifier.send(msg)
-        return {"targets": 0, "error": "_scan.json 없음 (scan 잡 지연·실패)"}
+        return {"targets": 0, "error": cause}
     targets = scan.get("analyze_targets") or []
     if not targets:
         logger.info("%s 분석 대상 없음 (빈 picks·보유·관심종목)", market)
@@ -473,7 +473,15 @@ def _analyze_body(deps: DaemonDeps, market: str) -> dict:
     # 종목당 세션 1회(--max-budget-usd 는 세션 단위). 실패한 종목은 기록하고 다음 종목으로.
     runner = deps.session_runner or run_session
     ok, failed, sessions = 0, [], []
+    stopped = False
     for t in targets:
+        if deps.stop_event.is_set():
+            # SIGTERM 뒤 shutdown(wait=True) 가 이 잡을 기다린다. 남은 종목 세션을 계속 띄우면
+            # launchd ExitTimeOut(세션 1회 기준) 안에 못 끝나 SIGKILL 된다
+            left = len(targets) - ok - len(failed)
+            logger.warning("종료 중: 남은 analyze 세션 %d건 생략 %s", left, market)
+            stopped = True
+            break
         conn = deps.conn_factory()
         try:
             res = runner(
@@ -503,7 +511,13 @@ def _analyze_body(deps: DaemonDeps, market: str) -> dict:
         else:
             failed.append(t["ticker"])
             deps.notifier.send(f"[analyze 실패] {market} {t['ticker']}: {res.error}")
-    return {"targets": len(targets), "ok": ok, "failed": failed, "sessions": sessions}
+    return {
+        "targets": len(targets),
+        "ok": ok,
+        "failed": failed,
+        "sessions": sessions,
+        "stopped": stopped,
+    }
 
 
 def _monitor_body(deps: DaemonDeps, market: str) -> dict:
@@ -682,12 +696,13 @@ def _scan_analyze_body(deps: DaemonDeps, market: str) -> dict:
     """scan 뒤 바로 analyze. scan 이 예외로 죽어도 통보하고 analyze 를 시도한다(_analyze_body 가
     `_scan.json` 없음을 알림·error 로 남긴다). 세션을 세기 전에 stale running 을 정리한다."""
     _close_stale_sessions(deps)
+    scan_error: str | None = None
     try:
         _scan_body(deps, market)
     except Exception as e:  # noqa: BLE001 - scan 실패가 analyze 시도를 막지 않는다
         logger.exception("scan 실패 %s", market)
-        deps.notifier.send(f"[scan 실패] {market}: {type(e).__name__}: {e}")
-    return _analyze_body(deps, market)
+        scan_error = f"{type(e).__name__}: {e}"  # 알림은 _analyze_body 가 원인과 함께 1건만
+    return _analyze_body(deps, market, scan_error=scan_error)
 
 
 def job_body(deps: DaemonDeps, job: Job) -> Callable[[], Any]:
@@ -785,7 +800,7 @@ def run(
                 misfire_grace_time=120,
             )
         logger.info("데몬 시작: 잡 %d개, web=%s", len(jobs), web)
-        _install_signals(scheduler)
+        _install_signals(scheduler, deps.stop_event)
         try:
             scheduler.start()
         except (KeyboardInterrupt, SystemExit):
@@ -795,7 +810,9 @@ def run(
         lock.release()
 
 
-def make_signal_handler(scheduler: Any) -> Callable[[int, Any], None]:
+def make_signal_handler(
+    scheduler: Any, stop_event: threading.Event | None = None
+) -> Callable[[int, Any], None]:
     """SIGINT/SIGTERM → 실행 중인 잡이 끝나길 기다려 스케줄러를 멈춘 뒤 SystemExit.
 
     wait=True 라야 analyze 세션(최대 llm.timeout_s)이 끝난 뒤 finally 의 잠금 해제가 돈다.
@@ -811,6 +828,8 @@ def make_signal_handler(scheduler: Any) -> Callable[[int, Any], None]:
             logger.warning("시그널 %s 재수신, 이미 종료 중입니다 (실행 중인 잡을 기다림)", signum)
             return
         state["shutting_down"] = True
+        if stop_event is not None:
+            stop_event.set()  # analyze 가 남은 종목 세션을 띄우지 않도록
         logger.info("시그널 %s 수신, 실행 중인 잡을 마치고 데몬을 종료합니다", signum)
         try:
             scheduler.shutdown(wait=True)
@@ -821,10 +840,10 @@ def make_signal_handler(scheduler: Any) -> Callable[[int, Any], None]:
     return handler
 
 
-def _install_signals(scheduler: Any) -> None:
+def _install_signals(scheduler: Any, stop_event: threading.Event | None = None) -> None:
     import signal
 
-    handler = make_signal_handler(scheduler)
+    handler = make_signal_handler(scheduler, stop_event)
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
             signal.signal(sig, handler)

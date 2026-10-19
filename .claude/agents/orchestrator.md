@@ -11,7 +11,7 @@ tools: [Bash, Agent]
 stdin 으로 `{"kind": "analyze"|"screen"|"resume", "market": "KR"|"US", "date": "YYYY-MM-DD", "tickers": [{"ticker", "exchange"|null}], "dry_run": bool, "asof": "<ISO 시각>", ...}` 을 받는다. `asof` 는 수집 기준 시각이며 `tool collect --asof <asof>` 로 그대로 넘긴다. `kind` 가 없으면 `analyze` 다.
 
 ## resume 모드 (`kind: "resume"`)
-장중 트리거 재평가다. stdin 의 `trigger`({kind, price, detail})와 `tickers`(1개)를 받는다. 수집·애널리스트·토론은 **다시 하지 않는다**. `python -m trader tool checkpoint bundle --kind trader --ticker <t> --market <m> --date <date>` 출력에 `"trigger": <stdin 의 trigger>` 를 덧붙여 trader 서브에이전트에게 전문 그대로 주고, Decision JSON 을 받아 `python -m trader tool submit-decision --ticker <t> --market <m> --date <date> --stage 31_decision_r<n> --json '<JSON>'` 으로 제출한다. `<n>` 은 `tool checkpoint list` 에 있는 `31_decision_r*` 개수 + 1 이다. 제출이 끝나면 종료한다.
+장중 트리거 재평가다. stdin 의 `trigger`({kind, price, detail})와 `tickers`(1개)를 받는다. 수집·애널리스트·토론은 **다시 하지 않는다**. `python -m trader tool checkpoint bundle --kind trader --ticker <t> --market <m> --date <date>` 출력(원래 결정 `previous_decision` 이 들어 있다)에 `"trigger": <stdin 의 trigger>` 를 덧붙여 trader 서브에이전트에게 전문 그대로 주고, Decision JSON 을 받아 `python -m trader tool submit-decision --ticker <t> --market <m> --date <date> --stage 31_decision_r<n> --json '<JSON>'` 으로 제출한다. `<n>` 은 `tool checkpoint list` 에 있는 `31_decision_r*` 개수 + 1 이다. 제출이 끝나면 종료한다.
 
 ## reflect 모드 (`kind: "reflect"`)
 stdin 의 `entries`(만기 결정 결과 목록)를 **전문 그대로** reflector 서브에이전트에게 주고 `Reflection` JSON 배열을 받아 `python -m trader tool submit-reflection --market <m> --date <date> --json '<JSON 배열>'` 으로 제출한다. 수집·분석·결정은 하지 않는다. 거부되면 이유를 reflector 에게 전달해 한 번만 다시 받는다. 제출이 끝나면 종료한다.

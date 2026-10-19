@@ -56,3 +56,14 @@ def test_project_root_from_relative_trader_home_is_absolute(project, monkeypatch
     monkeypatch.setenv("TRADER_HOME", ".")
     root = paths.project_root()
     assert root.is_absolute() and root == project.resolve()
+
+
+def test_configure_with_name_uses_separate_file(project):
+    """오래 사는 명령(web·telegram loop·monitor)은 데몬과 다른 파일에 쓴다 (한 파일 공유는 회전
+    경쟁·뒤섞임의 원인). 기본은 trader.log."""
+    logging_setup.configure(project / "state", name="web")
+    logging.getLogger("trader.test").info("웹 로그")
+    for h in logging.getLogger().handlers:
+        h.flush()
+    assert "웹 로그" in (project / "state" / "logs" / "trader-web.log").read_text(encoding="utf-8")
+    assert not (project / "state" / "logs" / "trader.log").exists()

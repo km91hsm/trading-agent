@@ -1,10 +1,12 @@
 from datetime import date
 from decimal import Decimal
 
+from fastapi.testclient import TestClient
 from helpers_agents import ok_decision
-from helpers_web import AUTH
+from helpers_web import AUTH, make_deps
 
 from trader.ledger import repo
+from trader.web.app import create_app
 
 D = date(2026, 10, 9)
 
@@ -96,3 +98,15 @@ def test_portfolio_refresh_passes_memory_settings(client, conn, monkeypatch):
     monkeypatch.setattr(executor, "build_portfolio", spy)
     r = client.post("/api/portfolio/refresh?account_id=paper-main&market=KR", headers=AUTH)
     assert r.status_code == 200 and seen["memory_settings"] is not None
+
+
+def test_refresh_snapshots_under_market_run_date(project, conn):
+    """잔고 새로고침 스냅샷 날짜도 executor·monitor 와 같은 운영일(US 는 뉴욕)이어야 한다."""
+    from datetime import UTC, datetime
+
+    deps = make_deps(project)
+    deps.now = lambda: datetime(2026, 10, 9, 23, 0, tzinfo=UTC)  # 08:00 KST 10-10 = 19:00 ET 10-09
+    c = TestClient(create_app(deps))
+    r = c.post("/api/portfolio/refresh?account_id=paper-main&market=US", headers=AUTH)
+    assert r.status_code == 200, r.text
+    assert r.json()["date"] == "2026-10-09"

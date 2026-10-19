@@ -502,12 +502,13 @@ def _place(
         write_checkpoint(d, f"{order_stage}_{account.id}", _wrap(payload))
     except OSError as e:
         logger.warning("주문 체크포인트 기록 실패 %s %s: %s", account.id, request.ticker, e)
-    head = "[주문]" if result.accepted else "[주문 실패]"
-    _notify_quietly(
-        ctx,
-        f"{head} {account.id} {request.side} {request.ticker} {request.qty}주 "
-        f"({mode}) 접수번호 {result.order_no or '-'} {result.message}",
-    )
+    if status != "unknown":  # unknown 은 위에서 이미 알렸다 (실패로 덧알리면 운영자가 재주문함)
+        head = "[주문]" if result.accepted else "[주문 실패]"
+        _notify_quietly(
+            ctx,
+            f"{head} {account.id} {request.side} {request.ticker} {request.qty}주 "
+            f"({mode}) 접수번호 {result.order_no or '-'} {result.message}",
+        )
     return payload["result"] | {"status": status}
 
 

@@ -289,3 +289,14 @@ def test_us_daily_order_marker_uses_market_local_date(client, conn):
     r = client.get("/api/charts?ticker=AAPL&market=US&exchange=NAS&days=120").json()
     order_marker = next(m for m in r["markers"] if m["kind"] == "order")
     assert order_marker["time"] == "2026-10-09"
+
+
+def test_today_default_date_is_market_run_date(project):
+    """US 는 KST 자정 뒤에도 전날 뉴욕 운영일 디렉터리에 실행이 있어 기본 날짜는 run_date_for."""
+    from datetime import UTC, datetime
+
+    deps = make_deps(project)
+    deps.now = lambda: datetime(2026, 10, 9, 23, 0, tzinfo=UTC)  # 08:00 KST 10-10, 19:00 ET 10-09
+    c = TestClient(create_app(deps))
+    assert c.get("/api/today?market=US").json()["date"] == "2026-10-09"
+    assert c.get("/api/today?market=KR").json()["date"] == "2026-10-10"
