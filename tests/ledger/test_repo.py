@@ -611,3 +611,66 @@ def test_held_since_uses_market_local_date_for_us(conn):
         created_at="2026-10-13T15:30:00+00:00",  # 11:30 ET 10-13 = 00:30 KST 10-14
     )
     assert repo.held_since(conn, "paper-main") == {"AAPL": date(2026, 10, 13)}
+
+
+def test_realized_pnl_ignores_sell_without_known_cost_and_filters_market(conn):
+    """체결 기록이 없는 보유분(fills sync 이전 매수·HTS 매수)의 SELL 은 평단을 모르므로 손익에
+    넣지 않는다 (평단 0 으로 매도금액 전체를 이익으로 세면 성향이 틀린다). 묶음 재구성도 같은
+    시장 체결만 본다."""
+    dec_id = repo.ingest_checkpoint(
+        conn, D, "KR", "005930", "30_decision", {"data": ok_decision(), "call": None}
+    )
+    sell = repo.insert_order(
+        conn,
+        decision_id=dec_id,
+        account_id="paper-main",
+        ticker="005930",
+        market="KR",
+        side="SELL",
+        qty=10,
+        order_type="MARKET",
+        price=None,
+        status="filled",
+        order_no="S",
+        message="",
+        mode="auto",
+        created_at="2026-10-08T01:00:00+00:00",
+    )
+    repo.insert_fill(
+        conn,
+        order_id=sell,
+        account_id="paper-main",
+        qty=10,
+        price=Decimal("50000"),
+        filled_at="2026-10-08T01:00:00+00:00",
+    )
+    assert repo.realized_pnl_5d(conn, "paper-main", D, market="KR") == Decimal(0)
+    # 같은 티커 문자열의 US BUY 체결은 KR 묶음에 섞이지 않는다
+    dec_us = repo.ingest_checkpoint(
+        conn, D, "US", "005930", "30_decision", {"data": ok_decision(), "call": None}
+    )
+    buy_us = repo.insert_order(
+        conn,
+        decision_id=dec_us,
+        account_id="paper-main",
+        ticker="005930",
+        market="US",
+        side="BUY",
+        qty=10,
+        order_type="LIMIT",
+        price=Decimal("1"),
+        status="filled",
+        order_no="B",
+        message="",
+        mode="auto",
+        created_at="2026-10-01T15:00:00+00:00",
+    )
+    repo.insert_fill(
+        conn,
+        order_id=buy_us,
+        account_id="paper-main",
+        qty=10,
+        price=Decimal("1"),
+        filled_at="2026-10-01T15:00:00+00:00",
+    )
+    assert repo.realized_pnl_5d(conn, "paper-main", D, market="KR") == Decimal(0)

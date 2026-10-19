@@ -82,3 +82,30 @@ def test_shuffled_labels_give_chance_accuracy():
     fake = quant.evaluate_walkforward(shuffled, fast_cfg(), features=cols)
     assert real["accuracy"] > fake["accuracy"] + 0.05
     assert abs(fake["accuracy"] - fake["baseline"]) < 0.12
+
+
+def test_split_drops_train_rows_whose_label_reaches_test_window():
+    """라벨은 종목별 행 시프트인데 폴드 경계는 고유 날짜 기준이라, 거래정지·결측으로 날짜가 비는
+    종목은 학습 행 라벨이 테스트 창 종가를 볼 수 있다 → fwd_date 로 걸러야 한다."""
+    import pandas as pd
+
+    df = synthetic_features(2, 120, signal=False)
+    days = sorted(df["date"].unique())
+    fs = walkforward.folds(days, n_folds=2, horizon_days=H, embargo_days=E, min_train=30)
+    assert fs
+    f = fs[-1]
+    idx = {pd.Timestamp(d).date(): i for i, d in enumerate(days)}
+    i_end, i_start = idx[f.train_end], idx[f.test_start]
+    # T01 은 train_end 직전부터 test_start 너머까지 날짜가 빈다 → 행 시프트 라벨이 테스트 창을 본다
+    gap = set(days[i_end - 7 : i_start - 1])
+    df = df[~((df["ticker"] == "T01") & df["date"].isin(gap))].reset_index(drop=True)
+    df = dataset.make_labels(df, horizon_days=H, up=0.02, down=-0.02)
+    assert "fwd_date" in df.columns
+    d = pd.to_datetime(df["date"]).dt.date
+    fwd_all = pd.to_datetime(df["fwd_date"]).dt.date
+    leaking = df[(d <= f.train_end) & df["label"].notna() & (fwd_all >= f.test_start)]
+    assert len(leaking) > 0  # 전제: 걸러야 할 행이 실제로 있다
+    train, test = walkforward.split(df, f)
+    fwd = pd.to_datetime(train["fwd_date"]).dt.date
+    assert (fwd < f.test_start).all()
+    assert len(train) == int(((d <= f.train_end) & df["label"].notna()).sum()) - len(leaking)

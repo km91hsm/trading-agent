@@ -259,13 +259,22 @@ def backfill(
     frames: list[pd.DataFrame] = []
 
     def flush() -> None:
-        # 종목마다 write_rows 를 부르면 날짜 파일을 종목 × 날짜 만큼 읽고 다시 쓴다 → 묶음으로 1회
+        # 종목마다 write_rows 를 부르면 날짜 파일을 종목 × 날짜 만큼 읽고 다시 쓴다 → 묶음으로 1회.
+        # 쓰기가 실패하면 모은 행을 버리지 않고 다음 flush 에서 다시 시도한다 (조용한 유실 방지).
         nonlocal total
         if not frames:
             return
         batch = pd.concat(frames, ignore_index=True)
+        try:
+            write_rows(batch, state)
+        except Exception as e:  # noqa: BLE001 - 쓰기 실패는 다음 묶음과 함께 재시도
+            logger.warning(
+                "백필 묶음 쓰기 실패 (%d행 보류, 다음 묶음에서 재시도): %s",
+                len(batch),
+                e,
+            )
+            return
         frames.clear()
-        write_rows(batch, state)
         total += len(batch)
 
     for ticker, market, exchange in _targets(universe, markets):
@@ -288,6 +297,9 @@ def backfill(
             logger.warning("백필 실패 %s %s: %s: %s", market, ticker, type(e).__name__, e)
             progress(f"{market} {ticker}: 실패 ({type(e).__name__})")
     flush()
+    if frames:
+        logger.error("백필 마지막 묶음 쓰기 실패: %d종목 행이 저장되지 않음", len(frames))
+        progress(f"쓰기 실패: {len(frames)}종목 미저장")
     return total
 
 

@@ -123,3 +123,37 @@ def test_collect_macro_closes_self_made_client(monkeypatch):
     monkeypatch.setattr(httpx, "Client", Spy)
     collect_macro(MacroCfg(), Secrets(), market_client=None, asof=T0, now=lambda: T0)
     assert len(made) == 1 and made[0].is_closed
+
+
+def test_fred_and_ecos_respect_asof(respx_mock):
+    """asof 뒤에 발표된 관측값은 뺀다 (재수집 때 미래 VIX 가 서킷브레이커 입력에 들어가지 않게)."""
+    from datetime import date
+
+    respx_mock.get(url__startswith=FRED).mock(
+        return_value=httpx.Response(200, json=load("macro_fred.json"))
+    )
+    v = Fred("FRED-KEY-SECRET", httpx.Client()).latest("DGS10", asof=date(2026, 10, 6))
+    assert v == {"value": 4.10, "date": "2026-10-06"}
+    route = respx_mock.get(url__startswith=ECOS).mock(
+        return_value=httpx.Response(200, json=load("macro_ecos.json"))
+    )
+    Ecos("ECOS-KEY-SECRET", httpx.Client(), now=lambda: T0).latest(
+        "722Y001", "0101000", asof=date(2026, 10, 1)
+    )
+    assert "/20261001/" in str(route.calls[0].request.url)
+
+
+def test_collect_macro_passes_asof_to_sources(respx_mock):
+    from datetime import UTC, datetime
+
+    fred = respx_mock.get(url__startswith=FRED).mock(
+        return_value=httpx.Response(200, json=load("macro_fred.json"))
+    )
+    out = collect_macro(
+        MacroCfg(fred=True, ecos=False),
+        Secrets(FRED_API_KEY="k"),
+        market_client=None,
+        asof=datetime(2026, 10, 6, 12, 0, tzinfo=UTC),
+    )
+    assert out["us10y"]["data"]["date"] == "2026-10-06"
+    assert fred.calls[0].request.url.params["observation_end"] == "2026-10-06"

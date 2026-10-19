@@ -149,6 +149,7 @@ class KisMarket:
                     "FID_PW_DATA_INCU_YN": "N",
                 },
             )
+            raw_rows = _rows(data.get("output2"))
             page = [
                 Candle(
                     date=_ymd(str(r["stck_bsop_date"])),
@@ -159,7 +160,7 @@ class KisMarket:
                     volume=_int(r.get("cntg_vol")),
                     time=str(r["stck_cntg_hour"]),
                 )
-                for r in _rows(data.get("output2"))
+                for r in raw_rows
                 if r.get("stck_bsop_date") and r.get("stck_cntg_hour")
             ]
             if not page:
@@ -170,7 +171,8 @@ class KisMarket:
             fresh = [c for c in today if c.time not in seen]
             seen.update(c.time for c in fresh)
             candles.extend(fresh)
-            if not fresh or len(today) < self.MINUTE_PAGE:
+            # 짧은 페이지 판단은 빈 시각 행을 버리기 전 원시 행 수로 (한 행이 비어도 계속 넘긴다)
+            if not fresh or len(raw_rows) < self.MINUTE_PAGE or len(today) < len(page):
                 break  # 전일 봉이 섞였거나 당일 봉이 바닥났다
             earliest = min(c.time for c in today)
             if earliest <= self.MINUTE_OPEN:

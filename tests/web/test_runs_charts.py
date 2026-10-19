@@ -263,3 +263,29 @@ def test_chart_cache_prunes_expired_entries():
     cache: dict = {("KR", "a"): (0.0, []), ("KR", "b"): (10_000.0, [])}
     charts_mod._remember(cache, ("KR", "c"), [], ttl=1.0, now=10_000.5)
     assert set(cache) == {("KR", "b"), ("KR", "c")}
+
+
+def test_us_daily_order_marker_uses_market_local_date(client, conn):
+    """US 주문 마커는 뉴욕 날짜 봉에 붙어야 한다 (KST 날짜면 자정 뒤 주문이 다음 날·주말 봉으로)."""
+    dec_id = repo.ingest_checkpoint(
+        conn, D, "US", "AAPL", "30_decision", {"data": ok_decision(ticker="AAPL")}
+    )
+    repo.insert_order(
+        conn,
+        decision_id=dec_id,
+        account_id="paper-main",
+        ticker="AAPL",
+        market="US",
+        side="BUY",
+        qty=1,
+        order_type="LIMIT",
+        price=Decimal("200"),
+        status="accepted",
+        order_no="1",
+        message="",
+        mode="auto",
+        created_at="2026-10-09T15:30:00+00:00",  # 11:30 ET 10-09 = 00:30 KST 10-10
+    )
+    r = client.get("/api/charts?ticker=AAPL&market=US&exchange=NAS&days=120").json()
+    order_marker = next(m for m in r["markers"] if m["kind"] == "order")
+    assert order_marker["time"] == "2026-10-09"

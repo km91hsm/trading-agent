@@ -31,7 +31,6 @@ def utc_now() -> datetime:
     return datetime.now(UTC)
 
 
-_utc_now = utc_now
 TAG_RE = re.compile(r"<[^>]+>")
 
 
@@ -45,7 +44,7 @@ def run_section(
     fn: Callable[[], Any],
     *,
     enabled: bool = True,
-    now: Callable[[], datetime] = _utc_now,
+    now: Callable[[], datetime] = utc_now,
 ) -> Section:
     """수집 함수를 실행해 Section 으로 감싼다. 예외는 던지지 않고 error 에 기록한다."""
     if not enabled:
@@ -58,7 +57,7 @@ def run_section(
     return Section(data=data, received_at=now().isoformat(), error=None)
 
 
-def skipped_section(reason: str, *, now: Callable[[], datetime] = _utc_now) -> Section:
+def skipped_section(reason: str, *, now: Callable[[], datetime] = utc_now) -> Section:
     """호출 없이 건너뛴 절."""
     return Section(data=None, received_at=now().isoformat(), error=reason)
 

@@ -78,8 +78,15 @@ def check_no_leak(
 
 
 def split(df: pd.DataFrame, fold: Fold) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """폴드로 학습·테스트 행을 나눈다. 학습은 라벨이 있는 행만."""
+    """폴드로 학습·테스트 행을 나눈다. 학습은 라벨이 있는 행만.
+
+    `fwd_date`(라벨이 쓴 미래 봉 날짜)가 있으면 그 날짜가 test_start 이상인 학습 행을 뺀다 — 날짜가
+    비는 종목은 h 거래일 시프트가 테스트 창을 넘어가 라벨이 테스트 종가를 보기 때문이다."""
     d = pd.to_datetime(df["date"]).dt.date
-    train = df[(d <= fold.train_end) & df["label"].notna()]
+    train_mask = (d <= fold.train_end) & df["label"].notna()
+    if "fwd_date" in df.columns:
+        fwd = pd.to_datetime(df["fwd_date"]).dt.date
+        train_mask &= fwd.isna() | (fwd < fold.test_start)
+    train = df[train_mask]
     test = df[(d >= fold.test_start) & (d <= fold.test_end) & df["label"].notna()]
     return train, test

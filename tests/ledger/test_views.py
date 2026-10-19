@@ -130,3 +130,38 @@ def test_account_summary_counts_pending(conn):
     assert s["stance_by_market"] == {"KR": "normal", "US": "normal"} and "stance" not in s
     assert views.list_approvals(conn, "paper-main", status="pending")[0]["order"] == {}
     assert views.list_approvals(conn, "real-main") == []
+
+
+def test_snapshot_same_day_removes_sold_positions(conn):
+    """같은 날 두 번째 스냅샷에서 사라진 종목(전량 매도)은 지워져야 한다. upsert 만 하면 유령 보유가
+    웹·트레이더 입력에 남는다."""
+    pos = {
+        "ticker": "005930",
+        "market": "KR",
+        "qty": 10,
+        "avg_price": "70000",
+        "current_price": "71000",
+        "eval_amount": "710000",
+    }
+    repo.snapshot_positions(
+        conn, account_id="paper-main", d=D, market="KR", nav=Decimal("1"), cash=Decimal("1"),
+        positions=[pos],
+    )
+    repo.snapshot_positions(
+        conn, account_id="paper-main", d=D, market="KR", nav=Decimal("2"), cash=Decimal("2"),
+        positions=[],
+    )
+    snap = views.latest_positions(conn, "paper-main", "KR")
+    assert snap["positions"] == [] and snap["nav"] == "2"
+    # 다른 시장의 같은 날 행은 건드리지 않는다
+    repo.snapshot_positions(
+        conn, account_id="paper-main", d=D, market="US", nav=Decimal("3"), cash=Decimal("3"),
+        positions=[{**pos, "ticker": "AAPL", "market": "US"}],
+    )
+    repo.snapshot_positions(
+        conn, account_id="paper-main", d=D, market="KR", nav=Decimal("2"), cash=Decimal("2"),
+        positions=[],
+    )
+    assert [p["ticker"] for p in views.latest_positions(conn, "paper-main", "US")["positions"]] == [
+        "AAPL"
+    ]

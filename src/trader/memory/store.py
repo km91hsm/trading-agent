@@ -48,13 +48,27 @@ def record_decision(
     horizon_days: int,
     vector: list[float] | None = None,
 ) -> int:
-    """결정 1건당 엔트리 1건 (decision_id UNIQUE, 멱등). importance 초기값 = confidence."""
+    """결정 1건당 엔트리 1건 (decision_id UNIQUE, 멱등). importance 초기값 = confidence.
+
+    같은 decision_id 로 다시 오면(재평가 31_decision_r<n> 이 decisions 행을 갱신) 만기 전 엔트리의
+    결정·horizon 만 새 값으로 바꾼다 — 실제로 팔아 버린 종목을 BUY 로 채점하지 않도록. 상황 벡터는
+    같은 운영일 상황이라 그대로 두고, 결과가 채워진 엔트리는 바꾸지 않는다."""
     if decision_id is None:
         raise ValueError("memory_entries 는 decision_id 가 있어야 멱등이 성립합니다")
     existing = conn.execute(
-        "SELECT id FROM memory_entries WHERE decision_id=?", (decision_id,)
+        "SELECT id, outcome_at FROM memory_entries WHERE decision_id=?", (decision_id,)
     ).fetchone()
     if existing:
+        if existing["outcome_at"] is None:
+            conn.execute(
+                "UPDATE memory_entries SET decision=?, horizon_days=? WHERE id=?",
+                (
+                    json.dumps(decision, ensure_ascii=False, default=str),
+                    horizon_days,
+                    existing["id"],
+                ),
+            )
+            conn.commit()
         return int(existing["id"])
     v = vector or vec.situation_vector(row or {}, market)
     importance = float(decision.get("confidence") or 0.5)

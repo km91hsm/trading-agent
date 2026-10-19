@@ -47,3 +47,12 @@ def test_rotation_by_another_process_reopens_stream(project):
     mine.flush()
     assert "회전 뒤 기록" in (log_dir / "trader.log").read_text(encoding="utf-8")
     assert "회전 뒤 기록" not in archives[0].read_text(encoding="utf-8")
+
+
+def test_project_root_from_relative_trader_home_is_absolute(project, monkeypatch):
+    """세션 cwd 는 저장소 밖 임시 디렉터리라 TRADER_HOME 이 상대경로면 tool 서브프로세스가 깨짐."""
+    from trader.platform import paths
+
+    monkeypatch.setenv("TRADER_HOME", ".")
+    root = paths.project_root()
+    assert root.is_absolute() and root == project.resolve()

@@ -62,3 +62,10 @@ def test_quiet_httpx_is_shared_and_idempotent():
     quiet_httpx()
     assert logging.getLogger("httpx").level == logging.WARNING
     assert logging.getLogger("httpcore").level == logging.WARNING
+
+
+def test_macro_uses_shared_utc_now():
+    from trader.sources import base, macro
+
+    assert not hasattr(macro, "_utc_now") and not hasattr(base, "_utc_now")
+    assert macro.utc_now is base.utc_now

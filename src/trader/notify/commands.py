@@ -13,6 +13,12 @@ from trader.notify.telegram import parse_command
 from trader.orchestrator import executor
 
 
+def _mode_label(conn, account) -> str:
+    """STATUS·웹과 같은 실효 모드 (실전 auto + 확인 기록 없음 = off, 강등 표시)."""
+    mode, note = executor.effective_mode(conn, account)
+    return f"{account.id}={mode}" + (" (강등)" if note else "")
+
+
 def approval_line(a: dict) -> str:
     o = a["order"]
     return (
@@ -77,7 +83,7 @@ def poll_once(ectx: Any, receiver: Any, *, echo: Callable[[str], None] = lambda 
         handled += 1
         if name == "status":
             pending = repo.pending_approvals(conn)
-            modes = ", ".join(f"{a.id}={control.get_account_mode(conn, a)}" for a in ectx.accounts)
+            modes = ", ".join(_mode_label(conn, a) for a in ectx.accounts)
             body = "\n".join(approval_line(a) for a in pending) or "없음"
             paused = "일시정지" if control.is_paused(conn) else "실행 중"
             ectx.notifier.send(f"[상태] {paused} · 계좌 모드: {modes}\n미승인 주문:\n{body}")

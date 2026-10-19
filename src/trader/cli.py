@@ -392,6 +392,7 @@ def _run_features(action: str, market: str | None, **kwargs) -> None:
 
 
 @features_app.command("snapshot")
+@_config_errors
 def features_snapshot(
     market: str | None = typer.Option(None, "--market", help="KR 또는 US (기본: 둘 다)"),
     asof: str | None = typer.Option(
@@ -399,13 +400,17 @@ def features_snapshot(
     ),
 ) -> None:
     """유니버스 전체의 오늘 피처 행을 저장한다."""
-    when = datetime.fromisoformat(asof) if asof else None
+    try:
+        when = datetime.fromisoformat(asof) if asof else None
+    except ValueError as e:
+        raise config.ConfigError(f"--asof 는 ISO8601 이어야 합니다: {asof!r}") from e
     if when is not None and when.tzinfo is None:
         when = when.replace(tzinfo=UTC)
     _run_features("snapshot", market, asof=when)
 
 
 @features_app.command("backfill")
+@_config_errors
 def features_backfill(
     years: int = typer.Option(3, "--years", help="과거 적재 연수 (최대 약 4년=1000봉)"),
     market: str | None = typer.Option(None, "--market", help="KR 또는 US (기본: 둘 다)"),
@@ -1049,6 +1054,7 @@ def control_mode(
 
 
 @control_app.command("pause")
+@_config_errors
 def control_pause() -> None:
     """paused 플래그를 켠다 (Phase 6 데몬이 확인)."""
     from trader.control import control
@@ -1062,6 +1068,7 @@ def control_pause() -> None:
 
 
 @control_app.command("resume")
+@_config_errors
 def control_resume() -> None:
     """paused 플래그를 끈다."""
     from trader.control import control
@@ -1292,6 +1299,7 @@ def monitor_cmd(
 
 
 @app.command("install")
+@_config_errors
 def install_cmd(
     dry_run: bool = typer.Option(False, "--dry-run", help="파일을 쓰지 않고 내용·명령만 출력"),
     uninstall: bool = typer.Option(False, "--uninstall", help="등록 해제"),
@@ -1352,6 +1360,7 @@ def ml_train(
 
 
 @ml_app.command("models")
+@_config_errors
 def ml_models() -> None:
     """레지스트리의 quant 모델 목록."""
     from trader.ml import registry
@@ -1372,6 +1381,7 @@ def ml_models() -> None:
 
 
 @ml_app.command("promote")
+@_config_errors
 def ml_promote(
     version: str = typer.Argument(..., help="YYYYMMDD_HHMMSS"),
     reason: str = typer.Option("manual", "--reason"),
@@ -1388,6 +1398,7 @@ def ml_promote(
 
 
 @ml_app.command("demote")
+@_config_errors
 def ml_demote(
     version: str = typer.Argument(..., help="YYYYMMDD_HHMMSS"),
     reason: str = typer.Option("manual", "--reason"),
@@ -1444,6 +1455,7 @@ def rl_train(
 
 
 @rl_app.command("models")
+@_config_errors
 def rl_models() -> None:
     """레지스트리의 rl_sizer 모델 목록."""
     from trader.ml import registry
@@ -1491,6 +1503,7 @@ def rl_report(
 
 
 @rl_app.command("promote")
+@_config_errors
 def rl_promote(
     version: str = typer.Argument(..., help="YYYYMMDD_HHMMSS"),
     reason: str = typer.Option("manual", "--reason"),
@@ -1507,6 +1520,7 @@ def rl_promote(
 
 
 @rl_app.command("demote")
+@_config_errors
 def rl_demote(
     version: str = typer.Argument(..., help="YYYYMMDD_HHMMSS"),
     reason: str = typer.Option("manual", "--reason"),
@@ -1585,6 +1599,7 @@ app.add_typer(calibration_app, name="calibration")
 
 
 @calibration_app.command("build")
+@_config_errors
 def calibration_build() -> None:
     """현재 메모리 결과로 보정 리포트를 계산해 출력한다 (체크포인트는 analyze 때 종목별로 생성)."""
     import json
@@ -1611,6 +1626,7 @@ def calibration_build() -> None:
 
 
 @app.command("backtest")
+@_config_errors
 def backtest_cmd(
     since: str = typer.Option(..., "--since", help="컷오프 날짜(YYYY-MM-DD). 이후 결정만 집계"),
     market: str | None = typer.Option(None, "--market", help="KR 또는 US (없으면 전체)"),

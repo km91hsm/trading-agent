@@ -16,6 +16,7 @@ from trader.broker.models import Position
 from trader.config import RiskLimits
 from trader.risk import costs
 from trader.risk.stance import Stance, limits_for
+from trader.risk.ticks import quantize_price
 
 MIN_HOLD_TRADING_DAYS = 3
 MAX_TRADES_PER_WEEK = 2
@@ -106,9 +107,13 @@ def evaluate(
         order_type = "LIMIT"
         reasons.append("US 는 지정가만 허용: 시장가를 현재가 지정가로 전환")
     if order_type == "LIMIT":
-        order_price: Decimal | None = (
+        raw_price = (
             Decimal(str(decision.limit_price)) if decision.limit_price is not None else price
         )
+        # 호가단위 밖 지정가는 KIS 가 거부해 그날 결정이 통째로 날아간다 → 가장 가까운 단위로
+        order_price: Decimal | None = quantize_price(market, raw_price)
+        if order_price != raw_price:
+            reasons.append(f"지정가 {raw_price} 를 호가단위에 맞춰 {order_price} 로 조정")
     else:
         order_price = None
 
@@ -136,12 +141,13 @@ def evaluate(
             reasons.append(f"종목당 상한 {lim.max_position_pct:.0%} 까지만 추가 매수")
         available = portfolio.cash_available - portfolio.today_order_amount
         reserve = Decimal(str(lim.min_cash_pct)) * nav if lim.min_cash_pct > 0 else Decimal(0)
-        if reserve > 0 and buy_value > available - reserve:
-            reasons.append(f"현금 보유 하한 {lim.min_cash_pct:.0%} (NAV 대비) 유보로 수량 축소")
-        available -= reserve
-        if buy_value > available:
-            buy_value = max(available, Decimal(0))
-            reasons.append("가능금액(당일 누적 주문 차감) 초과로 수량 축소")
+        if buy_value > available - reserve:
+            # 한 번의 축소에 사유는 하나 (유보가 있으면 문구에 함께 적는다)
+            held_back = (
+                f", 현금 보유 하한 {lim.min_cash_pct:.0%} (NAV 대비) 유보" if reserve > 0 else ""
+            )
+            reasons.append(f"가능금액(당일 누적 주문 차감{held_back}) 초과로 수량 축소")
+            buy_value = max(available - reserve, Decimal(0))
         # 수량은 실제 주문가 기준 (지정가가 현재가보다 높으면 현재가 기준 수량은 금액을 초과한다)
         qty = _floor_qty(buy_value, order_price if order_price is not None else price)
         if decision.stop_loss is not None and Decimal(str(decision.stop_loss)) >= price:

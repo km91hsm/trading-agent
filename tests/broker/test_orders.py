@@ -139,3 +139,15 @@ def test_fake_broker_records():
     b2 = FakeBroker(make_account("paper-main", "paper", "auto"), fail={"place_order"})
     with pytest.raises(KisApiError):
         b2.place_order(_kr())
+
+
+def test_price_str_rejects_off_tick_price():
+    """호가단위를 벗어난 가격은 KIS 에 보내기 전에 ValueError 로 막는다 (KR 소수, US 소수 5자리)."""
+    from trader.broker.accounts import _price_str
+
+    assert _price_str(Decimal("71000")) == "71000" and _price_str(Decimal("200.5")) == "200.5"
+    with pytest.raises(ValueError):
+        _price_str(Decimal("70350.5"), market="KR")
+    with pytest.raises(ValueError):
+        _price_str(Decimal("253.12345"), market="US")
+    assert _price_str(Decimal("0.1234"), market="US") == "0.1234"  # 1달러 미만은 0.0001

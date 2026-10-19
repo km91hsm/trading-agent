@@ -296,3 +296,16 @@ def test_daily_skips_rows_with_blank_date(market, respx_mock):
     us["output2"] = us["output2"][:5] + [{k: "" for k in us["output2"][0]}]
     respx_mock.get(REAL + OVS_DAILY).mock(return_value=httpx.Response(200, json=us))
     assert len(market.get_daily_us("AAPL", "NAS", days=30)) == 5
+
+
+def test_minute_kr_blank_time_row_does_not_stop_paging(market, respx_mock):
+    """30행 중 하나가 빈 시각이어도(버림) 페이지가 '짧다' 고 보고 멈추면 안 된다."""
+    times = _hhmm_range("153000", 30)
+    times[5] = ""
+    first = _minute_payload(times)
+    second = _minute_payload(_hhmm_range("150000", 10))
+    route = respx_mock.get(REAL + DOM_MINUTE).mock(
+        side_effect=[httpx.Response(200, json=first), httpx.Response(200, json=second)]
+    )
+    candles = market.get_minute_kr("005930", count=390)
+    assert len(route.calls) == 2 and len(candles) == 39

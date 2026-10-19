@@ -235,7 +235,9 @@ class KisBroker:
                 "PDNO": request.ticker,
                 "ORD_DVSN": "00" if request.order_type == "LIMIT" else "01",
                 "ORD_QTY": str(request.qty),
-                "ORD_UNPR": _price_str(request.price) if request.order_type == "LIMIT" else "0",
+                "ORD_UNPR": (
+                    _price_str(request.price, "KR") if request.order_type == "LIMIT" else "0"
+                ),
             }
         else:
             if request.order_type != "LIMIT" or request.price is None:
@@ -246,7 +248,7 @@ class KisBroker:
                 "OVRS_EXCG_CD": _us_order_exchange(request.exchange),
                 "PDNO": request.ticker,
                 "ORD_QTY": str(request.qty),
-                "OVRS_ORD_UNPR": _price_str(request.price),
+                "OVRS_ORD_UNPR": _price_str(request.price, "US"),
                 "ORD_SVR_DVSN_CD": "0",
                 "ORD_DVSN": "00",
             }
@@ -336,8 +338,14 @@ def _us_order_exchange(exchange: str | None) -> str:
         raise ValueError(f"알 수 없는 US 거래소: {exchange}") from None
 
 
-def _price_str(price: Decimal | None) -> str:
+def _price_str(price: Decimal | None, market: str | None = None) -> str:
+    """주문 단가 문자열. market 을 주면 호가단위 밖 가격을 보내기 전에 ValueError 로 막는다."""
     if price is None:
         return "0"
+    if market is not None:
+        from trader.risk.ticks import is_on_tick
+
+        if not is_on_tick(market, price):
+            raise ValueError(f"호가단위 밖 지정가 {price} ({market})")
     s = format(price.normalize(), "f")
     return s

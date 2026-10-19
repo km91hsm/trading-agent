@@ -222,3 +222,37 @@ def test_retrieve_hydrates_only_top_k(conn):
     assert all("decision" in e and "situation_vector" in e and "score" in e for e in r["entries"])
     full = [s for s in stmts if "SELECT *" in s]
     assert full and all("IN (" in s for s in full)  # 전 행 SELECT * 없음
+
+
+def test_record_decision_updates_unmatured_entry_with_new_action(conn):
+    """재평가(31_decision_r<n>)가 같은 decisions 행을 SELL 로 바꾸면 만기 전 메모리 엔트리의 결정도
+    따라가야 한다. 첫 기록만 남으면 실제로 팔아 버린 종목을 BUY 로 채점한다."""
+    a = _entry(conn, 1, matured=False)
+    b = store.record_decision(
+        conn,
+        decision_id=1,
+        ticker="T001",
+        market="KR",
+        account_id="paper-main",
+        decided_at=NOW.isoformat(),
+        decision={"action": "SELL", "target_weight": 0.0, "confidence": 0.9},
+        row=None,
+        horizon_days=3,
+    )
+    assert a == b
+    e = store.get_entry(conn, a)
+    assert e["decision"]["action"] == "SELL" and e["horizon_days"] == 3
+    # 만기 결과가 채워진 엔트리는 바꾸지 않는다
+    store.fill_outcome(conn, a, realized_return=0.01, alpha=0.0, outcome_at=NOW.isoformat())
+    store.record_decision(
+        conn,
+        decision_id=1,
+        ticker="T001",
+        market="KR",
+        account_id="paper-main",
+        decided_at=NOW.isoformat(),
+        decision={"action": "BUY"},
+        row=None,
+        horizon_days=5,
+    )
+    assert store.get_entry(conn, a)["decision"]["action"] == "SELL"

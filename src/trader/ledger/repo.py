@@ -480,12 +480,16 @@ def realized_pnl_5d(
     if not tickers:
         return Decimal(0)
     marks = ",".join("?" * len(tickers))
-    rows = conn.execute(
+    sql = (
         "SELECT o.ticker, o.side, f.qty, f.price, f.filled_at FROM fills f "
         "JOIN orders o ON o.id=f.order_id "
-        f"WHERE f.account_id=? AND o.ticker IN ({marks}) ORDER BY f.filled_at, f.id",
-        (account_id, *tickers),
-    ).fetchall()
+        f"WHERE f.account_id=? AND o.ticker IN ({marks})"
+    )
+    args = [account_id, *tickers]
+    if market:
+        sql += " AND o.market=?"
+        args.append(market)
+    rows = conn.execute(sql + " ORDER BY f.filled_at, f.id", args).fetchall()
     total = Decimal(0)
     qty: dict[str, int] = {}
     cost: dict[str, Decimal] = {}
@@ -498,7 +502,11 @@ def realized_pnl_5d(
             cost[t] = cost.get(t, Decimal(0)) + px * q
             continue
         held = qty.get(t, 0)
-        avg = cost.get(t, Decimal(0)) / held if held > 0 else Decimal(0)
+        if held <= 0:
+            # 매수 체결 기록이 없는 보유분(fills sync 이전·HTS 매수): 평단을 몰라 손익에 넣지 않는다
+            # (평단 0 으로 치면 매도금액 전체가 이익이 돼 성향이 틀린다)
+            continue
+        avg = cost.get(t, Decimal(0)) / held
         if lo <= r["filled_at"] < hi:
             total += (px - avg) * q
         remaining = held - q
@@ -588,7 +596,10 @@ def snapshot_positions(
     positions: list[dict],
     market: str | None = None,
 ) -> None:
-    """계좌·날짜·종목 단위 upsert. nav·cash 는 시장(통화)별이라 _CASH 자리에도 market 을 둔다."""
+    """계좌·날짜·종목 단위 upsert. nav·cash 는 시장(통화)별이라 _CASH 자리에도 market 을 둔다.
+
+    같은 날 앞선 스냅샷에 있던 종목이 이번에 없으면(전량 매도) 그 행을 지운다 — 웹·트레이더 입력이
+    유령 보유를 보지 않도록. 같은 시장의 행만 지운다 (통화·시장 분리)."""
     created = now_iso()
     rows = positions or [
         {
@@ -622,6 +633,13 @@ def snapshot_positions(
                 created,
             ),
         )
+    keep = [p["ticker"] for p in rows]
+    marks = ",".join("?" * len(keep))
+    conn.execute(
+        "DELETE FROM positions_snapshot WHERE account_id=? AND date=? AND market IS ? "
+        f"AND ticker NOT IN ({marks})",
+        (account_id, d.isoformat(), market, *keep),
+    )
     conn.commit()
 
 

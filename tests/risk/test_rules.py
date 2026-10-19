@@ -234,3 +234,42 @@ def test_min_cash_pct_reserves_cash():
         today=D,
     )
     assert v.approved and v.adjusted_qty == 14 and any("유보" in r for r in v.reasons)
+
+
+def test_reserve_binding_emits_single_reason():
+    """유보가 묶으면 축소 사유는 하나(유보 포함)만 남긴다 (같은 축소를 두 번 적지 않음)."""
+    v = rules.evaluate(
+        Decision(**ok_decision(target_weight=0.098, limit_price=None, order_type="MARKET")),
+        _portfolio(cash_available=Decimal("1000000")),
+        limits=RiskLimits(min_cash_pct=0.05),
+        stance="normal",
+        market="KR",
+        price=Decimal("70000"),
+        today=D,
+    )
+    cuts = [r for r in v.reasons if "축소" in r]
+    assert len(cuts) == 1 and "유보" in cuts[0]
+
+
+def test_limit_price_is_quantized_to_tick():
+    """LLM 지정가는 호가단위로 맞춰야 KIS 가 거부하지 않는다 (KR 5만~20만원 100원, US 0.01)."""
+    v = _eval(ok_decision(limit_price=70350.0))
+    assert v.approved and v.price == Decimal("70400")
+    v = _eval(ok_decision(limit_price=20030.0, target_weight=0.05), price="20000")
+    assert v.price == Decimal("20050")
+    us = _eval(ok_decision(ticker="AAPL", limit_price=253.125), price="250", market="US")
+    assert us.price == Decimal("253.13")
+
+
+def test_tick_table():
+    from trader.risk.ticks import quantize_price
+
+    assert quantize_price("KR", Decimal("1999.6")) == Decimal("2000")
+    assert quantize_price("KR", Decimal("4997")) == Decimal("4995")
+    assert quantize_price("KR", Decimal("19995")) == Decimal("20000")
+    assert quantize_price("KR", Decimal("49975")) == Decimal("50000")
+    assert quantize_price("KR", Decimal("199950")) == Decimal("200000")
+    assert quantize_price("KR", Decimal("499800")) == Decimal("500000")
+    assert quantize_price("KR", Decimal("1234567")) == Decimal("1235000")
+    assert quantize_price("US", Decimal("0.12345")) == Decimal("0.1235")
+    assert quantize_price("US", Decimal("10.005")) == Decimal("10.01")

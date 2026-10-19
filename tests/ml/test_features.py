@@ -315,3 +315,46 @@ def test_backfill_writes_in_chunks_not_per_ticker(project, monkeypatch):
     assert n == 125 and calls["n"] <= 3  # CHUNK=10 → 3회
     got = pd.concat(pd.read_parquet(f) for f in (project / "state" / "features").glob("*.parquet"))
     assert len(got) == 125 and got["ticker"].nunique() == 25
+
+
+def test_backfill_keeps_rows_when_chunk_write_fails_then_retries(project, monkeypatch):
+    """묶음 쓰기가 실패해도 모은 행을 버리지 않고 다음 flush 에서 다시 쓴다. 마지막 flush 실패는
+    예외로 끝내지 않고 로그만 남긴다 (수 분 걸린 백필이 비정상 종료되지 않도록)."""
+    real = features.write_rows
+    calls = {"n": 0}
+
+    def flaky(df, state=None):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise OSError("disk hiccup")
+        return real(df, state)
+
+    monkeypatch.setattr(features, "write_rows", flaky)
+    tickers = [f"{i:06d}" for i in range(1, 12)]  # 11종목 → 10종목에서 1차 flush, 마지막에 2차
+    n = features.backfill(
+        market_client=FakeMarket(candles=5),
+        dart=None,
+        universe=Universe(kr=tickers),
+        markets=["KR"],
+        years=1,
+        progress=lambda s: None,
+    )
+    assert calls["n"] == 2 and n == 55  # 1차 실패분(10종목)도 2차에서 함께 저장된다
+    got = pd.concat(pd.read_parquet(f) for f in (project / "state" / "features").glob("*.parquet"))
+    assert set(got["ticker"]) == set(tickers)
+
+
+def test_backfill_final_flush_failure_does_not_raise(project, monkeypatch):
+    def boom(df, state=None):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(features, "write_rows", boom)
+    n = features.backfill(
+        market_client=FakeMarket(candles=5),
+        dart=None,
+        universe=Universe(kr=["005930"]),
+        markets=["KR"],
+        years=1,
+        progress=lambda s: None,
+    )
+    assert n == 0

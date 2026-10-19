@@ -91,3 +91,13 @@ def test_poll_once_advances_offset_past_filtered_updates(conn):
 
     commands.poll_once(ctx, MixedRecv(["/status", "/status"]))  # update_id 1, 2
     assert control.get_flag(conn, "telegram_offset") == 3
+
+
+def test_status_shows_effective_mode(conn):
+    """/status 의 계좌 모드는 executor.effective_mode (실전 auto + 확인 기록 없음 = off)."""
+    sent = Sent()
+    ctx = _ctx(conn, sent)
+    control.set_flag(conn, "mode:real-main", "auto")  # 확인 문자열 없이 직접 쓴 값
+    commands.poll_once(ctx, Recv(["/status"]))
+    msg = sent.msgs[-1]
+    assert "real-main=off" in msg and "강등" in msg and "real-main=auto" not in msg

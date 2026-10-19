@@ -15,7 +15,7 @@ import pandas as pd
 from trader.ml import features
 
 LABELS = ("down", "flat", "up")
-TARGET_COLUMNS = ("fwd_return", "label")
+TARGET_COLUMNS = ("fwd_return", "fwd_date", "label")
 NON_FEATURE_COLUMNS = ("date", "ticker", "market", "close", "volume", *TARGET_COLUMNS)
 
 
@@ -49,10 +49,15 @@ def load_all(
 
 
 def make_labels(df: pd.DataFrame, *, horizon_days: int, up: float, down: float) -> pd.DataFrame:
-    """fwd_return = close(t+h)/close(t) − 1 (종목별 shift), label = 0 down / 1 flat / 2 up."""
+    """fwd_return = close(t+h)/close(t) − 1 (종목별 shift), label = 0 down / 1 flat / 2 up.
+
+    fwd_date 는 라벨이 쓴 미래 봉의 날짜다. 종목별 행 시프트라 날짜가 비는 종목(거래정지·결측)은
+    h 거래일보다 멀리 볼 수 있어, 워크포워드 split 이 이 날짜로 테스트 창 침범을 걸러낸다."""
     out = df.sort_values(["ticker", "date"]).reset_index(drop=True).copy()
     close = pd.to_numeric(out["close"], errors="coerce")
+    grouped = out.groupby("ticker")
     future = close.groupby(out["ticker"]).shift(-horizon_days)
+    out["fwd_date"] = grouped["date"].shift(-horizon_days)
     out["fwd_return"] = (future / close - 1).astype("float64")
     label = pd.Series(
         np.where(out["fwd_return"] >= up, 2, np.where(out["fwd_return"] <= down, 0, 1)),

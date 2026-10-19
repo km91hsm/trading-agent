@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from trader.config import KST
 from trader.memory import vector
 from trader.ml import dataset
 
@@ -25,9 +26,14 @@ def _empty() -> pd.DataFrame:
     return pd.DataFrame({c: pd.Series(dtype="object") for c in STEP_COLUMNS})
 
 
-def _naive_utc(iso: str) -> pd.Timestamp:
+def _run_day(iso: str) -> pd.Timestamp:
+    """decided_at(UTC) → 운영일(KST 날짜) 자정 타임스탬프.
+
+    UTC 날짜로 묶으면 아침 결정(전날 22:50 UTC)이 전날 스텝과 섞여 폴드 경계가 하루 어긋난다."""
     ts = pd.Timestamp(iso)
-    return ts.tz_convert(None) if ts.tzinfo is not None else ts
+    if ts.tzinfo is not None:
+        ts = ts.tz_convert(KST)
+    return pd.Timestamp(ts.date())
 
 
 def _memory_steps(conn: sqlite3.Connection, market: str | None) -> pd.DataFrame:
@@ -51,7 +57,7 @@ def _memory_steps(conn: sqlite3.Connection, market: str | None) -> pd.DataFrame:
         w = float(dec.get("target_weight") or 0.0)
         out.append(
             {
-                "date": _naive_utc(r["decided_at"]),
+                "date": _run_day(r["decided_at"]),
                 "ticker": r["ticker"],
                 "obs": [*vec, conf, w],
                 "fwd_return": float(r["price_return"]),

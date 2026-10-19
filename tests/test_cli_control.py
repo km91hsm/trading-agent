@@ -75,3 +75,13 @@ def test_control_show_reports_effective_mode(project):
     assert r.exit_code == 0, r.stdout
     line = next(x for x in r.stdout.splitlines() if x.startswith("real-main"))
     assert "off" in line and "live_confirmed" in line
+
+
+def test_control_pause_reports_config_error_as_one_line(project):
+    """설정 오류는 트레이스백이 아니라 '오류: …' 한 줄 + exit 1 (`_config_errors` 미적용 명령)."""
+    (project / "config" / "accounts.yaml").write_text("accounts: [{id: x}]", encoding="utf-8")
+    r = CliRunner().invoke(app, ["control", "pause"])
+    assert r.exit_code == 1 and "오류:" in (r.stdout + (r.stderr or ""))
+    assert "Traceback" not in (r.stdout + (r.stderr or ""))
+    r = CliRunner().invoke(app, ["features", "snapshot", "--asof", "2026/10/18"])
+    assert r.exit_code == 1 and "오류:" in (r.stdout + (r.stderr or ""))

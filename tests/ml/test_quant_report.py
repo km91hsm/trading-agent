@@ -109,3 +109,17 @@ def test_latest_row_is_memoized_per_process(project, monkeypatch):
     features.write_rows(synthetic_features(1, 31, signal=False))
     quant_report.latest_row("T00", "KR")
     assert calls["n"] == 3
+
+
+def test_latest_row_cache_sees_rewritten_newest_file(project):
+    """데몬처럼 오래 사는 프로세스에서 같은 날짜 파일이 다시 써지면(스냅샷이 종목을 추가) 캐시가
+    새 내용을 봐야 한다. 파일 이름만 키면 그날 내내 옛 결과(None)를 돌려준다."""
+    from helpers_ml import synthetic_features
+
+    from trader.ml import features
+
+    quant_report.latest_row.cache_clear()
+    features.write_rows(synthetic_features(1, 30, signal=False))
+    assert quant_report.latest_row("T01", "KR") is None
+    features.write_rows(synthetic_features(2, 30, signal=False))  # 같은 날짜 파일에 T01 추가
+    assert quant_report.latest_row("T01", "KR") is not None

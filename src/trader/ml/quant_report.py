@@ -31,10 +31,14 @@ def latest_row(
 
     한 tool 서브프로세스 안에서 같은 종목을 메모리·보정·05_quant 가 각각 조회하고, 스토어에 없는
     종목(관심종목·외부 보유분)은 조회마다 파일 60개를 읽으므로 (종목·시장·asof·최신 파일) 키로
-    메모이즈한다. 새 파일이 생기면 키가 바뀌어 자연히 무효화된다."""
+    메모이즈한다. 새 파일이 생기거나 최신 파일이 다시 써지면(스냅샷이 종목 추가; 데몬처럼 오래 사는
+    프로세스) 키가 바뀌어 무효화된다."""
     fdir = features._features_dir(state)
     files = sorted(fdir.glob("*.parquet")) if fdir.exists() else []
-    newest = files[-1].stem if files else ""
+    newest = ""
+    if files:
+        st = files[-1].stat()
+        newest = f"{files[-1].stem}:{st.st_mtime_ns}:{st.st_size}"
     row = _latest_row_cached(ticker, market, str(fdir), asof.isoformat() if asof else "", newest)
     return dict(row) if row is not None else None
 

@@ -130,7 +130,8 @@ def charts(
             sql += " AND account_id=?"
             args.append(account_id)
         for r in conn.execute(sql + " ORDER BY id", args).fetchall():
-            day = datetime.fromisoformat(r["created_at"]).astimezone(KST).date().isoformat()
+            at = datetime.fromisoformat(r["created_at"]).astimezone(MARKET_TZ[m])
+            day = at.date().isoformat()
             markers.append(
                 {
                     "time": day,
