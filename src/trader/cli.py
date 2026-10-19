@@ -1574,6 +1574,38 @@ def reflect_cmd(
 
 calibration_app = typer.Typer(help="애널리스트 신호 적중률 보정 (결정 60건 미만이면 비활성)")
 app.add_typer(calibration_app, name="calibration")
+secrets_app = typer.Typer(help="secrets/.env 관리 (값은 출력하지 않는다)", no_args_is_help=True)
+app.add_typer(secrets_app, name="secrets")
+
+
+@secrets_app.command("import")
+@_config_errors
+def secrets_import(
+    src: str = typer.Option(..., "--from", help="원본 .env 경로 (예: ../Stock/.env)"),
+    overwrite: bool = typer.Option(False, "--overwrite", help="이미 값이 있는 키도 바꾼다"),
+    keys: str | None = typer.Option(None, "--keys", help="대상 키 이름(쉼표 구분). 없으면 전부"),
+) -> None:
+    """다른 프로젝트 .env 의 키를 이름 매핑(KIS_APP_KEY→KIS_PAPER_APP_KEY 등)으로 옮긴다.
+    기본은 비어 있는 키만 채우고, 키 이름만 출력한다."""
+    from pathlib import Path as _Path
+
+    from trader import secrets_io
+
+    r = secrets_io.import_env(
+        _Path(src).expanduser(),
+        paths.secrets_path(),
+        overwrite=overwrite,
+        keys=[k.strip() for k in keys.split(",") if k.strip()] if keys else None,
+    )
+    typer.echo("복사: " + (", ".join(r["copied"]) or "없음"))
+    typer.echo("유지(이미 값 있음, 원본과 같음): " + (", ".join(r["same"]) or "없음"))
+    typer.echo(
+        "유지(이미 값 있음, 원본과 다름 → --overwrite 로 교체 가능): "
+        + (", ".join(r["differs"]) or "없음")
+    )
+    typer.echo("원본에 없음: " + (", ".join(r["unavailable"]) or "없음"))
+    if r.get("backup"):
+        typer.echo(f"백업: secrets/{r['backup']}")
 
 
 @calibration_app.command("build")

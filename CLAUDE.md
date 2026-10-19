@@ -44,6 +44,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `uv run trader readiness` : 실전 전환 준비도 점검(읽기 전용, 모드 불변). 임계값은 `docs/runbook-live-transition.md` 표
 - `uv run trader rl train [--market] [--seeds N]` : RL 사이저 워크포워드×시드 학습·기준선 비교·저장(stdout JSON, **자동 승격 없음**). `rl models`, `rl promote|demote <버전>`(수동), `rl report --account paper-main [--weeks 8]`(모델 요약 + 섀도 실적)
 - `uv run trader kis order-test --account paper-main` : Phase 4 실기 전용. 모의 계좌에 현재가 −10% 1주 지정가 매수 → 즉시 취소 (실전 거부, 원장 미기록, 휴장일엔 KIS 가 40100000 으로 거부)
+- `uv run trader secrets import --from <다른 프로젝트/.env> [--overwrite] [--keys A,B]` : 다른 프로젝트의 .env 에서 이 저장소가 쓰는 키만 이름 매핑(`KIS_APP_KEY`→`KIS_PAPER_APP_KEY`, `KIS_LIVE_*`→`KIS_REAL_*`)으로 `secrets/.env` 에 옮긴다. 기본은 빈 키만 채우고 유지한 키는 원본과 같음/다름으로만 알려 준다(값은 어디에도 출력하지 않음). 덮어쓰기 전 `secrets/.env.bak-<YYYYMMDD_HHMMSS>` 를 남긴다
 - `uv run trader tool …` : 오케스트레이터 세션 전용(사람이 직접 쓰지 않음)
 - `uv run trader --help` : 등록된 명령 확인
 - 브랜치는 Phase 단위 `feat/phase<N>-<이름>` 을 직전 Phase 브랜치 위에 쌓고, PR 도 직전 Phase 브랜치를 대상으로 연다 (Phase 0 은 `main`). `.gitattributes` 가 LF 를 강제한다.
@@ -89,7 +90,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 금지사항
 - 실전 주문을 수동으로 실행하지 않는다. `.claude/settings.json` 이 `kis order *`·`kis order-test`·`approvals approve`·`telegram poll|loop`·`daemon`·`monitor`·`install` 을 거부한다(자동 주문·로그온 등록 경로라 사용자만 실행한다. 실기 검증이 필요하면 사용자에게 요청한다).
-- `secrets/` 를 커밋하지 않는다. 읽지도 않는다 (settings.json 의 deny 규칙. Bash 로 읽는 명령도 거부되므로 다른 명령과 묶지 않는다). `config/accounts.yaml` 에는 실제 계좌번호가 있으므로 값을 출력·인용하지 않는다.
+- `secrets/` 를 커밋하지 않는다. 읽지도 않는다 (settings.json 의 deny 규칙. Bash 로 읽는 명령도 거부되므로 다른 명령과 묶지 않는다; `secrets/.env.example` 을 cat 하는 것도 패턴에 걸린다). 키를 옮길 때는 `trader secrets import` 로만 하고 값은 출력하지 않는다. `config/accounts.yaml` 에는 실제 계좌번호가 있으므로 값을 출력·인용하지 않는다.
 - 계좌 모드(control 테이블)를 임의로 변경하지 않는다 (`trader control mode` 는 사용자가 쓴다).
 - `uv run trader analyze` 를 `FAKE_CLAUDE=1` 없이 돌리면 구독 호출이 발생한다. 사용자 요청 없이 실제 세션을 띄우지 않는다.
 - 셸 스크립트(.sh/.bat/.ps1)를 추가하지 않는다. 훅·설치·유틸은 전부 파이썬.
