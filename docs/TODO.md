@@ -161,3 +161,12 @@
 - [x] 후속 수정 독립 리뷰 + 리뷰 공백 반영(2026-10-20, 같은 플랜 Task G, 18건): 손절 dedupe 전 체결 1회 동기화, 데몬 종료 플래그로 남은 세션 중단, scan 실패 알림 1건, schedule `analyze` 키 선택·제거, 호가단위 정본 단일화, unknown 덧알림 제거, 재평가 현재가 = 트리거 가격, 트레이더 묶음 `previous_decision`, 섹션 `quote` 동봉, screener·reflector 런타임 스키마, 공통 규칙 접두 비교 10개 md, trader/analyst/orchestrator md 입력 설명 갱신, 웹 기본 날짜·refresh 운영일, Performance 시장 초기화 (`npm run typecheck`·`npm test` 통과)
 - [x] 남은 보완 3건(2026-10-20, 같은 플랜 Task H): 세션을 프로세스 그룹으로 띄워 타임아웃 시 `killpg`(고아 tool 서브프로세스 방지), 퀀트 벤치마크 `latest_rows(tickers=유니버스)`, `trader web|telegram loop|monitor` 는 `trader-<name>.log` 로 분리. 이연 유지(사용자 결정, 동작 불변 정리): `cli.py` 부트스트랩 묶기, `SessionResult.num_turns` 활용, decision hydrate 공유
 - [x] 순수 정리 3건(2026-10-20, 같은 플랜 Task I): `cli._boot` 부트스트랩 헬퍼(14개 명령), `agent_calls.num_turns`(v9), 결정 hydrate `repo._hydrate_decision` 공유. 이연 항목 없음(Phase 7 별도 Phase 만 남음)
+
+## Phase 10 번들 배포 (`docs/superpowers/plans/2026-10-20-phase10-bundle.md`)
+- [x] `platform/bundle.py`(frozen 루트·리소스·도구 명령·daemon argv·first_run_init), `paths.web_dist/agents_dir`
+- [x] 세션 `--allowedTools`·프롬프트를 `bundle.tool_command()` 로 (번들은 `trader tool`), PATH 앞에 `tool_bin_dir`
+- [x] 인스톨러 argv 등록(`[exe, daemon]`), `trader init`·`trader app`(더블클릭 진입), `templates/`
+- [x] `packaging/trader.spec`·`packaging/build.py`·`.github/workflows/build.yml`; macOS 로컬 빌드·스모크 통과(2026-10-20, 268MB/zip 144MB; frozen 에서 `--help`·`init`·`status`·`tool status`·`web --help`·`control show` 정상)
+- [x] `docs/bundle-usage.md`, CLAUDE.md 규칙
+- [ ] 완료 기준(사용자 확인 대기): `v*` 태그 푸시 → GitHub Actions 가 macOS·Windows 번들을 릴리스에 첨부 (Windows 러너의 `pytest` 통과가 곧 TODO 의 Windows 확인 항목 일부). 받은 zip 을 풀어 더블클릭 → 웹 UI → `kis ping` 실기 확인(macOS 우클릭 열기·Windows SmartScreen 1회)
+- 범위 조정: 코드 서명·공증(개인 사용), 트레이 앱, lightgbm·torch 번들, 자동 업데이트는 제외(플랜 표)

@@ -43,7 +43,7 @@
 - `paths.web_dist() -> Path`: `bundle.resource_dir() / "web" / "dist"`.
 - `paths.agents_dir() -> Path`: frozen `resource_dir()/"agents"`, 아니면 `project_root()/".claude"/"agents"`.
 
-- [ ] **Step 1: 실패 테스트** `tests/platform/test_bundle.py`
+- [x] **Step 1: 실패 테스트** `tests/platform/test_bundle.py`
 ```python
 def test_not_frozen_defaults(project):
     assert bundle.is_frozen() is False
@@ -64,10 +64,10 @@ def test_frozen_root_is_executable_dir(tmp_path, monkeypatch):
 
 def test_trader_home_still_wins_when_frozen(tmp_path, monkeypatch): ...  # TRADER_HOME 설정 시 그 경로
 ```
-- [ ] **Step 2:** `uv run pytest tests/platform/test_bundle.py -v` → FAIL (`bundle` 없음)
-- [ ] **Step 3:** 구현. `registry.agents_dir(base)` 기본값을 `paths.agents_dir()` 로, `cli._web_deps` 의 `dist=paths.web_dist()`.
-- [ ] **Step 4:** `uv run pytest tests/platform tests/agents tests/web -q` → PASS
-- [ ] **Step 5:** 커밋 `feat(platform): bundle 모듈 — frozen 루트·리소스·도구 명령`
+- [x] **Step 2:** `uv run pytest tests/platform/test_bundle.py -v` → FAIL (`bundle` 없음)
+- [x] **Step 3:** 구현. `registry.agents_dir(base)` 기본값을 `paths.agents_dir()` 로, `cli._web_deps` 의 `dist=paths.web_dist()`.
+- [x] **Step 4:** `uv run pytest tests/platform tests/agents tests/web -q` → PASS
+- [x] **Step 5:** 커밋 `feat(platform): bundle 모듈 — frozen 루트·리소스·도구 명령`
 
 ### Task 2: 세션의 도구 명령·PATH 를 bundle 로
 
@@ -77,7 +77,7 @@ def test_trader_home_still_wins_when_frozen(tmp_path, monkeypatch): ...  # TRADE
 
 **Interfaces (Consumes):** `bundle.tool_command()`, `bundle.tool_bin_dir()`.
 
-- [ ] **Step 1: 실패 테스트**
+- [x] **Step 1: 실패 테스트**
 ```python
 def test_frozen_session_allows_trader_tool_and_rewrites_prompt(monkeypatch, ...):
     monkeypatch.setattr(bundle, "tool_command", lambda: "trader tool")
@@ -86,10 +86,10 @@ def test_frozen_session_allows_trader_tool_and_rewrites_prompt(monkeypatch, ...)
     prompt = cmd[cmd.index("--append-system-prompt") + 1]
     assert "python -m trader tool" not in prompt and "trader tool status" in prompt
 ```
-- [ ] **Step 2:** FAIL 확인
-- [ ] **Step 3:** `orchestrator_prompt` 가 md 본문의 `python -m trader tool` 을 `bundle.tool_command()` 로 치환, `build_command` 가 `f"Bash({bundle.tool_command()} *)"`, env `PATH` 앞에 `bundle.tool_bin_dir()`.
-- [ ] **Step 4:** `uv run pytest tests/orchestrator/test_session.py tests/agents -q` → PASS (기존 `"tool status"` 토큰 테스트 유지)
-- [ ] **Step 5:** 커밋 `feat(session): frozen 번들에서 도구 명령을 trader tool 로`
+- [x] **Step 2:** FAIL 확인
+- [x] **Step 3:** `orchestrator_prompt` 가 md 본문의 `python -m trader tool` 을 `bundle.tool_command()` 로 치환, `build_command` 가 `f"Bash({bundle.tool_command()} *)"`, env `PATH` 앞에 `bundle.tool_bin_dir()`.
+- [x] **Step 4:** `uv run pytest tests/orchestrator/test_session.py tests/agents -q` → PASS (기존 `"tool status"` 토큰 테스트 유지)
+- [x] **Step 5:** 커밋 `feat(session): frozen 번들에서 도구 명령을 trader tool 로`
 
 ### Task 3: 인스톨러가 실행파일 경로를 등록
 
@@ -100,9 +100,9 @@ def test_frozen_session_allows_trader_tool_and_rewrites_prompt(monkeypatch, ...)
 **Interfaces:** `render(platform, *, program: list[str], project_root, …)` — `program` 은 argv (`[python, "-m", "trader", "daemon"]` 또는 `[exe, "daemon"]`). `install(..., program: list[str] | None = None)` 기본은 `bundle.daemon_argv()`.
 - `bundle.daemon_argv() -> list[str]` — frozen: `[sys.executable, "daemon"]`; 아니면 `[sys.executable, "-m", "trader", "daemon"]`.
 
-- [ ] **Step 1: 실패 테스트** — plist 에 `<string>/dist/trader/trader</string><string>daemon</string>` 만 있고 `-m` 이 없음; XML `<Command>…trader.exe</Command><Arguments>daemon</Arguments>`.
-- [ ] **Step 2:** FAIL → **Step 3:** 구현(기존 `python=` 인자는 제거, 호출자 갱신) → **Step 4:** `tests/platform` PASS
-- [ ] **Step 5:** 커밋 `feat(installer): 데몬 등록을 argv 로 (번들 실행파일 지원)`
+- [x] **Step 1: 실패 테스트** — plist 에 `<string>/dist/trader/trader</string><string>daemon</string>` 만 있고 `-m` 이 없음; XML `<Command>…trader.exe</Command><Arguments>daemon</Arguments>`.
+- [x] **Step 2:** FAIL → **Step 3:** 구현(기존 `python=` 인자는 제거, 호출자 갱신) → **Step 4:** `tests/platform` PASS
+- [x] **Step 5:** 커밋 `feat(installer): 데몬 등록을 argv 로 (번들 실행파일 지원)`
 
 ### Task 4: 첫 실행 초기화 + `trader app` + 더블클릭 진입
 
@@ -115,15 +115,15 @@ def test_frozen_session_allows_trader_tool_and_rewrites_prompt(monkeypatch, ...)
 - CLI `trader init` → 위 호출, 복사 목록 출력. `trader app [--no-browser]` → `init` → `daemon_mod.run(deps, web=True)` 이고 시작 1.5초 뒤 스레드가 `webbrowser.open(f"http://{bind}:{port}")`.
 - `__main__`: `bundle.is_frozen() and len(sys.argv) == 1` 이면 `app(["app"])`, 아니면 `app()`.
 
-- [ ] **Step 1: 실패 테스트**
+- [x] **Step 1: 실패 테스트**
 ```python
 def test_first_run_init_copies_missing_only(tmp_path): (project/"config"/"settings.yaml") 미리 쓴 뒤 호출 → 그 파일 불변, accounts.yaml 생성, "00000000" 포함, secrets/.env 는 만들지 않고 .env.example 만
 def test_cli_init_prints_created(project)
 def test_app_runs_daemon_and_opens_browser(project, monkeypatch): daemon.run·webbrowser.open 을 monkeypatch, 호출 인자 확인(web=True, URL)
 def test_main_double_click_routes_to_app(monkeypatch): sys.frozen=True, argv=["trader"] → app 명령 호출
 ```
-- [ ] **Step 2:** FAIL → **Step 3:** 구현 → **Step 4:** PASS (`tests/test_cli_app.py tests/test_cli_smoke.py`)
-- [ ] **Step 5:** 커밋 `feat(cli): init·app 명령과 더블클릭 진입 (첫 실행 템플릿)`
+- [x] **Step 2:** FAIL → **Step 3:** 구현 → **Step 4:** PASS (`tests/test_cli_app.py tests/test_cli_smoke.py`)
+- [x] **Step 5:** 커밋 `feat(cli): init·app 명령과 더블클릭 진입 (첫 실행 템플릿)`
 
 ### Task 5: PyInstaller 스펙·로컬 빌드 스모크·GitHub Actions
 
@@ -133,17 +133,17 @@ def test_main_double_click_routes_to_app(monkeypatch): sys.frozen=True, argv=["t
 
 **Interfaces:** `uv run --group build python packaging/build.py [--skip-web]` → `dist/trader/`(실행파일 + `_internal/`) 와 `dist/trader-<os>-<arch>.zip`. 스펙: `name="trader"`, `contents_directory="_internal"`, `console=True`, datas `web/dist→web/dist`, `.claude/agents→agents`, `templates→templates`, `docs/runbook-live-transition.md→docs`, hiddenimports `sklearn.*`(collect_submodules), `pyarrow`, `uvicorn.*`, `apscheduler.triggers.cron/interval`, `tzdata`.
 
-- [ ] **Step 1:** `uv sync --group build`, 스펙 작성, `uv run --group build pyinstaller packaging/trader.spec --noconfirm`
-- [ ] **Step 2: 스모크(packaging/build.py 가 수행):** `dist/trader/trader --help` exit 0; `TRADER_HOME=<tmp>` 로 `trader init` → `config/accounts.yaml` 생성; `trader status` exit 0; zip 안에 `secrets/.env`·`state/` 없음, `_internal/agents/orchestrator.md` 있음.
-- [ ] **Step 3:** `.github/workflows/build.yml`: `on: [push: tags v*, workflow_dispatch]`, matrix `os: [macos-latest, windows-latest]`, steps: checkout → `astral-sh/setup-uv` → `uv sync --group build` → `uv run pytest -q` → `actions/setup-node` + `npm ci && npm run build` (cwd web) → `uv run --group build python packaging/build.py --skip-web` → `actions/upload-artifact`; tag 푸시면 `softprops/action-gh-release` 에 zip 첨부.
-- [ ] **Step 4:** 로컬 macOS 빌드·스모크 통과 확인(Windows 는 CI 에서; TODO 의 Windows 확인 항목과 연결).
-- [ ] **Step 5:** 커밋 `build: PyInstaller 번들 스펙·빌드 스크립트·GitHub Actions`
+- [x] **Step 1:** `uv sync --group build`, 스펙 작성, `uv run --group build pyinstaller packaging/trader.spec --noconfirm`
+- [x] **Step 2: 스모크(packaging/build.py 가 수행):** `dist/trader/trader --help` exit 0; `TRADER_HOME=<tmp>` 로 `trader init` → `config/accounts.yaml` 생성; `trader status` exit 0; zip 안에 `secrets/.env`·`state/` 없음, `_internal/agents/orchestrator.md` 있음.
+- [x] **Step 3:** `.github/workflows/build.yml`: `on: [push: tags v*, workflow_dispatch]`, matrix `os: [macos-latest, windows-latest]`, steps: checkout → `astral-sh/setup-uv` → `uv sync --group build` → `uv run pytest -q` → `actions/setup-node` + `npm ci && npm run build` (cwd web) → `uv run --group build python packaging/build.py --skip-web` → `actions/upload-artifact`; tag 푸시면 `softprops/action-gh-release` 에 zip 첨부.
+- [x] **Step 4:** 로컬 macOS 빌드·스모크 통과 확인(Windows 는 CI 에서; TODO 의 Windows 확인 항목과 연결).
+- [x] **Step 5:** 커밋 `build: PyInstaller 번들 스펙·빌드 스크립트·GitHub Actions`
 
 ### Task 6: 문서
-- [ ] `docs/bundle-usage.md`: 설치(압축 해제·claude 설치·첫 실행 경고 넘기기), 폴더 구조, `secrets/.env`·`config/accounts.yaml` 채우기, 더블클릭 → 웹 UI, 터미널 명령(`./trader status` 등), 업데이트(폴더 교체, `config/ secrets/ state/` 유지), 자동 시작(`trader install`).
-- [ ] CLAUDE.md: 실행 명령에 `init`·`app`·빌드 명령, 아키텍처 규칙에 "frozen 분기는 `platform/bundle` 만, 도구 명령은 `bundle.tool_command()`", 템플릿 규칙(config 바꾸면 templates 도).
-- [ ] TODO.md Phase 10 절(완료 기준: Windows CI 빌드 통과·더블클릭 실기 확인은 사용자 확인 대기).
-- [ ] 커밋 `docs: Phase 10 번들 사용법·규칙`
+- [x] `docs/bundle-usage.md`: 설치(압축 해제·claude 설치·첫 실행 경고 넘기기), 폴더 구조, `secrets/.env`·`config/accounts.yaml` 채우기, 더블클릭 → 웹 UI, 터미널 명령(`./trader status` 등), 업데이트(폴더 교체, `config/ secrets/ state/` 유지), 자동 시작(`trader install`).
+- [x] CLAUDE.md: 실행 명령에 `init`·`app`·빌드 명령, 아키텍처 규칙에 "frozen 분기는 `platform/bundle` 만, 도구 명령은 `bundle.tool_command()`", 템플릿 규칙(config 바꾸면 templates 도).
+- [x] TODO.md Phase 10 절(완료 기준: Windows CI 빌드 통과·더블클릭 실기 확인은 사용자 확인 대기).
+- [x] 커밋 `docs: Phase 10 번들 사용법·규칙`
 
 ## 범위 조정
 | 제외 항목 | 이유 | 재개 |

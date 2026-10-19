@@ -1,0 +1,58 @@
+# 번들(실행파일) 사용법 — macOS · Windows
+
+Python·uv 를 설치하지 않고 쓰는 배포본입니다. GitHub Releases 의 `trader-darwin-*.zip`(macOS) 또는
+`trader-win32-*.zip`(Windows) 을 받아 압축을 풉니다.
+
+## 1. 폴더 구조
+
+```
+trader/                ← 이 폴더가 TRADER_HOME. 폴더째 다른 PC 로 복사해도 된다
+  trader (.exe)        ← 유일한 실행파일. 더블클릭 = 데몬 + 웹 UI + 브라우저
+  _internal/           ← Python 런타임·라이브러리·에이전트 프롬프트·웹 (건드리지 않음)
+  config/              ← settings·accounts·universe·schedule·sources·ml .yaml (첫 실행 때 생성)
+  secrets/.env         ← API 키 (첫 실행 때 .env.example 만 생김 → 복사해서 채운다)
+  state/               ← 원장 DB·runs·logs·features·models (실행하며 생김, 백업 대상)
+  docs/                ← 이 문서·실전 전환 런북
+```
+
+## 2. 준비물
+
+1. **Claude Code CLI** — 번들에 들어 있지 않습니다. https://claude.ai/code 안내대로 `claude` 를 설치하고
+   한 번 로그인(구독 인증)해 둡니다. 터미널에서 `claude --version` 이 나오면 됩니다.
+2. **KIS Open API 앱키** (모의·실전), **DART**·**FRED** 키, **네이버 API HUB** 앱의 Client ID/Secret
+   (NCP 콘솔 > NAVER API HUB > Application), **텔레그램** 봇 토큰·chat_id.
+
+## 3. 첫 실행
+
+1. `trader`(.exe) 를 더블클릭합니다. 처음에는 `config/`·`secrets/.env.example`·`docs/` 가 만들어지고
+   웹 UI(http://127.0.0.1:8787)가 열립니다. 키가 없으면 수집·세션은 실패하지만 UI 는 뜹니다.
+   - macOS: 서명이 없어 "확인되지 않은 개발자" 경고가 뜨면 **우클릭 → 열기** 를 한 번 합니다.
+   - Windows: SmartScreen 경고에서 **추가 정보 → 실행** 을 한 번 누릅니다.
+2. `secrets/.env.example` 을 `secrets/.env` 로 복사해 키를 넣습니다. 다른 프로젝트의 `.env` 가 있으면
+   터미널에서 `trader secrets import --from <그 파일>` 로 이름 매핑 복사(값은 출력되지 않음).
+3. `config/accounts.yaml` 의 `cano` 를 실제 계좌번호로 바꿉니다(모의 `auto`, 실전은 `off` 로 시작).
+4. 터미널에서 점검: `./trader kis ping` (Windows: `trader.exe kis ping`), `./trader status`.
+5. 리허설(구독 호출 없음): `FAKE_CLAUDE=1 ./trader analyze --ticker 005930 --dry-run`.
+
+## 4. 평소 운용
+
+- 더블클릭(= `trader app`) 하나로 스케줄 데몬 + 웹 UI 가 돕니다. 창을 닫으면 멈춥니다.
+- 로그온 시 자동 시작: `./trader install` (해제 `--uninstall`). 데몬 로그는 `state/logs/`.
+- 텔레그램: 알림 수신, `/approve <id>`·`/reject <id>`·`/status`·`/pause`·`/resume`·`/mode <계좌> <모드>`.
+- 웹 UI 제어(일시정지·승인·모드)는 `secrets/.env` 의 `WEB_TOKEN` 을 설정 페이지에 넣어야 됩니다.
+- 터미널 명령은 개발 환경과 같습니다(`uv run trader …` 대신 `./trader …`):
+  `status`, `scan`, `analyze`, `monitor --once`, `fills sync`, `approvals list`, `control show|pause|resume`,
+  `features backfill --years 3`, `ml train`, `readiness`, `backtest --since YYYY-MM-DD`.
+
+## 5. 업데이트·백업
+
+- 새 zip 을 풀어 **`_internal/` 과 실행파일만** 교체합니다. `config/ secrets/ state/` 는 그대로 둡니다.
+- 백업은 `config/ secrets/ state/` 세 폴더면 충분합니다.
+
+## 6. 문제가 날 때
+
+- "claude 실행파일을 찾을 수 없습니다": PATH 에 `claude` 가 없습니다. `config/settings.yaml` 의
+  `claude_bin` 에 전체 경로를 적습니다.
+- 웹이 안 열림: 터미널에서 `./trader web` 로 띄우고 오류 메시지를 봅니다. 포트는 `settings.yaml` `web.port`.
+- 원장 오류: `state/trader.db` 가 깨진 경우 `state/` 를 백업 뒤 비우면 새로 만듭니다(기록 유실 주의).
+- 실전 전환은 `docs/runbook-live-transition.md` 의 수동 절차로만 합니다.
