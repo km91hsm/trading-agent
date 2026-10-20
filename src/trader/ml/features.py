@@ -248,6 +248,30 @@ def _write_day_file(path: Path, part: pd.DataFrame, sectors: SectorMap) -> None:
     tmp.replace(path)
 
 
+def ticker_history(
+    state: Path | None, market: str, ticker: str, *, days: int, max_files: int = 2000
+) -> pd.DataFrame:
+    """한 종목의 최근 days 행(날짜 오름차순). 최신 파일부터 거꾸로 읽어 모이면 멈춘다.
+
+    웹 탐색용이라 스토어 전체를 읽지 않는다 (학습은 dataset.load_all)."""
+    fdir = _features_dir(state)
+    files = sorted(fdir.glob("*.parquet"), reverse=True) if fdir.exists() else []
+    parts: list[pd.DataFrame] = []
+    got = 0
+    for f in files[:max_files]:
+        part = _coerce(pd.read_parquet(f).reindex(columns=list(FEATURE_COLUMNS)))
+        part = part[(part["market"] == market) & (part["ticker"].astype(str) == ticker)]
+        if not part.empty:
+            parts.append(part)
+            got += len(part)
+        if got >= days:
+            break
+    if not parts:
+        return pd.DataFrame(columns=FEATURE_COLUMNS)
+    out = pd.concat(parts, ignore_index=True).sort_values("date").tail(days)
+    return _coerce(out.reset_index(drop=True))
+
+
 def write_rows(
     df: pd.DataFrame, state: Path | None = None, *, sectors: SectorMap | None = None
 ) -> list[Path]:
