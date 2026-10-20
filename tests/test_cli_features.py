@@ -43,3 +43,15 @@ def test_cli_features_market_build_failure_exit1(project, monkeypatch):
     monkeypatch.setattr(cli, "_build_market", boom)
     r = CliRunner().invoke(app, ["features", "snapshot"])
     assert r.exit_code == 1
+
+
+def test_daemon_snapshot_fn_passes_edgar(project, monkeypatch):
+    """데몬 reflect 앞 스냅샷도 EDGAR 를 넘겨야 US 비율이 매일 NaN 으로 덮이지 않는다 (리뷰 #1)."""
+    from trader.ml import features
+
+    seen: dict = {}
+    monkeypatch.setattr(cli, "_build_dart", lambda s: None)
+    monkeypatch.setattr(cli, "_build_edgar", lambda: "EDGAR")
+    monkeypatch.setattr(features, "snapshot", lambda **kw: seen.update(kw) or 1)
+    run = cli._daemon_snapshot_fn(object(), object(), market_client=object())
+    assert run(["US"]) == 1 and seen["edgar"] == "EDGAR"

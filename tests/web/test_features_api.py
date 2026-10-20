@@ -76,3 +76,17 @@ def test_history_rejects_bad_ticker_and_days(client, project):
     assert client.get("/api/features/history?market=KR&ticker=005930&days=1").status_code == 422
     assert client.get("/api/features/history?market=KR&ticker=005930&days=5000").status_code == 422
     assert client.get("/api/features/history?market=XX&ticker=005930").status_code == 400
+
+
+def test_history_unknown_ticker_is_404_not_full_scan(client, project):
+    """유니버스에 없는 종목은 파일을 다 읽지 않고 404 (토큰 없는 API 비용 방어, 리뷰 #10)."""
+    _seed(project)
+    assert client.get("/api/features/history?market=KR&ticker=999999&days=10").status_code == 404
+    assert client.get("/api/features/history?market=KR&ticker=005930&days=10").status_code == 200
+
+
+def test_latest_tolerates_broken_sectors_yaml(client, project):
+    _seed(project)
+    (project / "config" / "sectors.yaml").write_text("sectors: [반도체]\nkr: {'005930': 금융}\n")
+    r = client.get("/api/features/latest?market=KR")
+    assert r.status_code == 200 and r.json()["rows"][0]["sector"] is None

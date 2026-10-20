@@ -78,6 +78,9 @@ class QuantModel:
                 learning_rate=learning_rate,
                 max_leaf_nodes=num_leaves,
                 random_state=random_state,
+                # 'auto' 는 1만 행 넘으면 무작위 10% 검증으로 조기 종료 → max_iter 가 무의미하고
+                # 검증 분할이 시간 순서를 섞는다. 반복 수는 ml tune 이 고른다.
+                early_stopping=False,
             )
 
     def fit(self, X: np.ndarray, y: np.ndarray) -> QuantModel:

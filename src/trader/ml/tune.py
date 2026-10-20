@@ -88,6 +88,7 @@ def tune_quant(
         }
     dev = [f.index for f in fs[:-1]]
     hold = [fs[-1].index]
+    default_params = {k: getattr(cfg.models.quant, k) for k in PARAM_KEYS}
     candidates = []
     for values in itertools.product(*(GRIDS[grid][k] for k in PARAM_KEYS)):
         params = dict(zip(PARAM_KEYS, values, strict=True))
@@ -95,8 +96,24 @@ def tune_quant(
             df, _with_params(cfg, params), features=cols, fold_indices=dev
         )
         candidates.append({"params": params, "dev": _dev_summary(m)})
-    best = max(candidates, key=lambda c: (c["dev"]["alpha_topn"], c["dev"]["accuracy"]))
-    default_params = {k: getattr(cfg.models.quant, k) for k in PARAM_KEYS}
+    evaluated = min(c["dev"]["n_folds"] for c in candidates)
+    if evaluated < 1:
+        # 폴드가 '생성' 돼도 학습창이 비면 평가되지 않아 전부 0 으로 동률
+        # → 첫 후보를 best 로 보고하면 안 된다
+        return base | {
+            "status": "insufficient_folds",
+            "reason": "dev 폴드가 하나도 평가되지 않음 (학습 행 부족)",
+            "n_folds": n,
+        }
+    # 동률이면 기본값(설정 파일 값)을 우선한다 — 바꿀 근거가 없다
+    best = max(
+        candidates,
+        key=lambda c: (
+            c["dev"]["alpha_topn"],
+            c["dev"]["accuracy"],
+            c["params"] == default_params,
+        ),
+    )
     holdout = {
         "default": {
             "params": default_params,
@@ -111,6 +128,24 @@ def tune_quant(
             ),
         },
     }
+    min_alpha = cfg.models.quant.promote_min_alpha
+    hb, hd = holdout["best"]["alpha_topn"], holdout["default"]["alpha_topn"]
+    if best["params"] == default_params:
+        rec = {"apply": False, "reason": "최선 후보가 현재 설정과 같음"}
+    elif hb < min_alpha or hb <= hd:
+        rec = {
+            "apply": False,
+            "reason": (
+                f"홀드아웃 alpha_topn {hb:.4f} 가 승격 기준 {min_alpha} 미만이거나 "
+                f"기본값 {hd:.4f} 이하 — dev 선택은 후보 중 최대값이라 위로 치우치므로 "
+                "홀드아웃이 확인해야 한다"
+            ),
+        }
+    else:
+        rec = {
+            "apply": True,
+            "reason": f"홀드아웃 alpha_topn {hb:.4f} ≥ {min_alpha} 이고 기본값 {hd:.4f} 초과",
+        }
     report = {
         "status": "tuned",
         "market": market,
@@ -123,7 +158,12 @@ def tune_quant(
         "best": best,
         "holdout": holdout,
         "applied": False,
-        "note": "자동 적용 없음 — ml.yaml models.quant.{learning_rate,num_leaves,max_iter} 에 반영",
+        "recommendation": rec,
+        "note": (
+            "자동 적용 없음 — recommendation.apply 가 true 일 때만 ml.yaml "
+            "models.quant.{learning_rate,num_leaves,max_iter} 에 반영. 적용 뒤 ml train 의 "
+            "승격 지표는 dev 폴드를 다시 쓰므로 낙관적이다"
+        ),
     }
     d = registry._dir("quant_tune", state)
     d.mkdir(parents=True, exist_ok=True)

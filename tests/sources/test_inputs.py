@@ -626,3 +626,43 @@ def test_fundamental_peer_skipped_without_sector_or_peers(project):
         deps=deps(),
     )
     assert d["fundamental"]["peer"]["error"] == "no sector peers"
+
+
+def test_fundamental_peer_uses_market_local_date(project):
+    """룩어헤드 규칙은 시장 현지 날짜: asof 10-20 08:00 KST 는 뉴욕 10-19 라 10-20 행을 보면 안 된다
+    (리뷰 #7)."""
+    from datetime import UTC, datetime
+
+    import pandas as pd
+
+    from trader.config import SectorMap
+    from trader.ml import features
+
+    _seed_peers(project, "US", {"AAPL": 0.1, "NVDA": 0.2, "AMD": 0.3})  # T0 = 10-09 KST 행
+    sectors = SectorMap(
+        sectors=["반도체", "기타"], us=dict.fromkeys(["AAPL", "NVDA", "AMD"], "반도체")
+    )
+    future = pd.DataFrame(
+        {
+            "date": [T0.date().replace(day=10)] * 3,
+            "ticker": ["AAPL", "NVDA", "AMD"],
+            "market": ["US"] * 3,
+            "close": [100.0] * 3,
+            "volume": [1000] * 3,
+            "roe": [0.9, 0.9, 0.9],
+            "op_margin": [0.1] * 3,
+            "debt_ratio": [1.0] * 3,
+        }
+    )
+    features.write_rows(future, sectors=sectors)
+    asof = datetime(2026, 10, 9, 23, 0, tzinfo=UTC)  # 10-10 08:00 KST, NY 10-09 19:00 → 현지 10-09
+    d = build_inputs(
+        ticker="AAPL",
+        market="US",
+        exchange="NAS",
+        asof=asof,
+        cfg=cfg(),
+        secrets=Secrets(),
+        deps=deps(),
+    )
+    assert d["fundamental"]["peer"]["data"]["median"]["ROE"] == pytest.approx(0.2)  # 10-09 행만

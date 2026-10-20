@@ -175,11 +175,13 @@ def _technical(ticker, market, exchange, cfg, deps, asof: datetime) -> dict[str,
     return out
 
 
-def _peer_section(ticker: str, market: Market, day: date, now) -> Section:
+def _peer_section(ticker: str, market: Market, asof: datetime, now) -> Section:
     """스펙 §3 '동종업 중앙값 대비': 피처 스토어 최신 행(그 날 이하)으로 섹터 중앙값·내 값·차이.
 
     섹터를 모르거나 구성원이 3개 미만이면 `no sector peers` 로 건너뛴다 (errors 집계 제외)."""
     from trader.ml import features
+
+    day = run_date_for(market, asof)  # 룩어헤드 규칙은 시장 현지 날짜 (US 는 뉴욕)
 
     def peer() -> dict | None:
         sectors = load_sectors()
@@ -219,7 +221,7 @@ def _fundamental(ticker, market, asof, cfg, deps, technical) -> dict[str, Sectio
     price = Decimal(str(quote["price"])) if quote else None
     day = asof.astimezone(KST).date()
     keys = ("ratios", "history", "disclosures")
-    peer = _peer_section(ticker, market, day, now)
+    peer = _peer_section(ticker, market, asof, now)
     if market == "KR":
         if not cfg.dart.enabled:
             return {k: skipped_section("disabled", now=now) for k in keys} | {"peer": peer}

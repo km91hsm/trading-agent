@@ -110,3 +110,12 @@ def test_sector_medians_from_latest_rows(project):
     m = features.sector_medians(None, "KR", "반도체", tickers=["A", "B", "C"])
     assert m["n"] == 3 and m["median"]["roe"] == 0.2 and m["median"]["op_margin"] == 0.1
     assert features.sector_medians(None, "KR", "금융", tickers=["D", "E"])["n"] == 1
+
+
+def test_write_rows_rejects_missing_required_columns(project):
+    """_coerce 가 reindex 로 바뀌어도 식별 열 누락은 조용히 NaN 이 되면 안 된다 (리뷰 #6).
+
+    파생 열(*_vs_sector)·피처 열은 없어도 된다(피처 열은 snapshot_row 가 막는다)."""
+    df = _rows(date(2026, 1, 5), "KR", {"A": 0.1, "B": 0.2, "C": 0.3}).drop(columns=["volume"])
+    with pytest.raises(ValueError, match="volume"):
+        features.write_rows(df, sectors=SECTORS)

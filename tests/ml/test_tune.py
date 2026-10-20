@@ -64,3 +64,72 @@ def test_tune_insufficient_data(project):
     features.write_rows(synthetic_features(1, 30, signal=False))
     r = tune.tune_quant(fast_cfg(), market="KR")
     assert r["status"] == "insufficient_data"
+
+
+def _fake_eval_factory(calls, *, alpha_by_lr, holdout_by_lr=None, drop_dev=False):
+    def fake_eval(df, cfg, *, features, fold_indices=None):
+        q = cfg.models.quant
+        calls.append(fold_indices)
+        if drop_dev and len(fold_indices) > 1:
+            folds = []
+        else:
+            table = alpha_by_lr if len(fold_indices) > 1 else (holdout_by_lr or {})
+            a = table.get(q.learning_rate, 0.0)
+            folds = [
+                {"index": i, "alpha_topn": a, "accuracy": 0.4, "up_count": 9} for i in fold_indices
+            ]
+        mean = sum(f["alpha_topn"] for f in folds) / len(folds) if folds else 0.0
+        return {"folds": folds, "accuracy": 0.4, "baseline": 0.33, "alpha": mean,
+                "alpha_topn": mean, "n_test": 10}
+
+    return fake_eval
+
+
+def test_tune_insufficient_when_no_dev_fold_was_evaluated(project, monkeypatch):
+    """폴드가 '생성' 돼도 학습창이 비어 평가되지 않으면 전부 0 으로 동률 → 첫 후보를 best 로
+    보고하면 안 된다 (리뷰 #3)."""
+    _seed(project)
+    calls: list = []
+    monkeypatch.setattr(
+        quant, "evaluate_walkforward", _fake_eval_factory(calls, alpha_by_lr={}, drop_dev=True)
+    )
+    monkeypatch.setitem(tune.GRIDS, "tiny", TINY)
+    r = tune.tune_quant(fast_cfg(train={"walk_forward_folds": 4}), market="KR", grid="tiny")
+    assert r["status"] == "insufficient_folds"
+
+
+def test_tune_tie_prefers_default_params_and_recommendation_needs_holdout(project, monkeypatch):
+    _seed(project)
+    cfg = fast_cfg(train={"walk_forward_folds": 4}, quant={"promote_min_alpha": 0.003})
+    calls: list = []
+    # 동률(모두 0.002) → 기본값(learning_rate 0.05) 우선
+    monkeypatch.setattr(
+        quant,
+        "evaluate_walkforward",
+        _fake_eval_factory(calls, alpha_by_lr={0.05: 0.002, 0.1: 0.002}),
+    )
+    monkeypatch.setitem(tune.GRIDS, "tiny", TINY)
+    r = tune.tune_quant(cfg, market="KR", grid="tiny")
+    assert r["best"]["params"]["learning_rate"] == 0.05
+    assert r["recommendation"]["apply"] is False  # 현재 설정과 같음 → 바꿀 것 없음
+    # dev 는 0.1 이 좋지만 홀드아웃 0.001 < promote_min_alpha 0.003 → 적용 권고 안 함
+    monkeypatch.setattr(
+        quant,
+        "evaluate_walkforward",
+        _fake_eval_factory(
+            calls, alpha_by_lr={0.05: 0.001, 0.1: 0.004}, holdout_by_lr={0.05: 0.0, 0.1: 0.001}
+        ),
+    )
+    r = tune.tune_quant(cfg, market="KR", grid="tiny")
+    assert r["best"]["params"]["learning_rate"] == 0.1
+    assert r["recommendation"]["apply"] is False and "홀드아웃" in r["recommendation"]["reason"]
+    # 홀드아웃도 기준을 넘고 기본값보다 좋을 때만 권고
+    monkeypatch.setattr(
+        quant,
+        "evaluate_walkforward",
+        _fake_eval_factory(
+            calls, alpha_by_lr={0.05: 0.001, 0.1: 0.004}, holdout_by_lr={0.05: 0.001, 0.1: 0.005}
+        ),
+    )
+    r = tune.tune_quant(cfg, market="KR", grid="tiny")
+    assert r["recommendation"]["apply"] is True

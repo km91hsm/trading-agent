@@ -300,7 +300,6 @@ def _build_input_deps(secrets: config.Secrets, cfg: config.SourcesConfig) -> Inp
     `trader.sources.inputs` 는 pandas/pyarrow 를 끌어와 import 에 0.6 초가 들므로 수집 명령 안에서만
     불러온다 (`python -m trader tool …` 서브프로세스가 세션당 20여 회 뜬다)."""
     from trader.sources.dart import DartClient
-    from trader.sources.edgar import EdgarClient
     from trader.sources.inputs import InputDeps
 
     cache = paths.state_dir() / "cache"
@@ -310,8 +309,7 @@ def _build_input_deps(secrets: config.Secrets, cfg: config.SourcesConfig) -> Inp
         logging.getLogger("trader.sources").warning("시세 클라이언트 생성 실패: %s", e)
         market = None
     dart = DartClient(secrets.DART_API_KEY, cache) if secrets.DART_API_KEY else None
-    edgar = EdgarClient(cfg.edgar.user_agent, cache) if cfg.edgar.enabled else None
-    return InputDeps(market=market, dart=dart, edgar=edgar)
+    return InputDeps(market=market, dart=dart, edgar=_build_edgar(cfg))
 
 
 @app.command("collect")
@@ -379,11 +377,13 @@ def _build_dart(secrets: config.Secrets):
     return DartClient(secrets.DART_API_KEY, cache) if secrets.DART_API_KEY else None
 
 
-def _build_edgar():
-    """US 비율용 EDGAR 클라이언트 (`sources.yaml` edgar.enabled 가 꺼져 있으면 None)."""
+def _build_edgar(cfg: config.SourcesConfig | None = None):
+    """EDGAR 클라이언트 (수집·US 비율 피처 공용).
+
+    `sources.yaml` edgar.enabled 가 꺼져 있으면 None."""
     from trader.sources.edgar import EdgarClient
 
-    cfg = config.load_sources()
+    cfg = cfg if cfg is not None else config.load_sources()
     if not cfg.edgar.enabled:
         return None
     return EdgarClient(cfg.edgar.user_agent, paths.state_dir() / "cache")
@@ -909,6 +909,7 @@ def _daemon_snapshot_fn(secrets: config.Secrets, universe, market_client):
         return features.snapshot(
             market_client=market_client,
             dart=_build_dart(secrets),
+            edgar=_build_edgar(),
             universe=universe,
             markets=markets,  # type: ignore[arg-type]
             progress=lambda s: None,

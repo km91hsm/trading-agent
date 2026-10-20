@@ -32,8 +32,9 @@ COUNT_COLUMNS = ["news_count", "community_count"]
 # write_rows 가 날짜 파일 전체로 다시 계산하는 파생 열이라 백필 묶음 쓰기 뒤에도 값이 같다.
 SECTOR_COLUMNS = [f"{c}_vs_sector" for c in RATIO_COLUMNS]
 MIN_SECTOR_PEERS = 3
+KEY_COLUMNS = ["date", "ticker", "market", "close", "volume"]
 FEATURE_COLUMNS: list[str] = (
-    ["date", "ticker", "market", "close", "volume"]
+    KEY_COLUMNS
     + indicators.COLUMNS
     + FLOW_COLUMNS
     + list(RATIO_COLUMNS)
@@ -130,6 +131,9 @@ def snapshot_row(
     row["news_count"] = news_count
     row["community_count"] = community_count
     row.update(dict.fromkeys(SECTOR_COLUMNS))  # write_rows 가 채운다
+    missing = [c for c in FEATURE_COLUMNS if c not in row]
+    if missing:  # _coerce 가 reindex 라 여기서 막지 않으면 조용히 NaN 으로 저장된다
+        raise ValueError(f"스냅샷 행에 피처 열이 없습니다: {missing}")
     return row
 
 
@@ -259,7 +263,10 @@ def ticker_history(
     parts: list[pd.DataFrame] = []
     got = 0
     for f in files[:max_files]:
-        part = _coerce(pd.read_parquet(f).reindex(columns=list(FEATURE_COLUMNS)))
+        raw = pd.read_parquet(f, filters=[("ticker", "==", ticker)])  # 행 필터 뒤에 변환
+        if raw.empty:
+            continue
+        part = _coerce(raw.reindex(columns=list(FEATURE_COLUMNS)))
         part = part[(part["market"] == market) & (part["ticker"].astype(str) == ticker)]
         if not part.empty:
             parts.append(part)
@@ -280,6 +287,11 @@ def write_rows(
     d = _features_dir(state)
     sectors = sectors if sectors is not None else load_sectors()
     written: list[Path] = []
+    missing = [c for c in KEY_COLUMNS if c not in df.columns]
+    if missing:
+        # _coerce 는 reindex 라 빠진 열이 조용히 NaN 이 된다 → 식별 열 누락은 여기서, 피처 열 누락은
+        # 생산자(snapshot_row·history_rows)가 막는다
+        raise ValueError(f"피처 행에 열이 없습니다: {missing}")
     df = _coerce(df)
     for day, part in df.groupby("date", sort=True):
         path = d / f"{pd.Timestamp(day).date().isoformat()}.parquet"

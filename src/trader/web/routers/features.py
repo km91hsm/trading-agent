@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from datetime import date
 from typing import Any
@@ -9,9 +10,10 @@ from typing import Any
 import pandas as pd
 from fastapi import APIRouter, HTTPException, Query, Request
 
-from trader.config import ConfigError, load_sectors, load_universe
+from trader.config import ConfigError, SectorMap, load_sectors, load_universe
 from trader.ml import features
 
+logger = logging.getLogger("trader.web")
 router = APIRouter(prefix="/features", tags=["features"])
 _TICKER_RE = re.compile(r"^[A-Za-z0-9.\-]{1,12}$")
 COLUMNS = [*features.FEATURE_COLUMNS, "sector"]
@@ -49,6 +51,14 @@ def _records(df: pd.DataFrame) -> list[dict[str, Any]]:
     return out
 
 
+def _sectors() -> SectorMap:
+    try:
+        return load_sectors()
+    except ConfigError as e:  # 설정 파일 오류는 조회를 막지 않고 섹터만 비운다
+        logger.warning("sectors.yaml 로드 실패: %s", e)
+        return SectorMap()
+
+
 def _universe_tickers(market: str) -> list[str] | None:
     try:
         u = load_universe()
@@ -64,7 +74,7 @@ def latest(request: Request, market: str) -> dict:
     deps = request.app.state.deps
     m = _market(market)
     df = features.latest_rows(deps.state, m, tickers=_universe_tickers(m))
-    sectors = load_sectors()
+    sectors = _sectors()
     rows = _records(df)
     for r in rows:
         r["sector"] = sectors.sector_of(str(r["ticker"]), m)  # type: ignore[arg-type]
@@ -83,5 +93,9 @@ def history(
     deps = request.app.state.deps
     m = _market(market)
     t = _ticker(ticker)
+    known = _universe_tickers(m)
+    if known is not None and t not in known:
+        # 토큰 없는 API: 없는 종목으로 파일 수천 개를 읽게 하지 않는다
+        raise HTTPException(status_code=404, detail=f"유니버스에 없는 종목: {t}")
     df = features.ticker_history(deps.state, m, t, days=days)
     return {"ticker": t, "market": m, "rows": _records(df)}

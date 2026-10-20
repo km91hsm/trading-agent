@@ -14,7 +14,7 @@ function FeatureStore() {
   const latest = useLoad(() => getJson<LatestResp>(`/api/features/latest?market=${market}`), [market, tick]);
   const history = useLoad(
     () => (ticker ? getJson<HistoryResp>(`/api/features/history?market=${market}&ticker=${encodeURIComponent(ticker)}&days=120`) : null),
-    [market, ticker, tick],
+    [market, ticker],
   );
   const onSort = (k: string) => {
     if (k === sortKey) setDir(dir === "asc" ? "desc" : "asc");

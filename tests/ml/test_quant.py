@@ -103,3 +103,12 @@ def test_evaluate_walkforward_fold_indices_subset():
     assert [f["index"] for f in dev["folds"]] == list(range(n - 1))
     assert [f["index"] for f in hold["folds"]] == [n - 1]
     assert hold["folds"][0]["accuracy"] == full["folds"][-1]["accuracy"]
+
+
+def test_quant_model_sklearn_disables_early_stopping():
+    """HistGradientBoosting 의 early_stopping='auto' 는 1만 행 넘으면 무작위 10% 검증으로 조기
+    종료해 max_iter 탐색이 무의미하고 시간 순서도 섞인다 → 명시적으로 끈다 (리뷰 #4)."""
+    df = _labeled(signal=False, n_days=60, n_tickers=2)
+    cols = dataset.feature_columns(df)
+    m = quant.QuantModel(cols, backend="sklearn", max_iter=20)
+    assert m._est.early_stopping is False
