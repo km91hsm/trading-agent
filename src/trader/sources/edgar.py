@@ -73,6 +73,7 @@ class EdgarClient:
         self._http = http or httpx.Client(timeout=15)
         self._now = now
         self._tickers: dict[str, Any] | None = None
+        self._facts: dict[str, dict] = {}  # cik → companyfacts (비율·history 가 한 번만 받도록)
 
     def _get(self, url: str) -> Any:
         resp = self._http.get(url, headers=self._headers)
@@ -116,7 +117,9 @@ class EdgarClient:
         return (self._load_tickers().get(symbol.upper()) or {}).get("name") or None
 
     def companyfacts(self, cik: str) -> dict:
-        return self._get(FACTS_URL.format(cik=cik))
+        if cik not in self._facts:
+            self._facts[cik] = self._get(FACTS_URL.format(cik=cik))
+        return self._facts[cik]
 
 
 def _annual_entries(entries: list[dict], asof: date, *, duration: bool) -> list[dict]:
@@ -136,6 +139,90 @@ def _annual_entries(entries: list[dict], asof: date, *, duration: bool) -> list[
         out.append(e)
     out.sort(key=lambda e: (e["end"], e.get("filed", "")), reverse=True)
     return out
+
+
+ANNUAL_DAYS = (300, 400)
+QUARTER_DAYS = (60, 120)
+HISTORY_YEARS = 3
+
+
+def _unit_entries(all_facts: dict, tax: str, tag: str) -> list[dict]:
+    return (((all_facts.get(tax) or {}).get(tag) or {}).get("units") or {}).get("USD") or []
+
+
+def _values_at(
+    all_facts: dict, *, form: str, end: str, span: tuple[int, int], asof: date
+) -> tuple[dict[str, Decimal], str | None]:
+    """한 보고서(form·end)의 공통 키 값과 제출일. 기간형은 (end − start) 일수가 span 안."""
+    fin: dict[str, Decimal] = {}
+    filed_at: str | None = None
+    end_d = _d(end)
+    for key, (tax, tags, duration) in _TAGS.items():
+        for tag in tags:
+            hit = None
+            for ent in _unit_entries(all_facts, tax, tag):
+                if str(ent.get("form", "")) != form or str(ent.get("end", "")) != end:
+                    continue
+                filed = _d(ent.get("filed"))
+                if filed is None or filed > asof:
+                    continue
+                if duration:
+                    start = _d(ent.get("start"))
+                    if start is None or end_d is None:
+                        continue
+                    if not (span[0] <= (end_d - start).days <= span[1]):
+                        continue
+                hit = ent
+                break
+            if hit is not None:
+                fin[key] = Decimal(str(hit["val"]))
+                filed_at = filed_at or str(hit.get("filed"))
+                break
+    return fin, filed_at
+
+
+def _report_ends(
+    all_facts: dict, *, form: str, span: tuple[int, int] | None, asof: date
+) -> list[str]:
+    """asof 까지 제출된 form 보고서의 end 날짜(내림차순, 중복 없음). 기간형 태그로 판단한다."""
+    ends: set[str] = set()
+    for tax, tags, duration in _TAGS.values():
+        if not duration:
+            continue
+        for tag in tags:
+            for ent in _unit_entries(all_facts, tax, tag):
+                if str(ent.get("form", "")) != form:
+                    continue
+                filed, start, end = _d(ent.get("filed")), _d(ent.get("start")), _d(ent.get("end"))
+                if filed is None or end is None or filed > asof:
+                    continue
+                if span is not None:
+                    if start is None or not (span[0] <= (end - start).days <= span[1]):
+                        continue
+                ends.add(end.isoformat())
+    return sorted(ends, reverse=True)
+
+
+def financial_history_us(facts: dict, asof: date) -> dict[str, Any]:
+    """DART `financial_history` 와 같은 꼴: 3개년 10-K(`years`, end 연도 키, `_전기` 없음) +
+    최신 10-K 뒤의 최근 10-Q(`latest_quarter`: form·end·filed + 공통 키). asof 까지 제출된 것만."""
+    all_facts = facts.get("facts") or {}
+    years: dict[int, dict[str, Decimal]] = {}
+    annual_ends = _report_ends(all_facts, form="10-K", span=ANNUAL_DAYS, asof=asof)
+    for end in annual_ends[:HISTORY_YEARS]:
+        fin, _filed = _values_at(all_facts, form="10-K", end=end, span=ANNUAL_DAYS, asof=asof)
+        if fin:
+            years[int(end[:4])] = fin
+    latest_quarter: dict[str, Any] | None = None
+    floor = annual_ends[0] if annual_ends else ""
+    for end in _report_ends(all_facts, form="10-Q", span=QUARTER_DAYS, asof=asof):
+        if end <= floor:
+            break
+        fin, filed = _values_at(all_facts, form="10-Q", end=end, span=QUARTER_DAYS, asof=asof)
+        if fin:
+            latest_quarter = {"form": "10-Q", "end": end, "filed": filed, **fin}
+            break
+    return {"years": years, "latest_quarter": latest_quarter}
 
 
 def financials_us(facts: dict, asof: date) -> tuple[dict[str, Decimal], int | None]:

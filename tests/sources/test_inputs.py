@@ -83,7 +83,7 @@ def test_inputs_fundamental_history_section(project):
         secrets=Secrets(),
         deps=deps(),
     )
-    assert us["fundamental"]["history"]["error"] == "phase7"
+    assert us["fundamental"]["history"]["error"] == "no edgar client"
 
 
 def test_failed_section_recorded_and_file_written(project):
@@ -199,7 +199,10 @@ def test_us_requires_exchange_and_skips_kr_only_sections(project):
     assert d["meta"]["name"] == "AAPL"
     assert d["sentiment"]["investor_flow"]["error"] == "not available for US"
     assert d["fundamental"]["ratios"]["error"] == "no edgar client"
-    assert d["errors"] == ["fundamental.ratios: no edgar client"]
+    assert d["errors"] == [
+        "fundamental.ratios: no edgar client",
+        "fundamental.history: no edgar client",
+    ]
 
 
 def test_dart_corp_lookup_failure_is_section_error(project):
@@ -667,3 +670,24 @@ def test_fundamental_peer_uses_market_local_date(project):
         deps=deps(),
     )
     assert d["fundamental"]["peer"]["data"]["median"]["ROE"] == pytest.approx(0.2)  # 10-09 행만
+
+
+def test_us_history_section_from_edgar(project):
+    """스펙 §3: US 도 EDGAR 로 3개년 + 최근 분기 history 를 받는다 (Phase 13)."""
+    from helpers_sources import FakeEdgar
+
+    d = build_inputs(
+        ticker="AAPL",
+        market="US",
+        exchange="NAS",
+        asof=T0,  # 2026-10-09
+        cfg=cfg(),
+        secrets=Secrets(),
+        deps=deps(edgar=FakeEdgar()),
+    )
+    h = d["fundamental"]["history"]
+    assert h["error"] is None
+    assert {str(k) for k in h["data"]["years"]} == {"2023", "2024", "2025"}
+    assert h["data"]["latest_quarter"]["form"] == "10-Q"
+    assert h["data"]["latest_quarter"]["end"] == "2026-03-31"
+    assert d["fundamental"]["ratios"]["error"] is None  # 같은 companyfacts 로 비율도 채움

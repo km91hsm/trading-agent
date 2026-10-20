@@ -90,3 +90,44 @@ def test_ratios_by_year_us_without_cik_is_empty():
     from trader.sources.edgar import ratios_by_year_us
 
     assert ratios_by_year_us(FakeEdgar(), "ZZZZ", [2024]) == {}
+
+
+def test_financial_history_us_three_years_and_latest_quarter():
+    """KR financial_history 와 같은 꼴: 3개년 10-K(years, end 연도 키) + 최신 10-K 뒤의 최근 10-Q.
+    둘 다 asof 까지 제출된 것만 (룩어헤드)."""
+    from helpers_sources import FakeEdgar
+
+    from trader.sources.edgar import financial_history_us
+
+    facts = FakeEdgar().companyfacts("0000320193")
+    h = financial_history_us(facts, date(2026, 4, 1))
+    assert set(h["years"]) == {2023, 2024}  # FY2025 10-K 는 2026-05-15 제출
+    assert h["years"][2024]["매출액"] == Decimal(330) and "매출액_전기" not in h["years"][2024]
+    q = h["latest_quarter"]
+    assert q["form"] == "10-Q" and q["end"] == "2025-09-30" and q["filed"] == "2025-11-01"
+    assert q["매출액"] == Decimal(80) and q["자본총계"] == Decimal(410)
+    h2 = financial_history_us(facts, date(2026, 6, 1))
+    assert set(h2["years"]) == {2023, 2024, 2025}
+    assert h2["latest_quarter"]["end"] == "2026-03-31"
+
+
+def test_financial_history_us_quarter_none_when_not_after_latest_10k_or_after_asof():
+    from helpers_sources import FakeEdgar
+
+    from trader.sources.edgar import financial_history_us
+
+    facts = FakeEdgar().companyfacts("0000320193")
+    h = financial_history_us(facts, date(2025, 10, 1))  # 10-Q(9/30) 는 11/01 제출 → 아직 없음
+    assert set(h["years"]) == {2023, 2024} and h["latest_quarter"] is None
+    assert financial_history_us({"facts": {}}, date(2026, 1, 1)) == {
+        "years": {},
+        "latest_quarter": None,
+    }
+
+
+def test_companyfacts_memoized_per_client(edgar, respx_mock):
+    """ratios 와 history 가 같은 종목을 두 번 받지 않는다 (EDGAR 10 req/s 예절)."""
+    cik = edgar.cik("AAPL")
+    edgar.companyfacts(cik)
+    edgar.companyfacts(cik)
+    assert respx_mock.get(FACTS).call_count == 1

@@ -39,7 +39,7 @@ from trader.sources import indicators, manual_inputs
 from trader.sources.base import SKIP_REASONS, Section, run_section, skipped_section
 from trader.sources.community import collect_channels, collect_community  # noqa: F401
 from trader.sources.dart import ratios_kr
-from trader.sources.edgar import ratios_us
+from trader.sources.edgar import financial_history_us, ratios_us
 from trader.sources.macro import collect_macro
 from trader.sources.news import collect_news
 
@@ -252,14 +252,22 @@ def _fundamental(ticker, market, asof, cfg, deps, technical) -> dict[str, Sectio
             "peer": peer,
         }
     if not cfg.edgar.enabled:
-        ratios = skipped_section("disabled", now=now)
+        ratios = history = skipped_section("disabled", now=now)
     elif deps.edgar is None:
-        ratios = skipped_section("no edgar client", now=now)
+        ratios = history = skipped_section("no edgar client", now=now)
     else:
+
+        def history_us() -> dict:
+            cik = deps.edgar.cik(ticker)
+            if not cik:
+                raise ValueError(f"EDGAR CIK 없음: {ticker}")
+            return financial_history_us(deps.edgar.companyfacts(cik), day)
+
         ratios = run_section(lambda: ratios_us(deps.edgar, ticker, day, price), now=now)
+        history = run_section(history_us, now=now)
     return {
         "ratios": ratios,
-        "history": skipped_section("phase7", now=now),
+        "history": history,
         "disclosures": skipped_section("phase6", now=now),
         "peer": peer,
     }

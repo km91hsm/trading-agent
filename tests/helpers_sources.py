@@ -203,15 +203,51 @@ class FakeEdgar:
         def tag(values, duration):
             return {"units": {"USD": _fact_entries(values, filed=self.FILED, duration=duration)}}
 
+        def quarterly(values: dict[str, int], duration: bool) -> list[dict]:
+            # 10-Q: end 2025-09-30(2025-11-01 제출), end 2026-03-31(2026-05-10 제출)
+            filed = {"2025-09-30": "2025-11-01", "2026-03-31": "2026-05-10"}
+            out = []
+            for end, val in values.items():
+                e = {"form": "10-Q", "end": end, "filed": filed[end], "val": val}
+                if duration:
+                    e["start"] = {"2025-09-30": "2025-07-01", "2026-03-31": "2026-01-01"}[end]
+                out.append(e)
+            return out
+
+        def both(annual: dict[int, int], q: dict[str, int], duration: bool) -> dict:
+            t = tag(annual, duration)
+            t["units"]["USD"] += quarterly(q, duration)
+            return t
+
         return {
             "facts": {
                 "us-gaap": {
-                    "Revenues": tag({2023: 300, 2024: 330, 2025: 300}, True),
-                    "OperatingIncomeLoss": tag({2023: 30, 2024: 33, 2025: 66}, True),
-                    "NetIncomeLoss": tag({2023: 40, 2024: 40, 2025: 60}, True),
-                    "Assets": tag({2023: 500, 2024: 500, 2025: 500}, False),
-                    "Liabilities": tag({2023: 100, 2024: 100, 2025: 100}, False),
-                    "StockholdersEquity": tag({2023: 400, 2024: 400, 2025: 400}, False),
+                    "Revenues": both(
+                        {2023: 300, 2024: 330, 2025: 300},
+                        {"2025-09-30": 80, "2026-03-31": 90},
+                        True,
+                    ),
+                    "OperatingIncomeLoss": both(
+                        {2023: 30, 2024: 33, 2025: 66}, {"2025-09-30": 8, "2026-03-31": 9}, True
+                    ),
+                    "NetIncomeLoss": both(
+                        {2023: 40, 2024: 40, 2025: 60}, {"2025-09-30": 10, "2026-03-31": 12}, True
+                    ),
+                    "Assets": both(
+                        {2023: 500, 2024: 500, 2025: 500},
+                        {"2025-09-30": 510, "2026-03-31": 520},
+                        False,
+                    ),
+                    "Liabilities": both(
+                        {2023: 100, 2024: 100, 2025: 100},
+                        {"2025-09-30": 100, "2026-03-31": 100},
+                        False,
+                    ),
+                    "StockholdersEquity": both(
+                        {2023: 400, 2024: 400, 2025: 400},
+                        {"2025-09-30": 410, "2026-03-31": 420},
+                        False,
+                    ),
                 }
             }
         }
