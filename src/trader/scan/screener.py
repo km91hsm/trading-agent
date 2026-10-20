@@ -41,7 +41,8 @@ def run_screen(
     session_result = None
     if cap_hit or not candidates:
         n = PICKS_ON_CAP if candidates else 0
-        picks = [{"ticker": c["ticker"], "reason": "세션 상한: 정량 상위"} for c in candidates[:n]]
+        scored = [c for c in candidates if c.get("score") is not None]  # 피처 없는 종목 제외
+        picks = [{"ticker": c["ticker"], "reason": "세션 상한: 정량 상위"} for c in scored[:n]]
     else:
         spec = session_mod.SessionSpec(
             market=market,
@@ -59,9 +60,10 @@ def run_screen(
         picks = list((screened.get("data") or {}).get("picks") or [])
         if not session_result.ok or not picks:
             logger.warning("screener 세션 실패 또는 빈 picks → 정량 상위 %d", PICKS_ON_CAP)
+            scored = [c for c in candidates if c.get("score") is not None]
             picks = [
                 {"ticker": c["ticker"], "reason": "screener 실패: 정량 상위"}
-                for c in candidates[:PICKS_ON_CAP]
+                for c in scored[:PICKS_ON_CAP]
             ]
     exch = {c["ticker"]: c.get("exchange") for c in candidates}
     targets: list[dict] = []

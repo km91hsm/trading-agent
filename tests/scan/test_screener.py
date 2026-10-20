@@ -127,3 +127,22 @@ def test_watch_targets_are_scoped_to_market(project, conn):
         watch=["005930", "AAPL", "KR:000660", "US:MSFT"],
     )
     assert [t["ticker"] for t in r["analyze_targets"]] == ["AAPL", "MSFT"]
+
+
+def test_cap_fallback_picks_only_scored_candidates(conn):
+    """세션 상한 폴백은 점수가 있는 후보만 고른다 (유니버스 확대 뒤 앞쪽 종목이 전부 '피처 없음'
+    인데 그 셋을 '정량 상위' 로 고르던 결함)."""
+    from trader.config import AccountConfig, Settings
+    from trader.scan import screener
+
+    cands = [
+        {"ticker": "111111", "exchange": None, "score": None, "reasons": ["피처 없음"]},
+        {"ticker": "222222", "exchange": None, "score": None, "reasons": ["피처 없음"]},
+        {"ticker": "005930", "exchange": None, "score": 2.0, "reasons": ["모멘텀"]},
+        {"ticker": "000660", "exchange": None, "score": 1.0, "reasons": ["모멘텀"]},
+    ]
+    accounts = [AccountConfig(id="paper-main", env="paper", cano="1", markets=["KR"], mode="auto")]
+    r = screener.run_screen(
+        Settings(), conn, accounts, market="KR", date=D, candidates=cands, cap_hit=True
+    )
+    assert [p["ticker"] for p in r["picks"]] == ["005930", "000660"]

@@ -358,3 +358,38 @@ def test_backfill_final_flush_failure_does_not_raise(project, monkeypatch):
         progress=lambda s: None,
     )
     assert n == 0
+
+
+def test_history_rows_and_snapshot_drop_trailing_zero_volume_candle():
+    """KIS 일봉은 개장 전에 오늘 봉을 거래량 0 스텁으로 돌려준다. 그 행이 피처 스토어에 들어가면
+    거래대금 0 이라 scan 이 전 종목을 거른다(실기 10-20 07:5x) → 마지막 봉이 거래량 0 이면 버린다."""
+    from helpers_sources import make_candles
+
+    from trader.broker.models import Candle
+
+    candles = make_candles(30)
+    from datetime import timedelta
+
+    last = candles[-1]
+    stub = Candle(
+        date=last.date + timedelta(days=1),
+        open=last.close,
+        high=last.close,
+        low=last.close,
+        close=last.close,
+        volume=0,
+    )
+    rows = features.history_rows(
+        ticker="005930", market="KR", candles=[*candles, stub], ratios_by_year=None
+    )
+    assert rows["date"].max() == candles[-1].date and (rows["volume"] > 0).all()
+    snap = features.snapshot_row(
+        ticker="005930",
+        market="KR",
+        candles=[*candles, stub],
+        flows=None,
+        ratios=None,
+        news_count=None,
+        community_count=None,
+    )
+    assert snap["date"] == candles[-1].date

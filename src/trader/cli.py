@@ -1687,6 +1687,33 @@ calibration_app = typer.Typer(help="애널리스트 신호 적중률 보정 (결
 app.add_typer(calibration_app, name="calibration")
 secrets_app = typer.Typer(help="secrets/.env 관리 (값은 출력하지 않는다)", no_args_is_help=True)
 app.add_typer(secrets_app, name="secrets")
+universe_app = typer.Typer(help="유니버스 점검", no_args_is_help=True)
+app.add_typer(universe_app, name="universe")
+
+
+@universe_app.command("check")
+@_config_errors
+def universe_check_cmd(
+    market: str = typer.Option("KR", "--market", help="KR 또는 US"),
+    show_all: bool = typer.Option(False, "--all", help="문제 없는 종목도 출력"),
+) -> None:
+    """유니버스 종목이 KIS 시세를 실제로 주는지 점검한다 (US 는 거래소 코드 제안). 문제면 exit 1."""
+    from trader.scan import universe_check
+
+    if market not in ("KR", "US"):
+        raise config.ConfigError(f"시장은 KR 또는 US 여야 합니다: {market}")
+    boot = _boot(secrets=True)
+    universe = config.load_universe()
+    rows = universe_check.check(universe, _build_market(boot.secrets), market=market)
+    bad = [r for r in rows if not r["ok"]]
+    for r in rows if show_all else bad:
+        mark = "OK " if r["ok"] else "NG "
+        ex = f" {r['exchange']}" if r["exchange"] else ""
+        hint = f" → {r['suggested_exchange']}" if r["suggested_exchange"] else ""
+        typer.echo(f"{mark}{r['ticker']}{ex}{hint} {r['note']}".rstrip())
+    typer.echo(f"점검 {len(rows)}종목, 문제 {len(bad)}건")
+    if bad:
+        raise typer.Exit(code=1)
 
 
 @secrets_app.command("import")

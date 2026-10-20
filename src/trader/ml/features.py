@@ -105,7 +105,8 @@ def snapshot_row(
     news_count: int | None,
     community_count: int | None,
 ) -> dict[str, Any]:
-    """한 종목의 오늘 행. date 는 마지막 일봉 날짜."""
+    """한 종목의 오늘 행. date 는 마지막 **완성된** 일봉 날짜(거래량 0 스텁은 버린다)."""
+    candles = drop_incomplete_tail(candles)
     row: dict[str, Any] = {
         "date": candles[-1].date,
         "ticker": ticker,
@@ -126,6 +127,15 @@ def _effective_fy(d: date) -> int:
     return d.year - 1 if d.month >= 4 else d.year - 2
 
 
+def drop_incomplete_tail(candles: list[Candle]) -> list[Candle]:
+    """마지막 봉이 거래량 0 이면 버린다. KIS 일봉은 개장 전·장중 초반에 오늘 봉을 거래량 0 스텁으로
+    돌려주는데, 그 행이 스토어에 들어가면 거래대금 0 으로 scan 이 전 종목을 거른다(실기 10-20)."""
+    out = list(candles)
+    while out and int(out[-1].volume) <= 0:
+        out.pop()
+    return out
+
+
 def history_rows(
     *,
     ticker: str,
@@ -134,6 +144,7 @@ def history_rows(
     ratios_by_year: dict[int, dict] | None,
 ) -> pd.DataFrame:
     """일봉 전 구간의 행들. 비율은 해당 날짜의 사업연도 값, 수급·건수는 NaN."""
+    candles = drop_incomplete_tail(candles)
     df = indicators.indicator_frame(indicators.to_frame(candles)).reset_index()
     out = pd.DataFrame({"date": df["date"], "ticker": ticker, "market": market})
     out["close"] = df["close"]
