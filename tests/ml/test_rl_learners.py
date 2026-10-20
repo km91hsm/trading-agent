@@ -52,7 +52,11 @@ def test_fit_dispatches_and_reports_backend():
 
 
 def test_ppo_policy_roundtrips_joblib(tmp_path):
-    pytest.importorskip("stable_baselines3")
+    from trader.ml.rl import learners
+
+    reason = learners._sb3_unavailable_reason()
+    if reason is not None:  # SB3 없음 또는 torch↔NumPy 불일치(Intel macOS) → 환경 문제라 건너뜀
+        pytest.skip(reason)
     pol = fit_ppo(_trend_steps(40), RlSizerCfg(total_timesteps=256), seed=0)
     joblib.dump(pol, tmp_path / "p.joblib")
     back = joblib.load(tmp_path / "p.joblib")
@@ -88,3 +92,25 @@ def test_cem_learns_to_size_by_volatility():
     assert pol.act(low) > pol.act(high) + 0.05
     env = SizingEnv(steps, max_weight=0.25, drawdown_penalty=1.0, cost_bp=30, horizon_days=5)
     assert evaluate(env, pol)["return"] > evaluate(env, FixedPolicy(0.10))["return"]
+
+
+def test_resolve_backend_auto_falls_back_when_torch_cannot_see_numpy(monkeypatch):
+    """SB3 가 import 돼도 torch 가 NumPy 와 안 맞으면(Intel macOS: torch 2.2.2 + NumPy 2) 학습 중
+    'Numpy is not available' 로 죽는다 → auto 는 cem, ppo 지정은 ConfigError 로 미리 막는다."""
+    import types
+
+    from trader.ml.rl import learners
+
+    def fake_import(name):
+        if name == "stable_baselines3":
+            return types.SimpleNamespace()
+        if name == "torch":
+            def from_numpy(_a):
+                raise RuntimeError("Numpy is not available")
+            return types.SimpleNamespace(from_numpy=from_numpy)
+        raise ImportError(name)
+
+    monkeypatch.setattr(learners, "import_module", fake_import)
+    assert resolve_backend(RlSizerCfg(backend="auto")) == "cem"
+    with pytest.raises(ConfigError, match="NumPy"):
+        resolve_backend(RlSizerCfg(backend="ppo"))

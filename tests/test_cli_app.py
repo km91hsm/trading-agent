@@ -146,3 +146,15 @@ def test_templates_mirror_config_except_account_numbers(project):
         assert a == b, src.name
     tmpl_sources = (repo / "templates" / "config" / "sources.yaml").read_text(encoding="utf-8")
     assert not re.search(r"[A-Za-z0-9._%+-]+@gmail\.com", tmpl_sources)  # 개인 이메일 금지
+
+
+def test_selfcheck_reports_optional_modules(project):
+    """선택 백엔드(lightgbm·stable_baselines3)는 있으면 true, 없어도 ok 에 영향이 없다."""
+    import json
+
+    r = CliRunner().invoke(app, ["selfcheck"])
+    assert r.exit_code == 0, r.stdout
+    data = json.loads(r.stdout.strip().splitlines()[-1])
+    assert set(data["optional"]) == {"lightgbm", "stable_baselines3"}
+    assert all(isinstance(v, bool) for v in data["optional"].values())
+    assert data["ok"] is True

@@ -71,3 +71,14 @@ def test_sectors_values_must_be_declared(project):
     )
     with pytest.raises(config.ConfigError):
         config.load_sectors()
+
+
+def test_repo_ml_yaml_uses_auto_backends():
+    """사용자 결정(2026-10-20): 설정 파일은 auto — lightgbm·PPO 가 import 되면 쓰고, 없으면
+    sklearn·cem 으로 돈다. 코드 기본값(sklearn)은 그대로다."""
+    from pathlib import Path
+
+    repo = Path(__file__).resolve().parents[1]
+    m = config.load_ml(repo / "config" / "ml.yaml")
+    assert m.models.quant.backend == "auto" and m.models.rl_sizer.backend == "auto"
+    assert config.MlConfig().models.quant.backend == "sklearn"

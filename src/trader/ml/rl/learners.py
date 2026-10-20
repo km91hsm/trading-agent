@@ -165,23 +165,39 @@ def fit_ppo(steps: pd.DataFrame, cfg: RlSizerCfg, *, seed: int) -> PpoPolicy:
     return PpoPolicy(buf.getvalue(), max_weight=cfg.max_weight)
 
 
-def _sb3_available() -> bool:
+def _sb3_unavailable_reason() -> str | None:
+    """PPO 를 못 쓰는 이유(없으면 None). SB3 import 뿐 아니라 torch↔NumPy 상호운용도 확인한다 —
+    Intel macOS 는 마지막 휠 torch 2.2.2 가 NumPy 1 로 빌드돼 NumPy 2 환경에서 import 는 되지만
+    학습 중 'Numpy is not available' 로 죽는다."""
     try:
         import_module("stable_baselines3")
     except ImportError:
-        return False
-    return True
+        return "RL PPO 백엔드는 `uv sync --extra rl` 이 필요합니다"
+    try:
+        torch = import_module("torch")
+        torch.from_numpy(np.zeros(1, dtype="float32"))
+    except Exception as e:  # noqa: BLE001 - RuntimeError('Numpy is not available') 등
+        return f"torch 가 NumPy 와 맞지 않아 PPO 를 쓸 수 없습니다 (torch 2.2.2 + NumPy 2): {e}"
+    return None
+
+
+def _sb3_available() -> bool:
+    return _sb3_unavailable_reason() is None
 
 
 def resolve_backend(cfg: RlSizerCfg) -> Literal["cem", "ppo"]:
-    """auto → SB3 가 import 되면 ppo, 아니면 cem. ppo 지정인데 없으면 ConfigError."""
+    """auto → SB3·torch 가 쓸 수 있으면 ppo, 아니면 cem. ppo 지정인데 못 쓰면 ConfigError."""
     if cfg.backend == "cem":
         return "cem"
+    reason = _sb3_unavailable_reason()
     if cfg.backend == "ppo":
-        if not _sb3_available():
-            raise ConfigError("RL PPO 백엔드는 `uv sync --extra rl` 이 필요합니다")
+        if reason is not None:
+            raise ConfigError(reason)
         return "ppo"
-    return "ppo" if _sb3_available() else "cem"
+    if reason is not None:
+        logger.info("RL 백엔드 auto → cem (%s)", reason)
+        return "cem"
+    return "ppo"
 
 
 def fit(

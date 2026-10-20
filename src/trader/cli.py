@@ -1068,7 +1068,20 @@ def selfcheck_cmd() -> None:
             loaded.append(m.split(".")[0])
         except Exception as e:  # noqa: BLE001 - 어떤 import 실패든 보고한다
             failed[m] = f"{type(e).__name__}: {e}"
-    out = {"ok": not failed, "frozen": bundle.is_frozen(), "modules": loaded, "failed": failed}
+    optional = {}
+    for m in ("lightgbm", "stable_baselines3"):  # 선택 백엔드: 없어도 ok (sklearn·cem 폴백)
+        try:
+            importlib.import_module(m)
+            optional[m] = True
+        except Exception:  # noqa: BLE001 - ImportError·OSError(libomp 없음) 모두 "없음"
+            optional[m] = False
+    out = {
+        "ok": not failed,
+        "frozen": bundle.is_frozen(),
+        "modules": loaded,
+        "failed": failed,
+        "optional": optional,
+    }
     typer.echo(json.dumps(out, ensure_ascii=False))
     if failed:
         raise typer.Exit(code=1)

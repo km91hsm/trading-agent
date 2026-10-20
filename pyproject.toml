@@ -28,9 +28,13 @@ trader = "trader.cli:app"
 lightgbm = [
     "lightgbm>=4",
 ]
+# PPO 백엔드. macOS x86_64(Intel) 는 torch 2.2.2 가 마지막 휠이라 SB3 2.3·gymnasium 0.29 로 핀한다.
 rl = [
-    "gymnasium>=1.0",
-    "stable-baselines3>=2.3",
+    "gymnasium>=1.0; sys_platform != 'darwin' or platform_machine != 'x86_64'",
+    "stable-baselines3>=2.3; sys_platform != 'darwin' or platform_machine != 'x86_64'",
+    "gymnasium>=0.29,<1.0; sys_platform == 'darwin' and platform_machine == 'x86_64'",
+    "stable-baselines3>=2.3,<2.4; sys_platform == 'darwin' and platform_machine == 'x86_64'",
+    "torch<=2.2.2; sys_platform == 'darwin' and platform_machine == 'x86_64'",
 ]
 
 [dependency-groups]
