@@ -188,5 +188,9 @@
 - [x] `ml tune`(dev 폴드 선택·홀드아웃 보고·자동 적용 없음), `QuantModelCfg.learning_rate/num_leaves`
 - [x] 웹 `/api/features/latest|history` + Data 페이지 피처 행 탐색(정렬·종목 이력)
 - [x] 백엔드: `ml.yaml backend: auto`(quant·rl_sizer), `rl` extra 플랫폼 핀(darwin x86_64 torch 2.2.2·SB3 2.3), `selfcheck.optional`
-- [ ] 실기: US 백필·derive·재학습·tune·rl train 결과 기록
+- [x] 실기(2026-10-20): US 백필 38,489행(비율 50/51 종목 채움) → `features derive` 802파일 → 스냅샷 199행. 리뷰 반영(early_stopping=False) 뒤 재학습:
+  - **US h5: 정확도 0.360 / 기준선 0.333 / 상위 5 알파 +0.0033 / 양 폴드 6/6 → 승격(20261020_090042, sklearn)** — 비율·`*_vs_sector` 피처가 들어가며 처음으로 기준 통과. 단 `promote_min_alpha` 0.003 은 KR 왕복(30bp) 기준이고 US 왕복은 50bp 라 비용 대비 여유는 작다(사용자 판단: US 는 0.005 로 올릴지)
+  - KR h5: 정확도 0.377 / 기준선 0.336 / 상위 5 알파 −0.0018 / 양 폴드 2/6 → 미승격 (early_stopping=auto 였던 직전 실행은 +0.0004·3/6)
+  - `ml tune --market KR`: dev 최선 {lr 0.03, leaves 7, iter 100} alpha_topn +0.0050(5폴드 중 4 양) 이지만 홀드아웃 −0.0005(기본값 −0.0084) → 적용 권고 없음. `--market US`: dev 최선 같은 조합 +0.0052, 홀드아웃 +0.0035 < 기본값 +0.0080 → 적용 권고 없음(기본값 유지)
+  - `rl train`: auto → cem(Intel macOS 는 torch↔NumPy 불일치), 186,425 스텝, RL 0.0015 vs 고정 0.0113·변동성 타깃 0.0289 → 미승격(수동 승격 없음)
 - [ ] 사용자 실행(macOS LightGBM): `sudo chown -R $(whoami) /usr/local/share/man/man8 && chmod u+w /usr/local/share/man/man8` 뒤 `brew install libomp` → `uv run trader selfcheck` 의 `optional.lightgbm: true` 확인 → 다음 `ml train` 부터 lightgbm 백엔드(모델 메타 `backend`)

@@ -23,6 +23,8 @@ trader/                ← 이 폴더가 TRADER_HOME. 폴더째 다른 PC 로 �
    (NCP 콘솔 > NAVER API HUB > Application), **텔레그램** 봇 토큰·chat_id.
 3. (선택) 번들은 scikit-learn 백엔드로 돕니다. LightGBM·PPO 백엔드는 소스 설치(`uv sync --extra lightgbm --extra rl`,
    macOS 는 `brew install libomp`)에서만 쓸 수 있고 설정 `backend: auto` 는 없으면 자동으로 폴백합니다.
+   소스 설치에서 LightGBM 으로 학습·승격한 모델(`ml models` 의 backend)은 번들이 로드하지 못해 경고 뒤 ML 없이
+   돕니다 — 번들과 `state/` 를 공유하려면 소스 쪽도 `backend: sklearn` 으로 학습하세요.
 
 ## 3. 첫 실행
 
