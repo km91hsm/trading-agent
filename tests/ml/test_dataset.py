@@ -72,3 +72,55 @@ def test_load_all_date_window_reads_only_matching_files(project, monkeypatch):
     assert sorted(read) == [f.stem for f in files[1:4]]
     assert out["date"].min().date().isoformat() == since
     assert out["date"].max().date().isoformat() == until
+
+
+def _panel(n_days=4, tickers=("A", "B", "C", "D", "E", "F"), market="KR", seed=0):
+    """날짜마다 모든 종목이 있는 패널. 종목별 종가 경로가 달라 fwd_return 순위가 갈린다."""
+    import numpy as np
+
+    rng = np.random.default_rng(seed)
+    days = pd.bdate_range("2025-01-02", periods=n_days + 3)
+    rows = []
+    for t in tickers:
+        px = 100 * np.cumprod(1 + rng.normal(0, 0.02, len(days)))
+        for d, c in zip(days, px, strict=True):
+            rows.append(
+                {"date": d.date(), "ticker": t, "market": market, "close": float(c), "volume": 1}
+            )
+    return pd.DataFrame(rows)
+
+
+def test_relative_tercile_labels_balanced_per_day():
+    """횡단면 삼분위: 같은 날 6종목이면 라벨 0·1·2 가 각 2개 (기준선이 1/3 로 고정된다)."""
+    df = dataset.make_labels(_panel(), horizon_days=1, up=0.02, down=-0.02, mode="relative_tercile")
+    labeled = df[df["label"].notna()]
+    for _, g in labeled.groupby("date"):
+        assert sorted(g["label"].astype(int).tolist()) == [0, 0, 1, 1, 2, 2], g["date"].iloc[0]
+    # fwd_return 가 가장 큰 종목이 2, 가장 작은 종목이 0
+    g = labeled[labeled["date"] == labeled["date"].min()].sort_values("fwd_return")
+    assert g["label"].astype(int).tolist() == [0, 0, 1, 1, 2, 2]
+
+
+def test_relative_tercile_groups_by_market():
+    """KR·US 가 같은 날 섞여 있어도 시장별로 따로 삼분위를 매긴다 (US 안에도 0 이 있다)."""
+    kr = _panel(tickers=("A", "B", "C"), market="KR", seed=1)
+    us = _panel(tickers=("X", "Y", "Z"), market="US", seed=2)
+    us["close"] = us["close"] * 10  # 수준이 달라도 순위는 시장 안에서만
+    both = pd.concat([kr, us])
+    df = dataset.make_labels(both, horizon_days=1, up=0, down=0, mode="relative_tercile")
+    labeled = df[df["label"].notna()]
+    for (_, m), g in labeled.groupby(["date", "market"]):
+        assert sorted(g["label"].astype(int).tolist()) == [0, 1, 2], m
+
+
+def test_relative_tercile_nan_when_fewer_than_three():
+    two = _panel(tickers=("A", "B"))
+    df = dataset.make_labels(two, horizon_days=1, up=0, down=0, mode="relative_tercile")
+    assert df["label"].isna().all()
+
+
+def test_absolute_mode_is_default_and_unchanged():
+    df = _one([100, 101, 103, 100, 97, 100, 100, 100])
+    a = dataset.make_labels(df, horizon_days=2, up=0.02, down=-0.02)
+    b = dataset.make_labels(df, horizon_days=2, up=0.02, down=-0.02, mode="absolute")
+    assert a["label"].equals(b["label"])

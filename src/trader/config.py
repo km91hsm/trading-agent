@@ -393,6 +393,9 @@ class LabelCfg(BaseModel):
     horizon_days: int = Field(default=5, ge=1, le=60)
     thresholds: LabelThresholds = Field(default_factory=LabelThresholds)
     embargo_days: int = Field(default=5, ge=0, le=60)
+    # absolute: fwd_return 을 ±thresholds 로 3분류. relative_tercile: 같은 날·시장 안 순위 삼분위
+    # (기준선 1/3 고정, 시장 등락이 라벨에서 빠짐 — scan 랭커 용도와 맞는다)
+    mode: Literal["absolute", "relative_tercile"] = "absolute"
 
 
 class TrainCfg(BaseModel):

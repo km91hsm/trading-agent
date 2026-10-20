@@ -80,6 +80,7 @@ def train_quant(
         horizon_days=cfg.label.horizon_days,
         up=cfg.label.thresholds.up,
         down=cfg.label.thresholds.down,
+        mode=cfg.label.mode,
     )
     labeled = df[df["label"].notna()]
     cols = dataset.feature_columns(df)

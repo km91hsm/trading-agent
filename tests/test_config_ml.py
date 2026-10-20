@@ -34,3 +34,11 @@ def test_rl_sizer_defaults_and_mode(project):
     with pytest.raises(ValidationError):
         config.MlConfig.model_validate({"models": {"rl_sizer": {"mode": "live"}}})
     assert config.load_ml().models.rl_sizer.mode == "shadow"  # config/ml.yaml 과 모델이 맞는다
+
+
+def test_label_mode_default_absolute_and_relative_allowed():
+    from trader.config import MlConfig
+
+    assert MlConfig().label.mode == "absolute"
+    cfg = MlConfig.model_validate({"label": {"mode": "relative_tercile"}})
+    assert cfg.label.mode == "relative_tercile"

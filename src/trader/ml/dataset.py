@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from datetime import date
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
 import pandas as pd
@@ -48,8 +49,22 @@ def load_all(
     return df.sort_values(["ticker", "date"]).reset_index(drop=True)
 
 
-def make_labels(df: pd.DataFrame, *, horizon_days: int, up: float, down: float) -> pd.DataFrame:
-    """fwd_return = close(t+h)/close(t) − 1 (종목별 shift), label = 0 down / 1 flat / 2 up.
+LabelMode = Literal["absolute", "relative_tercile"]
+MIN_CROSS_SECTION = 3  # 상대 라벨에 필요한 같은 날·같은 시장 종목 수
+
+
+def make_labels(
+    df: pd.DataFrame,
+    *,
+    horizon_days: int,
+    up: float,
+    down: float,
+    mode: LabelMode = "absolute",
+) -> pd.DataFrame:
+    """fwd_return = close(t+h)/close(t) − 1 (종목별 shift). label 은 모드에 따라:
+    - absolute: 0 down(≤down) / 1 flat / 2 up(≥up)
+    - relative_tercile: 같은 (date, market) 안 fwd_return 순위 하위 1/3 → 0, 중간 → 1, 상위 1/3 → 2.
+      같은 날 종목이 MIN_CROSS_SECTION 미만이면 NaN. up/down 은 쓰지 않는다.
 
     fwd_date 는 라벨이 쓴 미래 봉의 날짜다. 종목별 행 시프트라 날짜가 비는 종목(거래정지·결측)은
     h 거래일보다 멀리 볼 수 있어, 워크포워드 split 이 이 날짜로 테스트 창 침범을 걸러낸다."""
@@ -59,14 +74,29 @@ def make_labels(df: pd.DataFrame, *, horizon_days: int, up: float, down: float) 
     future = close.groupby(out["ticker"]).shift(-horizon_days)
     out["fwd_date"] = grouped["date"].shift(-horizon_days)
     out["fwd_return"] = (future / close - 1).astype("float64")
-    label = pd.Series(
-        np.where(out["fwd_return"] >= up, 2, np.where(out["fwd_return"] <= down, 0, 1)),
-        index=out.index,
-        dtype="float64",
-    )
+    if mode == "relative_tercile":
+        label = _tercile_labels(out)
+    else:
+        label = pd.Series(
+            np.where(out["fwd_return"] >= up, 2, np.where(out["fwd_return"] <= down, 0, 1)),
+            index=out.index,
+            dtype="float64",
+        )
     label[out["fwd_return"].isna()] = np.nan
     out["label"] = label
     return out
+
+
+def _tercile_labels(out: pd.DataFrame) -> pd.Series:
+    """(date, market) 그룹 안 fwd_return 백분위 순위 → 0/1/2. 그룹이 작으면 NaN."""
+    valid = out[out["fwd_return"].notna()]
+    keys = [pd.to_datetime(valid["date"]), valid["market"]]
+    pct = valid["fwd_return"].groupby(keys).rank(pct=True, method="first")
+    size = valid["fwd_return"].groupby(keys).transform("size")
+    label = pd.Series(np.nan, index=out.index, dtype="float64")
+    tercile = np.where(pct <= 1 / 3, 0.0, np.where(pct > 2 / 3, 2.0, 1.0))
+    label.loc[valid.index] = np.where(size >= MIN_CROSS_SECTION, tercile, np.nan)
+    return label
 
 
 def feature_columns(df: pd.DataFrame) -> list[str]:
