@@ -448,6 +448,19 @@ def features_backfill(
     _run_features("backfill", market, years=years)
 
 
+@features_app.command("derive")
+@_config_errors
+def features_derive() -> None:
+    """모든 피처 파일의 파생 열(`*_vs_sector`, config/sectors.yaml)을 다시 계산한다.
+
+    KIS 호출 없음 — 섹터 맵을 바꾸거나 옛 스토어를 올릴 때."""
+    from trader.ml import features
+
+    configure(paths.state_dir())
+    n = features.rederive(progress=lambda s: typer.echo(f"  {s}"))
+    typer.echo(f"derive: {n}개 파일 갱신")
+
+
 # --- analyze -----------------------------------------------------------------
 
 

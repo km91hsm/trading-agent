@@ -42,3 +42,32 @@ def test_label_mode_default_absolute_and_relative_allowed():
     assert MlConfig().label.mode == "absolute"
     cfg = MlConfig.model_validate({"label": {"mode": "relative_tercile"}})
     assert cfg.label.mode == "relative_tercile"
+
+
+def test_load_sectors_covers_universe():
+    """config/sectors.yaml 은 유니버스 전 종목을 11개 대분류 중 하나로 매핑한다."""
+    from pathlib import Path
+
+    repo = Path(__file__).resolve().parents[1]
+    sectors = config.load_sectors(repo / "config" / "sectors.yaml")
+    universe = config.load_universe(repo / "config" / "universe.yaml")
+    assert len(sectors.sectors) == 11 and "기타" in sectors.sectors
+    assert set(universe.kr) <= set(sectors.kr)
+    assert {s.symbol for s in universe.us} <= set(sectors.us)
+    assert set(sectors.kr.values()) | set(sectors.us.values()) <= set(sectors.sectors)
+    assert sectors.sector_of("005930", "KR") == "반도체"
+    assert sectors.sector_of("JPM", "US") == "금융"
+    assert sectors.sector_of("005930", "US") is None
+
+
+def test_load_sectors_missing_file_is_empty(project):
+    s = config.load_sectors()
+    assert s.kr == {} and s.us == {} and s.sector_of("005930", "KR") is None
+
+
+def test_sectors_values_must_be_declared(project):
+    (project / "config" / "sectors.yaml").write_text(
+        "sectors: [반도체]\nkr: {'005930': 금융}\n", encoding="utf-8"
+    )
+    with pytest.raises(config.ConfigError):
+        config.load_sectors()

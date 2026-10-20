@@ -213,6 +213,32 @@ class Universe(BaseModel):
     watch: list[str] = Field(default_factory=list)
 
 
+class SectorMap(BaseModel):
+    """config/sectors.yaml — 종목 → 동종업 대분류 (사람이 관리하는 결정적 데이터, 스펙 §3).
+
+    피처 스토어 `*_vs_sector`(비율 − 같은 날·시장·섹터 중앙값)와 `00_inputs.fundamental.peer`
+    가 쓴다."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    sectors: list[str] = Field(default_factory=list)
+    kr: dict[str, str] = Field(default_factory=dict)
+    us: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("kr", "us")
+    @classmethod
+    def _declared(cls, v: dict[str, str], info) -> dict[str, str]:
+        declared = set(info.data.get("sectors") or [])
+        bad = sorted({s for s in v.values() if s not in declared})
+        if bad:
+            raise ValueError(f"sectors 에 없는 대분류: {bad}")
+        return v
+
+    def sector_of(self, ticker: str, market: Market) -> str | None:
+        table = self.kr if market == "KR" else self.us
+        return table.get(ticker)
+
+
 # --- secrets/.env ----------------------------------------------------------
 
 
@@ -516,6 +542,12 @@ def load_sources(path: Path | None = None) -> SourcesConfig:
 def load_universe(path: Path | None = None) -> Universe:
     p = path or paths.config_dir() / "universe.yaml"
     return _validate(Universe, _read_yaml(p), p.name)
+
+
+def load_sectors(path: Path | None = None) -> SectorMap:
+    """파일이 없으면 빈 맵 (파생 열은 전부 NaN, peer 절은 건너뜀)."""
+    p = path or paths.config_dir() / "sectors.yaml"
+    return _validate(SectorMap, _read_yaml(p), p.name)
 
 
 def load_secrets(path: Path | None = None) -> Secrets:

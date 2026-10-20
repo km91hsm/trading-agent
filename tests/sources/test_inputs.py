@@ -69,7 +69,7 @@ def test_inputs_fundamental_history_section(project):
         secrets=Secrets(),
         deps=deps(),
     )
-    assert inputs.SCHEMA_VERSION == 2 and d["meta"]["schema_version"] == 2
+    assert inputs.SCHEMA_VERSION == 3 and d["meta"]["schema_version"] == 3
     h = d["fundamental"]["history"]["data"]
     assert set(h["years"]) == {"2023", "2024", "2025"}  # JSON 키는 문자열
     assert h["years"]["2025"]["매출액"] == "330"  # Decimal → str
@@ -545,3 +545,84 @@ def test_collect_and_save_uses_market_run_date_for_us(project):
         deps=deps(now=lambda: asof),
     )
     assert p.parent.parent.parent.name == "2026-10-09"
+
+
+def _seed_peers(project, market: str, roes: dict[str, float]):
+    """피처 스토어 + sectors/universe 설정을 임시 프로젝트에 둔다 (동종업 peer 절용)."""
+    import pandas as pd
+    import yaml
+
+    from trader.config import SectorMap
+    from trader.ml import features
+
+    key = market.lower()
+    sectors = SectorMap(sectors=["반도체", "기타"], **{key: dict.fromkeys(roes, "반도체")})
+    (project / "config" / "sectors.yaml").write_text(
+        yaml.safe_dump(sectors.model_dump(), allow_unicode=True), encoding="utf-8"
+    )
+    if market == "KR":
+        uni = {"kr": list(roes)}
+    else:
+        uni = {"us": [{"symbol": t, "exchange": "NAS"} for t in roes]}
+    (project / "config" / "universe.yaml").write_text(yaml.safe_dump(uni), encoding="utf-8")
+    n = len(roes)
+    features.write_rows(
+        pd.DataFrame(
+            {
+                "date": [T0.date()] * n,
+                "ticker": list(roes),
+                "market": [market] * n,
+                "close": [100.0] * n,
+                "volume": [1000] * n,
+                "roe": list(roes.values()),
+                "op_margin": [0.1] * n,
+                "debt_ratio": [1.0] * n,
+            }
+        ),
+        sectors=sectors,
+    )
+
+
+def test_fundamental_peer_section_from_feature_store(project):
+    """스펙 §3 '동종업 중앙값 대비': 피처 스토어 최신 행으로 같은 섹터 중앙값·내 값·차이."""
+    _seed_peers(project, "US", {"AAPL": 0.3, "NVDA": 0.1, "AMD": 0.2})
+    d = build_inputs(
+        ticker="AAPL",
+        market="US",
+        exchange="NAS",
+        asof=T0,
+        cfg=cfg(),
+        secrets=Secrets(),
+        deps=deps(),
+    )
+    peer = d["fundamental"]["peer"]
+    assert peer["error"] is None
+    assert peer["data"]["sector"] == "반도체" and peer["data"]["n"] == 3
+    assert peer["data"]["median"]["ROE"] == pytest.approx(0.2)
+    assert peer["data"]["diff"]["ROE"] == pytest.approx(0.1)  # 내 ROE 0.3 − 중앙값 0.2
+    assert "fundamental.peer" not in " ".join(d["errors"])
+
+
+def test_fundamental_peer_skipped_without_sector_or_peers(project):
+    d = build_inputs(
+        ticker="005930",
+        market="KR",
+        exchange=None,
+        asof=T0,
+        cfg=cfg(),
+        secrets=Secrets(),
+        deps=deps(),
+    )
+    assert d["fundamental"]["peer"]["error"] == "no sector peers"
+    assert not any(e.startswith("fundamental.peer") for e in d["errors"])  # 건너뜀은 집계하지 않음
+    _seed_peers(project, "KR", {"005930": 0.1, "000660": 0.2})  # 2종목 → 중앙값 없음
+    d = build_inputs(
+        ticker="005930",
+        market="KR",
+        exchange=None,
+        asof=T0,
+        cfg=cfg(),
+        secrets=Secrets(),
+        deps=deps(),
+    )
+    assert d["fundamental"]["peer"]["error"] == "no sector peers"

@@ -18,7 +18,7 @@ import numpy as np
 import pandas as pd
 
 from trader.broker.models import Candle, InvestorFlow, Market
-from trader.config import ConfigError, Universe
+from trader.config import ConfigError, SectorMap, Universe, load_sectors
 from trader.platform import paths
 from trader.sources import indicators
 from trader.sources.dart import ANNUAL, basic_ratios
@@ -28,12 +28,17 @@ logger = logging.getLogger("trader.ml")
 RATIO_COLUMNS = {"op_margin": "영업이익률", "roe": "ROE", "debt_ratio": "부채비율"}
 FLOW_COLUMNS = ["flow_foreign_20d", "flow_inst_20d", "flow_indiv_20d"]
 COUNT_COLUMNS = ["news_count", "community_count"]
+# 동종업 상대 비율: 비율 − 같은 날·같은 시장·같은 섹터(config/sectors.yaml) 중앙값.
+# write_rows 가 날짜 파일 전체로 다시 계산하는 파생 열이라 백필 묶음 쓰기 뒤에도 값이 같다.
+SECTOR_COLUMNS = [f"{c}_vs_sector" for c in RATIO_COLUMNS]
+MIN_SECTOR_PEERS = 3
 FEATURE_COLUMNS: list[str] = (
     ["date", "ticker", "market", "close", "volume"]
     + indicators.COLUMNS
     + FLOW_COLUMNS
     + list(RATIO_COLUMNS)
     + COUNT_COLUMNS
+    + SECTOR_COLUMNS
 )
 MAX_DAYS = 1000  # KIS 일봉 10페이지 상한
 
@@ -45,13 +50,18 @@ FEATURE_DTYPES: dict[str, str] = {
     "volume": "int64",
     **{
         c: "Float64"
-        for c in indicators.COLUMNS + FLOW_COLUMNS + list(RATIO_COLUMNS) + COUNT_COLUMNS
+        for c in indicators.COLUMNS
+        + FLOW_COLUMNS
+        + list(RATIO_COLUMNS)
+        + COUNT_COLUMNS
+        + SECTOR_COLUMNS
     },
 }
 
 
 def _coerce(df: pd.DataFrame) -> pd.DataFrame:
-    out = df[FEATURE_COLUMNS].copy()
+    # 없는 열(파생 열을 아직 안 계산한 행·옛 파일)은 NaN 으로 채운다
+    out = df.reindex(columns=FEATURE_COLUMNS).copy()
     out["date"] = out["date"].map(lambda x: pd.Timestamp(x).date())
     for col, dtype in FEATURE_DTYPES.items():
         out[col] = out[col].astype(dtype)
@@ -119,6 +129,7 @@ def snapshot_row(
     row.update(_ratio_cols(ratios))
     row["news_count"] = news_count
     row["community_count"] = community_count
+    row.update(dict.fromkeys(SECTOR_COLUMNS))  # write_rows 가 채운다
     return row
 
 
@@ -160,9 +171,36 @@ def history_rows(
         out[col] = pd.array(
             [((ratios_by_year or {}).get(int(y)) or {}).get(key) for y in years], dtype="Float64"
         )
-    for c in COUNT_COLUMNS:
+    for c in COUNT_COLUMNS + SECTOR_COLUMNS:
         out[c] = pd.array([None] * len(out), dtype="Float64")
     return out[FEATURE_COLUMNS]
+
+
+def add_sector_relative(df: pd.DataFrame, sectors: SectorMap) -> pd.DataFrame:
+    """`<비율>_vs_sector` = 비율 − 같은 (date, market, 섹터) 중앙값. 값이 있는 구성원이
+    MIN_SECTOR_PEERS 미만이거나 섹터를 모르는 종목은 NaN (0 으로 두면 '평균 수준' 으로 읽힌다)."""
+    out = df.copy()
+    sector = pd.Series(
+        [
+            sectors.sector_of(str(t), m)
+            for t, m in zip(out["ticker"], out["market"], strict=True)
+        ],
+        index=out.index,
+        dtype="object",
+    )
+    keys = [pd.to_datetime(out["date"]), out["market"].astype(str), sector]
+    for col in RATIO_COLUMNS:
+        new = f"{col}_vs_sector"
+        if col not in out.columns:
+            out[new] = pd.array([None] * len(out), dtype="Float64")
+            continue
+        vals = pd.to_numeric(out[col], errors="coerce").astype("float64")
+        g = vals.groupby(keys, dropna=True)
+        med = g.transform("median")
+        cnt = g.transform("count")
+        rel = (vals - med).where(cnt >= MIN_SECTOR_PEERS)
+        out[new] = pd.array(rel.to_numpy(), dtype="Float64")
+    return out
 
 
 def latest_rows(
@@ -203,9 +241,20 @@ def latest_rows(
     return _coerce(out.sort_values("ticker").reset_index(drop=True))
 
 
-def write_rows(df: pd.DataFrame, state: Path | None = None) -> list[Path]:
-    """날짜별 parquet 에 (date, ticker) 기준으로 덮어쓴다. 멱등."""
+def _write_day_file(path: Path, part: pd.DataFrame, sectors: SectorMap) -> None:
+    part = _coerce(add_sector_relative(part, sectors))
+    tmp = path.with_suffix(".parquet.tmp")
+    part.reset_index(drop=True).to_parquet(tmp, index=False)
+    tmp.replace(path)
+
+
+def write_rows(
+    df: pd.DataFrame, state: Path | None = None, *, sectors: SectorMap | None = None
+) -> list[Path]:
+    """날짜별 parquet 에 (date, ticker) 기준으로 덮어쓴다. 멱등. 파생 열(`*_vs_sector`)은 합친
+    날짜 파일 전체로 다시 계산하므로 종목 묶음으로 나눠 써도 마지막 쓰기 뒤 값이 같다."""
     d = _features_dir(state)
+    sectors = sectors if sectors is not None else load_sectors()
     written: list[Path] = []
     df = _coerce(df)
     for day, part in df.groupby("date", sort=True):
@@ -215,11 +264,53 @@ def write_rows(df: pd.DataFrame, state: Path | None = None) -> list[Path]:
             old = _coerce(pd.read_parquet(path).reindex(columns=FEATURE_COLUMNS))
             old = old[~old["ticker"].isin(part["ticker"])]
             part = pd.concat([old, part], ignore_index=True)
-        tmp = path.with_suffix(".parquet.tmp")
-        part.reset_index(drop=True).to_parquet(tmp, index=False)
-        tmp.replace(path)
+        _write_day_file(path, part, sectors)
         written.append(path)
     return written
+
+
+def rederive(
+    state: Path | None = None,
+    *,
+    sectors: SectorMap | None = None,
+    progress: Callable[[str], None] = lambda s: None,
+) -> int:
+    """모든 날짜 파일의 파생 열(`*_vs_sector`)을 다시 계산해 쓴다 (KIS 호출 없음). 반환은 파일 수.
+    섹터 맵을 바꾸거나 파생 열이 없는 옛 스토어를 올릴 때 쓴다."""
+    fdir = _features_dir(state)
+    sectors = sectors if sectors is not None else load_sectors()
+    files = sorted(fdir.glob("*.parquet"))
+    for path in files:
+        part = _coerce(pd.read_parquet(path).reindex(columns=FEATURE_COLUMNS))
+        _write_day_file(path, part, sectors)
+        progress(f"{path.stem}: {len(part)}행")
+    return len(files)
+
+
+def sector_medians(
+    state: Path | None,
+    market: str,
+    sector: str,
+    *,
+    tickers: list[str],
+    asof: date | None = None,
+) -> dict[str, Any]:
+    """같은 섹터 구성원(tickers)의 최신 행 비율 중앙값.
+
+    반환 {sector, n, median{op_margin, roe, debt_ratio}} — n 은 비율이 하나라도 있는 구성원 수,
+    중앙값은 열마다 값 있는 구성원으로."""
+    rows = latest_rows(state, market, tickers=tickers, asof=asof) if tickers else None
+    median: dict[str, float | None] = {}
+    n = 0
+    if rows is not None and not rows.empty:
+        vals = rows[list(RATIO_COLUMNS)].apply(pd.to_numeric, errors="coerce").astype("float64")
+        n = int(vals.notna().any(axis=1).sum())
+        for col in RATIO_COLUMNS:
+            m = vals[col].median()
+            median[col] = None if pd.isna(m) else float(m)
+    else:
+        median = dict.fromkeys(RATIO_COLUMNS)
+    return {"sector": sector, "n": n, "median": median}
 
 
 def _ratios_by_year_kr(dart: Any, ticker: str, years: list[int]) -> dict[int, dict]:

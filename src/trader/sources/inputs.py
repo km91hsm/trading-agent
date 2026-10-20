@@ -21,9 +21,19 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+import pandas as pd
 from pydantic import BaseModel
 
-from trader.config import KST, MARKET_TZ, ConfigError, Market, Secrets, SourcesConfig
+from trader.config import (
+    KST,
+    MARKET_TZ,
+    ConfigError,
+    Market,
+    Secrets,
+    SourcesConfig,
+    load_sectors,
+    load_universe,
+)
 from trader.orchestrator.run_store import read_checkpoint, run_date_for, run_dir, write_checkpoint
 from trader.sources import indicators, manual_inputs
 from trader.sources.base import SKIP_REASONS, Section, run_section, skipped_section
@@ -35,7 +45,8 @@ from trader.sources.news import collect_news
 
 logger = logging.getLogger("trader.sources")
 
-SCHEMA_VERSION = 2  # v2: fundamental.history (3개년 + 최근 분기) 추가
+# v2: fundamental.history (3개년 + 최근 분기), v3: fundamental.peer (동종업 중앙값)
+SCHEMA_VERSION = 3
 MAX_PAST = timedelta(hours=24)
 MAX_FUTURE = timedelta(hours=24)  # 과거와 대칭. 연도 오타 같은 먼 미래만 거부
 
@@ -164,17 +175,56 @@ def _technical(ticker, market, exchange, cfg, deps, asof: datetime) -> dict[str,
     return out
 
 
+def _peer_section(ticker: str, market: Market, day: date, now) -> Section:
+    """스펙 §3 '동종업 중앙값 대비': 피처 스토어 최신 행(그 날 이하)으로 섹터 중앙값·내 값·차이.
+
+    섹터를 모르거나 구성원이 3개 미만이면 `no sector peers` 로 건너뛴다 (errors 집계 제외)."""
+    from trader.ml import features
+
+    def peer() -> dict | None:
+        sectors = load_sectors()
+        sector = sectors.sector_of(ticker, market)
+        if sector is None:
+            return None
+        universe = load_universe()
+        members = universe.kr if market == "KR" else [s.symbol for s in universe.us]
+        members = sorted({t for t in members if sectors.sector_of(t, market) == sector} | {ticker})
+        stats = features.sector_medians(None, market, sector, tickers=members, asof=day)
+        if stats["n"] < features.MIN_SECTOR_PEERS:
+            return None
+        mine_rows = features.latest_rows(None, market, tickers=[ticker], asof=day)
+        mine: dict[str, float | None] = dict.fromkeys(features.RATIO_COLUMNS)
+        if not mine_rows.empty:
+            for col in features.RATIO_COLUMNS:
+                v = mine_rows.iloc[0][col]
+                mine[col] = None if v is None or v is pd.NA or pd.isna(v) else float(v)
+        names = features.RATIO_COLUMNS  # 열 → 한글 비율 키 (basic_ratios 와 같은 키)
+        median = {names[c]: stats["median"][c] for c in names}
+        mine_k = {names[c]: mine[c] for c in names}
+        diff = {
+            k: (None if mine_k[k] is None or median[k] is None else mine_k[k] - median[k])
+            for k in median
+        }
+        return {"sector": sector, "n": stats["n"], "median": median, "mine": mine_k, "diff": diff}
+
+    sec = run_section(peer, now=now)
+    if sec["error"] is None and sec["data"] is None:
+        return skipped_section("no sector peers", now=now)
+    return sec
+
+
 def _fundamental(ticker, market, asof, cfg, deps, technical) -> dict[str, Section]:
     now = deps.now
     quote = technical["quote"]["data"]
     price = Decimal(str(quote["price"])) if quote else None
     day = asof.astimezone(KST).date()
     keys = ("ratios", "history", "disclosures")
+    peer = _peer_section(ticker, market, day, now)
     if market == "KR":
         if not cfg.dart.enabled:
-            return {k: skipped_section("disabled", now=now) for k in keys}
+            return {k: skipped_section("disabled", now=now) for k in keys} | {"peer": peer}
         if deps.dart is None:
-            return {k: skipped_section("no dart client", now=now) for k in keys}
+            return {k: skipped_section("no dart client", now=now) for k in keys} | {"peer": peer}
 
         def history() -> dict:
             code = deps.dart.corp_code(ticker)
@@ -190,6 +240,7 @@ def _fundamental(ticker, market, asof, cfg, deps, technical) -> dict[str, Sectio
             "ratios": run_section(lambda: ratios_kr(deps.dart, ticker, day, price), now=now),
             "history": run_section(history, now=now),
             "disclosures": run_section(disclosures, now=now),
+            "peer": peer,
         }
     if not cfg.edgar.enabled:
         ratios = skipped_section("disabled", now=now)
@@ -201,6 +252,7 @@ def _fundamental(ticker, market, asof, cfg, deps, technical) -> dict[str, Sectio
         "ratios": ratios,
         "history": skipped_section("phase7", now=now),
         "disclosures": skipped_section("phase6", now=now),
+        "peer": peer,
     }
 
 
