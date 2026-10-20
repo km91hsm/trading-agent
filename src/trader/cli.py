@@ -379,6 +379,16 @@ def _build_dart(secrets: config.Secrets):
     return DartClient(secrets.DART_API_KEY, cache) if secrets.DART_API_KEY else None
 
 
+def _build_edgar():
+    """US 비율용 EDGAR 클라이언트 (`sources.yaml` edgar.enabled 가 꺼져 있으면 None)."""
+    from trader.sources.edgar import EdgarClient
+
+    cfg = config.load_sources()
+    if not cfg.edgar.enabled:
+        return None
+    return EdgarClient(cfg.edgar.user_agent, paths.state_dir() / "cache")
+
+
 def _run_features(action: str, market: str | None, **kwargs) -> None:
     from trader.ml import features
 
@@ -395,6 +405,7 @@ def _run_features(action: str, market: str | None, **kwargs) -> None:
         n = fn(
             market_client=market_client,
             dart=dart,
+            edgar=_build_edgar(),
             universe=universe,
             markets=markets,  # type: ignore[arg-type]
             progress=lambda s: typer.echo(f"  {s}"),

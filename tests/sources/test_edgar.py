@@ -64,3 +64,29 @@ def test_filed_after_asof_excluded(edgar):
 def test_unknown_symbol_all_none(edgar):
     r = ratios_us(edgar, "ZZZZ", date(2026, 10, 9), Decimal("1"))
     assert all(v is None for v in r.values())
+
+
+def test_ratios_by_year_us_uses_filings_known_by_april():
+    """사업연도 Y 값은 Y+1 년 4월 1일까지 제출된 10-K 로만.
+
+    지연 제출(FY2025, 5월)은 2026 행에 못 들어간다."""
+    from helpers_sources import FakeEdgar
+
+    from trader.sources.edgar import ratios_by_year_us
+
+    e = FakeEdgar()
+    out = ratios_by_year_us(e, "AAPL", [2022, 2023, 2024, 2025])
+    assert set(out) == {2023, 2024, 2025}  # 2022: 2023-04-01 시점에 10-K 없음
+    assert out[2024]["영업이익률"] == pytest.approx(33 / 330)
+    # FY2025 10-K 는 2026-04-01 에 미제출 → FY2024 값 유지
+    assert out[2025]["영업이익률"] == pytest.approx(33 / 330)
+    assert out[2024]["ROE"] == pytest.approx(40 / 400) and out[2024]["PER"] is None
+    assert e.calls == 1  # companyfacts 는 종목당 1회
+
+
+def test_ratios_by_year_us_without_cik_is_empty():
+    from helpers_sources import FakeEdgar
+
+    from trader.sources.edgar import ratios_by_year_us
+
+    assert ratios_by_year_us(FakeEdgar(), "ZZZZ", [2024]) == {}

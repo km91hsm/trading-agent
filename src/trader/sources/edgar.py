@@ -168,6 +168,24 @@ def financials_us(facts: dict, asof: date) -> tuple[dict[str, Decimal], int | No
     return fin, shares
 
 
+def ratios_by_year_us(
+    edgar: EdgarClient, symbol: str, years: list[int]
+) -> dict[int, dict[str, float | None]]:
+    """연도별 비율(피처 스토어용). 사업연도 Y 값은 Y+1 년 4월 1일까지 제출된 10-K 로만 만든다
+    (KR 과 같은 룩어헤드 규칙 — 지연 제출분은 다음 해로 밀린다). companyfacts 는 1회만 받고,
+    CIK 가 없거나 그 시점에 10-K 가 없는 연도는 빠진다. 주식수·가격은 없어 PER/PBR/PSR 은 None."""
+    cik = edgar.cik(symbol)
+    if not cik:
+        return {}
+    facts = edgar.companyfacts(cik)
+    out: dict[int, dict[str, float | None]] = {}
+    for y in years:
+        fin, _shares = financials_us(facts, date(y + 1, 4, 1))
+        if fin:
+            out[y] = basic_ratios(fin, shares=None, price=None)
+    return out
+
+
 def ratios_us(
     edgar: EdgarClient, symbol: str, asof: date, price: Decimal | None
 ) -> dict[str, float | None]:

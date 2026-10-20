@@ -165,3 +165,53 @@ class FakeDart:
 
     def disclosures(self, corp_code, asof, days=30):
         return [{"title": "공시", "rcept_dt": "2026-10-07", "url": "https://dart.fss.or.kr/x"}]
+
+
+def _fact_entries(
+    values: dict[int, int], *, filed: dict[int, str], duration: bool
+) -> list[dict]:
+    out = []
+    for fy, val in values.items():
+        e = {"form": "10-K", "fy": fy, "end": f"{fy}-12-31", "filed": filed[fy], "val": val}
+        if duration:
+            e["start"] = f"{fy}-01-01"
+        out.append(e)
+    return out
+
+
+class FakeEdgar:
+    """EdgarClient 과 같은 메서드. 10-K 제출일: FY2023 2024-02-01, FY2024 2025-02-01,
+    FY2025 2026-05-15(지연 — 2026-04-01 시점엔 FY2024 가 최신)."""
+
+    FILED = {2023: "2024-02-01", 2024: "2025-02-01", 2025: "2026-05-15"}
+
+    def __init__(self, *, fail: bool = False):
+        self.fail = fail
+        self.calls = 0
+
+    def cik(self, symbol):
+        return "0000320193" if symbol.upper() in ("AAPL", "MSFT") else None
+
+    def company_name(self, symbol):
+        return "Apple Inc." if symbol.upper() == "AAPL" else None
+
+    def companyfacts(self, cik):
+        self.calls += 1
+        if self.fail:
+            raise RuntimeError("EDGAR down")
+
+        def tag(values, duration):
+            return {"units": {"USD": _fact_entries(values, filed=self.FILED, duration=duration)}}
+
+        return {
+            "facts": {
+                "us-gaap": {
+                    "Revenues": tag({2023: 300, 2024: 330, 2025: 300}, True),
+                    "OperatingIncomeLoss": tag({2023: 30, 2024: 33, 2025: 66}, True),
+                    "NetIncomeLoss": tag({2023: 40, 2024: 40, 2025: 60}, True),
+                    "Assets": tag({2023: 500, 2024: 500, 2025: 500}, False),
+                    "Liabilities": tag({2023: 100, 2024: 100, 2025: 100}, False),
+                    "StockholdersEquity": tag({2023: 400, 2024: 400, 2025: 400}, False),
+                }
+            }
+        }

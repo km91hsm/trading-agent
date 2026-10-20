@@ -243,6 +243,25 @@ def _ratios_by_year_kr(dart: Any, ticker: str, years: list[int]) -> dict[int, di
     return out
 
 
+def _ratios_by_year_us(edgar: Any, symbol: str, years: list[int]) -> dict[int, dict]:
+    """연도별 비율(US). EDGAR 조회 실패는 빈 dict (가격 지표 행은 그대로 저장한다)."""
+    from trader.sources.edgar import ratios_by_year_us
+
+    try:
+        return ratios_by_year_us(edgar, symbol, years)
+    except Exception as e:  # noqa: BLE001 - EDGAR 한도·네트워크 등
+        logger.warning("EDGAR 재무 %s 실패: %s", symbol, type(e).__name__)
+        return {}
+
+
+def _ratios_by_year(
+    market: Market, ticker: str, years: list[int], *, dart: Any | None, edgar: Any | None
+) -> dict[int, dict] | None:
+    if market == "KR":
+        return _ratios_by_year_kr(dart, ticker, years) if dart else None
+    return _ratios_by_year_us(edgar, ticker, years) if edgar else None
+
+
 def _targets(universe: Universe, markets: list[Market]) -> list[tuple[str, Market, str | None]]:
     targets: list[tuple[str, Market, str | None]] = []
     if "KR" in markets:
@@ -261,10 +280,13 @@ def backfill(
     universe: Universe,
     markets: list[Market],
     years: int = 3,
+    edgar: Any | None = None,
     state: Path | None = None,
     progress: Callable[[str], None] = lambda s: None,
 ) -> int:
-    """유니버스 전 종목의 과거 피처를 재구성해 저장한다. 종목 실패는 로그 후 계속. 반환은 행 수."""
+    """유니버스 전 종목의 과거 피처를 재구성해 저장한다. 종목 실패는 로그 후 계속. 반환은 행 수.
+
+    비율은 KR 은 DART(`dart`), US 는 EDGAR(`edgar`) 연도별 값이며 클라이언트가 None 이면 NaN."""
     days = min(years * 252, MAX_DAYS)
     if years * 252 > MAX_DAYS:
         logger.warning("일봉 상한 %d봉으로 제한합니다 (요청 %d년)", MAX_DAYS, years)
@@ -300,7 +322,7 @@ def backfill(
             if not candles:
                 raise ValueError("일봉 없음")
             fy_years = sorted({_effective_fy(c.date) for c in candles})
-            ratios = _ratios_by_year_kr(dart, ticker, fy_years) if market == "KR" and dart else None
+            ratios = _ratios_by_year(market, ticker, fy_years, dart=dart, edgar=edgar)
             df = history_rows(ticker=ticker, market=market, candles=candles, ratios_by_year=ratios)
             frames.append(df)
             progress(f"{market} {ticker}: {len(df)}행")
@@ -351,6 +373,7 @@ def snapshot(
     universe: Universe,
     markets: list[Market],
     asof: datetime | None = None,
+    edgar: Any | None = None,
     state: Path | None = None,
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
     progress: Callable[[str], None] = lambda s: None,
@@ -376,10 +399,10 @@ def snapshot(
                 progress(f"{market} {ticker}: 오늘 봉 미완성(거래량 0), 생략")
                 continue
             flows = market_client.get_investor_kr(ticker, days=20) if market == "KR" else None
-            ratios = None
-            if market == "KR" and dart is not None:
-                by_year = _ratios_by_year_kr(dart, ticker, [_effective_fy(candles[-1].date)])
-                ratios = next(iter(by_year.values()), None)
+            by_year = _ratios_by_year(
+                market, ticker, [_effective_fy(candles[-1].date)], dart=dart, edgar=edgar
+            )
+            ratios = next(iter(by_year.values()), None) if by_year else None
             news_count, community_count = counts_from_inputs(ticker, market, asof, state)
             rows.append(
                 snapshot_row(

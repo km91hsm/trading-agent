@@ -3,7 +3,7 @@ from decimal import Decimal
 
 import pandas as pd
 import pytest
-from helpers_sources import FakeDart, FakeMarket, make_candles
+from helpers_sources import FakeDart, FakeEdgar, FakeMarket, make_candles
 
 from trader.broker.errors import KisApiError
 from trader.config import Universe, UsSymbol
@@ -139,7 +139,7 @@ def test_backfill_continues_on_failure(project):
     got = pd.concat(pd.read_parquet(f) for f in files)
     assert set(got["ticker"]) == {"005930", "AAPL"}
     assert got[got["ticker"] == "005930"]["roe"].notna().any()
-    assert got[got["ticker"] == "AAPL"]["roe"].isna().all()  # US 비율은 Phase 7
+    assert got[got["ticker"] == "AAPL"]["roe"].isna().all()  # edgar 미주입이면 US 비율은 NaN
 
 
 def test_backfill_continues_when_dart_lookup_fails(project):
@@ -444,3 +444,59 @@ def test_snapshot_skips_ticker_whose_today_bar_is_incomplete(project):
         progress=seen.append,
     )
     assert n == 1 and any("000660" in s and "미완성" in s for s in seen)
+
+
+def test_backfill_fills_us_ratios_from_edgar(project):
+    universe = Universe(kr=["005930"], us=[UsSymbol(symbol="AAPL", exchange="NAS")])
+    edgar = FakeEdgar()
+    n = features.backfill(
+        market_client=FakeMarket(candles=40),
+        dart=FakeDart(),
+        edgar=edgar,
+        universe=universe,
+        markets=["KR", "US"],
+        years=1,
+        progress=lambda s: None,
+    )
+    assert n == 80
+    got = pd.concat(pd.read_parquet(f) for f in (project / "state" / "features").glob("*.parquet"))
+    aapl = got[got["ticker"] == "AAPL"]
+    assert aapl["roe"].notna().all() and float(aapl["roe"].iloc[0]) == pytest.approx(40 / 400)
+    assert float(got[got["ticker"] == "005930"]["roe"].iloc[0]) == pytest.approx(40 / 400)
+    assert edgar.calls == 1
+
+
+def test_backfill_continues_when_edgar_fails(project):
+    universe = Universe(kr=[], us=[UsSymbol(symbol="AAPL", exchange="NAS")])
+    n = features.backfill(
+        market_client=FakeMarket(candles=40),
+        dart=None,
+        edgar=FakeEdgar(fail=True),
+        universe=universe,
+        markets=["US"],
+        years=1,
+        progress=lambda s: None,
+    )
+    assert n == 40  # 가격 지표 행은 저장
+    got = pd.concat(pd.read_parquet(f) for f in (project / "state" / "features").glob("*.parquet"))
+    assert got["roe"].isna().all()
+
+
+def test_snapshot_fills_us_ratios_from_edgar(project):
+    from datetime import UTC, datetime
+
+    universe = Universe(kr=[], us=[UsSymbol(symbol="AAPL", exchange="NAS")])
+    now = datetime(2026, 10, 20, 12, tzinfo=UTC)
+    market = FakeMarket(candles=300, now=lambda: now)
+    n = features.snapshot(
+        market_client=market,
+        dart=None,
+        edgar=FakeEdgar(),
+        universe=universe,
+        markets=["US"],
+        now=lambda: now,
+        progress=lambda s: None,
+    )
+    assert n == 1
+    got = pd.concat(pd.read_parquet(f) for f in (project / "state" / "features").glob("*.parquet"))
+    assert float(got["roe"].iloc[0]) == pytest.approx(40 / 400)
