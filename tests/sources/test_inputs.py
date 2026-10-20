@@ -691,3 +691,18 @@ def test_us_history_section_from_edgar(project):
     assert h["data"]["latest_quarter"]["form"] == "10-Q"
     assert h["data"]["latest_quarter"]["end"] == "2026-03-31"
     assert d["fundamental"]["ratios"]["error"] is None  # 같은 companyfacts 로 비율도 채움
+
+
+def test_us_fundamental_fetches_companyfacts_once_without_process_memo(project):
+    """비율·history 가 companyfacts 를 한 번만 받되, 클라이언트에 프로세스 수명 메모를 두지 않는다
+    (데몬은 EdgarClient 를 기동 때 한 번 만들어 재사용 → 새 10-Q 가 영영 반영되지 않음, 리뷰 #1)."""
+    from helpers_sources import FakeEdgar
+
+    e = FakeEdgar()
+    kw = dict(ticker="AAPL", market="US", exchange="NAS", asof=T0, cfg=cfg(), secrets=Secrets())
+    build_inputs(**kw, deps=deps(edgar=e))
+    assert e.calls == 1
+    kw = dict(ticker="AAPL", market="US", exchange="NAS", asof=T0, cfg=cfg(), secrets=Secrets())
+    build_inputs(**kw, deps=deps(edgar=e))
+    assert e.calls == 2  # 수집마다 새로 받는다
+    assert not hasattr(e, "_facts")

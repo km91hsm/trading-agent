@@ -39,7 +39,7 @@ from trader.sources import indicators, manual_inputs
 from trader.sources.base import SKIP_REASONS, Section, run_section, skipped_section
 from trader.sources.community import collect_channels, collect_community  # noqa: F401
 from trader.sources.dart import ratios_kr
-from trader.sources.edgar import financial_history_us, ratios_us
+from trader.sources.edgar import financial_history_us, ratios_from_facts
 from trader.sources.macro import collect_macro
 from trader.sources.news import collect_news
 
@@ -256,15 +256,19 @@ def _fundamental(ticker, market, asof, cfg, deps, technical) -> dict[str, Sectio
     elif deps.edgar is None:
         ratios = history = skipped_section("no edgar client", now=now)
     else:
+        cache: dict[str, dict] = {}
 
-        def history_us() -> dict:
-            cik = deps.edgar.cik(ticker)
-            if not cik:
-                raise ValueError(f"EDGAR CIK 없음: {ticker}")
-            return financial_history_us(deps.edgar.companyfacts(cik), day)
+        def facts() -> dict:
+            # companyfacts 는 이 수집 안에서 1회 (클라이언트에 프로세스 수명 메모를 두지 않는다)
+            if "f" not in cache:
+                cik = deps.edgar.cik(ticker)
+                if not cik:
+                    raise ValueError(f"EDGAR CIK 없음: {ticker}")
+                cache["f"] = deps.edgar.companyfacts(cik)
+            return cache["f"]
 
-        ratios = run_section(lambda: ratios_us(deps.edgar, ticker, day, price), now=now)
-        history = run_section(history_us, now=now)
+        ratios = run_section(lambda: ratios_from_facts(facts(), day, price), now=now)
+        history = run_section(lambda: financial_history_us(facts(), day), now=now)
     return {
         "ratios": ratios,
         "history": history,

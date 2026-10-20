@@ -6,12 +6,15 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import date
 from pathlib import Path
 from typing import Any
 
-from trader.config import SectorMap, Universe, load_sectors
+import yaml
+
+from trader.config import ConfigError, SectorMap, Universe, load_sectors
 
 logger = logging.getLogger("trader.scan")
 
@@ -66,7 +69,9 @@ def suggest(
 
 def _block_end(lines: list[str], key: str) -> tuple[int, int] | None:
     """`key:` 블록의 (헤더 줄 번호, 마지막 항목 줄 다음 번호). 블록이 없으면 None."""
-    start = next((i for i, ln in enumerate(lines) if ln.rstrip() == f"{key}:"), None)
+    start = next(
+        (i for i, ln in enumerate(lines) if ln.split("#", 1)[0].rstrip() == f"{key}:"), None
+    )
     if start is None:
         return None
     end = start + 1
@@ -98,22 +103,38 @@ def apply(path: Path, market: str, rows: list[dict[str, Any]], *, today: date) -
     lines = text.splitlines()
     pos = _block_end(lines, key)
     if pos is None:
-        # `kr: {}` 같은 인라인 꼴이면 블록 꼴로 바꾼다
         idx = next((i for i, ln in enumerate(lines) if ln.startswith(f"{key}:")), None)
         if idx is None:
             lines.append(f"{key}:")
             idx = len(lines) - 1
         else:
-            lines[idx] = f"{key}:"
+            body, _, comment = lines[idx].partition("#")
+            inline = body.split(":", 1)[1].strip()
+            if inline not in ("", "{}"):
+                # 값이 든 인라인 매핑을 블록으로 바꾸면 기존 항목이 지워진다
+                # → 사람이 블록 꼴로 옮긴 뒤 다시
+                raise ConfigError(
+                    f"{path.name} 의 `{key}:` 가 인라인 매핑입니다. "
+                    "블록 꼴로 바꾼 뒤 다시 실행하세요"
+                )
+            lines[idx] = f"{key}:" + (f"  #{comment}" if comment else "")
         insert_at = idx + 1
     else:
         insert_at = pos[1]
     stamp = f"(auto {today.isoformat()})"
     new = [
-        f'  "{r["ticker"]}": {r["suggested"]}  # {r.get("industry") or "-"} {stamp}' for r in adds
+        f"  {json.dumps(r['ticker'], ensure_ascii=False)}: {r['suggested']}"
+        f"  # {r.get('industry') or '-'} {stamp}"
+        for r in adds
     ]
     lines[insert_at:insert_at] = new
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    load_sectors(path)  # 쓴 결과가 읽히는지 바로 확인 (깨졌으면 ConfigError)
+    new_text = "\n".join(lines) + "\n"
+    try:  # 쓰기 전에 검증 — 깨진 설정을 디스크에 남기지 않는다
+        SectorMap.model_validate(yaml.safe_load(new_text) or {})
+    except Exception as e:  # noqa: BLE001 - yaml 오류·검증 오류 모두
+        raise ConfigError(f"{path.name} 갱신 결과가 유효하지 않아 쓰지 않았습니다: {e}") from e
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(new_text, encoding="utf-8", newline="\n")
+    tmp.replace(path)
     logger.info("sectors.yaml %s 에 %d종목 추가: %s", key, len(adds), [r["ticker"] for r in adds])
     return len(adds)

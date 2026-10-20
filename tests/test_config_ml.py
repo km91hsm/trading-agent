@@ -108,3 +108,13 @@ def test_sector_map_classify_by_industry():
         config.SectorMap.model_validate(
             {"sectors": ["반도체"], "kr_industry_to_sector": {"x": "금융"}}
         )
+
+
+def test_promote_min_alpha_by_market_rejects_unknown_market_key():
+    """`{us: 0.005}` 같은 오타가 조용히 무시돼 기본값이 적용되면 안 된다 (리뷰 #9)."""
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        config.QuantModelCfg.model_validate({"promote_min_alpha_by_market": {"us": 0.005}})
+    q = config.QuantModelCfg.model_validate({"promote_min_alpha_by_market": {"US": 0.005}})
+    assert q.min_alpha_for("US") == 0.005

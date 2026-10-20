@@ -1824,9 +1824,11 @@ def universe_sectors_cmd(
         today = _date.today()
         n = sector_suggest.apply(paths.config_dir() / "sectors.yaml", market, rows, today=today)
         tmpl = _templates_config_dir() / "sectors.yaml"
+        wrote_tmpl = False
         if not bundle.is_frozen() and tmpl.is_file():
             sector_suggest.apply(tmpl, market, rows, today=today)
-        typer.echo(f"기록: {n}종목 (config/sectors.yaml{'·templates' if tmpl.is_file() else ''})")
+            wrote_tmpl = True
+        typer.echo(f"기록: {n}종목 (config/sectors.yaml{'·templates' if wrote_tmpl else ''})")
     typer.echo(f"점검 {len(rows)}종목, 제안 없음 {len(unresolved)}건")
     if unresolved:
         raise typer.Exit(code=1)

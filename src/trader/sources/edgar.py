@@ -73,7 +73,6 @@ class EdgarClient:
         self._http = http or httpx.Client(timeout=15)
         self._now = now
         self._tickers: dict[str, Any] | None = None
-        self._facts: dict[str, dict] = {}  # cik → companyfacts (비율·history 가 한 번만 받도록)
 
     def _get(self, url: str) -> Any:
         resp = self._http.get(url, headers=self._headers)
@@ -117,9 +116,10 @@ class EdgarClient:
         return (self._load_tickers().get(symbol.upper()) or {}).get("name") or None
 
     def companyfacts(self, cik: str) -> dict:
-        if cik not in self._facts:
-            self._facts[cik] = self._get(FACTS_URL.format(cik=cik))
-        return self._facts[cik]
+        """메모하지 않는다 — 데몬은 클라이언트를 기동 때 한 번 만들어 재사용하므로 프로세스 수명
+        메모는 새 10-Q 를 영영 반영하지 못한다. 한 수집 안에서 비율·history 가 같이 쓰려면 호출자가
+        facts 를 들고 넘긴다."""
+        return self._get(FACTS_URL.format(cik=cik))
 
 
 def _annual_entries(entries: list[dict], asof: date, *, duration: bool) -> list[dict]:
@@ -209,10 +209,16 @@ def financial_history_us(facts: dict, asof: date) -> dict[str, Any]:
     all_facts = facts.get("facts") or {}
     years: dict[int, dict[str, Decimal]] = {}
     annual_ends = _report_ends(all_facts, form="10-K", span=ANNUAL_DAYS, asof=asof)
-    for end in annual_ends[:HISTORY_YEARS]:
+    for end in annual_ends:
+        if len(years) >= HISTORY_YEARS:
+            break
+        year = int(end[:4])
+        if year in years:
+            continue  # 결산월 변경으로 같은 연도에 10-K 가 둘이면 최신(end 가 늦은) 것만
         fin, _filed = _values_at(all_facts, form="10-K", end=end, span=ANNUAL_DAYS, asof=asof)
         if fin:
-            years[int(end[:4])] = fin
+            # 1월 결산사(NVDA FY2026=2026-01-25)처럼 연도 키가 달력연도와 달라 end 를 함께 둔다
+            years[year] = {**fin, "end": end}
     latest_quarter: dict[str, Any] | None = None
     floor = annual_ends[0] if annual_ends else ""
     for end in _report_ends(all_facts, form="10-Q", span=QUARTER_DAYS, asof=asof):
@@ -273,11 +279,16 @@ def ratios_by_year_us(
     return out
 
 
+def ratios_from_facts(facts: dict, asof: date, price: Decimal | None) -> dict[str, float | None]:
+    """이미 받은 companyfacts 로 비율 (수집 1회 안에서 history 와 같은 facts 를 쓴다)."""
+    fin, shares = financials_us(facts, asof)
+    return basic_ratios(fin, shares=shares, price=price)
+
+
 def ratios_us(
     edgar: EdgarClient, symbol: str, asof: date, price: Decimal | None
 ) -> dict[str, float | None]:
     cik = edgar.cik(symbol)
     if not cik:
         return dict.fromkeys(RATIO_KEYS)
-    fin, shares = financials_us(edgar.companyfacts(cik), asof)
-    return basic_ratios(fin, shares=shares, price=price)
+    return ratios_from_facts(edgar.companyfacts(cik), asof, price)

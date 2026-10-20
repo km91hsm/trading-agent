@@ -71,3 +71,23 @@ def test_check_kr_distinguishes_transient_api_error_from_no_price():
     assert rows["000660"]["ok"] is False and "EGW00201" in rows["000660"]["note"]
     assert "재실행" in rows["000660"]["note"]
     assert rows["999999"]["ok"] is False and "재실행" not in rows["999999"]["note"]
+
+
+def test_check_us_transient_error_does_not_suggest_exchange():
+    """US 도 KIS 일시 오류는 '다른 거래소로 바꾸라' 가 아니라 '재실행' 이어야 한다 (리뷰 #8)."""
+    from trader.broker.errors import KisApiError
+
+    class Market(FakeMarket):
+        def get_price_us(self, symbol, exchange):
+            if symbol == "AAPL":
+                raise KisApiError("EGW00201", "초당 거래건수를 초과하였습니다", "HHDFS00000300")
+            return super().get_price_us(symbol, exchange)
+
+    uni = Universe(
+        us=[UsSymbol(symbol="AAPL", exchange="NAS"), UsSymbol(symbol="JPM", exchange="NYS")]
+    )
+    market = Market(prices={"JPM": Decimal(1)})
+    rows = {r["ticker"]: r for r in universe_check.check(uni, market, market="US")}
+    assert rows["AAPL"]["ok"] is False and rows["AAPL"]["suggested_exchange"] is None
+    assert "재실행" in rows["AAPL"]["note"] and "EGW00201" in rows["AAPL"]["note"]
+    assert rows["JPM"]["ok"] is True

@@ -3,6 +3,7 @@
 from datetime import date
 from decimal import Decimal
 
+import pytest
 import yaml
 from typer.testing import CliRunner
 
@@ -126,3 +127,33 @@ def test_cli_universe_sectors_write_updates_config_and_template(project, monkeyp
     )
     r = CliRunner().invoke(app, ["universe", "sectors", "--market", "KR"])
     assert r.exit_code == 1 and "kr_industry_to_sector" in r.stdout
+
+
+def test_apply_inline_mapping_rules(tmp_path):
+    """`kr: {}` 만 블록으로 바꾸고, 비어 있지 않은 인라인 매핑은 지우지 않고 ConfigError (리뷰 #2).
+    쓰기 전에 검증해 깨진 파일을 남기지 않는다."""
+    from trader.config import ConfigError
+
+    rows = [{"ticker": "000660", "industry": "전기·전자", "current": None, "suggested": "반도체"}]
+    p = tmp_path / "a.yaml"
+    p.write_text("sectors: [반도체]\nkr: {}  # 비어 있음\nus: {}\n", encoding="utf-8")
+    assert sector_suggest.apply(p, "KR", rows, today=date(2026, 10, 20)) == 1
+    assert load_sectors(p).kr == {"000660": "반도체"} and load_sectors(p).us == {}
+    q = tmp_path / "b.yaml"
+    original = 'sectors: [반도체, 기타]\nkr: {"005930": 기타}\nus: {}\n'
+    q.write_text(original, encoding="utf-8")
+    with pytest.raises(ConfigError):
+        sector_suggest.apply(q, "KR", rows, today=date(2026, 10, 20))
+    assert q.read_text(encoding="utf-8") == original  # 파일 불변
+
+
+def test_apply_keeps_header_comment_and_escapes_ticker(tmp_path):
+    p = tmp_path / "s.yaml"
+    p.write_text(
+        'sectors: [반도체]\nkr:  # 수동 관리\n  "005930": 반도체\nus: {}\n', encoding="utf-8"
+    )
+    rows = [{"ticker": 'A"B', "industry": "x", "current": None, "suggested": "반도체"}]
+    assert sector_suggest.apply(p, "KR", rows, today=date(2026, 10, 20)) == 1
+    text = p.read_text(encoding="utf-8")
+    assert "kr:  # 수동 관리" in text and "\r" not in text
+    assert load_sectors(p).kr == {"005930": "반도체", 'A"B': "반도체"}

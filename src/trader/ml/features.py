@@ -477,7 +477,11 @@ def backfill(
     if frames:
         logger.error("백필 마지막 묶음 쓰기 실패: %d종목 행이 저장되지 않음", len(frames))
         progress(f"쓰기 실패: {len(frames)}종목 미저장")
-    if touched:
+        # 실패한 쓰기가 일부 날짜 파일을 derive=False 로 남겼을 수 있다(touched 에 없음)
+        # → 전체 재계산
+        n_files = rederive(state)
+        progress(f"파생 열 계산(전체): {n_files}개 날짜 파일")
+    elif touched:
         n_files = rederive(state, paths=sorted(touched))
         progress(f"파생 열 계산: {n_files}개 날짜 파일")
     return total

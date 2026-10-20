@@ -26,13 +26,22 @@ def _transient(e: KisApiError) -> bool:
     return code in TRANSIENT_CODES or code.startswith("HTTP5")
 
 
-def _price_us(market_client: Any, symbol: str, exchange: str) -> Decimal | None:
+def _price_us(
+    market_client: Any, symbol: str, exchange: str
+) -> tuple[Decimal | None, str | None]:
+    """(가격, 일시 오류 note). 일시 오류면 (None, note), 그 밖의 실패·가격 0 은 (None, None)."""
     try:
         q = market_client.get_price_us(symbol, exchange)
-    except (KisApiError, ValueError) as e:
+    except KisApiError as e:
         logger.info("시세 조회 실패 %s %s: %s", symbol, exchange, e)
-        return None
-    return q.price if q.price and q.price > 0 else None
+        if _transient(e):
+            code = getattr(e, "msg_cd", "")
+            return None, f"일시 오류 가능: KisApiError {code} — 재실행으로 확인"
+        return None, None
+    except ValueError as e:
+        logger.info("시세 조회 실패 %s %s: %s", symbol, exchange, e)
+        return None, None
+    return (q.price if q.price and q.price > 0 else None), None
 
 
 def check(universe: Universe, market_client: Any, *, market: str) -> list[dict]:
@@ -61,7 +70,20 @@ def check(universe: Universe, market_client: Any, *, market: str) -> list[dict]:
             )
         return out
     for u in universe.us:
-        if _price_us(market_client, u.symbol, u.exchange) is not None:
+        price, transient = _price_us(market_client, u.symbol, u.exchange)
+        if transient:
+            # 한도 초과·네트워크면 다른 거래소를 더듬지 않는다 (잘못된 거래소 제안 방지)
+            out.append(
+                {
+                    "ticker": u.symbol,
+                    "exchange": u.exchange,
+                    "ok": False,
+                    "suggested_exchange": None,
+                    "note": transient,
+                }
+            )
+            continue
+        if price is not None:
             out.append(
                 {
                     "ticker": u.symbol,
@@ -73,7 +95,11 @@ def check(universe: Universe, market_client: Any, *, market: str) -> list[dict]:
             )
             continue
         found = next(
-            (x for x in US_EXCHANGES if x != u.exchange and _price_us(market_client, u.symbol, x)),
+            (
+                x
+                for x in US_EXCHANGES
+                if x != u.exchange and _price_us(market_client, u.symbol, x)[0] is not None
+            ),
             None,
         )
         out.append(

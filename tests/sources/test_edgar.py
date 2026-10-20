@@ -125,9 +125,25 @@ def test_financial_history_us_quarter_none_when_not_after_latest_10k_or_after_as
     }
 
 
-def test_companyfacts_memoized_per_client(edgar, respx_mock):
-    """ratios 와 history 가 같은 종목을 두 번 받지 않는다 (EDGAR 10 req/s 예절)."""
-    cik = edgar.cik("AAPL")
-    edgar.companyfacts(cik)
-    edgar.companyfacts(cik)
-    assert respx_mock.get(FACTS).call_count == 1
+
+def test_financial_history_us_keeps_latest_10k_when_two_end_in_same_year():
+    """결산월 변경(transition)으로 같은 연도에 10-K end 가 둘이면 최신(end 가 늦은) 값을 남기고,
+    각 연도에 `end` 를 실어 1월 결산사(NVDA FY2026=2026-01-25)의 연도 키를 오독하지 않게 한다."""
+    from helpers_sources import FakeEdgar
+
+    from trader.sources.edgar import financial_history_us
+
+    facts = FakeEdgar().companyfacts("0000320193")
+    rev = facts["facts"]["us-gaap"]["Revenues"]["units"]["USD"]
+    rev.append(
+        {
+            "form": "10-K",
+            "start": "2024-04-01",
+            "end": "2024-06-30",
+            "filed": "2024-08-01",
+            "val": 1,
+        },
+    )
+    h = financial_history_us(facts, date(2026, 4, 1))
+    assert h["years"][2024]["매출액"] == Decimal(330)  # 12-31 결산분이 6-30 전환분을 덮지 않는다
+    assert h["years"][2024]["end"] == "2024-12-31" and h["years"][2023]["end"] == "2023-12-31"

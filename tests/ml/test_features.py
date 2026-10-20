@@ -529,3 +529,36 @@ def test_backfill_derives_once_per_date_file_not_per_chunk(project, monkeypatch)
     assert len(files) == 40
     got = pd.read_parquet(files[-1])
     assert "roe_vs_sector" in got.columns and len(got) == 2
+
+
+def test_backfill_rederives_everything_when_final_flush_fails(project, monkeypatch):
+    """마지막 묶음 쓰기가 중간에 실패하면 그 전에 쓴 날짜 파일이 touched 에 안 들어가 파생 열이
+    빈 채 남는다 → 그때는 전체 rederive (리뷰 #10)."""
+    real = features.write_rows
+    state = {"n": 0}
+
+    def flaky(df, st=None, **kw):
+        state["n"] += 1
+        if state["n"] >= 2:  # 두 번째 묶음부터(재시도 포함) 절반 쓰고 실패 → 마지막 flush 도 실패
+            real(df.iloc[: len(df) // 2], st, **kw)
+            raise OSError("disk")
+        return real(df, st, **kw)
+
+    monkeypatch.setattr(features, "write_rows", flaky)
+    monkeypatch.setattr(features, "BACKFILL_CHUNK", 1)
+    seen: list = []
+    real_rederive = features.rederive
+    def spy(*a, **kw):
+        seen.append(kw.get("paths"))
+        return real_rederive(*a, **kw)
+
+    monkeypatch.setattr(features, "rederive", spy)
+    features.backfill(
+        market_client=FakeMarket(candles=10),
+        dart=None,
+        universe=Universe(kr=["005930", "000660"]),
+        markets=["KR"],
+        years=1,
+        progress=lambda s: None,
+    )
+    assert seen and seen[-1] is None  # 마지막 호출은 전체(paths=None)
