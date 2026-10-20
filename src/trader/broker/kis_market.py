@@ -67,6 +67,28 @@ class KisMarket:
             asof=self._now(),
         )
 
+    def get_industry_kr(self, ticker: str) -> str | None:
+        """KRX 업종명 (현재가 응답 `bstp_kor_isnm`). 섹터 제안(`universe sectors`)용, 없으면 None.
+
+        시세 호출과 같은 API 라 한 종목에 두 번 부르지 않도록 섹터 제안에서만 쓴다."""
+        data = self._client.get(
+            path("DOM_PRICE"),
+            "DOM_PRICE",
+            {"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": ticker},
+        )
+        name = str((data.get("output") or {}).get("bstp_kor_isnm") or "").strip()
+        return name or None
+
+    def get_industry_us(self, symbol: str, exchange: str) -> str | None:
+        """KIS 해외 업종코드 3자리 (현재가상세 `e_icod`). 없으면 None."""
+        data = self._client.get(
+            path("OVS_PRICE_DETAIL"),
+            "OVS_PRICE_DETAIL",
+            {"AUTH": "", "EXCD": exchange, "SYMB": symbol},
+        )
+        code = str((data.get("output") or {}).get("e_icod") or "").strip()
+        return code or None
+
     def get_price_us(self, symbol: str, exchange: str) -> Quote:
         data = self._client.get(
             path("OVS_PRICE"),

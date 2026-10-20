@@ -309,3 +309,21 @@ def test_minute_kr_blank_time_row_does_not_stop_paging(market, respx_mock):
     )
     candles = market.get_minute_kr("005930", count=390)
     assert len(route.calls) == 2 and len(candles) == 39
+
+
+OVS_PRICE_DETAIL = "/uapi/overseas-price/v1/quotations/price-detail"
+
+
+def test_industry_kr_and_us(market, respx_mock):
+    """섹터 제안(universe sectors)용 업종: KR 은 현재가 응답의 업종한글명, US 는 현재가상세 e_icod."""
+    respx_mock.get(REAL + DOM_PRICE).mock(return_value=resp("price_kr.json"))
+    assert market.get_industry_kr("005930") == "전기전자"
+    route = respx_mock.get(REAL + OVS_PRICE_DETAIL).mock(return_value=resp("price_detail_us.json"))
+    assert market.get_industry_us("AAPL", "NAS") == "730"
+    p = route.calls[0].request.url.params
+    assert p["EXCD"] == "NAS" and p["SYMB"] == "AAPL"
+    assert route.calls[0].request.headers["tr_id"] == "HHDFS76200200"
+    respx_mock.get(REAL + DOM_PRICE).mock(
+        return_value=httpx.Response(200, json={"rt_cd": "0", "output": {"stck_prpr": "1"}})
+    )
+    assert market.get_industry_kr("000660") is None  # 업종 없음 → None

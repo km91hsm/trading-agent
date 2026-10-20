@@ -10,6 +10,7 @@ import threading
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from decimal import Decimal
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import typer
@@ -1779,6 +1780,55 @@ def universe_check_cmd(
         typer.echo(f"{mark}{r['ticker']}{ex}{hint} {r['note']}".rstrip())
     typer.echo(f"점검 {len(rows)}종목, 문제 {len(bad)}건")
     if bad:
+        raise typer.Exit(code=1)
+
+
+def _templates_config_dir() -> Path:
+    """config/*.yaml 의 사본이 있는 templates/config (개발 체크아웃).
+
+    번들(_internal)에는 쓰지 않는다."""
+    return paths.project_root() / "templates" / "config"
+
+
+@universe_app.command("sectors")
+@_config_errors
+def universe_sectors_cmd(
+    market: str = typer.Option("KR", "--market", help="KR 또는 US"),
+    show_all: bool = typer.Option(False, "--all", help="이미 섹터가 있는 종목도 출력"),
+    write: bool = typer.Option(
+        False, "--write", help="제안을 config/sectors.yaml(+템플릿)에 덧붙인다"
+    ),
+) -> None:
+    """KIS 업종으로 sectors.yaml 에 빠진 종목의 섹터를 제안한다. 표에 없는 업종이 있으면 exit 1."""
+    from datetime import date as _date
+
+    from trader.platform import bundle
+    from trader.scan import sector_suggest
+
+    if market not in ("KR", "US"):
+        raise config.ConfigError(f"시장은 KR 또는 US 여야 합니다: {market}")
+    boot = _boot(secrets=True)
+    universe = config.load_universe()
+    sectors = config.load_sectors()
+    rows = sector_suggest.suggest(
+        universe, sectors, _build_market(boot.secrets), market=market, only_missing=not show_all
+    )
+    for r in rows:
+        ex = f" {r['exchange']}" if r["exchange"] else ""
+        typer.echo(
+            f"{r['ticker']}{ex}  업종={r['industry'] or '-'}  현재={r['current'] or '-'}  "
+            f"제안={r['suggested'] or '-'}  {r['note']}".rstrip()
+        )
+    unresolved = [r for r in rows if r["current"] is None and not r["suggested"]]
+    if write:
+        today = _date.today()
+        n = sector_suggest.apply(paths.config_dir() / "sectors.yaml", market, rows, today=today)
+        tmpl = _templates_config_dir() / "sectors.yaml"
+        if not bundle.is_frozen() and tmpl.is_file():
+            sector_suggest.apply(tmpl, market, rows, today=today)
+        typer.echo(f"기록: {n}종목 (config/sectors.yaml{'·templates' if tmpl.is_file() else ''})")
+    typer.echo(f"점검 {len(rows)}종목, 제안 없음 {len(unresolved)}건")
+    if unresolved:
         raise typer.Exit(code=1)
 
 

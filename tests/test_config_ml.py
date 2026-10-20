@@ -91,3 +91,20 @@ def test_repo_ml_yaml_has_us_alpha_threshold():
     repo = Path(__file__).resolve().parents[1]
     q = config.load_ml(repo / "config" / "ml.yaml").models.quant
     assert q.min_alpha_for("US") == 0.005 and q.min_alpha_for("KR") == 0.003
+
+
+def test_sector_map_classify_by_industry():
+    """업종→대분류 표(사람이 관리)로 KIS 업종을 섹터로 바꾼다. 표에 없으면 None (추측하지 않음)."""
+    m = config.SectorMap(
+        sectors=["반도체", "금융"],
+        kr_industry_to_sector={"전기전자": "반도체"},
+        us_industry_to_sector={"710": "반도체", "610": "금융"},
+    )
+    assert m.classify("전기전자", "KR") == "반도체" and m.classify("710", "US") == "반도체"
+    assert m.classify("화학", "KR") is None and m.classify(None, "US") is None
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):  # 표의 값도 선언된 대분류여야 한다
+        config.SectorMap.model_validate(
+            {"sectors": ["반도체"], "kr_industry_to_sector": {"x": "금융"}}
+        )

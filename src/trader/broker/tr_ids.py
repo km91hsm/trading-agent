@@ -66,6 +66,12 @@ _TR: dict[str, tuple[str, str, str | None]] = {
     ),
     # 해외 시세
     "OVS_PRICE": ("/uapi/overseas-price/v1/quotations/price", "HHDFS00000300", "HHDFS00000300"),
+    # 현재가상세: 업종코드(e_icod) — 섹터 제안(universe sectors)에만 쓴다
+    "OVS_PRICE_DETAIL": (
+        "/uapi/overseas-price/v1/quotations/price-detail",
+        "HHDFS76200200",
+        "HHDFS76200200",
+    ),
     "OVS_DAILY": (
         "/uapi/overseas-price/v1/quotations/dailyprice",
         "HHDFS76240000",

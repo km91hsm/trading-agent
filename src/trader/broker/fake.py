@@ -29,9 +29,11 @@ class FakeMarket:
         *,
         minutes: dict[str, list[Candle]] | None = None,
         fail: set[str] | None = None,
+        industries: dict[str, str] | None = None,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self.prices = prices or {}
+        self.industries = industries or {}
         self.candles = candles or {}
         self.minutes = minutes or {}
         self.holidays = holidays or set()
@@ -43,6 +45,14 @@ class FakeMarket:
         self.calls.append(name)
         if name in self.fail:
             raise KisApiError("FAKE", f"가짜 실패 주입: {name}")
+
+    def get_industry_kr(self, ticker: str) -> str | None:
+        self._record("get_industry_kr")
+        return self.industries.get(ticker)
+
+    def get_industry_us(self, symbol: str, exchange: str) -> str | None:
+        self._record("get_industry_us")
+        return self.industries.get(symbol)
 
     def _quote(self, ticker: str, market: Market) -> Quote:
         if ticker not in self.prices:

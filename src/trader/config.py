@@ -224,8 +224,12 @@ class SectorMap(BaseModel):
     sectors: list[str] = Field(default_factory=list)
     kr: dict[str, str] = Field(default_factory=dict)
     us: dict[str, str] = Field(default_factory=dict)
+    # KIS 업종 → 대분류 (KR 은 현재가 응답의 업종한글명, US 는 현재가상세 e_icod 3자리).
+    # `trader universe sectors` 가 빠진 종목의 섹터를 제안할 때 쓴다. 표에 없는 업종은 추측하지 않음.
+    kr_industry_to_sector: dict[str, str] = Field(default_factory=dict)
+    us_industry_to_sector: dict[str, str] = Field(default_factory=dict)
 
-    @field_validator("kr", "us")
+    @field_validator("kr", "us", "kr_industry_to_sector", "us_industry_to_sector")
     @classmethod
     def _declared(cls, v: dict[str, str], info) -> dict[str, str]:
         declared = set(info.data.get("sectors") or [])
@@ -237,6 +241,12 @@ class SectorMap(BaseModel):
     def sector_of(self, ticker: str, market: Market) -> str | None:
         table = self.kr if market == "KR" else self.us
         return table.get(ticker)
+
+    def classify(self, industry: str | None, market: Market) -> str | None:
+        if not industry:
+            return None
+        table = self.kr_industry_to_sector if market == "KR" else self.us_industry_to_sector
+        return table.get(str(industry).strip())
 
 
 # --- secrets/.env ----------------------------------------------------------
