@@ -74,6 +74,12 @@ def smoke(exe: Path) -> dict:
             raise SystemExit("accounts.yaml 템플릿에 계좌번호 자리(00000000)가 없습니다")
         r = _run([str(exe), "status"], capture_output=True, env=env)
         out["status"] = r.stdout.strip()[-120:]
+        # 무거운 스택(sklearn·pyarrow·pandas·fastapi·uvicorn)이 실제로 import 되는지 — --help·status 는
+        # 이들을 건드리지 않아 hidden import·dylib 누락을 못 잡는다
+        r = _run([str(exe), "selfcheck"], capture_output=True, env=env)
+        out["selfcheck"] = r.stdout.strip().splitlines()[-1][:200]
+        _run([str(exe), "ml", "models"], capture_output=True, env=env)
+        _run([str(exe), "rl", "models"], capture_output=True, env=env)
         if not (Path(tmp) / "state" / "STATUS.md").exists():
             raise SystemExit("status 가 STATUS.md 를 만들지 않았습니다")
     internal = DIST / "_internal"

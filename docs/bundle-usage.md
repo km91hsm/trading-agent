@@ -26,13 +26,18 @@ trader/                ← 이 폴더가 TRADER_HOME. 폴더째 다른 PC 로 �
 
 1. `trader`(.exe) 를 더블클릭합니다. 처음에는 `config/`·`secrets/.env.example`·`docs/` 가 만들어지고
    웹 UI(http://127.0.0.1:8787)가 열립니다. 키가 없으면 수집·세션은 실패하지만 UI 는 뜹니다.
-   - macOS: 서명이 없어 "확인되지 않은 개발자" 경고가 뜨면 **우클릭 → 열기** 를 한 번 합니다.
+   - macOS: 서명이 없어 "확인되지 않은 개발자" 경고가 뜨면 **우클릭 → 열기** 를 한 번 합니다. 그래도
+     "악성 소프트웨어인지 확인할 수 없다" 로 막히면 터미널에서 `xattr -dr com.apple.quarantine trader/`
+     를 한 번 실행합니다(압축 파일의 격리 표시 제거).
    - Windows: SmartScreen 경고에서 **추가 정보 → 실행** 을 한 번 누릅니다.
 2. `secrets/.env.example` 을 `secrets/.env` 로 복사해 키를 넣습니다. 다른 프로젝트의 `.env` 가 있으면
    터미널에서 `trader secrets import --from <그 파일>` 로 이름 매핑 복사(값은 출력되지 않음).
-3. `config/accounts.yaml` 의 `cano` 를 실제 계좌번호로 바꿉니다(모의 `auto`, 실전은 `off` 로 시작).
+3. `config/accounts.yaml` 의 `cano` 를 실제 계좌번호로 바꾸고(모의 `auto`, 실전은 `off` 로 시작),
+   `config/sources.yaml` 의 `edgar.user_agent` 에 본인 이메일을 넣습니다(SEC 요구).
 4. 터미널에서 점검: `./trader kis ping` (Windows: `trader.exe kis ping`), `./trader status`.
-5. 리허설(구독 호출 없음): `FAKE_CLAUDE=1 ./trader analyze --ticker 005930 --dry-run`.
+5. 리허설(구독 호출 없음) — macOS: `FAKE_CLAUDE=1 ./trader analyze --ticker 005930 --dry-run`,
+   Windows PowerShell: `$env:FAKE_CLAUDE="1"; .\trader.exe analyze --ticker 005930 --dry-run`
+   (cmd: `set FAKE_CLAUDE=1 && trader.exe analyze …`). `./trader selfcheck` 로 설치 점검.
 
 ## 4. 평소 운용
 

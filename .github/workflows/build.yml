@@ -5,6 +5,9 @@ on:
     tags: ["v*"]
   workflow_dispatch:
 
+permissions:
+  contents: write  # 태그 릴리스에 zip 첨부 (기본 토큰은 읽기 전용)
+
 jobs:
   bundle:
     strategy:

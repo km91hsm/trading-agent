@@ -6,6 +6,7 @@ import functools
 import logging
 import os
 import sys
+import threading
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from decimal import Decimal
@@ -973,7 +974,6 @@ def app_cmd(
     dry_run: bool = typer.Option(False, "--dry-run", help="세션·monitor 를 dry_run 으로"),
 ) -> None:
     """번들 더블클릭 진입점: 초기화 → 데몬(스케줄 + 웹 UI) → 브라우저 (§10.2)."""
-    import threading
     import webbrowser
 
     from trader import daemon as daemon_mod
@@ -983,16 +983,70 @@ def app_cmd(
     if created:
         typer.echo("초기화: " + ", ".join(created))
     deps = _daemon_deps(dry_run=dry_run)
-    url = f"http://{deps.settings.web.bind}:{deps.settings.web.port}"
+    bind, port = deps.settings.web.bind, deps.settings.web.port
+    url = f"http://{bind}:{port}"
     typer.echo(f"웹 UI: {url}  (종료: Ctrl+C)")
-    if not no_browser:
-        if browser_delay <= 0:
+    finished = threading.Event()
+
+    def open_when_ready() -> None:
+        # 첫 실행은 무거운 import 로 1.5초를 훌쩍 넘기므로 포트가 열릴 때까지(최대 20초) 기다린다.
+        # 데몬이 먼저 끝났으면(잠금 실패 등) 열지 않는다.
+        if browser_delay > 0:
+            finished.wait(browser_delay)
+        if finished.is_set():
+            return
+        if _wait_for_port(bind, port, timeout_s=20.0, stop=finished):
             webbrowser.open(url)
-        else:
-            threading.Timer(browser_delay, webbrowser.open, args=(url,)).start()
-    r = daemon_mod.run(deps, web=True)
+
+    if not no_browser:
+        threading.Thread(target=open_when_ready, name="trader-open-browser", daemon=True).start()
+    try:
+        r = daemon_mod.run(deps, web=True)
+    finally:
+        finished.set()
     if not r.get("ok"):
         typer.echo(f"오류: {r.get('error')}", err=True)
+        raise typer.Exit(code=1)
+
+
+def _wait_for_port(
+    host: str, port: int, *, timeout_s: float, stop: threading.Event | None = None
+) -> bool:
+    """host:port 가 연결을 받을 때까지 기다린다 (최대 timeout_s). stop 이 세워지면 False."""
+    import socket
+    import time
+
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if stop is not None and stop.is_set():
+            return False
+        try:
+            with socket.create_connection((host, port), timeout=0.5):
+                return True
+        except OSError:
+            time.sleep(0.25)
+    return False
+
+
+@app.command("selfcheck")
+def selfcheck_cmd() -> None:
+    """무거운 라이브러리가 import 되는지 점검한다 (번들 스모크·설치 확인용, JSON 한 줄)."""
+    import importlib
+    import json
+
+    from trader.platform import bundle
+
+    mods = ["sklearn", "pyarrow.parquet", "pandas", "fastapi", "uvicorn", "apscheduler", "httpx"]
+    loaded, failed = [], {}
+    for m in mods:
+        try:
+            importlib.import_module(m)
+            loaded.append(m.split(".")[0])
+        except Exception as e:  # noqa: BLE001 - 어떤 import 실패든 보고한다
+            failed[m] = f"{type(e).__name__}: {e}"
+    out = {"ok": not failed, "frozen": bundle.is_frozen(), "modules": loaded, "failed": failed}
+    typer.echo(json.dumps(out, ensure_ascii=False))
+    if failed:
         raise typer.Exit(code=1)
 
 

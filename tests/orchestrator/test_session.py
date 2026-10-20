@@ -518,4 +518,4 @@ def test_session_env_path_starts_with_tool_bin_dir(project, conn, monkeypatch):
         agents_dir=REPO_AGENTS,
         now=lambda: T0,
     )
-    assert seen["path"].split(os.pathsep)[0] == "/bundle/dir"
+    assert seen["path"].split(os.pathsep)[0] == str(Path("/bundle/dir"))  # Windows 는 역슬래시
