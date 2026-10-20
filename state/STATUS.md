@@ -1,4 +1,4 @@
-# 시스템 상태 (생성: 2026-10-20 22:19 KST)
+# 시스템 상태 (생성: 2026-10-20 23:31 KST)
 
 ## 실행 제어
 - 일시정지: 아니오
@@ -61,6 +61,7 @@
 - Phase 11 ML 2단계 (`docs/superpowers/plans/2026-10-20-phase11-ml2.md`): 4/4
 - Phase 12 ML 3단계 (`docs/superpowers/plans/2026-10-20-phase12-ml3.md`): 6/7
 - 2026-10-20 정리(Phase 12 보류 항목 회수, 추천대로 진행): 5/5
+- Phase 13 US 재무 history·섹터 자동 분류 (`docs/superpowers/plans/2026-10-20-phase13-us-history-sectors.md`): 3/3
 
 ## 다음 할 일
 - 완료 기준: Windows 에서 `uv sync` 후 `uv run trader status` 동일 동작 (사용자 확인 대기)
