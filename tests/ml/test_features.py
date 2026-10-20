@@ -298,9 +298,9 @@ def test_backfill_writes_in_chunks_not_per_ticker(project, monkeypatch):
     calls = {"n": 0}
     real = features.write_rows
 
-    def counting(df, state=None):
+    def counting(df, state=None, **kw):
         calls["n"] += 1
-        return real(df, state)
+        return real(df, state, **kw)
 
     monkeypatch.setattr(features, "write_rows", counting)
     universe = Universe(kr=[f"0000{i:02d}" for i in range(25)])
@@ -323,11 +323,11 @@ def test_backfill_keeps_rows_when_chunk_write_fails_then_retries(project, monkey
     real = features.write_rows
     calls = {"n": 0}
 
-    def flaky(df, state=None):
+    def flaky(df, state=None, **kw):
         calls["n"] += 1
         if calls["n"] == 1:
             raise OSError("disk hiccup")
-        return real(df, state)
+        return real(df, state, **kw)
 
     monkeypatch.setattr(features, "write_rows", flaky)
     tickers = [f"{i:06d}" for i in range(1, 12)]  # 11종목 → 10종목에서 1차 flush, 마지막에 2차
@@ -500,3 +500,32 @@ def test_snapshot_fills_us_ratios_from_edgar(project):
     assert n == 1
     got = pd.concat(pd.read_parquet(f) for f in (project / "state" / "features").glob("*.parquet"))
     assert float(got["roe"].iloc[0]) == pytest.approx(40 / 400)
+
+
+def test_backfill_derives_once_per_date_file_not_per_chunk(project, monkeypatch):
+    """묶음 쓰기마다 파생 열을 다시 계산하면 백필이 날짜 × 묶음 수만큼 느려진다 → 묶음 쓰기는 파생
+    없이, 마지막에 건드린 날짜 파일만 1회 계산한다 (리뷰 #5)."""
+    calls: list[int] = []
+    real = features.add_sector_relative
+
+    def counting(df, sectors):
+        calls.append(len(df))
+        return real(df, sectors)
+
+    monkeypatch.setattr(features, "add_sector_relative", counting)
+    monkeypatch.setattr(features, "BACKFILL_CHUNK", 1)
+    universe = Universe(kr=["005930", "000660"], us=[])
+    n = features.backfill(
+        market_client=FakeMarket(candles=40),
+        dart=FakeDart(),
+        universe=universe,
+        markets=["KR"],
+        years=1,
+        progress=lambda s: None,
+    )
+    assert n == 80
+    assert len(calls) == 40  # 날짜 파일 수 (묶음 2개 × 40 = 80 이 아님)
+    files = sorted((project / "state" / "features").glob("*.parquet"))
+    assert len(files) == 40
+    got = pd.read_parquet(files[-1])
+    assert "roe_vs_sector" in got.columns and len(got) == 2

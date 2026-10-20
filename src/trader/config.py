@@ -449,6 +449,14 @@ class QuantModelCfg(BaseModel):
     # `ml tune` 이 탐색하는 두 값 (sklearn max_leaf_nodes / lightgbm num_leaves). 자동 적용 없음.
     learning_rate: float = Field(default=0.05, gt=0, le=1.0)
     num_leaves: int = Field(default=15, ge=2, le=255)
+    # 알파 기준은 왕복비용 기준이라 시장마다 다를 수 있다 (KR 30bp, US 50bp).
+    # 없는 시장은 promote_min_alpha.
+    promote_min_alpha_by_market: dict[str, float] = Field(default_factory=dict)
+
+    def min_alpha_for(self, market: str | None) -> float:
+        if market is not None and market in self.promote_min_alpha_by_market:
+            return self.promote_min_alpha_by_market[market]
+        return self.promote_min_alpha
 
 
 class RankerCfg(BaseModel):

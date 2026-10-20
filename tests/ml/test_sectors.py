@@ -109,7 +109,10 @@ def test_sector_medians_from_latest_rows(project):
     )
     m = features.sector_medians(None, "KR", "반도체", tickers=["A", "B", "C"])
     assert m["n"] == 3 and m["median"]["roe"] == 0.2 and m["median"]["op_margin"] == 0.1
-    assert features.sector_medians(None, "KR", "금융", tickers=["D", "E"])["n"] == 1
+    assert m["dates"] == {"min": "2026-01-05", "max": "2026-01-05"}  # 섞인 날짜를 드러낸다
+    fin = features.sector_medians(None, "KR", "금융", tickers=["D", "E"])
+    assert fin["n"] == 1 and fin["dates"]["max"] == "2026-01-05"
+    assert features.sector_medians(None, "KR", "기타", tickers=["Z"])["dates"] is None
 
 
 def test_write_rows_rejects_missing_required_columns(project):

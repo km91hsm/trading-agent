@@ -213,3 +213,29 @@ def test_promotion_alpha_mode_prefers_topn_alpha():
     }
     ok, why = train.promotion_decision(m, cfg)
     assert ok is False and "상위" in why  # 풀링 알파가 양이어도 상위 N 알파가 음이면 미승격
+
+
+def test_promotion_alpha_mode_uses_market_specific_threshold():
+    """승격 알파 기준은 왕복비용 기준이라 시장별로 다르다: KR 30bp(0.003), US 50bp(0.005).
+    같은 0.0033 이 KR 은 승격, US 는 미승격이어야 한다."""
+    cfg = MlConfig.model_validate(
+        {
+            "models": {
+                "quant": {
+                    "promote_metric": "alpha",
+                    "promote_min_alpha": 0.003,
+                    "promote_min_alpha_by_market": {"US": 0.005},
+                    "promote_min_positive_folds": 0.66,
+                }
+            }
+        }
+    )
+    folds = _alpha_folds([0.0033] * 6)
+    m = {"accuracy": 0.36, "baseline": 0.33, "alpha": 0.001, "alpha_topn": 0.0033,
+         "folds": folds, "n_test": 600}
+    assert train.promotion_decision(m, cfg, market="KR")[0] is True
+    ok, why = train.promotion_decision(m, cfg, market="US")
+    assert ok is False and "0.005" in why
+    assert train.promotion_decision(m, cfg)[0] is True  # 시장 미지정은 기본값
+    assert cfg.models.quant.min_alpha_for("US") == 0.005
+    assert cfg.models.quant.min_alpha_for("KR") == 0.003

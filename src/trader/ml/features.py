@@ -245,8 +245,10 @@ def latest_rows(
     return _coerce(out.sort_values("ticker").reset_index(drop=True))
 
 
-def _write_day_file(path: Path, part: pd.DataFrame, sectors: SectorMap) -> None:
-    part = _coerce(add_sector_relative(part, sectors))
+def _write_day_file(
+    path: Path, part: pd.DataFrame, sectors: SectorMap, *, derive: bool = True
+) -> None:
+    part = _coerce(add_sector_relative(part, sectors) if derive else part)
     tmp = path.with_suffix(".parquet.tmp")
     part.reset_index(drop=True).to_parquet(tmp, index=False)
     tmp.replace(path)
@@ -280,12 +282,17 @@ def ticker_history(
 
 
 def write_rows(
-    df: pd.DataFrame, state: Path | None = None, *, sectors: SectorMap | None = None
+    df: pd.DataFrame,
+    state: Path | None = None,
+    *,
+    sectors: SectorMap | None = None,
+    derive: bool = True,
 ) -> list[Path]:
     """날짜별 parquet 에 (date, ticker) 기준으로 덮어쓴다. 멱등. 파생 열(`*_vs_sector`)은 합친
-    날짜 파일 전체로 다시 계산하므로 종목 묶음으로 나눠 써도 마지막 쓰기 뒤 값이 같다."""
+    날짜 파일 전체로 다시 계산하므로 종목 묶음으로 나눠 써도 마지막 쓰기 뒤 값이 같다.
+    derive=False 는 백필 묶음 쓰기용(끝에 `rederive(paths=)` 로 1회 계산), 기존 파생 값은 그대로."""
     d = _features_dir(state)
-    sectors = sectors if sectors is not None else load_sectors()
+    sectors = sectors if sectors is not None else (load_sectors() if derive else SectorMap())
     written: list[Path] = []
     missing = [c for c in KEY_COLUMNS if c not in df.columns]
     if missing:
@@ -300,7 +307,7 @@ def write_rows(
             old = _coerce(pd.read_parquet(path).reindex(columns=FEATURE_COLUMNS))
             old = old[~old["ticker"].isin(part["ticker"])]
             part = pd.concat([old, part], ignore_index=True)
-        _write_day_file(path, part, sectors)
+        _write_day_file(path, part, sectors, derive=derive)
         written.append(path)
     return written
 
@@ -310,12 +317,14 @@ def rederive(
     *,
     sectors: SectorMap | None = None,
     progress: Callable[[str], None] = lambda s: None,
+    paths: list[Path] | None = None,
 ) -> int:
-    """모든 날짜 파일의 파생 열(`*_vs_sector`)을 다시 계산해 쓴다 (KIS 호출 없음). 반환은 파일 수.
-    섹터 맵을 바꾸거나 파생 열이 없는 옛 스토어를 올릴 때 쓴다."""
+    """날짜 파일의 파생 열(`*_vs_sector`)을 다시 계산해 쓴다 (KIS 호출 없음). 반환은 파일 수.
+    paths 가 없으면 전체 — 섹터 맵을 바꾸거나 파생 열이 없는 옛 스토어를 올릴 때. 백필은 건드린
+    파일만 넘긴다."""
     fdir = _features_dir(state)
     sectors = sectors if sectors is not None else load_sectors()
-    files = sorted(fdir.glob("*.parquet"))
+    files = sorted(paths) if paths is not None else sorted(fdir.glob("*.parquet"))
     for path in files:
         part = _coerce(pd.read_parquet(path).reindex(columns=FEATURE_COLUMNS))
         _write_day_file(path, part, sectors)
@@ -338,15 +347,19 @@ def sector_medians(
     rows = latest_rows(state, market, tickers=tickers, asof=asof) if tickers else None
     median: dict[str, float | None] = {}
     n = 0
+    dates: dict[str, str] | None = None
     if rows is not None and not rows.empty:
         vals = rows[list(RATIO_COLUMNS)].apply(pd.to_numeric, errors="coerce").astype("float64")
         n = int(vals.notna().any(axis=1).sum())
         for col in RATIO_COLUMNS:
             m = vals[col].median()
             median[col] = None if pd.isna(m) else float(m)
+        ds = pd.to_datetime(rows["date"])
+        # 종목별 '최신 행' 이라 스냅샷이 빠진 종목의 옛 날짜가 섞일 수 있다 → 범위를 드러낸다
+        dates = {"min": ds.min().date().isoformat(), "max": ds.max().date().isoformat()}
     else:
         median = dict.fromkeys(RATIO_COLUMNS)
-    return {"sector": sector, "n": n, "median": median}
+    return {"sector": sector, "n": n, "median": median, "dates": dates}
 
 
 def _ratios_by_year_kr(dart: Any, ticker: str, years: list[int]) -> dict[int, dict]:
@@ -419,6 +432,7 @@ def backfill(
         logger.warning("일봉 상한 %d봉으로 제한합니다 (요청 %d년)", MAX_DAYS, years)
     total = 0
     frames: list[pd.DataFrame] = []
+    touched: set[Path] = set()
 
     def flush() -> None:
         # 종목마다 write_rows 를 부르면 날짜 파일을 종목 × 날짜 만큼 읽고 다시 쓴다 → 묶음으로 1회.
@@ -428,7 +442,8 @@ def backfill(
             return
         batch = pd.concat(frames, ignore_index=True)
         try:
-            write_rows(batch, state)
+            # 파생 열은 묶음마다 계산하지 않고(날짜 × 묶음 수만큼 느려진다) 끝에 건드린 파일만 1회
+            touched.update(write_rows(batch, state, derive=False))
         except Exception as e:  # noqa: BLE001 - 쓰기 실패는 다음 묶음과 함께 재시도
             logger.warning(
                 "백필 묶음 쓰기 실패 (%d행 보류, 다음 묶음에서 재시도): %s",
@@ -462,6 +477,9 @@ def backfill(
     if frames:
         logger.error("백필 마지막 묶음 쓰기 실패: %d종목 행이 저장되지 않음", len(frames))
         progress(f"쓰기 실패: {len(frames)}종목 미저장")
+    if touched:
+        n_files = rederive(state, paths=sorted(touched))
+        progress(f"파생 열 계산: {n_files}개 날짜 파일")
     return total
 
 

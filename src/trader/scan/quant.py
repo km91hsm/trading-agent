@@ -29,11 +29,10 @@ def _z(s: pd.Series) -> pd.Series:
     return features.zscore(s, fill=0.0)
 
 
-def score(df: pd.DataFrame, *, top: int = TOP_N) -> pd.DataFrame:
-    """ticker·market·score·reasons 를 점수 내림차순으로 돌려준다 (빈 입력은 빈 프레임)."""
-    cols = ["ticker", "market", "score", "reasons"]
-    if df is None or df.empty:
-        return pd.DataFrame(columns=cols)
+SIGNAL_COLUMNS = ("roc_10", "high_52w_pos", "turnover")
+
+
+def _prepare(df: pd.DataFrame) -> pd.DataFrame:
     d = df.copy()
     for c in ("atr_14", "roc_10", "high_52w_pos", "close", "volume"):
         if c not in d.columns:
@@ -44,24 +43,63 @@ def score(df: pd.DataFrame, *, top: int = TOP_N) -> pd.DataFrame:
     d["vol_ratio"] = pd.to_numeric(d["atr_14"], errors="coerce") / pd.to_numeric(
         d["close"], errors="coerce"
     )
-    reasons: dict[int, list[str]] = {i: [] for i in d.index}
-    keep = pd.Series(True, index=d.index)
+    return d
+
+
+def _filter_masks(d: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
+    """(거래대금 하위 Q 탈락, 변동성 상위 Q 탈락) 마스크. 표본 3개 미만이면 거르지 않는다."""
+    low = pd.Series(False, index=d.index)
+    high = pd.Series(False, index=d.index)
     if d["turnover"].notna().sum() >= 3:
-        cut = d["turnover"].quantile(TURNOVER_DROP_Q)
-        low = d["turnover"] <= cut
-        keep &= ~low
+        low = d["turnover"] <= d["turnover"].quantile(TURNOVER_DROP_Q)
     if d["vol_ratio"].notna().sum() >= 3:
-        cut = d["vol_ratio"].quantile(VOLATILITY_DROP_Q)
-        high = d["vol_ratio"] > cut
-        keep &= ~high
-    d = d[keep].copy()
-    # 신호 열이 NaN 인 행(지표 워밍업·결측)은 z=0 으로 통과시키지 않고 제외한다.
-    # 열 전체가 비어 있으면(아직 계산하지 않는 지표) 그 열은 보지 않는다.
-    signal_ok = pd.Series(True, index=d.index)
-    for c in ("roc_10", "high_52w_pos", "turnover"):
+        high = d["vol_ratio"] > d["vol_ratio"].quantile(VOLATILITY_DROP_Q)
+    return low, high
+
+
+def _missing_signals(d: pd.DataFrame) -> dict[int, list[str]]:
+    """행별 결측 신호 열. 열 전체가 비어 있으면(아직 계산하지 않는 지표) 그 열은 보지 않는다."""
+    out: dict[int, list[str]] = {i: [] for i in d.index}
+    for c in SIGNAL_COLUMNS:
         col = pd.to_numeric(d[c], errors="coerce")
         if col.notna().any():
-            signal_ok &= col.notna()
+            for i in d.index[col.isna()]:
+                out[i].append(c)
+    return out
+
+
+def drop_reasons(df: pd.DataFrame) -> dict[str, str]:
+    """score 가 제외하는 종목의 사유(ticker → 한 문장). 필터 탈락이 신호 결측보다 먼저다
+    (score 와 같은 순서). candidates 가 '피처 없음' 과 구분해 보여 준다."""
+    if df is None or df.empty:
+        return {}
+    d = _prepare(df)
+    low, high = _filter_masks(d)
+    missing = _missing_signals(d[~(low | high)])
+    out: dict[str, str] = {}
+    for i in d.index:
+        t = str(d.at[i, "ticker"])
+        if low[i]:
+            out[t] = f"정량 필터 탈락: 거래대금 하위 {int(TURNOVER_DROP_Q * 100)}%"
+        elif high[i]:
+            out[t] = f"정량 필터 탈락: 변동성 상위 {int(round((1 - VOLATILITY_DROP_Q) * 100))}%"
+        elif missing.get(i):
+            out[t] = "신호 결측: " + ", ".join(missing[i])
+    return out
+
+
+def score(df: pd.DataFrame, *, top: int = TOP_N) -> pd.DataFrame:
+    """ticker·market·score·reasons 를 점수 내림차순으로 돌려준다 (빈 입력은 빈 프레임)."""
+    cols = ["ticker", "market", "score", "reasons"]
+    if df is None or df.empty:
+        return pd.DataFrame(columns=cols)
+    d = _prepare(df)
+    reasons: dict[int, list[str]] = {i: [] for i in d.index}
+    low, high = _filter_masks(d)
+    d = d[~(low | high)].copy()
+    # 신호 열이 NaN 인 행(지표 워밍업·결측)은 z=0 으로 통과시키지 않고 제외한다.
+    missing = _missing_signals(d)
+    signal_ok = pd.Series([not missing[i] for i in d.index], index=d.index)
     dropped = int((~signal_ok).sum())
     if dropped:
         logger.info("정량 필터: 신호 결측 %d행 제외", dropped)
@@ -141,8 +179,12 @@ def candidates(
         )
         seen.add(str(r["ticker"]))
     present = set(df["ticker"].astype(str)) if not df.empty else set()
+    dropped = drop_reasons(df) if not df.empty else {}
     for t, e in ids:
         if t not in seen:
-            why = "피처는 있으나 필터·신호 결측으로 제외" if t in present else "피처 없음"
+            if t not in present:
+                why = "피처 없음"
+            else:
+                why = dropped.get(t, f"정량 상위 {TOP_N} 밖")
             out.append({"ticker": t, "exchange": e, "score": None, "reasons": [why]})
     return out

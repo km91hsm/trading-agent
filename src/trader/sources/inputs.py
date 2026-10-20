@@ -207,7 +207,14 @@ def _peer_section(ticker: str, market: Market, asof: datetime, now) -> Section:
             k: (None if mine_k[k] is None or median[k] is None else mine_k[k] - median[k])
             for k in median
         }
-        return {"sector": sector, "n": stats["n"], "median": median, "mine": mine_k, "diff": diff}
+        return {
+            "sector": sector,
+            "n": stats["n"],
+            "dates": stats["dates"],
+            "median": median,
+            "mine": mine_k,
+            "diff": diff,
+        }
 
     sec = run_section(peer, now=now)
     if sec["error"] is None and sec["data"] is None:

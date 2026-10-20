@@ -189,8 +189,15 @@
 - [x] 웹 `/api/features/latest|history` + Data 페이지 피처 행 탐색(정렬·종목 이력)
 - [x] 백엔드: `ml.yaml backend: auto`(quant·rl_sizer), `rl` extra 플랫폼 핀(darwin x86_64 torch 2.2.2·SB3 2.3), `selfcheck.optional`
 - [x] 실기(2026-10-20): US 백필 38,489행(비율 50/51 종목 채움) → `features derive` 802파일 → 스냅샷 199행. 리뷰 반영(early_stopping=False) 뒤 재학습:
-  - **US h5: 정확도 0.360 / 기준선 0.333 / 상위 5 알파 +0.0033 / 양 폴드 6/6 → 승격(20261020_090042, sklearn)** — 비율·`*_vs_sector` 피처가 들어가며 처음으로 기준 통과. 단 `promote_min_alpha` 0.003 은 KR 왕복(30bp) 기준이고 US 왕복은 50bp 라 비용 대비 여유는 작다(사용자 판단: US 는 0.005 로 올릴지)
+  - US h5: 정확도 0.360 / 기준선 0.333 / 상위 5 알파 +0.0033 / 양 폴드 6/6 → 공통 기준 0.003 으로는 승격(20261020_090042)됐으나 **US 기준을 왕복 50bp(0.005)로 분리(`promote_min_alpha_by_market`)하면서 해제**. 비율·`*_vs_sector` 피처가 들어가며 US 가 처음으로 양 폴드 6/6 — 다음 주간 재학습에서 0.005 를 넘으면 자동 승격
   - KR h5: 정확도 0.377 / 기준선 0.336 / 상위 5 알파 −0.0018 / 양 폴드 2/6 → 미승격 (early_stopping=auto 였던 직전 실행은 +0.0004·3/6)
   - `ml tune --market KR`: dev 최선 {lr 0.03, leaves 7, iter 100} alpha_topn +0.0050(5폴드 중 4 양) 이지만 홀드아웃 −0.0005(기본값 −0.0084) → 적용 권고 없음. `--market US`: dev 최선 같은 조합 +0.0052, 홀드아웃 +0.0035 < 기본값 +0.0080 → 적용 권고 없음(기본값 유지)
   - `rl train`: auto → cem(Intel macOS 는 torch↔NumPy 불일치), 186,425 스텝, RL 0.0015 vs 고정 0.0113·변동성 타깃 0.0289 → 미승격(수동 승격 없음)
 - [ ] 사용자 실행(macOS LightGBM): `sudo chown -R $(whoami) /usr/local/share/man/man8 && chmod u+w /usr/local/share/man/man8` 뒤 `brew install libomp` → `uv run trader selfcheck` 의 `optional.lightgbm: true` 확인 → 다음 `ml train` 부터 lightgbm 백엔드(모델 메타 `backend`)
+
+## 2026-10-20 정리(Phase 12 보류 항목 회수, 추천대로 진행)
+- [x] US 승격 알파 기준 0.005(왕복 50bp) — `promote_min_alpha_by_market: {US: 0.005}`, `min_alpha_for(market)`; 승격돼 있던 US 모델 20261020_090042 해제, 재학습 결과는 Phase 12 절
+- [x] 백필 묶음 쓰기는 파생 열 없이(`write_rows(derive=False)`), 끝에 건드린 날짜 파일만 `rederive(paths=)` 1회
+- [x] lightgbm 모델 로드 실패 경고에 원인·대처(demote / sklearn 재학습) 안내
+- [x] `fundamental.peer`·`sector_medians` 에 `dates{min,max}` (스냅샷 빠진 종목의 옛 날짜 혼입을 드러냄)
+- [x] scan 제외 사유 분리(`quant.drop_reasons`: 필터 탈락·신호 결측·피처 없음·상위 N 밖), `universe check` 일시 오류(`TRANSIENT_CODES`) 구분(Phase 11 보류분)

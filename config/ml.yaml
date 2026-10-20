@@ -13,7 +13,8 @@ models:
   # accuracy 로 바꾸면 기존(정확도 > 기준선 ∧ ≥ 0.40) 기준.
   # backend auto: lightgbm 이 import 되면 lightgbm(macOS 는 libomp 필요), 아니면 sklearn. 모델 메타 backend 에 기록.
   # learning_rate·num_leaves·max_iter 는 `trader ml tune` 리포트를 보고 바꾼다 (자동 적용 없음).
-  quant: {enabled: true, backend: auto, promote_metric: alpha, promote_min_alpha: 0.003, promote_min_positive_folds: 0.66, promote_min_accuracy: 0.40}
+  # promote_min_alpha 는 KR 왕복 30bp 기준. US 는 왕복 50bp 라 by_market 으로 0.005 (2026-10-20 사용자 결정).
+  quant: {enabled: true, backend: auto, promote_metric: alpha, promote_min_alpha: 0.003, promote_min_alpha_by_market: {US: 0.005}, promote_min_positive_folds: 0.66, promote_min_accuracy: 0.40}
   ranker: {enabled: true}
   calibration: {enabled: true, min_decisions: 60}
   # rl_sizer.horizon_days 는 학습 때 label.horizon_days 로 덮인다(보상 정규화용). 승격은 `trader rl promote` 수동.

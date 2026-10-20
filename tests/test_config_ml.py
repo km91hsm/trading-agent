@@ -82,3 +82,12 @@ def test_repo_ml_yaml_uses_auto_backends():
     m = config.load_ml(repo / "config" / "ml.yaml")
     assert m.models.quant.backend == "auto" and m.models.rl_sizer.backend == "auto"
     assert config.MlConfig().models.quant.backend == "sklearn"
+
+
+def test_repo_ml_yaml_has_us_alpha_threshold():
+    """사용자 결정(2026-10-20): US 승격 알파 기준은 US 왕복비용(50bp) 0.005."""
+    from pathlib import Path
+
+    repo = Path(__file__).resolve().parents[1]
+    q = config.load_ml(repo / "config" / "ml.yaml").models.quant
+    assert q.min_alpha_for("US") == 0.005 and q.min_alpha_for("KR") == 0.003

@@ -128,7 +128,7 @@ def tune_quant(
             ),
         },
     }
-    min_alpha = cfg.models.quant.promote_min_alpha
+    min_alpha = cfg.models.quant.min_alpha_for(market)
     hb, hd = holdout["best"]["alpha_topn"], holdout["default"]["alpha_topn"]
     if best["params"] == default_params:
         rec = {"apply": False, "reason": "최선 후보가 현재 설정과 같음"}

@@ -600,6 +600,7 @@ def test_fundamental_peer_section_from_feature_store(project):
     assert peer["data"]["sector"] == "반도체" and peer["data"]["n"] == 3
     assert peer["data"]["median"]["ROE"] == pytest.approx(0.2)
     assert peer["data"]["diff"]["ROE"] == pytest.approx(0.1)  # 내 ROE 0.3 − 중앙값 0.2
+    assert peer["data"]["dates"] == {"min": T0.date().isoformat(), "max": T0.date().isoformat()}
     assert "fundamental.peer" not in " ".join(d["errors"])
 
 

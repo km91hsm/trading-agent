@@ -16,6 +16,14 @@ from trader.config import Universe
 logger = logging.getLogger("trader.scan")
 
 US_EXCHANGES = ("NAS", "NYS", "AMS")
+# 재실행하면 사라질 수 있는 KIS 오류 (초당 한도·네트워크·서버 5xx).
+# 그 밖의 코드는 종목 쪽 문제로 본다.
+TRANSIENT_CODES = {"EGW00201", "NETWORK", "NETWORK_UNKNOWN", "AUTH"}
+
+
+def _transient(e: KisApiError) -> bool:
+    code = str(getattr(e, "msg_cd", "") or "")
+    return code in TRANSIENT_CODES or code.startswith("HTTP5")
 
 
 def _price_us(market_client: Any, symbol: str, exchange: str) -> Decimal | None:
@@ -37,7 +45,16 @@ def check(universe: Universe, market_client: Any, *, market: str) -> list[dict]:
                 q = market_client.get_price_kr(t)
                 ok = bool(q.price and q.price > 0)
                 note = "" if ok else "가격 0"
-            except (KisApiError, ValueError) as e:
+            except KisApiError as e:
+                # 한도 초과·네트워크 같은 일시 오류는 상장폐지·오코드와 다르다 → 재실행으로 가린다
+                ok = False
+                code = getattr(e, "msg_cd", "")
+                note = (
+                    f"일시 오류 가능: KisApiError {code} — 재실행으로 확인"
+                    if _transient(e)
+                    else f"가격 없음: KisApiError {code}"
+                )
+            except ValueError as e:
                 ok, note = False, f"가격 없음: {type(e).__name__}"
             out.append(
                 {"ticker": t, "exchange": None, "ok": ok, "suggested_exchange": None, "note": note}

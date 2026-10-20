@@ -149,3 +149,21 @@ def test_candidates_labels_signal_missing_distinct_from_no_features(project, mon
     out = {c["ticker"]: c for c in quant.candidates(Universe(kr=[*df["ticker"], "999999"]), "KR")}
     assert out["T05"]["score"] is None and "피처 없음" not in out["T05"]["reasons"]
     assert out["999999"]["reasons"] == ["피처 없음"]
+
+
+def test_candidates_distinguish_filter_drop_from_missing_signal(project, monkeypatch):
+    """제외 사유를 셋으로 가른다: 정량 필터 탈락(거래대금 하위 30%·변동성 상위 10%), 신호 결측,
+    피처 없음. 운영자가 '왜 빠졌나' 를 한눈에 봐야 한다."""
+    df = _df()
+    df.loc[df["ticker"] == "T05", "roc_10"] = float("nan")
+
+    def fake_latest_rows(state, market, *, tickers=None, asof=None, max_files=60):
+        return df
+
+    monkeypatch.setattr(quant.features, "latest_rows", fake_latest_rows)
+    out = {c["ticker"]: c for c in quant.candidates(Universe(kr=[*df["ticker"], "999999"]), "KR")}
+    assert out["T00"]["reasons"] == ["정량 필터 탈락: 거래대금 하위 30%"]
+    assert out["T09"]["reasons"] == ["정량 필터 탈락: 변동성 상위 10%"]
+    assert out["T05"]["reasons"] == ["신호 결측: roc_10"]
+    assert out["999999"]["reasons"] == ["피처 없음"]
+    assert out["T08"]["score"] is not None

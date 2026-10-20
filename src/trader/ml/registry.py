@@ -81,7 +81,22 @@ def latest(
         try:
             return load(name, meta["version"], state)
         except Exception as e:  # noqa: BLE001 - 깨진 pickle·클래스 변경 등은 건너뛴다 (파이프라인 보호)
-            logger.warning("모델 로드 실패 %s %s: %s", name, meta.get("version"), e)
+            backend = meta.get("backend")
+            hint = ""
+            if backend == "lightgbm":
+                hint = (
+                    " — lightgbm 으로 학습한 모델입니다. 이 환경(번들 포함)에 lightgbm"
+                    "(macOS 는 libomp)이 없으면 `ml demote <버전>` 하거나 backend sklearn 으로"
+                    " 다시 학습하세요"
+                )
+            logger.warning(
+                "모델 로드 실패 %s %s (backend=%s): %s%s",
+                name,
+                meta.get("version"),
+                backend,
+                e,
+                hint,
+            )
             continue
     return None
 

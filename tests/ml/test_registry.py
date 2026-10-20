@@ -56,3 +56,21 @@ def test_demote(project):
     registry.promote("quant", v)
     r = registry.demote("quant", v, reason="수동 해제")
     assert r["promoted"] is False and registry.latest("quant") is None
+
+
+def test_latest_warns_with_backend_hint_when_lightgbm_model_fails_to_load(project, caplog):
+    """lightgbm 으로 학습한 승격 모델을 lightgbm 없는 환경(번들)이 못 읽으면 원인을 알려야 한다
+    (리뷰 #8)."""
+    import logging
+
+    d = project / "state" / "models" / "quant" / "20260101_000000"
+    d.mkdir(parents=True)
+    (d / "model.joblib").write_bytes(b"not a pickle")
+    (d / "meta.json").write_text(
+        '{"name": "quant", "version": "20260101_000000", "promoted": true, "backend": "lightgbm"}',
+        encoding="utf-8",
+    )
+    with caplog.at_level(logging.WARNING, logger="trader.ml"):
+        assert registry.latest("quant") is None
+    msg = " ".join(r.getMessage() for r in caplog.records)
+    assert "lightgbm" in msg and ("sklearn" in msg or "demote" in msg)
