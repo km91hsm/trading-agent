@@ -21,6 +21,8 @@ trader/                ← 이 폴더가 TRADER_HOME. 폴더째 다른 PC 로 �
    한 번 로그인(구독 인증)해 둡니다. 터미널에서 `claude --version` 이 나오면 됩니다.
 2. **KIS Open API 앱키** (모의·실전), **DART**·**FRED** 키, **네이버 API HUB** 앱의 Client ID/Secret
    (NCP 콘솔 > NAVER API HUB > Application), **텔레그램** 봇 토큰·chat_id.
+3. (선택) 번들은 scikit-learn 백엔드로 돕니다. LightGBM·PPO 백엔드는 소스 설치(`uv sync --extra lightgbm --extra rl`,
+   macOS 는 `brew install libomp`)에서만 쓸 수 있고 설정 `backend: auto` 는 없으면 자동으로 폴백합니다.
 
 ## 3. 첫 실행
 

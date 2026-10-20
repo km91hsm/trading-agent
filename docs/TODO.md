@@ -115,12 +115,12 @@
 - [x] 05_quant.json 투입(`tool collect`·`analyze`·데몬 뒤 `tools.ensure_quant`, 트레이더 `context.quant`), scan ML 랭킹(`ml_model` 표시)
 - [x] UI ML 페이지(모델 목록·폴드 성능·permutation 중요도) + `/api/ml/models[/{version}]` + `trader ml train|models|promote` + 데몬 `ml_train` 잡 + STATUS "ML 모델" 절
 - [x] 완료 기준(실기 2026-10-17): `uv run trader ml train --market KR` → 4,940행·6폴드 정확도 0.315 / 기준선 0.465 / 알파 −0.003 → **미승격**(승격 규칙: 정확도 > 기준선 ∧ ≥ 0.40 ∧ 알파 > 0 ∧ 폴드별 up 예측 ≥ 5건. 잡음 데이터 4 seed 전부 미승격 테스트 확인. 파이프라인은 ML 없이 돈다). 합성 신호 데이터에서는 승격·05_quant·랭킹 전부 테스트로 확인. UI 성능·중요도는 `/api/ml/models` 응답으로 확인
-- [ ] 사용자 확인 대기: LightGBM 을 쓰려면 `brew install libomp` → `uv sync --extra lightgbm` → `config/ml.yaml` 의 `models.quant.backend: lightgbm`(기본은 플랫폼 동일 동작을 위해 `sklearn`)
+- [x] (Phase 12 에서 `backend: auto` 로 전환, libomp 설치는 사용자) LightGBM 을 쓰려면 `brew install libomp` → `uv sync --extra lightgbm` → `config/ml.yaml` 의 `models.quant.backend: lightgbm`(기본은 플랫폼 동일 동작을 위해 `sklearn`)
 - [x] Phase 7 이연(리뷰, Phase 8 회수): close 대비 비율 피처 `sma_5/20/60_rel·bb_pos·atr_pct·macd_hist_rel` 추가(옛 parquet 행은 NaN → `features backfill` 재실행 후 `ml train`). 중요도는 마지막 폴드 홀드아웃 기준
 - [x] Phase 7 이연: `features snapshot` 은 데몬 reflect 잡 앞에서 매일 실행(`DaemonDeps.snapshot_fn`, 실패는 통보). 재학습은 사용자 실기(`features backfill --years 3` → `ml train`)
 - [x] 3년 백필 후 `ml train` 재실행(2026-10-20): `features backfill --years 3` → 피처 파일 802일(2023-09~2026-10), 21,924+7,560행. KR 정확도 0.343 / 기준선 0.354 / 알파 +0.0023, US 0.385 / 0.399 / +0.0020 → **둘 다 미승격**(정확도 < 0.40, 기준선 이하). 승격 전까지 05_quant·ML 랭킹은 비활성 유지. 백필 중 EGW00201 1회 재시도로 종목이 빠져 재시도를 3회 백오프로 보강, WMT 는 KIS 가 NAS 코드로만 줘 유니버스 수정
 - [x] 리뷰 Minor 이연(이연 회수 플랜): stale running 정리는 상태 표시·오류율 정확성용(세션 상한 `sessions_today` 는 created_at 기준이라 그대로), 신호 결측으로 제외된 종목이 `candidates` 에서 "피처 없음" 으로 표시, `scan --asof` 가 `latest_features` 에 전달되지 않음(과거 asof 스캔은 최신 파일) → 2026-10-20 전부 처리(후속 플랜 Task F: stale running 매일 정리, '피처는 있으나 필터·신호 결측으로 제외' 표시, `scan --asof` 를 `quant.candidates(asof=)` 로 전달)
-- [ ] Phase 7 이연 유지(별도 Phase·사용자 결정): US 연도별 재무비율·동종업 중앙값 비율(데이터 설계 필요), 피처 행 탐색 UI, 하이퍼파라미터 탐색
+- [x] (Phase 12 구현) Phase 7 이연: US 연도별 재무비율·동종업 중앙값 비율(데이터 설계 필요), 피처 행 탐색 UI, 하이퍼파라미터 탐색
 
 ## Phase 8 학습·평가·보정
 - [x] memory 3층·엠바고·서킷브레이커 (`memory_entries` v5, 12차원 상황 벡터, 반감기 14/90/365, 워밍업 50, `control.memory_breaker`)
@@ -141,7 +141,7 @@
 - [x] UI 실험 로그 (ML 페이지 "RL 실험" 절, `/api/rl/experiments|shadow|report`, STATUS `rl_sizer` 줄, 데몬 ml_train 이 enabled 일 때 함께 학습, `rl report`)
 - [x] 실기(2026-10-17): `rl train --market KR --seeds 1`(피처 스토어 4,940 스텝·6폴드, CEM) → 테스트 창 평균 수익 RL −0.13% / 고정 10% +0.33% / 변동성 타깃 +0.89%, 정책은 변동성에 반응(atr 1% → 비중 0.20, 5% → 0.006) → **미승격**(1시드·1년 데이터로는 기준선 미달, 승격은 수동) → `rl report` → `FAKE_CLAUDE=1 analyze --dry-run`(HOLD·dry-run 이라 `rl_shadow` 0행, 모드 불변) → `/api/rl/*` 200 → STATUS 줄. 리뷰 전 버전 `20261017_063439` 는 정규화 전 수치(수익 2673%)라 무시
 - [ ] 완료 기준(사용자 확인 대기): 8주 워크포워드 비교 리포트 — 모의 운영 8주 뒤 `uv run trader rl train` → `rl report --account paper-main --weeks 8` 로 RL vs 고정·LLM 비교, 승격은 `rl promote <버전>` 수동(그 뒤 `ml.yaml rl_sizer.enabled: true`, 처음엔 `mode: shadow`)
-- [ ] 사용자 확인 대기: PPO 백엔드 — `uv sync --extra rl`(torch 휠 필요, 이 머신은 x86_64 Python 이라 설치가 안 될 수 있음) 후 `ml.yaml rl_sizer.backend: ppo` 로 `rl train`
+- [x] (Phase 12: darwin x86_64 는 torch 2.2.2·SB3 2.3 핀) PPO 백엔드 — `uv sync --extra rl`(torch 휠 필요, 이 머신은 x86_64 Python 이라 설치가 안 될 수 있음) 후 `ml.yaml rl_sizer.backend: ppo` 로 `rl train`
 - [x] Phase 9 이연 회수(2026-10-17, 이연 회수 플랜): 섀도 관측·quant 는 `latest_rows` 부분 읽기(학습 `load_all` 은 전체 필요). 이연 유지(사용자 결정): 멀티 종목 동시 포트폴리오 환경, RL 실험 전용 페이지
 - [x] 리뷰 Minor 이연(Phase 9) 회수(2026-10-17, 이연 회수 플랜): `--seeds` 범위 1~10, `rl_shadow.applied` 는 게이트 승인 뒤 기록, 메모리 스텝 BUY/ADD 만, `/api/rl/report?market=` 검증, docstring·yaml 주석. 이연 유지: `uv.lock` torch(extra 전용), 학습/서빙 drawdown 정의(멀티 종목 환경과 함께)
 
@@ -180,4 +180,13 @@
   - US h5: 0.348 / 0.333 / −0.0000 / 3/6, US h10: 0.347 / 0.333 / +0.0003 / 3/6 → 미승격(신호 없음)
   - 리뷰 반영 뒤 승격 지표를 랭커와 같은 **상위 5 알파(alpha_topn)** 로 바꿔 재측정: KR h5 alpha_topn −0.0002(양 폴드 4/6), KR h10 −0.0019(4/6, 폴드별 −0.025~+0.022) → 미승격
   - 해석: 정확도는 기준선(1/3)을 4pp 넘고 삼분위 스프레드(풀링 알파)는 양이지만, **상위 5 선택은 잡음**(폴드 간 부호가 바뀜). 즉 '상위 1/3 vs 하위 1/3' 수준의 약한 신호는 있으나 상위 5 랭킹엔 못 쓴다. 기준은 그대로 두고 매주 ml_train 재평가. US 는 신호 없음(비율 피처 부재)
-- [ ] 사용자 결정: 기본 `horizon_days` 를 10 으로 바꿀지(풀링 알파로는 h10 이 5/6 로 보였지만 상위 5 알파로는 4/6·음수라 근거가 약하다. 바꾸면 라벨·엠바고·보정 창이 함께 바뀜) / US 비율 피처(EDGAR 연도별) 추가 여부
+- [x] 사용자 결정(2026-10-20): `horizon_days` 5 유지(추천대로), US 비율 피처·Phase 7 이연·백엔드는 Phase 12 로 진행. 원문: 기본 `horizon_days` 를 10 으로 바꿀지(풀링 알파로는 h10 이 5/6 로 보였지만 상위 5 알파로는 4/6·음수라 근거가 약하다. 바꾸면 라벨·엠바고·보정 창이 함께 바뀜) / US 비율 피처(EDGAR 연도별) 추가 여부
+
+## Phase 12 ML 3단계 (`docs/superpowers/plans/2026-10-20-phase12-ml3.md`)
+- [x] US 연도별 재무비율(EDGAR companyfacts, 사업연도 Y 는 Y+1 년 4월 1일 제출분까지) → 피처 스토어 US 행 `op_margin·roe·debt_ratio`
+- [x] 동종업 중앙값 상대 비율 `*_vs_sector`(`config/sectors.yaml` KR 199·US 51 → 11개 대분류, 3종목 미만 NaN, write_rows 전체 재계산·멱등), `features derive`, `00_inputs.fundamental.peer`(v3)
+- [x] `ml tune`(dev 폴드 선택·홀드아웃 보고·자동 적용 없음), `QuantModelCfg.learning_rate/num_leaves`
+- [x] 웹 `/api/features/latest|history` + Data 페이지 피처 행 탐색(정렬·종목 이력)
+- [x] 백엔드: `ml.yaml backend: auto`(quant·rl_sizer), `rl` extra 플랫폼 핀(darwin x86_64 torch 2.2.2·SB3 2.3), `selfcheck.optional`
+- [ ] 실기: US 백필·derive·재학습·tune·rl train 결과 기록
+- [ ] 사용자 실행(macOS LightGBM): `sudo chown -R $(whoami) /usr/local/share/man/man8 && chmod u+w /usr/local/share/man/man8` 뒤 `brew install libomp` → `uv run trader selfcheck` 의 `optional.lightgbm: true` 확인 → 다음 `ml train` 부터 lightgbm 백엔드(모델 메타 `backend`)
