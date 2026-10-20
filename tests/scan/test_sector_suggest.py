@@ -37,6 +37,12 @@ us:
 """
 
 
+def _with_manual(text: str, line: str) -> str:
+    """kr: 블록의 삼성전자 줄 뒤에 수동 항목 한 줄을 넣은 yaml."""
+    anchor = '  "005930": 반도체      # 삼성전자\n'
+    return text.replace(anchor, anchor + line)
+
+
 def _market():
     return FakeMarket(
         prices={t: Decimal(1) for t in ("005930", "000660", "105560", "JPM")},
@@ -157,3 +163,35 @@ def test_apply_keeps_header_comment_and_escapes_ticker(tmp_path):
     text = p.read_text(encoding="utf-8")
     assert "kr:  # 수동 관리" in text and "\r" not in text
     assert load_sectors(p).kr == {"005930": "반도체", 'A"B': "반도체"}
+
+
+def test_sync_copies_config_entries_missing_in_template(tmp_path):
+    """config 에는 있고 templates 에만 빠진 종목은 KIS 제안이 아니라 config 값으로 채운다."""
+    cfg_p = tmp_path / "config.yaml"
+    tmpl_p = tmp_path / "template.yaml"
+    cfg_p.write_text(_with_manual(YAML, '  "000660": 반도체  # 수동\n'), encoding="utf-8")
+    tmpl_p.write_text(YAML, encoding="utf-8")
+    assert sector_suggest.sync(cfg_p, tmpl_p, "KR", today=date(2026, 10, 20)) == 1
+    assert load_sectors(tmpl_p).kr == load_sectors(cfg_p).kr
+    assert sector_suggest.sync(cfg_p, tmpl_p, "KR", today=date(2026, 10, 20)) == 0  # 멱등
+    assert "# 유지할 주석" in tmpl_p.read_text(encoding="utf-8")
+
+
+def test_cli_universe_sectors_write_syncs_template_drift(project, monkeypatch):
+    from trader import cli
+
+    (project / "config" / "sectors.yaml").write_text(
+        _with_manual(YAML, '  "105560": 금융  # 수동\n'),
+        encoding="utf-8",
+    )
+    (project / "templates" / "config").mkdir(parents=True)
+    (project / "templates" / "config" / "sectors.yaml").write_text(YAML, encoding="utf-8")
+    (project / "config" / "universe.yaml").write_text(
+        yaml.safe_dump({"kr": ["005930", "000660", "105560"]}), encoding="utf-8"
+    )
+    monkeypatch.setattr(cli, "_build_market", lambda s: _market())
+    monkeypatch.setattr(cli, "_templates_config_dir", lambda: project / "templates" / "config")
+    r = CliRunner().invoke(app, ["universe", "sectors", "--market", "KR", "--write"])
+    assert r.exit_code == 0, r.stdout
+    assert load_sectors().kr == load_sectors(project / "templates" / "config" / "sectors.yaml").kr
+    assert load_sectors().kr == {"005930": "반도체", "000660": "반도체", "105560": "금융"}

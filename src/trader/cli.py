@@ -1826,7 +1826,8 @@ def universe_sectors_cmd(
         tmpl = _templates_config_dir() / "sectors.yaml"
         wrote_tmpl = False
         if not bundle.is_frozen() and tmpl.is_file():
-            sector_suggest.apply(tmpl, market, rows, today=today)
+            # 템플릿은 KIS 제안이 아니라 config 값으로 맞춘다 (config 에만 있던 수동 항목도 함께)
+            sector_suggest.sync(paths.config_dir() / "sectors.yaml", tmpl, market, today=today)
             wrote_tmpl = True
         typer.echo(f"기록: {n}종목 (config/sectors.yaml{'·templates' if wrote_tmpl else ''})")
     typer.echo(f"점검 {len(rows)}종목, 제안 없음 {len(unresolved)}건")

@@ -90,6 +90,12 @@ def make_labels(
 def _tercile_labels(out: pd.DataFrame) -> pd.Series:
     """(date, market) 그룹 안 fwd_return 백분위 순위 → 0/1/2. 그룹이 작으면 NaN."""
     valid = out[out["fwd_return"].notna()]
+    missing = int(valid["market"].isna().sum()) if "market" in valid.columns else len(valid)
+    if missing:
+        # (date, market) 그룹에서 조용히 빠져 라벨 NaN 이 되면 데이터 결함이 가려진다
+        raise ValueError(
+            f"상대 라벨: market 이 빈 행 {missing}건 — 피처 스토어 행에 market 이 있어야 한다"
+        )
     keys = [pd.to_datetime(valid["date"]), valid["market"]]
     pct = valid["fwd_return"].groupby(keys).rank(pct=True, method="average")  # 동률은 같은 라벨
     size = valid["fwd_return"].groupby(keys).transform("size")

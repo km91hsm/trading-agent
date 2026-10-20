@@ -147,3 +147,38 @@ def test_financial_history_us_keeps_latest_10k_when_two_end_in_same_year():
     h = financial_history_us(facts, date(2026, 4, 1))
     assert h["years"][2024]["매출액"] == Decimal(330)  # 12-31 결산분이 6-30 전환분을 덮지 않는다
     assert h["years"][2024]["end"] == "2024-12-31" and h["years"][2023]["end"] == "2023-12-31"
+
+
+def test_amendments_override_original_when_filed_before_asof():
+    """10-K/A·10-Q/A 정정 공시는 같은 결산일의 원본을 덮되, asof 뒤 제출분은 보이지 않는다."""
+    from helpers_sources import FakeEdgar
+
+    from trader.sources.edgar import financial_history_us, ratios_from_facts
+
+    facts = FakeEdgar().companyfacts("0000320193")
+    rev = facts["facts"]["us-gaap"]["Revenues"]["units"]["USD"]
+    rev.append(
+        {
+            "form": "10-K/A",
+            "start": "2024-01-01",
+            "end": "2024-12-31",
+            "filed": "2025-06-01",
+            "val": 340,
+        }
+    )
+    rev.append(
+        {
+            "form": "10-Q/A",
+            "start": "2025-07-01",
+            "end": "2025-09-30",
+            "filed": "2025-12-15",
+            "val": 85,
+        }
+    )
+    h = financial_history_us(facts, date(2026, 4, 1))
+    assert h["years"][2024]["매출액"] == Decimal(340)  # 정정분
+    assert h["latest_quarter"]["매출액"] == Decimal(85) and h["latest_quarter"]["form"] == "10-Q/A"
+    before = financial_history_us(facts, date(2025, 3, 1))
+    assert before["years"][2024]["매출액"] == Decimal(330)  # 정정 전엔 원본
+    r_after = ratios_from_facts(facts, date(2026, 4, 1), None)
+    assert r_after["영업이익률"] == pytest.approx(33 / 340)  # 비율도 정정분 매출 기준

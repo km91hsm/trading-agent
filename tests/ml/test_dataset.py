@@ -141,3 +141,18 @@ def test_relative_tercile_ties_share_a_label():
     )
     first = df[df["date"] == date(2025, 1, 2)].set_index("ticker")["label"]
     assert first["A"] == first["B"] == first["C"] and first["D"] == first["E"]
+
+
+def test_relative_tercile_rejects_rows_without_market():
+    """market 이 비면 (date, market) 그룹에서 조용히 빠져 라벨 NaN 이 된다 → 명시적으로 거부한다."""
+    import pytest
+    from helpers_ml import synthetic_features
+
+    from trader.ml import dataset
+
+    df = synthetic_features(3, 30, signal=False)
+    df.loc[df.index[:2], "market"] = None
+    with pytest.raises(ValueError, match="market"):
+        dataset.make_labels(df, horizon_days=5, up=0.02, down=-0.02, mode="relative_tercile")
+    # absolute 모드는 market 을 쓰지 않으므로 그대로
+    dataset.make_labels(df, horizon_days=5, up=0.02, down=-0.02, mode="absolute")

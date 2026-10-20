@@ -122,11 +122,17 @@ class EdgarClient:
         return self._get(FACTS_URL.format(cik=cik))
 
 
+# 정정 공시(/A)는 같은 결산일의 원본을 덮는다 — 정렬이 (end, filed) 내림차순이라 asof 까지 제출된
+# 최신 제출분이 먼저 온다. 전환기 보고서(10-KT·10-QT)는 기간 길이 필터가 걸러 낸다.
+ANNUAL_FORMS = ("10-K", "10-K/A")
+QUARTER_FORMS = ("10-Q", "10-Q/A")
+
+
 def _annual_entries(entries: list[dict], asof: date, *, duration: bool) -> list[dict]:
-    """asof 이전에 제출된 10-K 연간 값만, end 내림차순."""
+    """asof 이전에 제출된 10-K(정정 포함) 연간 값만, (end, filed) 내림차순 — 정정분이 앞."""
     out = []
     for e in entries:
-        if str(e.get("form", "")) != "10-K":
+        if str(e.get("form", "")) not in ANNUAL_FORMS:
             continue
         filed = _d(e.get("filed"))
         end = _d(e.get("end"))
@@ -151,17 +157,19 @@ def _unit_entries(all_facts: dict, tax: str, tag: str) -> list[dict]:
 
 
 def _values_at(
-    all_facts: dict, *, form: str, end: str, span: tuple[int, int], asof: date
-) -> tuple[dict[str, Decimal], str | None]:
-    """한 보고서(form·end)의 공통 키 값과 제출일. 기간형은 (end − start) 일수가 span 안."""
+    all_facts: dict, *, forms: tuple[str, ...], end: str, span: tuple[int, int], asof: date
+) -> tuple[dict[str, Decimal], str | None, str | None]:
+    """한 결산일(end)의 공통 키 값·제출일·form. 같은 end 에 원본과 정정(/A)이 있으면 asof 까지
+    제출된 것 중 가장 늦게 제출된 값을 쓴다. 기간형은 (end − start) 일수가 span 안."""
     fin: dict[str, Decimal] = {}
     filed_at: str | None = None
+    form_at: str | None = None
     end_d = _d(end)
     for key, (tax, tags, duration) in _TAGS.items():
         for tag in tags:
             hit = None
             for ent in _unit_entries(all_facts, tax, tag):
-                if str(ent.get("form", "")) != form or str(ent.get("end", "")) != end:
+                if str(ent.get("form", "")) not in forms or str(ent.get("end", "")) != end:
                     continue
                 filed = _d(ent.get("filed"))
                 if filed is None or filed > asof:
@@ -172,26 +180,27 @@ def _values_at(
                         continue
                     if not (span[0] <= (end_d - start).days <= span[1]):
                         continue
-                hit = ent
-                break
+                if hit is None or str(ent.get("filed")) > str(hit.get("filed")):
+                    hit = ent
             if hit is not None:
                 fin[key] = Decimal(str(hit["val"]))
-                filed_at = filed_at or str(hit.get("filed"))
+                if filed_at is None or str(hit.get("filed")) > filed_at:
+                    filed_at, form_at = str(hit.get("filed")), str(hit.get("form"))
                 break
-    return fin, filed_at
+    return fin, filed_at, form_at
 
 
 def _report_ends(
-    all_facts: dict, *, form: str, span: tuple[int, int] | None, asof: date
+    all_facts: dict, *, forms: tuple[str, ...], span: tuple[int, int] | None, asof: date
 ) -> list[str]:
-    """asof 까지 제출된 form 보고서의 end 날짜(내림차순, 중복 없음). 기간형 태그로 판단한다."""
+    """asof 까지 제출된 보고서(forms)의 end 날짜(내림차순, 중복 없음). 기간형 태그로 판단한다."""
     ends: set[str] = set()
     for tax, tags, duration in _TAGS.values():
         if not duration:
             continue
         for tag in tags:
             for ent in _unit_entries(all_facts, tax, tag):
-                if str(ent.get("form", "")) != form:
+                if str(ent.get("form", "")) not in forms:
                     continue
                 filed, start, end = _d(ent.get("filed")), _d(ent.get("start")), _d(ent.get("end"))
                 if filed is None or end is None or filed > asof:
@@ -208,25 +217,29 @@ def financial_history_us(facts: dict, asof: date) -> dict[str, Any]:
     최신 10-K 뒤의 최근 10-Q(`latest_quarter`: form·end·filed + 공통 키). asof 까지 제출된 것만."""
     all_facts = facts.get("facts") or {}
     years: dict[int, dict[str, Decimal]] = {}
-    annual_ends = _report_ends(all_facts, form="10-K", span=ANNUAL_DAYS, asof=asof)
+    annual_ends = _report_ends(all_facts, forms=ANNUAL_FORMS, span=ANNUAL_DAYS, asof=asof)
     for end in annual_ends:
         if len(years) >= HISTORY_YEARS:
             break
         year = int(end[:4])
         if year in years:
             continue  # 결산월 변경으로 같은 연도에 10-K 가 둘이면 최신(end 가 늦은) 것만
-        fin, _filed = _values_at(all_facts, form="10-K", end=end, span=ANNUAL_DAYS, asof=asof)
+        fin, _filed, _form = _values_at(
+            all_facts, forms=ANNUAL_FORMS, end=end, span=ANNUAL_DAYS, asof=asof
+        )
         if fin:
             # 1월 결산사(NVDA FY2026=2026-01-25)처럼 연도 키가 달력연도와 달라 end 를 함께 둔다
             years[year] = {**fin, "end": end}
     latest_quarter: dict[str, Any] | None = None
     floor = annual_ends[0] if annual_ends else ""
-    for end in _report_ends(all_facts, form="10-Q", span=QUARTER_DAYS, asof=asof):
+    for end in _report_ends(all_facts, forms=QUARTER_FORMS, span=QUARTER_DAYS, asof=asof):
         if end <= floor:
             break
-        fin, filed = _values_at(all_facts, form="10-Q", end=end, span=QUARTER_DAYS, asof=asof)
+        fin, filed, form = _values_at(
+            all_facts, forms=QUARTER_FORMS, end=end, span=QUARTER_DAYS, asof=asof
+        )
         if fin:
-            latest_quarter = {"form": "10-Q", "end": end, "filed": filed, **fin}
+            latest_quarter = {"form": form or "10-Q", "end": end, "filed": filed, **fin}
             break
     return {"years": years, "latest_quarter": latest_quarter}
 

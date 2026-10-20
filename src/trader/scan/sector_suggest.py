@@ -138,3 +138,18 @@ def apply(path: Path, market: str, rows: list[dict[str, Any]], *, today: date) -
     tmp.replace(path)
     logger.info("sectors.yaml %s 에 %d종목 추가: %s", key, len(adds), [r["ticker"] for r in adds])
     return len(adds)
+
+
+def sync(src: Path, dst: Path, market: str, *, today: date) -> int:
+    """src(config) 에 있고 dst(templates) 에 빠진 종목을 src 값으로 덧붙인다 — 패리티 유지.
+    KIS 제안이 아니라 config 의 (수동) 값을 복사한다. 반환 추가 수. 멱등."""
+    src_map = load_sectors(src)
+    dst_map = load_sectors(dst)
+    a = src_map.kr if market == "KR" else src_map.us
+    b = dst_map.kr if market == "KR" else dst_map.us
+    rows = [
+        {"ticker": t, "industry": "config 동기화", "current": None, "suggested": sec}
+        for t, sec in a.items()
+        if t not in b
+    ]
+    return apply(dst, market, rows, today=today) if rows else 0
