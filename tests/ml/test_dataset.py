@@ -124,3 +124,20 @@ def test_absolute_mode_is_default_and_unchanged():
     a = dataset.make_labels(df, horizon_days=2, up=0.02, down=-0.02)
     b = dataset.make_labels(df, horizon_days=2, up=0.02, down=-0.02, mode="absolute")
     assert a["label"].equals(b["label"])
+
+
+def test_relative_tercile_ties_share_a_label():
+    """같은 fwd_return(거래정지·보합)은 같은 라벨이어야 한다.
+
+    행 순서로 동률을 쪼개면 정렬 순서가 라벨이 된다.
+    """
+    rows = []
+    for t, c1 in zip("ABCDEF", [100, 100, 100, 102, 102, 105], strict=True):
+        base = {"ticker": t, "market": "KR", "volume": 1}
+        rows.append({"date": date(2025, 1, 2), "close": 100.0, **base})
+        rows.append({"date": date(2025, 1, 3), "close": float(c1), **base})
+    df = dataset.make_labels(
+        pd.DataFrame(rows), horizon_days=1, up=0, down=0, mode="relative_tercile"
+    )
+    first = df[df["date"] == date(2025, 1, 2)].set_index("ticker")["label"]
+    assert first["A"] == first["B"] == first["C"] and first["D"] == first["E"]

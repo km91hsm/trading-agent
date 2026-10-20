@@ -33,13 +33,16 @@ def promotion_decision(metrics: dict, cfg: MlConfig) -> tuple[bool, str]:
     if not folds:
         fails.append("평가 폴드 없음")
     if q.promote_metric == "alpha":
-        pos = sum(1 for f in folds if float(f.get("alpha", 0.0)) > 0)
+        # 랭커가 실제로 쓰는 "상위 N 알파"(alpha_topn). 옛 메타엔 없을 수 있어 풀링 알파로 대신한다
+        alpha = float(metrics.get("alpha_topn", alpha))
+        pos = sum(1 for f in folds if float(f.get("alpha_topn", f.get("alpha", 0.0))) > 0)
         frac = pos / len(folds) if folds else 0.0
         if alpha < q.promote_min_alpha:
-            fails.append(f"평균 알파 {alpha:.4f} < {q.promote_min_alpha}")
+            fails.append(f"상위 {q.promote_top_n} 평균 알파 {alpha:.4f} < {q.promote_min_alpha}")
         if frac < q.promote_min_positive_folds:
             fails.append(
-                f"알파 양인 폴드 {pos}/{len(folds)} ({frac:.2f}) < {q.promote_min_positive_folds}"
+                f"상위 알파 양인 폴드 {pos}/{len(folds)} ({frac:.2f}) "
+                f"< {q.promote_min_positive_folds}"
             )
     else:
         if acc <= base:
@@ -55,7 +58,8 @@ def promotion_decision(metrics: dict, cfg: MlConfig) -> tuple[bool, str]:
         return False, "미승격: " + "; ".join(fails)
     if q.promote_metric == "alpha":
         return True, (
-            f"승격(알파 기준): 평균 알파 {alpha:.4f} ≥ {q.promote_min_alpha}, 양인 폴드 "
+            f"승격(상위 {q.promote_top_n} 알파): 평균 {alpha:.4f} ≥ {q.promote_min_alpha}, "
+            "양인 폴드 "
             f"{pos}/{len(folds)}, 모든 폴드 up 예측 ≥ {q.min_up_predictions}"
         )
     return True, (

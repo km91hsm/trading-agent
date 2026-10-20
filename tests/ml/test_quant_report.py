@@ -123,3 +123,15 @@ def test_latest_row_cache_sees_rewritten_newest_file(project):
     assert quant_report.latest_row("T01", "KR") is None
     features.write_rows(synthetic_features(2, 30, signal=False))  # 같은 날짜 파일에 T01 추가
     assert quant_report.latest_row("T01", "KR") is not None
+
+
+def test_build_report_carries_label_mode(project):
+    """상대 라벨 모델의 p_up 은 '같은 날 시장 내 상위 삼분위 확률' 이라 트레이더가 구분해야 한다."""
+    m, cols, v = _promoted(project)
+    row = quant_report.latest_row("T00", "KR")
+    model, meta = registry.latest("quant")
+    rep = quant_report.build(model, meta, row, ticker="T00", asof=NOW.isoformat())
+    assert rep["label_mode"] == (meta.get("label") or {}).get("mode", "absolute")
+    meta2 = {**meta, "label": {**(meta.get("label") or {}), "mode": "relative_tercile"}}
+    rep2 = quant_report.build(model, meta2, row, ticker="T00", asof=NOW.isoformat())
+    assert rep2["label_mode"] == "relative_tercile"

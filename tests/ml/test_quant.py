@@ -60,3 +60,19 @@ def test_quant_model_max_iter_is_configurable():
     assert m._est.max_iter == 7
     cfg = MlConfig.model_validate({"models": {"quant": {"max_iter": 30}}})
     assert cfg.models.quant.max_iter == 30 and MlConfig().models.quant.max_iter == 200
+
+
+def test_evaluate_walkforward_reports_per_day_topn_alpha():
+    """승격에 쓰는 알파는 랭커의 실제 용도와 같아야 한다: 날짜(·시장)마다 p_up 상위 N 종목의
+    fwd_return 평균 − 그날 유니버스 평균을 날짜 평균한 값(alpha_topn).
+    풀링 알파는 타이밍이 섞인다."""
+    from helpers_ml import fast_cfg, synthetic_features
+
+    from trader.ml import dataset
+
+    cfg = fast_cfg(train={"walk_forward_folds": 2}, label={"mode": "relative_tercile"})
+    df = synthetic_features(8, 160, signal=True)
+    df = dataset.make_labels(df, horizon_days=5, up=0.02, down=-0.02, mode="relative_tercile")
+    m = quant.evaluate_walkforward(df, cfg, features=dataset.feature_columns(df))
+    assert "alpha_topn" in m and all("alpha_topn" in f for f in m["folds"])
+    assert all(abs(f["alpha_topn"]) < 1 for f in m["folds"])

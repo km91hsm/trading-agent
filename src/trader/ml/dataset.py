@@ -91,7 +91,7 @@ def _tercile_labels(out: pd.DataFrame) -> pd.Series:
     """(date, market) 그룹 안 fwd_return 백분위 순위 → 0/1/2. 그룹이 작으면 NaN."""
     valid = out[out["fwd_return"].notna()]
     keys = [pd.to_datetime(valid["date"]), valid["market"]]
-    pct = valid["fwd_return"].groupby(keys).rank(pct=True, method="first")
+    pct = valid["fwd_return"].groupby(keys).rank(pct=True, method="average")  # 동률은 같은 라벨
     size = valid["fwd_return"].groupby(keys).transform("size")
     label = pd.Series(np.nan, index=out.index, dtype="float64")
     tercile = np.where(pct <= 1 / 3, 0.0, np.where(pct > 2 / 3, 2.0, 1.0))

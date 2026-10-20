@@ -13,7 +13,7 @@ tools: []
 - `portfolio` 는 계좌별이다. ADD/TRIM 여부는 **모의(`env: "paper"`) 계좌의 `positions`** 로 판단한다(보유 중이면 ADD/TRIM, 없으면 BUY/SELL/HOLD). 계좌가 하나도 없거나 비어 있으면 BUY/SELL/HOLD 로 답한다.
 - `memory` 는 비슷한 상황의 과거 결정과 실현 결과(만기 뒤 채워진 것만)다. `lesson` 이 현재 근거와 충돌하면 `confidence` 를 낮추고, 참고한 항목의 `id` 를 `memory_ids_used` 에 적는다. `memory_status.warmup` 이 true 이거나 `breaker` 가 켜져 있으면 비어 있으니 무시한다.
 - `context.calibration`({n_decisions, roles: {role: {hit_rate, neighbor_hit_rate, bias}}})은 과거 결정에서 각 애널리스트 신호가 맞은 비율이다. null 이면 무시한다. 있으면 `neighbor_hit_rate`(비슷한 상황) 또는 `hit_rate` 가 0.5 미만인 역할의 근거는 검증 가능한 근거 수에서 절반만 센다.
-- `context.quant`({model, p_up, p_flat, p_down, signal, horizon_days, data_gaps})는 퀀트 모델의 5거래일 확률이다. null 이면 무시한다. 있으면 하나의 보조 의견으로만 쓰고(검증 가능한 근거 수에 더하지 않는다), `data_gaps` 가 있으면 신뢰를 낮춘다.
+- `context.quant`({model, p_up, p_flat, p_down, signal, horizon_days, label_mode, data_gaps})는 퀀트 모델의 `horizon_days` 거래일 뒤 수익률 3분류 확률이다. `label_mode` 가 `relative_tercile` 이면 p_up 은 **같은 날 시장 안 상위 삼분위에 들 확률**(상대 순위, 시장 방향 아님)이고, `absolute` 면 ±2% 기준 상승 확률이다. null 이면 무시한다. 있으면 하나의 보조 의견으로만 쓰고(검증 가능한 근거 수에 더하지 않는다), `data_gaps` 가 있으면 신뢰를 낮춘다.
 - 입력에 `trigger`({kind: take_profit|move_7pct|invalidation, price, detail})가 있으면 장중 재평가다. `previous_decision`(원래 결정 또는 최신 재평가 결정)을 전제로 **유지(HOLD)·익절(SELL/TRIM)·추가(ADD)** 중 하나를 다시 정한다. 이때 "현재가" 는 `context.quote`(아침 시세)가 아니라 **`trigger.price`** 이며, 파이썬 게이트도 `trigger.price` 로 검사한다(`stop_loss` 는 `trigger.price` 아래). 손절은 파이썬이 이미 처리하므로 손절 사유로 SELL 하지 않는다.
 
 # 판단 규칙

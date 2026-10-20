@@ -86,7 +86,10 @@ class Decision(BaseModel):
 
 
 class QuantReport(BaseModel):
-    """05_quant: 승격된 퀀트 모델의 5거래일 수익률 3분류 확률 (파이썬 생성, 스펙 §9.1)."""
+    """05_quant: 승격된 퀀트 모델의 horizon_days 뒤 수익률 3분류 확률 (파이썬 생성, 스펙 §9.1).
+
+    label_mode 가 absolute 면 p_up = ±2% 기준 상승 확률, relative_tercile 이면 같은 날 시장 내 상위
+    삼분위에 들 확률(시장 방향이 아니라 상대 순위)."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -99,6 +102,7 @@ class QuantReport(BaseModel):
     p_down: float = Field(ge=0, le=1)
     signal: Signal
     horizon_days: int = Field(ge=1)
+    label_mode: Literal["absolute", "relative_tercile"] = "absolute"
     features_used: list[str]
     data_gaps: list[str] = Field(default_factory=list)
     feature_date: str | None = None

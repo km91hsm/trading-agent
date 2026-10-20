@@ -61,3 +61,9 @@ def test_cli_ml_train_horizon_override(project, monkeypatch):
     assert seen["h"] == 10
     r = CliRunner().invoke(app, ["ml", "train", "--market", "KR"])
     assert seen["h"] == 5  # 기본은 ml.yaml 값
+
+
+def test_cli_ml_train_horizon_rejects_invalid(project):
+    for h in ("0", "-1", "61"):
+        r = CliRunner().invoke(app, ["ml", "train", "--market", "KR", "--horizon", h])
+        assert r.exit_code != 0 and "Traceback" not in (r.stdout + (r.stderr or "")), h

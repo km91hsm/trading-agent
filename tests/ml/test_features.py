@@ -393,3 +393,54 @@ def test_history_rows_and_snapshot_drop_trailing_zero_volume_candle():
         community_count=None,
     )
     assert snap["date"] == candles[-1].date
+
+
+def test_history_rows_all_zero_volume_raises_clear_error():
+    from datetime import timedelta
+
+    from trader.broker.models import Candle
+
+    stubs = [
+        Candle(date=date(2026, 1, 1) + timedelta(days=i), open=1, high=1, low=1, close=1, volume=0)
+        for i in range(3)
+    ]
+    with pytest.raises(ValueError, match="완성된 일봉"):
+        features.history_rows(ticker="A", market="KR", candles=stubs, ratios_by_year=None)
+
+
+def test_snapshot_skips_ticker_whose_today_bar_is_incomplete(project):
+    """개장 전 스냅샷: 오늘 봉이 거래량 0 스텁이면 그 종목은 건너뛴다 (전날 날짜로 다시 써서 어제
+    행을 오늘 수집 건수로 덮어쓰면 안 된다 — 과거 파일 불변·룩어헤드)."""
+    from datetime import timedelta
+
+    from helpers_sources import T0
+
+    from trader.broker.models import Candle
+
+    class StubMarket(FakeMarket):
+        def get_daily_kr(self, ticker, days=250):
+            c = super().get_daily_kr(ticker, days)
+            if ticker == "000660":
+                last = c[-1]
+                stub = Candle(
+                    date=last.date + timedelta(days=1),
+                    open=last.close,
+                    high=last.close,
+                    low=last.close,
+                    close=last.close,
+                    volume=0,
+                )
+                c = [*c, stub]
+            return c
+
+    seen = []
+    n = features.snapshot(
+        market_client=StubMarket(),
+        dart=None,
+        universe=Universe(kr=["005930", "000660"]),
+        markets=["KR"],
+        asof=T0,
+        now=lambda: T0,
+        progress=seen.append,
+    )
+    assert n == 1 and any("000660" in s and "미완성" in s for s in seen)

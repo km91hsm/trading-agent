@@ -192,3 +192,24 @@ def test_promotion_accuracy_mode_unchanged_by_new_fields():
     assert cfg.models.quant.promote_metric == "accuracy"
     assert train.promotion_decision(_metrics(0.52, 0.45, 0.002), cfg)[0] is True
     assert train.promotion_decision(_metrics(0.43, 0.50, 0.002), cfg)[0] is False
+
+
+def test_promotion_alpha_mode_prefers_topn_alpha():
+    cfg = MlConfig.model_validate(
+        {"models": {"quant": {"promote_metric": "alpha", "promote_min_alpha": 0.003}}}
+    )
+    folds = [
+        {"index": i, "accuracy": 0.34, "baseline": 0.34, "alpha": 0.01, "alpha_topn": -0.01,
+         "up_count": 20, "test_rows": 100}
+        for i in range(6)
+    ]
+    m = {
+        "accuracy": 0.34,
+        "baseline": 0.34,
+        "alpha": 0.01,
+        "alpha_topn": -0.01,
+        "folds": folds,
+        "n_test": 600,
+    }
+    ok, why = train.promotion_decision(m, cfg)
+    assert ok is False and "상위" in why  # 풀링 알파가 양이어도 상위 N 알파가 음이면 미승격

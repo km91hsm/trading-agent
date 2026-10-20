@@ -145,6 +145,8 @@ def history_rows(
 ) -> pd.DataFrame:
     """일봉 전 구간의 행들. 비율은 해당 날짜의 사업연도 값, 수급·건수는 NaN."""
     candles = drop_incomplete_tail(candles)
+    if not candles:
+        raise ValueError("완성된 일봉 없음 (전부 거래량 0)")
     df = indicators.indicator_frame(indicators.to_frame(candles)).reset_index()
     out = pd.DataFrame({"date": df["date"], "ticker": ticker, "market": market})
     out["close"] = df["close"]
@@ -369,6 +371,10 @@ def snapshot(
             )
             if not candles:
                 raise ValueError("일봉 없음")
+            if int(candles[-1].volume) <= 0:
+                # 개장 전 스텁 봉: 전날 날짜로 다시 쓰면 어제 행을 오늘 건수로 덮어쓴다 → 건너뜀
+                progress(f"{market} {ticker}: 오늘 봉 미완성(거래량 0), 생략")
+                continue
             flows = market_client.get_investor_kr(ticker, days=20) if market == "KR" else None
             ratios = None
             if market == "KR" and dart is not None:

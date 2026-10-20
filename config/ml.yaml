@@ -8,9 +8,10 @@ train:
   window_years: 3
   walk_forward_folds: 6
 models:
-  # 승격은 알파 기준: 폴드별 상위 5 종목 초과수익의 평균 ≥ 0.003(KR 왕복 30bp) 이고 알파가 양인 폴드 ≥ 67%.
+  # 승격은 알파 기준(alpha_topn): 날짜마다 p_up 상위 promote_top_n(5) 종목의 수익 − 그날 유니버스 평균을 날짜 평균한
+  # 값이 폴드 평균 ≥ 0.003(KR 왕복 30bp) 이고 양인 폴드 ≥ 0.66(6폴드 중 4). (풀링 알파 `alpha` 는 참고용)
   # accuracy 로 바꾸면 기존(정확도 > 기준선 ∧ ≥ 0.40) 기준.
-  quant: {enabled: true, promote_metric: alpha, promote_min_alpha: 0.003, promote_min_positive_folds: 0.67, promote_min_accuracy: 0.40}
+  quant: {enabled: true, promote_metric: alpha, promote_min_alpha: 0.003, promote_min_positive_folds: 0.66, promote_min_accuracy: 0.40}
   ranker: {enabled: true}
   calibration: {enabled: true, min_decisions: 60}
   # rl_sizer.horizon_days 는 학습 때 label.horizon_days 로 덮인다(보상 정규화용). 승격은 `trader rl promote` 수동.

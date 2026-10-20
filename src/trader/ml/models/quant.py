@@ -115,8 +115,11 @@ class QuantModel:
 
 
 def evaluate_walkforward(df: pd.DataFrame, cfg: MlConfig, *, features: list[str]) -> dict:
-    """폴드별 정확도·기준선(최빈 라벨)·알파(예측 up 행의 평균 fwd_return − 전체 평균)·up 예측 건수.
+    """폴드별 정확도·기준선(최빈 라벨)·알파·up 예측 건수.
 
+    - alpha: 예측 up 행의 평균 fwd_return − 전체 평균 (풀링, 타이밍이 섞인다 — 참고용)
+    - alpha_topn: 날짜·시장마다 p_up 상위 N(promote_top_n) 종목의 fwd_return 평균 − 그날 유니버스
+      평균을 날짜 평균한 값. scan 랭커가 실제로 쓰는 방식이라 승격(alpha 모드)은 이 값을 본다.
     전체 정확도·기준선은 테스트 행 합산(pooled) 기준으로 같은 방식으로 집계한다.
     """
     days = sorted(pd.to_datetime(df["date"]).dt.date.unique())
@@ -130,6 +133,8 @@ def evaluate_walkforward(df: pd.DataFrame, cfg: MlConfig, *, features: list[str]
     correct = total = 0
     class_counts = np.zeros(N_CLASSES, dtype=int)
     alphas: list[float] = []
+    alphas_topn: list[float] = []
+    top_n = cfg.models.quant.promote_top_n
     backend = cfg.models.quant.backend
     max_iter = cfg.models.quant.max_iter
     for f in fs:
@@ -142,9 +147,12 @@ def evaluate_walkforward(df: pd.DataFrame, cfg: MlConfig, *, features: list[str]
         pred = model.predict(Xte)
         acc = float((pred == yte).mean())
         baseline = float(np.bincount(yte, minlength=N_CLASSES).max() / len(yte))
-        fwd = test.loc[test["label"].notna(), "fwd_return"].to_numpy(dtype="float64")
+        labeled = test[test["label"].notna()]
+        fwd = labeled["fwd_return"].to_numpy(dtype="float64")
         up = pred == 2
         alpha = float(fwd[up].mean() - fwd.mean()) if up.any() else 0.0
+        p_up = model.predict_proba(Xte)[:, 2]
+        alpha_topn = _topn_alpha(labeled, p_up, top_n)
         out.append(
             {
                 "index": f.index,
@@ -153,6 +161,7 @@ def evaluate_walkforward(df: pd.DataFrame, cfg: MlConfig, *, features: list[str]
                 "accuracy": round(acc, 4),
                 "baseline": round(baseline, 4),
                 "alpha": round(alpha, 6),
+                "alpha_topn": round(alpha_topn, 6),
                 "up_count": int(up.sum()),
             }
         )
@@ -160,10 +169,34 @@ def evaluate_walkforward(df: pd.DataFrame, cfg: MlConfig, *, features: list[str]
         total += len(yte)
         class_counts += np.bincount(yte, minlength=N_CLASSES)
         alphas.append(alpha)
+        alphas_topn.append(alpha_topn)
     return {
         "folds": out,
         "accuracy": round(correct / total, 4) if total else 0.0,
         "baseline": round(float(class_counts.max() / total), 4) if total else 0.0,
         "alpha": round(float(np.mean(alphas)), 6) if alphas else 0.0,
+        "alpha_topn": round(float(np.mean(alphas_topn)), 6) if alphas_topn else 0.0,
         "n_test": total,
     }
+
+
+def _topn_alpha(labeled: pd.DataFrame, p_up: np.ndarray, top_n: int) -> float:
+    """날짜·시장 그룹마다 p_up 상위 N 의 fwd_return 평균 − 그룹 평균을 그룹 평균.
+
+    N 이하 그룹은 건너뜀.
+    """
+    d = pd.DataFrame(
+        {
+            "date": pd.to_datetime(labeled["date"]).to_numpy(),
+            "market": labeled["market"].to_numpy() if "market" in labeled else "",
+            "fwd": labeled["fwd_return"].to_numpy(dtype="float64"),
+            "p": np.asarray(p_up, dtype="float64"),
+        }
+    )
+    vals: list[float] = []
+    for _, g in d.groupby(["date", "market"], sort=False):
+        if len(g) <= top_n:
+            continue
+        top = g.nlargest(top_n, "p")["fwd"].mean()
+        vals.append(float(top - g["fwd"].mean()))
+    return float(np.mean(vals)) if vals else 0.0

@@ -77,6 +77,7 @@ def build(model: Any, meta: dict, row: dict, *, ticker: str, asof: str) -> dict:
         p_up=round(float(p[2]), 4),
         signal=signal_for(float(p[2]), float(p[0])),
         horizon_days=horizon,
+        label_mode=str(((meta.get("label") or {}).get("mode")) or "absolute"),
         features_used=cols,
         data_gaps=gaps,
         feature_date=str(row.get("date")) if row.get("date") is not None else None,
