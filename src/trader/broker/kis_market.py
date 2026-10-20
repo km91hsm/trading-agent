@@ -80,7 +80,9 @@ class KisMarket:
         return name or None
 
     def get_industry_us(self, symbol: str, exchange: str) -> str | None:
-        """KIS 해외 업종코드 3자리 (현재가상세 `e_icod`). 없으면 None."""
+        """KIS 해외 업종명 (현재가상세 `e_icod`, 한글 업종명으로 온다 — 실기 2026-10-20).
+
+        없으면 None."""
         data = self._client.get(
             path("OVS_PRICE_DETAIL"),
             "OVS_PRICE_DETAIL",

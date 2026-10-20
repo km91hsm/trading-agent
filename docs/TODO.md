@@ -201,3 +201,8 @@
 - [x] lightgbm 모델 로드 실패 경고에 원인·대처(demote / sklearn 재학습) 안내
 - [x] `fundamental.peer`·`sector_medians` 에 `dates{min,max}` (스냅샷 빠진 종목의 옛 날짜 혼입을 드러냄)
 - [x] scan 제외 사유 분리(`quant.drop_reasons`: 필터 탈락·신호 결측·피처 없음·상위 N 밖), `universe check` 일시 오류(`TRANSIENT_CODES`) 구분(Phase 11 보류분)
+
+## Phase 13 US 재무 history·섹터 자동 분류 (`docs/superpowers/plans/2026-10-20-phase13-us-history-sectors.md`)
+- [x] US `fundamental.history`: EDGAR 10-K 3개년 `years` + 최신 10-K 뒤 최근 10-Q `latest_quarter`(asof 이전 제출분만), companyfacts 메모. 실기 AAPL: years 2023~2025, 10-Q end 2026-06-27(filed 07-31)
+- [x] `trader universe sectors --market KR|US [--all] [--write]`: KIS 업종(KR `bstp_kor_isnm`, US `e_icod` — 둘 다 한글 업종명)을 `kr_industry_to_sector`/`us_industry_to_sector` 표로 바꿔 빠진 종목만 제안, `--write` 는 `kr:`/`us:` 블록 끝에 덧붙임(기존 항목·주석 불변). tr_id `OVS_PRICE_DETAIL`
+- [x] 실기(2026-10-20): KR 199·US 51 전체 조회 → 표에 없던 업종 보완(KR 일반서비스→기타·의료·정밀기기, US 는 코드가 아니라 업종명으로 와 표를 업종명으로 재작성). 수동 매핑과 KRX 업종이 다른 KR 41종목(지주사 '금융', 2차전지 '전기·전자' 등)은 의도된 수동 판단이라 유지. US 3종목(HON·LIN·WMT)은 KIS 가 업종을 주지 않음(수동 항목 있음)

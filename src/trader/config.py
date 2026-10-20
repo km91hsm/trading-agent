@@ -224,8 +224,8 @@ class SectorMap(BaseModel):
     sectors: list[str] = Field(default_factory=list)
     kr: dict[str, str] = Field(default_factory=dict)
     us: dict[str, str] = Field(default_factory=dict)
-    # KIS 업종 → 대분류 (KR 은 현재가 응답의 업종한글명, US 는 현재가상세 e_icod 3자리).
-    # `trader universe sectors` 가 빠진 종목의 섹터를 제안할 때 쓴다. 표에 없는 업종은 추측하지 않음.
+    # KIS 업종 → 대분류 (KR 은 현재가 응답의 업종한글명, US 는 현재가상세 e_icod — 한글 업종명).
+    # `trader universe sectors` 가 빠진 종목의 섹터를 제안할 때 쓴다. 표에 없으면 추측하지 않음.
     kr_industry_to_sector: dict[str, str] = Field(default_factory=dict)
     us_industry_to_sector: dict[str, str] = Field(default_factory=dict)
 

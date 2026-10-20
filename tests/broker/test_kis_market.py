@@ -315,11 +315,11 @@ OVS_PRICE_DETAIL = "/uapi/overseas-price/v1/quotations/price-detail"
 
 
 def test_industry_kr_and_us(market, respx_mock):
-    """섹터 제안(universe sectors)용 업종: KR 은 현재가 응답의 업종한글명, US 는 현재가상세 e_icod."""
+    """섹터 제안(universe sectors)용 업종: KR 은 현재가 응답 업종한글명, US 는 현재가상세 e_icod."""
     respx_mock.get(REAL + DOM_PRICE).mock(return_value=resp("price_kr.json"))
     assert market.get_industry_kr("005930") == "전기전자"
     route = respx_mock.get(REAL + OVS_PRICE_DETAIL).mock(return_value=resp("price_detail_us.json"))
-    assert market.get_industry_us("AAPL", "NAS") == "730"
+    assert market.get_industry_us("AAPL", "NAS") == "컴퓨터전자장비/기기"
     p = route.calls[0].request.url.params
     assert p["EXCD"] == "NAS" and p["SYMB"] == "AAPL"
     assert route.calls[0].request.headers["tr_id"] == "HHDFS76200200"
