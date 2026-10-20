@@ -411,6 +411,11 @@ class QuantModelCfg(BaseModel):
     enabled: bool = True
     promote_min_accuracy: float = 0.40
     promote_min_alpha: float = 0.0
+    # accuracy: 합산 정확도 > 기준선 ∧ ≥ promote_min_accuracy ∧ 알파 > promote_min_alpha (기존).
+    # alpha: scan 랭커 용도 — 평균 알파(상위 N 초과수익) ≥ promote_min_alpha ∧ 알파가 양인 폴드
+    #        비율 ≥ promote_min_positive_folds. 정확도는 보지 않는다 (상대 라벨 기준선은 1/3 고정).
+    promote_metric: Literal["accuracy", "alpha"] = "accuracy"
+    promote_min_positive_folds: float = Field(default=0.67, ge=0.0, le=1.0)
     backend: Literal["auto", "sklearn", "lightgbm"] = "sklearn"  # 플랫폼 간 동일 동작을 위해 고정
     min_up_predictions: int = 5  # 폴드마다 up 예측 최소 건수 (알파 추정 노이즈 방지)
     max_iter: int = Field(default=200, ge=1, le=5000)  # 부스팅 반복(트리 수). 테스트는 작게

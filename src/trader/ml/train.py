@@ -18,8 +18,10 @@ NAME = "quant"
 
 
 def promotion_decision(metrics: dict, cfg: MlConfig) -> tuple[bool, str]:
-    """승격 조건: 폴드가 있고, 합산 정확도 > 기준선(최빈 라벨) 이면서 ≥ promote_min_accuracy,
-    알파 > promote_min_alpha(엄격), 모든 폴드의 up 예측 건수 ≥ min_up_predictions."""
+    """승격 판정. 공통: 폴드가 있고 모든 폴드의 up 예측 ≥ min_up_predictions("전부 중립" 모델 차단).
+    - accuracy 모드: 합산 정확도 > 기준선(최빈 라벨) ∧ ≥ promote_min_accuracy ∧ 알파 > min_alpha.
+    - alpha 모드(scan 랭커 용도): 평균 알파 ≥ promote_min_alpha ∧ 알파 > 0 인 폴드 비율 ≥
+      promote_min_positive_folds. 정확도는 보지 않는다."""
     q = cfg.models.quant
     folds = metrics.get("folds") or []
     acc, base, alpha = (
@@ -30,17 +32,32 @@ def promotion_decision(metrics: dict, cfg: MlConfig) -> tuple[bool, str]:
     fails: list[str] = []
     if not folds:
         fails.append("평가 폴드 없음")
-    if acc <= base:
-        fails.append(f"정확도 {acc:.3f} ≤ 기준선 {base:.3f}")
-    if acc < q.promote_min_accuracy:
-        fails.append(f"정확도 {acc:.3f} < {q.promote_min_accuracy}")
-    if alpha <= q.promote_min_alpha:
-        fails.append(f"알파 {alpha:.4f} ≤ {q.promote_min_alpha}")
+    if q.promote_metric == "alpha":
+        pos = sum(1 for f in folds if float(f.get("alpha", 0.0)) > 0)
+        frac = pos / len(folds) if folds else 0.0
+        if alpha < q.promote_min_alpha:
+            fails.append(f"평균 알파 {alpha:.4f} < {q.promote_min_alpha}")
+        if frac < q.promote_min_positive_folds:
+            fails.append(
+                f"알파 양인 폴드 {pos}/{len(folds)} ({frac:.2f}) < {q.promote_min_positive_folds}"
+            )
+    else:
+        if acc <= base:
+            fails.append(f"정확도 {acc:.3f} ≤ 기준선 {base:.3f}")
+        if acc < q.promote_min_accuracy:
+            fails.append(f"정확도 {acc:.3f} < {q.promote_min_accuracy}")
+        if alpha <= q.promote_min_alpha:
+            fails.append(f"알파 {alpha:.4f} ≤ {q.promote_min_alpha}")
     low = [f["index"] for f in folds if int(f.get("up_count", 0)) < q.min_up_predictions]
     if low:
         fails.append(f"up 예측 {q.min_up_predictions}건 미만 폴드 {low}")
     if fails:
         return False, "미승격: " + "; ".join(fails)
+    if q.promote_metric == "alpha":
+        return True, (
+            f"승격(알파 기준): 평균 알파 {alpha:.4f} ≥ {q.promote_min_alpha}, 양인 폴드 "
+            f"{pos}/{len(folds)}, 모든 폴드 up 예측 ≥ {q.min_up_predictions}"
+        )
     return True, (
         f"승격: 정확도 {acc:.3f} > 기준선 {base:.3f} (≥ {q.promote_min_accuracy}), "
         f"알파 {alpha:.4f} > {q.promote_min_alpha}, 모든 폴드 up 예측 ≥ {q.min_up_predictions}"

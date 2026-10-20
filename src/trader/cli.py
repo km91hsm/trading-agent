@@ -1433,6 +1433,9 @@ app.add_typer(ml_app, name="ml")
 def ml_train(
     market: str | None = typer.Option(None, "--market", help="KR|US (기본 전체)"),
     min_rows: int = typer.Option(100, "--min-rows", help="학습 최소 라벨 행 수"),
+    horizon: int | None = typer.Option(
+        None, "--horizon", help="실험용: 이 실행만 label.horizon_days 를 덮어쓴다 (설정 파일 불변)"
+    ),
 ) -> None:
     """피처 스토어로 퀀트 모델을 워크포워드 학습·평가·저장하고 승격 기준을 판정한다."""
     import json
@@ -1441,6 +1444,9 @@ def ml_train(
 
     configure(paths.state_dir())
     cfg = config.load_ml()
+    if horizon is not None:
+        label = cfg.label.model_copy(update={"horizon_days": horizon})
+        cfg = cfg.model_copy(update={"label": label})
     if market is not None and market not in ("KR", "US"):
         raise config.ConfigError(f"시장은 KR 또는 US: {market}")
     r = train_mod.train_quant(cfg, market=market, min_rows=min_rows)

@@ -43,3 +43,21 @@ def test_cli_ml_demote(project):
     assert out["promoted"] is True
     r = runner.invoke(app, ["ml", "demote", out["version"], "--reason", "검토"])
     assert r.exit_code == 0 and registry.latest("quant") is None
+
+
+def test_cli_ml_train_horizon_override(project, monkeypatch):
+    """`--horizon N` 은 설정 파일을 바꾸지 않고 그 실행의 label.horizon_days 만 덮어쓴다."""
+    from trader.ml import train as train_mod
+
+    seen = {}
+
+    def fake_train(cfg, market=None, min_rows=100):
+        seen["h"] = cfg.label.horizon_days
+        return {"status": "trained", "promoted": False}
+
+    monkeypatch.setattr(train_mod, "train_quant", fake_train)
+    r = CliRunner().invoke(app, ["ml", "train", "--market", "KR", "--horizon", "10"])
+    assert r.exit_code == 0, r.stdout
+    assert seen["h"] == 10
+    r = CliRunner().invoke(app, ["ml", "train", "--market", "KR"])
+    assert seen["h"] == 5  # 기본은 ml.yaml 값

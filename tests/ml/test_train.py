@@ -135,3 +135,60 @@ def test_backend_config_pins_sklearn(project):
 
     with pytest.raises(ValueError):
         MlConfig.model_validate({"models": {"quant": {"backend": "xgboost"}}})
+
+
+def _alpha_folds(alphas, up=20):
+    return [
+        {
+            "index": i,
+            "accuracy": 0.34,
+            "baseline": 0.34,
+            "alpha": a,
+            "up_count": up,
+            "test_rows": 100,
+        }
+        for i, a in enumerate(alphas)
+    ]
+
+
+def test_promotion_alpha_mode_requires_mean_and_fold_fraction():
+    """순위 용도의 승격: 평균 알파 ≥ promote_min_alpha 이고 알파가 양인 폴드 비율 ≥ 기준.
+    정확도는 보지 않는다 (상대 라벨에선 기준선이 1/3 로 고정돼 정확도 비교가 의미를 잃는다)."""
+    cfg = MlConfig.model_validate(
+        {
+            "models": {
+                "quant": {
+                    "promote_metric": "alpha",
+                    "promote_min_alpha": 0.003,
+                    "promote_min_positive_folds": 0.67,
+                }
+            }
+        }
+    )
+    good = _alpha_folds([0.005, 0.004, 0.006, -0.001, 0.003, 0.007])
+    m = {"accuracy": 0.34, "baseline": 0.34, "alpha": 0.004, "folds": good, "n_test": 600}
+    ok, why = train.promotion_decision(m, cfg)
+    assert ok is True and "알파" in why
+    few = _alpha_folds([0.01, 0.01, 0.01, -0.01, -0.01, -0.01])
+    ok, why = train.promotion_decision({**m, "folds": few}, cfg)
+    assert ok is False and "폴드" in why
+    ok, why = train.promotion_decision({**m, "alpha": 0.002}, cfg)
+    assert ok is False and "알파" in why
+
+
+def test_promotion_alpha_mode_still_requires_up_predictions():
+    cfg = MlConfig.model_validate(
+        {"models": {"quant": {"promote_metric": "alpha", "promote_min_alpha": 0.001}}}
+    )
+    folds = _alpha_folds([0.01] * 6, up=2)
+    ok, why = train.promotion_decision(
+        {"accuracy": 0.34, "baseline": 0.34, "alpha": 0.01, "folds": folds, "n_test": 600}, cfg
+    )
+    assert ok is False and "up 예측" in why
+
+
+def test_promotion_accuracy_mode_unchanged_by_new_fields():
+    cfg = MlConfig()
+    assert cfg.models.quant.promote_metric == "accuracy"
+    assert train.promotion_decision(_metrics(0.52, 0.45, 0.002), cfg)[0] is True
+    assert train.promotion_decision(_metrics(0.43, 0.50, 0.002), cfg)[0] is False
