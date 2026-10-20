@@ -76,3 +76,30 @@ def test_evaluate_walkforward_reports_per_day_topn_alpha():
     m = quant.evaluate_walkforward(df, cfg, features=dataset.feature_columns(df))
     assert "alpha_topn" in m and all("alpha_topn" in f for f in m["folds"])
     assert all(abs(f["alpha_topn"]) < 1 for f in m["folds"])
+
+
+def test_quant_model_takes_learning_rate_and_leaves():
+    """하이퍼파라미터 탐색(ml tune)이 바꾸는 두 값이 추정기에 그대로 들어간다."""
+    df = _labeled(signal=False, n_days=60, n_tickers=2)
+    cols = dataset.feature_columns(df)
+    m = quant.QuantModel(cols, learning_rate=0.1, num_leaves=7, max_iter=20)
+    assert m._est.learning_rate == 0.1
+    leaves = getattr(m._est, "max_leaf_nodes", None) or getattr(m._est, "num_leaves", None)
+    assert leaves == 7
+
+
+def test_evaluate_walkforward_fold_indices_subset():
+    """fold_indices 를 주면 그 폴드만 평가한다 (tune 의 dev/홀드아웃 분리)."""
+    from helpers_ml import fast_cfg
+
+    df = _labeled(signal=True, n_days=300, n_tickers=6)
+    cols = dataset.feature_columns(df)
+    cfg = fast_cfg(train={"walk_forward_folds": 4})
+    full = quant.evaluate_walkforward(df, cfg, features=cols)
+    n = len(full["folds"])
+    assert n >= 2
+    dev = quant.evaluate_walkforward(df, cfg, features=cols, fold_indices=list(range(n - 1)))
+    hold = quant.evaluate_walkforward(df, cfg, features=cols, fold_indices=[n - 1])
+    assert [f["index"] for f in dev["folds"]] == list(range(n - 1))
+    assert [f["index"] for f in hold["folds"]] == [n - 1]
+    assert hold["folds"][0]["accuracy"] == full["folds"][-1]["accuracy"]

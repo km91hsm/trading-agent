@@ -1483,6 +1483,28 @@ def ml_train(
     typer.echo(json.dumps(r, ensure_ascii=False, default=str))
 
 
+@ml_app.command("tune")
+@_config_errors
+def ml_tune(
+    market: str | None = typer.Option(None, "--market", help="KR|US (기본 전체)"),
+    grid: str = typer.Option("small", "--grid", help="small|wide"),
+    min_rows: int = typer.Option(100, "--min-rows", help="학습 최소 라벨 행 수"),
+) -> None:
+    """하이퍼파라미터 탐색: dev 폴드(마지막 폴드 제외)로 고르고 홀드아웃을 보고한다.
+
+    자동 적용 없음 — 리포트를 보고 ml.yaml 에 반영한다."""
+    import json
+
+    from trader.ml import tune as tune_mod
+
+    configure(paths.state_dir())
+    cfg = config.load_ml()
+    if market is not None and market not in ("KR", "US"):
+        raise config.ConfigError(f"시장은 KR 또는 US: {market}")
+    r = tune_mod.tune_quant(cfg, market=market, min_rows=min_rows, grid=grid)
+    typer.echo(json.dumps(r, ensure_ascii=False, default=str))
+
+
 @ml_app.command("models")
 @_config_errors
 def ml_models() -> None:

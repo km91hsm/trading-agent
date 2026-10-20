@@ -446,6 +446,9 @@ class QuantModelCfg(BaseModel):
     backend: Literal["auto", "sklearn", "lightgbm"] = "sklearn"  # 플랫폼 간 동일 동작을 위해 고정
     min_up_predictions: int = 5  # 폴드마다 up 예측 최소 건수 (알파 추정 노이즈 방지)
     max_iter: int = Field(default=200, ge=1, le=5000)  # 부스팅 반복(트리 수). 테스트는 작게
+    # `ml tune` 이 탐색하는 두 값 (sklearn max_leaf_nodes / lightgbm num_leaves). 자동 적용 없음.
+    learning_rate: float = Field(default=0.05, gt=0, le=1.0)
+    num_leaves: int = Field(default=15, ge=2, le=255)
 
 
 class RankerCfg(BaseModel):

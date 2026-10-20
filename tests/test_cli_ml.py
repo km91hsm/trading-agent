@@ -67,3 +67,18 @@ def test_cli_ml_train_horizon_rejects_invalid(project):
     for h in ("0", "-1", "61"):
         r = CliRunner().invoke(app, ["ml", "train", "--market", "KR", "--horizon", h])
         assert r.exit_code != 0 and "Traceback" not in (r.stdout + (r.stderr or "")), h
+
+
+def test_cli_ml_tune_outputs_json(project, monkeypatch):
+    from trader.ml import tune
+
+    _fast_ml_yaml(project)
+    features.write_rows(synthetic_features(6, 320, signal=True))
+    monkeypatch.setitem(
+        tune.GRIDS, "small", {"learning_rate": [0.05], "num_leaves": [7], "max_iter": [20]}
+    )
+    r = CliRunner().invoke(app, ["ml", "tune", "--market", "KR"])
+    assert r.exit_code == 0, r.stdout
+    out = json.loads(r.stdout.strip().splitlines()[-1])
+    assert out["status"] == "tuned" and out["best"]["params"]["num_leaves"] == 7
+    assert CliRunner().invoke(app, ["ml", "tune", "--grid", "huge"]).exit_code != 0

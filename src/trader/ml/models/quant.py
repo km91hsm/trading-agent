@@ -44,6 +44,8 @@ class QuantModel:
         random_state: int = 0,
         backend: str = "sklearn",
         max_iter: int = 200,
+        learning_rate: float = 0.05,
+        num_leaves: int = 15,
     ) -> None:
         for c in features:
             if c in dataset.TARGET_COLUMNS:
@@ -62,8 +64,8 @@ class QuantModel:
             self._est: Any = LGBMClassifier(
                 objective="multiclass",
                 n_estimators=max_iter,
-                learning_rate=0.05,
-                num_leaves=15,
+                learning_rate=learning_rate,
+                num_leaves=num_leaves,
                 random_state=random_state,
                 verbose=-1,
             )
@@ -73,8 +75,8 @@ class QuantModel:
             self.backend = "sklearn"
             self._est = HistGradientBoostingClassifier(
                 max_iter=max_iter,
-                learning_rate=0.05,
-                max_leaf_nodes=15,
+                learning_rate=learning_rate,
+                max_leaf_nodes=num_leaves,
                 random_state=random_state,
             )
 
@@ -114,8 +116,26 @@ class QuantModel:
         return out
 
 
-def evaluate_walkforward(df: pd.DataFrame, cfg: MlConfig, *, features: list[str]) -> dict:
-    """폴드별 정확도·기준선(최빈 라벨)·알파·up 예측 건수.
+def model_kwargs(cfg: MlConfig) -> dict[str, Any]:
+    """설정의 하이퍼파라미터 → QuantModel 키워드 (train·evaluate·tune 이 같은 값을 쓴다)."""
+    q = cfg.models.quant
+    return {
+        "backend": q.backend,
+        "max_iter": q.max_iter,
+        "learning_rate": q.learning_rate,
+        "num_leaves": q.num_leaves,
+    }
+
+
+def evaluate_walkforward(
+    df: pd.DataFrame,
+    cfg: MlConfig,
+    *,
+    features: list[str],
+    fold_indices: list[int] | None = None,
+) -> dict:
+    """폴드별 정확도·기준선(최빈 라벨)·알파·up 예측 건수. fold_indices 를 주면 그 폴드만
+    (`ml tune` 의 dev/홀드아웃 분리; 폴드 번호는 전체 폴드 기준이라 결과의 index 가 같다).
 
     - alpha: 예측 up 행의 평균 fwd_return − 전체 평균 (풀링, 타이밍이 섞인다 — 참고용)
     - alpha_topn: 날짜·시장마다 p_up 상위 N(promote_top_n) 종목의 fwd_return 평균 − 그날 유니버스
@@ -135,15 +155,17 @@ def evaluate_walkforward(df: pd.DataFrame, cfg: MlConfig, *, features: list[str]
     alphas: list[float] = []
     alphas_topn: list[float] = []
     top_n = cfg.models.quant.promote_top_n
-    backend = cfg.models.quant.backend
-    max_iter = cfg.models.quant.max_iter
+    kwargs = model_kwargs(cfg)
+    if fold_indices is not None:
+        wanted = set(fold_indices)
+        fs = [f for f in fs if f.index in wanted]
     for f in fs:
         train, test = walkforward.split(df, f)
         if train.empty or test.empty or train["label"].nunique() < 2:
             continue
         Xtr, ytr = dataset.split_xy(train, features)
         Xte, yte = dataset.split_xy(test, features)
-        model = QuantModel(features, backend=backend, max_iter=max_iter).fit(Xtr, ytr)
+        model = QuantModel(features, **kwargs).fit(Xtr, ytr)
         pred = model.predict(Xte)
         acc = float((pred == yte).mean())
         baseline = float(np.bincount(yte, minlength=N_CLASSES).max() / len(yte))

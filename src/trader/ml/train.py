@@ -7,6 +7,8 @@ from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pandas as pd
+
 from trader.config import MlConfig
 from trader.ml import dataset, registry, walkforward
 from trader.ml.models import quant
@@ -68,34 +70,23 @@ def promotion_decision(metrics: dict, cfg: MlConfig) -> tuple[bool, str]:
     )
 
 
-def train_quant(
+def prepare_dataset(
     cfg: MlConfig,
     *,
-    state: Path | None = None,
-    market: str | None = None,
-    now: Callable[[], datetime] = lambda: datetime.now(UTC),
-    min_rows: int = MIN_ROWS,
-) -> dict:
-    """반환: status(trained|insufficient_data)·version·metrics·promoted·promote_reason·rows."""
+    state: Path | None,
+    market: str | None,
+    now: Callable[[], datetime],
+    min_rows: int,
+) -> tuple[pd.DataFrame, list[str], str | None]:
+    """학습 창 안의 피처 행에 라벨을 붙인다. 반환 (df, 피처 열, 부족 사유|None) — 사유가 있으면
+    df 는 그 시점까지의 행(개수 보고용)이고 학습하지 않는다. train·tune 이 같은 데이터로 돈다."""
     df = dataset.load_all(state, market=market)
-    base = {
-        "status": "insufficient_data",
-        "version": None,
-        "metrics": None,
-        "promoted": False,
-        "promote_reason": None,
-        "rows": int(len(df)),
-        "features": [],
-    }
     if df.empty:
-        return base | {"promote_reason": "피처 스토어가 비어 있음"}
+        return df, [], "피처 스토어가 비어 있음"
     cutoff = (now().astimezone(UTC) - timedelta(days=365 * cfg.train.window_years)).date()
     df = df[df["date"].dt.date >= cutoff].reset_index(drop=True)
     if df.empty:
-        return base | {
-            "rows": 0,
-            "promote_reason": f"학습 창({cfg.train.window_years}년) 안에 행 없음",
-        }
+        return df, [], f"학습 창({cfg.train.window_years}년) 안에 행 없음"
     df = dataset.make_labels(
         df,
         horizon_days=cfg.label.horizon_days,
@@ -106,13 +97,36 @@ def train_quant(
     labeled = df[df["label"].notna()]
     cols = dataset.feature_columns(df)
     if len(labeled) < min_rows or labeled["label"].nunique() < 2 or not cols:
-        return base | {
-            "rows": int(len(labeled)),
-            "promote_reason": f"데이터 부족: 라벨 행 {len(labeled)} (최소 {min_rows}), "
-            f"라벨 종류 {labeled['label'].nunique()}",
+        reason = (
+            f"데이터 부족: 라벨 행 {len(labeled)} (최소 {min_rows}), "
+            f"라벨 종류 {labeled['label'].nunique()}"
+        )
+        return labeled, cols, reason
+    return df, cols, None
+
+
+def train_quant(
+    cfg: MlConfig,
+    *,
+    state: Path | None = None,
+    market: str | None = None,
+    now: Callable[[], datetime] = lambda: datetime.now(UTC),
+    min_rows: int = MIN_ROWS,
+) -> dict:
+    """반환: status(trained|insufficient_data)·version·metrics·promoted·promote_reason·rows."""
+    df, cols, reason = prepare_dataset(cfg, state=state, market=market, now=now, min_rows=min_rows)
+    if reason is not None:
+        return {
+            "status": "insufficient_data",
+            "version": None,
+            "metrics": None,
+            "promoted": False,
+            "promote_reason": reason,
+            "rows": int(len(df)),
+            "features": [],
         }
-    backend = cfg.models.quant.backend
-    max_iter = cfg.models.quant.max_iter
+    labeled = df[df["label"].notna()]
+    kwargs = quant.model_kwargs(cfg)
     metrics = quant.evaluate_walkforward(df, cfg, features=cols)
     # 피처 중요도는 마지막 폴드의 홀드아웃(그 폴드까지만 학습한 모델)로 계산한다
     days = sorted(df["date"].dt.date.unique())
@@ -129,15 +143,11 @@ def train_quant(
             try:
                 Xa, ya = dataset.split_xy(train_df, cols)
                 Xt, yt = dataset.split_xy(test_df, cols)
-                importances = (
-                    quant.QuantModel(cols, backend=backend, max_iter=max_iter)
-                    .fit(Xa, ya)
-                    .importances(Xt, yt)
-                )
+                importances = quant.QuantModel(cols, **kwargs).fit(Xa, ya).importances(Xt, yt)
             except Exception as e:  # noqa: BLE001 - 중요도 계산 실패는 메타만 비운다
                 logger.warning("피처 중요도 계산 실패: %s", e)
     X, y = dataset.split_xy(df, cols)
-    model = quant.QuantModel(cols, backend=backend, max_iter=max_iter).fit(X, y)
+    model = quant.QuantModel(cols, **kwargs).fit(X, y)
     promoted, reason = promotion_decision(metrics, cfg)
     meta = {
         "market": market,
@@ -149,6 +159,7 @@ def train_quant(
         "importances": importances,
         "importances_scope": "last_fold_holdout",
         "backend": model.backend,
+        "params": {k: v for k, v in kwargs.items() if k != "backend"},
         "label": cfg.label.model_dump(),
     }
     version = registry.save(NAME, model, meta, state=state, now=now)
