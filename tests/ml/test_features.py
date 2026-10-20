@@ -362,7 +362,7 @@ def test_backfill_final_flush_failure_does_not_raise(project, monkeypatch):
 
 def test_history_rows_and_snapshot_drop_trailing_zero_volume_candle():
     """KIS 일봉은 개장 전에 오늘 봉을 거래량 0 스텁으로 돌려준다. 그 행이 피처 스토어에 들어가면
-    거래대금 0 이라 scan 이 전 종목을 거른다(실기 10-20 07:5x) → 마지막 봉이 거래량 0 이면 버린다."""
+    거래대금 0 이라 scan 이 전 종목을 거른다(실기 10-20) → 마지막 봉이 거래량 0 이면 버린다."""
     from helpers_sources import make_candles
 
     from trader.broker.models import Candle
