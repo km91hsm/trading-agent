@@ -21,6 +21,13 @@ ROOT = Path(__file__).resolve().parent.parent
 DIST = ROOT / "dist" / "trader"
 
 
+def _force_utf8() -> None:
+    """스크립트 자신의 stdout/stderr 를 UTF-8 로 (Windows CI 는 cp1252 라 결과 JSON 의 한글에서 죽는다)."""
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
+
+
 def _run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
     print("+", " ".join(cmd), flush=True)
     try:
@@ -114,6 +121,7 @@ def make_zip() -> Path:
 
 
 def main() -> None:
+    _force_utf8()
     ap = argparse.ArgumentParser()
     ap.add_argument("--skip-web", action="store_true", help="웹 빌드 생략 (기존 web/dist 사용)")
     ap.add_argument("--skip-smoke", action="store_true")

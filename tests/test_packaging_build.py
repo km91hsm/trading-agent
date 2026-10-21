@@ -27,3 +27,17 @@ def test_run_prints_captured_output_when_command_fails(capsys):
         build._run([sys.executable, "-c", code], capture_output=True)
     out = capsys.readouterr()
     assert "OUT-CLUE" in out.out and "ERR-CLUE" in out.err
+
+
+def test_force_utf8_lets_korean_result_json_print(monkeypatch):
+    """CI(Windows) 의 스크립트 stdout 은 cp1252 — 결과 JSON 의 한글(init 메시지)에서 죽었다."""
+    import io
+    import json
+
+    build = _load_build()
+    raw = io.BytesIO()
+    monkeypatch.setattr(sys, "stdout", io.TextIOWrapper(raw, encoding="cp1252", errors="strict"))
+    build._force_utf8()
+    print(json.dumps({"init": "생성: config/accounts.yaml"}, ensure_ascii=False))
+    sys.stdout.flush()
+    assert "생성" in raw.getvalue().decode("utf-8")
