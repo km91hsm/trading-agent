@@ -21,8 +21,9 @@ def test_run_prints_captured_output_when_command_fails(capsys):
     """capture_output=True 로 돈 스모크(`trader.exe --help`)가 exit 1 이면 stdout/stderr 를
     출력해야 한다 — v0.1.2 Windows CI 는 원인 없이 CalledProcessError 만 남았다."""
     build = _load_build()
-    code = "import sys; print('표준출력 단서'); print('표준오류 단서', file=sys.stderr); sys.exit(3)"
+    # 자식 파이썬의 콘솔 인코딩(Windows cp949)에 걸리지 않게 ASCII 단서만 쓴다
+    code = "import sys; print('OUT-CLUE'); print('ERR-CLUE', file=sys.stderr); sys.exit(3)"
     with pytest.raises(subprocess.CalledProcessError):
         build._run([sys.executable, "-c", code], capture_output=True)
     out = capsys.readouterr()
-    assert "표준출력 단서" in out.out and "표준오류 단서" in out.err
+    assert "OUT-CLUE" in out.out and "ERR-CLUE" in out.err
