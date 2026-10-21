@@ -88,8 +88,11 @@ def render(
     if platform == "darwin":
         dirs: list[str] = []
         for d in [*(extra_paths or []), Path(program[0]).parent, *map(Path, DEFAULT_PATH)]:
-            if str(d) not in dirs:
-                dirs.append(str(d))
+            # plist 는 macOS 전용이라 어느 호스트에서 렌더해도 POSIX 구분자여야 한다
+            # (Windows CI 포함)
+            posix = d.as_posix()
+            if posix not in dirs:
+                dirs.append(posix)
         return _PLIST.format(
             label=escape(label),
             program_args="\n".join(f"    <string>{escape(a)}</string>" for a in program),

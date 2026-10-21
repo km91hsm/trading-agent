@@ -62,7 +62,7 @@ def test_build_command_flags(project):
     cmd = build_command(
         spec(), s, Path("/x/claude"), Path("/tmp/agents.json"), session_id="u-1", prompt="PROMPT"
     )
-    assert cmd[:2] == ["/x/claude", "-p"]
+    assert cmd[:2] == [str(Path("/x/claude")), "-p"]  # Windows 는 \x\claude 로 정규화된다
     assert (
         "--bare" not in cmd
         and "--max-turns" not in cmd

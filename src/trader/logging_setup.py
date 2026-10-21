@@ -31,7 +31,15 @@ class SharedTimedRotatingFileHandler(TimedRotatingFileHandler):
                 self.stream = self._open()
             self.rolloverAt = self.computeRollover(int(time.time()))
             return
-        super().doRollover()
+        try:
+            super().doRollover()
+        except PermissionError:
+            # Windows: 다른 프로세스(데몬)가 파일을 쥐고 있으면 rename 이 WinError 32
+            # → 회전을 건너뛰고 같은 파일에 계속 쓴다. 다음 자정에 다시 시도한다
+            # (handleError 로 stderr 소음을 내지 않음).
+            if self.stream is None and not self.delay:
+                self.stream = self._open()
+            self.rolloverAt = self.computeRollover(int(time.time()))
 
 
 def file_handler(path: Path) -> SharedTimedRotatingFileHandler:

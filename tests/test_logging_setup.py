@@ -1,4 +1,7 @@
 import logging
+import sys
+
+import pytest
 
 from trader import logging_setup
 
@@ -27,6 +30,10 @@ def test_reset_removes_handlers(project):
     assert not [h for h in logging.getLogger().handlers if getattr(h, "name", "") == "trader"]
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows 는 열린 파일을 rename 못 해 다른 프로세스가 먼저 회전할 수 없다",
+)
 def test_rotation_by_another_process_reopens_stream(project):
     """두 프로세스(데몬 + web)가 같은 trader.log 를 쓸 때 한쪽이 자정 회전을 끝내면 다른 쪽은
     보관 파일에 계속 쓰지 말고 새 trader.log 를 다시 열어야 한다."""
@@ -67,3 +74,27 @@ def test_configure_with_name_uses_separate_file(project):
         h.flush()
     assert "웹 로그" in (project / "state" / "logs" / "trader-web.log").read_text(encoding="utf-8")
     assert not (project / "state" / "logs" / "trader.log").exists()
+
+
+def test_rotation_permission_error_keeps_writing_same_file(project, monkeypatch):
+    """Windows 에서 다른 프로세스(데몬)가 trader.log 를 쥐고 있으면 rename 이 PermissionError 다 →
+    회전을 건너뛰고 같은 파일에 계속 쓰며 다음 자정에 다시 시도한다 (Logging error 소음 없음)."""
+    import time
+
+    log_dir = project / "state" / "logs"
+    logging_setup.configure(project / "state")
+    mine = next(h for h in logging.getLogger().handlers if hasattr(h, "rolloverAt"))
+    mine.rolloverAt = int(time.time()) - 1
+
+    def locked(src, dst):
+        raise PermissionError(32, "being used by another process", src)
+
+    monkeypatch.setattr(mine, "rotate", locked)
+    errors: list = []
+    monkeypatch.setattr(mine, "handleError", lambda rec: errors.append(rec))
+    logging.getLogger("trader.test").info("잠긴 파일에 기록")
+    mine.flush()
+    assert not errors  # handleError(stderr 소음) 로 가지 않는다
+    assert "잠긴 파일에 기록" in (log_dir / "trader.log").read_text(encoding="utf-8")
+    assert mine.rolloverAt > int(time.time())  # 다음 회전 시각으로 미룬다
+    assert not list(log_dir.glob("trader.log.*"))
