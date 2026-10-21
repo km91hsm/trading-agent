@@ -22,6 +22,8 @@ def main() -> None:
     from trader import cli
     from trader.platform import bundle
 
+    # 콘솔·파이프 어느 쪽이든 UTF-8 (Windows 는 파이프면 cp1252 라 한글 도움말에서 죽는다)
+    cli._force_utf8()
     if not (bundle.is_frozen() and len(sys.argv) == 1):
         cli.app()
         return
