@@ -23,7 +23,17 @@ DIST = ROOT / "dist" / "trader"
 
 def _run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
     print("+", " ".join(cmd), flush=True)
-    return subprocess.run(cmd, shell=False, check=True, encoding="utf-8", errors="replace", **kw)
+    try:
+        return subprocess.run(
+            cmd, shell=False, check=True, encoding="utf-8", errors="replace", **kw
+        )
+    except subprocess.CalledProcessError as e:
+        # capture_output 으로 돈 명령이 실패하면 출력이 묻힌다 → CI 로그에 꼬리를 남긴다
+        if e.stdout:
+            print(e.stdout[-4000:], flush=True)
+        if e.stderr:
+            print(e.stderr[-4000:], file=sys.stderr, flush=True)
+        raise
 
 
 def build_web() -> None:
