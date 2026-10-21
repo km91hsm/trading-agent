@@ -87,6 +87,8 @@ def test_history_unknown_ticker_is_404_not_full_scan(client, project):
 
 def test_latest_tolerates_broken_sectors_yaml(client, project):
     _seed(project)
-    (project / "config" / "sectors.yaml").write_text("sectors: [반도체]\nkr: {'005930': 금융}\n")
+    (project / "config" / "sectors.yaml").write_text(
+        "sectors: [반도체]\nkr: {'005930': 금융}\n", encoding="utf-8"
+    )
     r = client.get("/api/features/latest?market=KR")
     assert r.status_code == 200 and r.json()["rows"][0]["sector"] is None

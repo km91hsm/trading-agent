@@ -73,7 +73,8 @@ def test_build_command_flags(project):
     assert pairs["--tools"] == "Bash,Agent"
     assert pairs["--allowedTools"] == "Bash(python -m trader tool *)"
     assert pairs["--permission-mode"] == "dontAsk" and pairs["--setting-sources"] == ""
-    assert pairs["--agents"] == "/tmp/agents.json" and pairs["--session-id"] == "u-1"
+    assert pairs["--agents"] == str(Path("/tmp/agents.json"))  # Windows 는 \tmp\agents.json
+    assert pairs["--session-id"] == "u-1"
     assert pairs["--append-system-prompt"] == "PROMPT"
     assert float(pairs["--max-budget-usd"]) == s.llm.budget_usd
     assert "--disable-slash-commands" in cmd
