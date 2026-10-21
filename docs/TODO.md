@@ -9,7 +9,7 @@
 - [x] STATUS.md 생성기 + `trader status`
 - [x] CLAUDE.md·SessionStart 훅·settings.json 검증 테스트
 - [x] 완료 기준: macOS 에서 `uv run trader status` 동작 + 새 claude 세션이 STATUS.md 자동 인식 (2026-10-09 확인, 훅 서브프로세스 테스트)
-- [ ] 완료 기준: Windows 에서 `uv sync` 후 `uv run trader status` 동일 동작 (사용자 확인 대기)
+- [x] 완료 기준: Windows 에서 `uv sync` 후 `uv run trader status` 동일 동작 (2026-10-22 GitHub Actions windows-latest: `uv sync`·pytest·번들 `trader.exe status` 스모크 통과로 확인)
 
 ## Phase 1 브로커
 - [x] KisAuth (env 별 토큰 캐시, 1분 1회 발급 보호)
@@ -51,7 +51,7 @@
 - [x] 세션 cwd 를 저장소 밖(tempfile)으로 옮겨 상위 CLAUDE.md 자동 탐색 가정 제거 (Phase 3 이연, Phase 6 에서 구현됨 — 2026-10-17 확인)
 - [x] 리서처·트레이더 입력을 파이썬이 조립하는 `tool checkpoint bundle`(24KB 바이트 한도) 추가. 실기 3차($1.80)에서 전문 전달이 예산 $2 를 소진해 중단 → 예산 $5 + bundle 로 4차($0.71, 재개 경로)에서 트레이더 묶음 17.8KB 전달·결정 확인 (2026-10-09)
 - [ ] 실기(사용자 확인 대기): 처음부터 끝까지 bundle 경로로 1회 실행해 리서처 라운드 0·1 묶음이 Agent 프롬프트에 전문으로 들어가는지 세션 기록으로 확인 (`uv run trader analyze --ticker 005930 --dry-run`, 체크포인트 비운 뒤, 약 $2.5)
-- [ ] 완료 기준: Windows 에서 FAKE_CLAUDE dry-run 동일 동작 (사용자 확인 대기)
+- [x] 완료 기준: Windows 에서 FAKE_CLAUDE dry-run 동일 동작 (2026-10-22 Windows CI 의 FAKE analyze 테스트 통과로 확인; 실제 PC 더블클릭은 아래 번들 항목)
 - [ ] 사용자 확인 대기(Windows): `claude.cmd` 가 다줄 9KB `--append-system-prompt` 를 cmd.exe 재해석 없이 받는지 실제 `claude -p` 1회. 깨지면 `claude.exe` 우선 또는 `--agent` 파일 전달로 전환
 
 ## Phase 4 리스크·계좌별 실행
@@ -64,7 +64,7 @@
 - [x] 완료 기준: 모의 자동 체결 + 실전 off 기록, 한도·회전율 초과 거부 테스트, 실전 계좌 off 전용 테스트 (2026-10-09 확인: 테스트 328개·FAKE `analyze --ticker 000660`(dry-run 해제)로 `40_risk_check_{paper,real}` 기록·실전 off 주문 없음. 모의 서버 실주문은 휴장일(한글날)이라 `kis order-test` 가 "40100000 모의투자 영업일이 아닙니다" 로 거부됨 → 주문 경로·오류 매핑만 확인, 체결은 아래 항목)
 - [ ] 실기(사용자 확인 대기, 영업일 09:00~15:30 KST): `uv run trader kis order-test --account paper-main` → 1주 지정가(현재가 −10%) 접수·취소 메시지 확인
 - [ ] 실기(사용자 확인 대기): 텔레그램 승인 — `uv run trader control mode paper-main approve` → `FAKE_CLAUDE=1` 없이 `uv run trader analyze --ticker 005930`(결정이 BUY 일 때만 승인 요청, 약 $2) 또는 `uv run trader approvals list` 로 요청 확인 → 텔레그램에서 `/approve <id>` → `uv run trader telegram poll` → 주문 접수 확인 → `uv run trader control mode paper-main auto` 원복
-- [ ] 사용자 확인 대기(Windows): Phase 4 테스트 전체 통과 (`uv run pytest`)
+- [x] Windows: Phase 4 테스트 전체 통과 (2026-10-22 GitHub Actions windows-latest pytest 914 passed)
 - [x] 리뷰 Minor 이연(Phase 4) 회수(2026-10-17, 이연 회수 플랜): metrics KST 창·telegram_offset 전진·KR 호가단위(`kis order-test`)는 이미 해결. 이연 유지: approvals.decision_id 0(결정 없는 승인은 손절 경로뿐), 승인 시점 게이트 재평가(설계상 30분 내 변화 감수)
 
 ## Phase 5 웹 UI
@@ -168,7 +168,8 @@
 - [x] 인스톨러 argv 등록(`[exe, daemon]`), `trader init`·`trader app`(더블클릭 진입), `templates/`
 - [x] `packaging/trader.spec`·`packaging/build.py`·`.github/workflows/build.yml`; macOS 로컬 빌드·스모크 통과(2026-10-20, 268MB/zip 144MB; frozen 에서 `--help`·`init`·`status`·`tool status`·`web --help`·`control show` 정상)
 - [x] `docs/bundle-usage.md`, CLAUDE.md 규칙
-- [ ] 완료 기준(사용자 확인 대기): `v*` 태그 푸시 → GitHub Actions 가 macOS·Windows 번들을 릴리스에 첨부 (Windows 러너의 `pytest` 통과가 곧 TODO 의 Windows 확인 항목 일부). 받은 zip 을 풀어 더블클릭 → 웹 UI → `kis ping` 실기 확인(macOS 우클릭 열기·Windows SmartScreen 1회)
+- [x] `v*` 태그 푸시 → GitHub Actions 가 번들을 릴리스에 첨부 (2026-10-22 v0.1.3: macOS arm64·**x86_64(Intel, macos-15-intel 추가)**·Windows 3종. v0.1.0~0.1.2 는 Windows 경로·cp1252 인코딩·로그 회전 문제로 Windows zip 이 빠졌었음)
+- [ ] 실기(사용자 확인 대기): v0.1.3 zip 을 풀어 더블클릭 → 웹 UI → `kis ping` (macOS 우클릭 열기·Windows SmartScreen 1회). Intel Mac 은 `trader-darwin-x86_64.zip`
 - 범위 조정: 코드 서명·공증(개인 사용), 트레이 앱, lightgbm·torch 번들, 자동 업데이트는 제외(플랜 표)
 
 ## Phase 11 ML 2단계 (`docs/superpowers/plans/2026-10-20-phase11-ml2.md`)

@@ -1,4 +1,4 @@
-# 시스템 상태 (생성: 2026-10-20 23:53 KST)
+# 시스템 상태 (생성: 2026-10-22 05:54 KST)
 
 ## 실행 제어
 - 일시정지: 아니오
@@ -46,26 +46,26 @@
 - 없음
 
 ## 구현 진행도
-- Phase 0 골격: 8/9
+- Phase 0 골격: 9/9
 - Phase 1 브로커: 9/9
 - Phase 2 수집: 10/10
-- Phase 3 에이전트: 15/18
-- Phase 4 리스크·계좌별 실행: 8/11
+- Phase 3 에이전트: 16/18
+- Phase 4 리스크·계좌별 실행: 9/11
 - Phase 5 웹 UI: 11/12
 - Phase 6 scan·monitor·데몬: 19/23
 - Phase 7 ML 1단계: 14/14
 - Phase 8 학습·평가·보정: 9/10
 - Phase 9 RL 사이징(실험): 8/9
 - 2026-10-18 전체 코드 검토 수정 (`docs/superpowers/plans/2026-10-18-review-correctness-fixes.md`): 15/15
-- Phase 10 번들 배포 (`docs/superpowers/plans/2026-10-20-phase10-bundle.md`): 5/6
+- Phase 10 번들 배포 (`docs/superpowers/plans/2026-10-20-phase10-bundle.md`): 6/7
 - Phase 11 ML 2단계 (`docs/superpowers/plans/2026-10-20-phase11-ml2.md`): 4/4
 - Phase 12 ML 3단계 (`docs/superpowers/plans/2026-10-20-phase12-ml3.md`): 6/7
 - 2026-10-20 정리(Phase 12 보류 항목 회수, 추천대로 진행): 5/5
 - Phase 13 US 재무 history·섹터 자동 분류 (`docs/superpowers/plans/2026-10-20-phase13-us-history-sectors.md`): 4/4
 
 ## 다음 할 일
-- 완료 기준: Windows 에서 `uv sync` 후 `uv run trader status` 동일 동작 (사용자 확인 대기)
 - 실기(사용자 확인 대기): 처음부터 끝까지 bundle 경로로 1회 실행해 리서처 라운드 0·1 묶음이 Agent 프롬프트에 전문으로 들어가는지 세션 기록으로 확인 (`uv run trader analyze --ticker 005930 --dry-run`, 체크포인트 비운 뒤, 약 $2.5)
-- 완료 기준: Windows 에서 FAKE_CLAUDE dry-run 동일 동작 (사용자 확인 대기)
 - 사용자 확인 대기(Windows): `claude.cmd` 가 다줄 9KB `--append-system-prompt` 를 cmd.exe 재해석 없이 받는지 실제 `claude -p` 1회. 깨지면 `claude.exe` 우선 또는 `--agent` 파일 전달로 전환
 - 실기(사용자 확인 대기, 영업일 09:00~15:30 KST): `uv run trader kis order-test --account paper-main` → 1주 지정가(현재가 −10%) 접수·취소 메시지 확인
+- 실기(사용자 확인 대기): 텔레그램 승인 — `uv run trader control mode paper-main approve` → `FAKE_CLAUDE=1` 없이 `uv run trader analyze --ticker 005930`(결정이 BUY 일 때만 승인 요청, 약 $2) 또는 `uv run trader approvals list` 로 요청 확인 → 텔레그램에서 `/approve <id>` → `uv run trader telegram poll` → 주문 접수 확인 → `uv run trader control mode paper-main auto` 원복
+- 사용자 확인 대기: `secrets/.env` 에 `WEB_TOKEN` 설정 후 `uv run trader web` → 설정 페이지에 토큰 입력 → 일시정지/재개가 반영되는지, 승인 요청이 있을 때 주문/승인 페이지에서 승인 → 주문 접수 확인
