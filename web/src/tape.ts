@@ -82,6 +82,7 @@ function gateText(
   now: Date,
 ): { approved: boolean | null; text: string } {
   if (!rc) return { approved: null, text: "판정 없음" };
+  if (d.action === "HOLD") return { approved: null, text: "보유 · 주문 없음" };
   if (!rc.approved) return { approved: false, text: `거부 · ${rc.reasons[0] ?? "사유 없음"}` };
   const qty = rc.adjusted_qty ?? 0;
   if (order) {

@@ -33,6 +33,11 @@
   text-align: left;
   vertical-align: top;
   font-size: var(--t-sm);
+  white-space: nowrap;
+}
+.tape td.wrap {
+  white-space: normal;
+  min-width: 200px;
 }
 .tape.dense th,
 .tape.dense td {
@@ -513,6 +518,11 @@ pre.status {
   border: var(--rule-w) solid var(--rule);
   border-radius: var(--radius);
   overflow: hidden;
+}
+.chart-hidden {
+  min-height: 0;
+  height: 0;
+  border: 0;
 }
 .chart-sm {
   min-height: 320px;

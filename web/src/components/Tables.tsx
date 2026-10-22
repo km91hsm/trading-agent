@@ -109,7 +109,7 @@ export function OrdersTable({ rows }: { rows: Order[] }) {
               <Badge kind="mode" value={o.mode} />
             </Td>
             <Td className="muted">{o.order_no ?? "—"}</Td>
-            <Td className="muted">{o.message}</Td>
+            <Td className="muted wrap">{o.message}</Td>
           </tr>
         ))}
       </tbody>
@@ -225,9 +225,9 @@ export function RiskChecksTable({ rows }: { rows: RiskCheck[] }) {
               </span>
             </Td>
             <Td>{r.action ? <Badge kind="action" value={r.action} /> : "—"}</Td>
-            <Td>{r.approved ? <Badge kind="ok" value="승인" /> : <Badge kind="status" value="rejected" />}</Td>
+            <Td>{r.approved ? <Badge kind="ok" value="승인" /> : r.action === "HOLD" ? <Badge kind="neutral" value="주문 없음" /> : <Badge kind="status" value="rejected" />}</Td>
             <Td num>{r.adjusted_qty ?? "—"}</Td>
-            <Td className="muted">{r.reasons.join(" / ") || "—"}</Td>
+            <Td className="muted wrap">{r.reasons.join(" / ") || "—"}</Td>
           </tr>
         ))}
       </tbody>

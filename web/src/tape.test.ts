@@ -92,11 +92,11 @@ describe("buildTape", () => {
       ["035420", "watch"],
     ]);
   });
-  it("게이트 문구: 승인+체결, 거부, HOLD 통과, 분석 없음", () => {
+  it("게이트 문구: 승인+체결, 거부, HOLD 는 주문 없음, 분석 없음", () => {
     const rows = buildTape({
       positions: [pos("000660", "KR", 20, "4650000")],
       decisions: [dec(1, "000660", "KR", "ADD", 0.72), dec(2, "AAPL", "US", "BUY"), dec(3, "005930", "KR", "HOLD")],
-      riskChecks: [rc(1, true, 12), rc(2, false, 0, ["주 2회 상한", "비중 초과"]), rc(3, true, 0)],
+      riskChecks: [rc(1, true, 12), rc(2, false, 0, ["주 2회 상한", "비중 초과"]), rc(3, false, 0, ["HOLD: 주문 없음"])],
       orders: [ord(1, "filled", "2580000")],
       approvals: [],
       watch: ["035420"],
@@ -108,7 +108,7 @@ describe("buildTape", () => {
     expect(by["000660"].weight).toBeCloseTo(0.459, 3);
     expect(by["000660"].action).toBe("ADD");
     expect(by["AAPL"].gate).toEqual({ approved: false, text: "거부 · 주 2회 상한" });
-    expect(by["005930"].gate).toEqual({ approved: true, text: "통과 · 주문 없음" });
+    expect(by["005930"].gate).toEqual({ approved: null, text: "보유 · 주문 없음" });
     expect(by["035420"].gate).toEqual({ approved: null, text: "분석 없음" });
     expect(by["035420"].action).toBeNull();
   });

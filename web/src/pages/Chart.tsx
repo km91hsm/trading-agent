@@ -156,7 +156,7 @@ export function ChartPage() {
       >
         <ErrorBox error={data.error} />
         {data.loading && !data.data && <Skeleton rows={6} />}
-        <div ref={box} className="chart" />
+        <div ref={box} className={data.data ? "chart" : "chart chart-hidden"} />
         <ul className="legend">
           <li>
             <Glyph name="pick" size={10} /> 결정(청)

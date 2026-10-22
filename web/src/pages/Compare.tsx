@@ -115,7 +115,7 @@ export function ComparePage() {
                       <Td num>{o.adjusted_qty ?? "—"}</Td>
                       <Td>{o.order_status ? <Badge kind="status" value={o.order_status} /> : <span className="muted">없음</span>}</Td>
                       <Td className="muted">{o.order_no ?? "—"}</Td>
-                      <Td className="muted">{o.reasons.join(" / ") || "—"}</Td>
+                      <Td className="muted wrap">{o.reasons.join(" / ") || "—"}</Td>
                     </tr>
                   ))}
                 </tbody>
