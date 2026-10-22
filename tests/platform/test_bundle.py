@@ -74,3 +74,32 @@ def test_spec_exe_names_differ_case_insensitively():
     assert len(names) == 2, names
     assert names[0].lower() != names[1].lower()
     assert "trader" in names and "TraderApp" in names
+
+
+def test_bundle_root_outside_app_bundle(tmp_path, monkeypatch):
+    """macOS .app: TRADER_HOME 은 .app 의 부모 폴더(config/secrets/state 가 .app 옆), 리소스는
+    Contents/Frameworks(sys._MEIPASS), 도구 명령 디렉터리는 Contents/MacOS."""
+    root = tmp_path / "x" / "trader"
+    macos = root / "Trader.app" / "Contents" / "MacOS"
+    frameworks = root / "Trader.app" / "Contents" / "Frameworks"
+    macos.mkdir(parents=True)
+    frameworks.mkdir(parents=True)
+    (macos / "trader").write_text("", encoding="utf-8")
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", str(macos / "TraderApp"))
+    monkeypatch.setattr(sys, "_MEIPASS", str(frameworks), raising=False)
+    monkeypatch.delenv("TRADER_HOME", raising=False)
+    assert bundle.app_bundle_dir() == (root / "Trader.app").resolve()
+    assert bundle.bundle_root() == root.resolve()
+    assert paths.project_root() == root.resolve()
+    assert bundle.resource_dir() == frameworks.resolve()
+    assert bundle.tool_bin_dir() == macos.resolve()
+    assert bundle.cli_executable() == (macos / "trader").resolve()
+    assert bundle.icons_dir() == frameworks.resolve() / "icons"
+
+
+def test_bundle_root_windows_flat_layout_unchanged(tmp_path, monkeypatch):
+    exe_dir = tmp_path / "dist" / "trader"
+    _freeze(monkeypatch, exe_dir)
+    assert bundle.app_bundle_dir() is None
+    assert bundle.bundle_root() == exe_dir.resolve()

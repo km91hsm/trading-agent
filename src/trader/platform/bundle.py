@@ -1,6 +1,7 @@
 """PyInstaller 번들(frozen) 분기는 이 모듈 한 곳에서만 답한다.
 
-- 실행파일 폴더가 TRADER_HOME 이다 (config/ secrets/ state/ docs/ 하위 폴더, 폴더째 이동 가능).
+- 실행파일 폴더(macOS `.app` 은 그 부모 폴더)가 TRADER_HOME 이다 (config/ secrets/ state/ docs/
+  하위 폴더, 폴더째 이동 가능).
 - 런타임 리소스(에이전트 md·웹 dist·설정 템플릿)는 `_internal/`(sys._MEIPASS) 아래에 있다.
 - 세션의 도구 명령: frozen 이면 `trader tool`, 개발 환경이면 `python -m trader tool`.
 """
@@ -33,10 +34,24 @@ def cli_executable() -> Path:
     return cli.resolve() if cli.exists() else exe
 
 
+def app_bundle_dir() -> Path | None:
+    """macOS `.app` 안에서 돌고 있으면 그 `.app` 경로 (Contents/MacOS 아래 실행파일일 때),
+    아니면 None."""
+    if not is_frozen():
+        return None
+    exe = executable()
+    for p in exe.parents:
+        if p.suffix == ".app" and (p / "Contents" / "MacOS") in exe.parents:
+            return p
+    return None
+
+
 def bundle_root() -> Path:
-    """실행파일 폴더(frozen) 또는 저장소 루트."""
+    """TRADER_HOME: `.app` 이면 그 부모 폴더(config/secrets/state 가 .app 옆), 아니면 실행파일 폴더,
+    개발 환경은 저장소 루트."""
     if is_frozen():
-        return executable().parent
+        app = app_bundle_dir()
+        return app.parent if app is not None else executable().parent
     from trader.platform import paths
 
     return paths.project_root()

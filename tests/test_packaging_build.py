@@ -80,3 +80,34 @@ def test_make_zip_preserves_symlinks_and_includes_readme(tmp_path):
         assert stat.S_ISLNK(info.external_attr >> 16)
         assert zf.read("trader/trader").decode() == "Trader.app/Contents/MacOS/trader"
         assert zf.read("trader/Trader.app/Contents/MacOS/trader").decode() == "bin"
+
+
+def test_assemble_dist_darwin_layout(tmp_path):
+    """macOS: dist/Trader.app 을 dist/trader/ 안으로 옮기고 CLI 심링크를 둔다
+    (COLLECT 폴더는 치운다)."""
+    build = _load_build()
+    dist = tmp_path / "dist"
+    macos = dist / "Trader.app" / "Contents" / "MacOS"
+    macos.mkdir(parents=True)
+    (macos / "trader").write_text("cli", encoding="utf-8")
+    (macos / "TraderApp").write_text("app", encoding="utf-8")
+    (dist / "trader" / "_internal").mkdir(parents=True)  # PyInstaller 의 COLLECT 산출물
+    out = build.assemble_dist(dist, sys_platform="darwin")
+    assert out == dist / "trader"
+    assert (out / "Trader.app" / "Contents" / "MacOS" / "TraderApp").exists()
+    link = out / "trader"
+    assert link.is_symlink()
+    assert link.resolve() == (out / "Trader.app" / "Contents" / "MacOS" / "trader").resolve()
+    assert link.read_text(encoding="utf-8") == "cli"
+    assert not (out / "_internal").exists()
+
+
+def test_assemble_dist_windows_keeps_flat(tmp_path):
+    build = _load_build()
+    dist = tmp_path / "dist"
+    (dist / "trader" / "_internal").mkdir(parents=True)
+    (dist / "trader" / "trader.exe").write_text("", encoding="utf-8")
+    (dist / "trader" / "TraderApp.exe").write_text("", encoding="utf-8")
+    out = build.assemble_dist(dist, sys_platform="win32")
+    assert out == dist / "trader"
+    assert (out / "TraderApp.exe").exists() and (out / "_internal").exists()

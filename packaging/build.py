@@ -55,6 +55,37 @@ def build_web() -> None:
     _run([npm, "run", "build"], cwd=str(web))
 
 
+def assemble_dist(dist: Path, *, sys_platform: str = sys.platform) -> Path:
+    """배포 폴더 `dist/trader/` 를 만든다.
+
+    macOS: PyInstaller 가 만든 `dist/Trader.app` 을 `dist/trader/` 안으로 옮기고 터미널용 심링크
+    `trader → Trader.app/Contents/MacOS/trader` 를 둔다 (COLLECT 가 남긴 평면 폴더는 지운다).
+    Windows: `dist/trader/{trader.exe, TraderApp.exe, _internal/}` 그대로."""
+    target = dist / "trader"
+    if sys_platform != "darwin":
+        return target
+    app = dist / "Trader.app"
+    if not app.is_dir():
+        raise SystemExit(f"Trader.app 이 없습니다: {app}")
+    if target.exists():
+        shutil.rmtree(target)
+    target.mkdir(parents=True)
+    shutil.move(str(app), str(target / "Trader.app"))
+    os.symlink(Path("Trader.app") / "Contents" / "MacOS" / "trader", target / "trader")
+    return target
+
+
+def cli_exe(dist_dir: Path) -> Path:
+    return dist_dir / ("trader.exe" if sys.platform == "win32" else "trader")
+
+
+def internal_dir(dist_dir: Path) -> Path:
+    """리소스 폴더: Windows `_internal/`, macOS `.app` 의 Contents/Frameworks (sys._MEIPASS)."""
+    if sys.platform == "darwin":
+        return dist_dir / "Trader.app" / "Contents" / "Frameworks"
+    return dist_dir / "_internal"
+
+
 def build_bundle() -> Path:
     if not (ROOT / "web" / "dist" / "index.html").exists():
         raise SystemExit("web/dist 가 없습니다. 먼저 웹을 빌드하세요 (npm run build)")
@@ -72,7 +103,8 @@ def build_bundle() -> Path:
         ],
         cwd=str(ROOT),
     )
-    exe = DIST / ("trader.exe" if sys.platform == "win32" else "trader")
+    assemble_dist(ROOT / "dist")
+    exe = cli_exe(DIST)
     if not exe.exists():
         raise SystemExit(f"실행파일이 없습니다: {exe}")
     return exe
@@ -101,13 +133,22 @@ def smoke(exe: Path) -> dict:
         _run([str(exe), "rl", "models"], capture_output=True, env=env)
         if not (Path(tmp) / "state" / "STATUS.md").exists():
             raise SystemExit("status 가 STATUS.md 를 만들지 않았습니다")
-    internal = DIST / "_internal"
-    for rel in ("agents/orchestrator.md", "templates/config/accounts.yaml", "web/dist/index.html"):
+    internal = internal_dir(DIST)
+    for rel in (
+        "agents/orchestrator.md", "templates/config/accounts.yaml", "web/dist/index.html",
+        "icons/tray-dark.png",
+    ):
         if not (internal / rel).exists():
-            raise SystemExit(f"번들 리소스 누락: _internal/{rel}")
+            raise SystemExit(f"번들 리소스 누락: {internal.name}/{rel}")
     for bad in ("secrets", "state"):
         if (DIST / bad).exists() or (internal / bad).exists():
             raise SystemExit(f"번들에 {bad}/ 가 들어갔습니다")
+    windowed = DIST / ("TraderApp.exe" if sys.platform == "win32" else "Trader.app/Contents/MacOS/TraderApp")
+    if not windowed.exists():
+        raise SystemExit(f"창 없는 실행파일이 없습니다: {windowed}")
+    if sys.platform == "darwin" and not (DIST / "Trader.app" / "Contents" / "Info.plist").exists():
+        raise SystemExit("Trader.app/Contents/Info.plist 가 없습니다")
+    out["windowed"] = str(windowed)
     return out
 
 
