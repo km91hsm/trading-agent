@@ -28,3 +28,9 @@ Thumbs.db
 # 웹 프런트 빌드 산출물·모듈
 web/dist/
 web/node_modules/
+
+# impeccable 작업 산출물 (design.json·surface brief·config.json 은 커밋)
+.impeccable/mocks/
+.impeccable/review/
+.impeccable/build/
+.impeccable/config.local.json

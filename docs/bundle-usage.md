@@ -48,7 +48,8 @@ trader/                ← 이 폴더가 TRADER_HOME. 폴더째 다른 PC 로 �
 - 더블클릭(= `trader app`) 하나로 스케줄 데몬 + 웹 UI 가 돕니다. 창을 닫으면 멈춥니다.
 - 로그온 시 자동 시작: `./trader install` (해제 `--uninstall`). 데몬 로그는 `state/logs/`.
 - 텔레그램: 알림 수신, `/approve <id>`·`/reject <id>`·`/status`·`/pause`·`/resume`·`/mode <계좌> <모드>`.
-- 웹 UI 제어(일시정지·승인·모드)는 `secrets/.env` 의 `WEB_TOKEN` 을 설정 페이지에 넣어야 됩니다.
+- 웹 UI 는 대시보드(운영 상태 한 줄 → 오늘의 시세표 → 주문·승인 → 성과)·오늘의 실행(종목별 파이프라인 판)·주문/승인·계좌·계좌 비교·차트·성과·데이터·ML·설정/제어 10페이지입니다. 상단 바의 계좌 선택이 전역이며 실전 계좌는 어디서나 빨간 표식으로 구분됩니다. 라이트/다크는 상단 바 오른쪽 버튼(기본은 시스템 설정).
+- 웹 UI 제어(일시정지·승인·모드·관심종목)는 `secrets/.env` 의 `WEB_TOKEN` 을 설정/제어 페이지에 넣어야 됩니다. 토큰이 없으면 조회 전용입니다.
 - 터미널 명령은 개발 환경과 같습니다(`uv run trader …` 대신 `./trader …`):
   `status`, `scan`, `analyze`, `monitor --once`, `fills sync`, `approvals list`, `control show|pause|resume`,
   `features backfill --years 3`, `ml train`, `readiness`, `backtest --since YYYY-MM-DD`.
