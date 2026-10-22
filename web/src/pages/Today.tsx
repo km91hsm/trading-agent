@@ -9,7 +9,9 @@ import { Skeleton } from "../components/Skeleton";
 import { ErrorBox } from "../components/Tables";
 import { Term } from "../components/Term";
 import { useApp, useLoad } from "../hooks";
+import { Link } from "react-router-dom";
 import { labelOf } from "../names";
+import { sectionForStage } from "../how";
 import { pipelineStages, stageSummary, type Stage } from "../pipeline";
 import type { Checkpoint, Market } from "../types";
 import { Ticker } from "../components/Ticker";
@@ -60,6 +62,11 @@ function StagePlates({
           <div className="plate-h">
             {st.done ? <Glyph name="check" size={12} title="완료" /> : <span className="plate-dot" aria-hidden="true" />}
             <Term k={`stage.${st.key}`} />
+            {sectionForStage(st.key) && (
+              <Link to={`/how#${sectionForStage(st.key)}`} className="plate-how" title="이 단계가 하는 일 (작동 방식)">
+                ?
+              </Link>
+            )}
           </div>
           <p className="plate-sum">{st.done ? summaries[st.key] || "…" : "아직 없음"}</p>
           {st.done && (

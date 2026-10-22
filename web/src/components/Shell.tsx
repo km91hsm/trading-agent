@@ -17,6 +17,7 @@ const LINKS: Array<[string, string]> = [
   ["/performance", "성과"],
   ["/data", "데이터"],
   ["/ml", "ML"],
+  ["/how", "작동 방식"],
   ["/settings", "설정/제어"],
 ];
 

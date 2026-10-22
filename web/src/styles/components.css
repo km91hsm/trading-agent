@@ -685,3 +685,89 @@ pre.status {
 .usage .note.err {
   color: var(--danger);
 }
+
+/* 작동 방식: 읽는 페이지. 본문 폭 72ch, 단계는 번호 없는 '누가 · 무엇' 목록, 절 제목은 같은 2px 먹선 */
+.how {
+  max-width: 72ch;
+}
+.how-toc {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-1) var(--s-3);
+  margin: var(--s-2) 0 var(--s-4);
+  font-size: var(--t-sm);
+}
+.how-toc a {
+  color: var(--ink-2);
+  border-bottom: 1px solid var(--rule);
+  padding-bottom: 1px;
+}
+.how-toc a:hover {
+  color: var(--ink);
+  border-bottom-color: var(--ink);
+}
+.how-anchor {
+  display: block;
+  position: relative;
+  top: calc(-1 * var(--shell-top) - var(--s-6));
+}
+.how-lead {
+  font-size: var(--t-md);
+  margin: var(--s-2) 0 var(--s-3);
+}
+.how-steps {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.how-steps li {
+  display: grid;
+  grid-template-columns: 160px minmax(0, 1fr);
+  gap: var(--s-3);
+  padding: var(--s-2) 0;
+  border-bottom: var(--rule-w) solid var(--rule);
+  font-size: var(--t-sm);
+}
+.how-steps li:last-child {
+  border-bottom: 0;
+}
+.how-who {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.how-who small {
+  font-size: var(--t-xs);
+}
+.how-rules {
+  margin-top: var(--s-3);
+  padding-left: 1.1em;
+  font-size: var(--t-sm);
+  color: var(--ink-2);
+}
+.how-rules li {
+  margin: var(--s-1) 0;
+}
+.plate-how {
+  margin-left: auto;
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  font-size: var(--t-xs);
+  font-weight: 700;
+  color: var(--ink-2);
+}
+.plate-how:hover {
+  color: var(--ink);
+  border-color: var(--ink);
+}
+@media (max-width: 599px) {
+  .how-steps li {
+    grid-template-columns: 1fr;
+    gap: var(--s-1);
+  }
+}

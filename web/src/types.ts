@@ -168,4 +168,5 @@ export type SystemSettings = {
   debate_rounds?: number;
   web?: Record<string, unknown>;
   llm?: { budget_usd?: number; daily_session_cap?: number };
+  models?: Record<string, string>;
 };

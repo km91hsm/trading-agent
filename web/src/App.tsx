@@ -8,6 +8,7 @@ import { AccountPage } from "./pages/Account";
 import { ComparePage } from "./pages/Compare";
 import { Dashboard } from "./pages/Dashboard";
 import { DataPage } from "./pages/Data";
+import { HowItWorksPage } from "./pages/HowItWorks";
 import { MlPage } from "./pages/Ml";
 import { OrdersPage } from "./pages/Orders";
 import { SettingsPage } from "./pages/Settings";
@@ -38,6 +39,7 @@ export default function App() {
                 <Route path="/ml" element={<MlPage />} />
                 <Route path="/performance" element={<PerformancePage />} />
                 <Route path="/settings" element={<SettingsPage />} />
+                <Route path="/how" element={<HowItWorksPage />} />
                 <Route path="*" element={<Dashboard />} />
               </Routes>
             </Suspense>
