@@ -1,0 +1,76 @@
+/* 디자인 토큰 — 시각 세계 "신문 증권면 시세표". 색은 이 파일에만 hex 로 적고 나머지는 변수만 쓴다.
+   라이트 = 미색 신문 용지 + 먹 잉크, 다크 = 먹 바탕 + 미색 글자. 적청은 등락·거부·실전 표식 같은
+   데이터 의미에만, 황은 대기·주의에만 쓴다. 대비는 tokens.test.ts 가 두 테마 모두 4.5:1 이상으로 고정. */
+
+:root {
+  --paper: #F6F4EE;
+  --panel: #FCFBF8;
+  --sel: #EDEAE0;
+  --ink: #17181A;
+  --ink-2: #585D64;
+  --ink-3: #7A7F86;
+  --rule: #DAD6CC;
+  --rule-strong: #17181A;
+  --up: #C8322B;
+  --dn: #2860BF;
+  --pending: #8A5A00;
+  --pending-bg: #FFF3D1;
+  --danger: #C8322B;
+  --danger-bg: #FBE4E2;
+  --ok: #1E6B41;
+  --ok-bg: #E3F3EA;
+  --real: #B3261E;
+  --real-bg: #FBE9E7;
+  --paper-env: #1F4E9B;
+  --paper-env-bg: #E8F0FB;
+  --focus: #2860BF;
+  --shadow: 0 2px 8px rgba(23, 24, 26, 0.12);
+
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-5: 24px;
+  --s-6: 32px;
+  --s-7: 48px;
+  --s-8: 64px;
+
+  --t-xs: 0.75rem;
+  --t-sm: 0.8125rem;
+  --t-md: 0.875rem;
+  --t-lg: 1rem;
+  --t-xl: 1.3125rem;
+  --t-2xl: 1.75rem;
+
+  --radius: 4px;
+  --rule-w: 1px;
+  --rule-strong-w: 2px;
+  --shell-top: 54px;
+  --shell-nav: 188px;
+  --motion: 160ms;
+}
+
+[data-theme="dark"] {
+  --paper: #141516;
+  --panel: #1C1D1F;
+  --sel: #2A2B2E;
+  --ink: #EDE9DF;
+  --ink-2: #B3AFA6;
+  --ink-3: #8A8780;
+  --rule: #34353A;
+  --rule-strong: #EDE9DF;
+  --up: #F06A5E;
+  --dn: #6FA3F5;
+  --pending: #E6B35A;
+  --pending-bg: #3A2E12;
+  --danger: #F06A5E;
+  --danger-bg: #3E1F1C;
+  --ok: #6CCB8F;
+  --ok-bg: #16311F;
+  --real: #FF7B70;
+  --real-bg: #3E1F1C;
+  --paper-env: #8FB4F0;
+  --paper-env-bg: #1B2A44;
+  --focus: #6FA3F5;
+  --shadow: 0 2px 10px rgba(0, 0, 0, 0.5);
+}
