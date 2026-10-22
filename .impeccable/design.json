@@ -1,0 +1,190 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-23T00:00:00Z",
+  "title": "Design System: trader",
+  "extensions": {
+    "colorMeta": {
+      "paper": { "role": "neutral", "displayName": "미색 용지", "canonical": "#F6F4EE", "darkValue": "#141516", "tonalRamp": ["#141516", "#2A2B2E", "#4A4B4E", "#7A7F86", "#B3AFA6", "#DAD6CC", "#EDEAE0", "#F6F4EE"] },
+      "panel": { "role": "neutral", "displayName": "판", "canonical": "#FCFBF8", "darkValue": "#1C1D1F", "tonalRamp": ["#1C1D1F", "#2A2B2E", "#4A4B4E", "#7A7F86", "#B3AFA6", "#DAD6CC", "#EDEAE0", "#FCFBF8"] },
+      "sel": { "role": "neutral", "displayName": "선택 음영", "canonical": "#EDEAE0", "darkValue": "#2A2B2E", "tonalRamp": ["#1C1D1F", "#2A2B2E", "#4A4B4E", "#7A7F86", "#B3AFA6", "#DAD6CC", "#EDEAE0", "#F6F4EE"] },
+      "ink": { "role": "primary", "displayName": "먹 잉크", "canonical": "#17181A", "darkValue": "#EDE9DF", "tonalRamp": ["#17181A", "#2A2B2E", "#585D64", "#7A7F86", "#8A8780", "#B3AFA6", "#DAD6CC", "#EDE9DF"] },
+      "ink-2": { "role": "primary", "displayName": "회색 잉크", "canonical": "#585D64", "darkValue": "#B3AFA6", "tonalRamp": ["#17181A", "#2A2B2E", "#585D64", "#7A7F86", "#8A8780", "#B3AFA6", "#DAD6CC", "#EDE9DF"] },
+      "ink-3": { "role": "primary", "displayName": "연한 잉크", "canonical": "#7A7F86", "darkValue": "#8A8780", "tonalRamp": ["#17181A", "#2A2B2E", "#585D64", "#7A7F86", "#8A8780", "#B3AFA6", "#DAD6CC", "#EDE9DF"] },
+      "rule": { "role": "neutral", "displayName": "미색 괘선", "canonical": "#DAD6CC", "darkValue": "#34353A", "tonalRamp": ["#141516", "#34353A", "#4A4B4E", "#7A7F86", "#B3AFA6", "#DAD6CC", "#EDEAE0", "#F6F4EE"] },
+      "rule-strong": { "role": "neutral", "displayName": "먹선", "canonical": "#17181A", "darkValue": "#EDE9DF", "tonalRamp": ["#17181A", "#2A2B2E", "#585D64", "#7A7F86", "#8A8780", "#B3AFA6", "#DAD6CC", "#EDE9DF"] },
+      "up": { "role": "secondary", "displayName": "상승 적", "canonical": "#C8322B", "darkValue": "#F06A5E", "tonalRamp": ["#3E1F1C", "#6B1F1A", "#8F2620", "#B3261E", "#C8322B", "#F06A5E", "#FBE4E2", "#FBE9E7"] },
+      "dn": { "role": "secondary", "displayName": "하락 청", "canonical": "#2860BF", "darkValue": "#6FA3F5", "tonalRamp": ["#1B2A44", "#163A73", "#1F4E9B", "#2860BF", "#4A80D8", "#6FA3F5", "#8FB4F0", "#E8F0FB"] },
+      "pending": { "role": "secondary", "displayName": "대기 황", "canonical": "#8A5A00", "darkValue": "#E6B35A", "tonalRamp": ["#3A2E12", "#5C3D00", "#8A5A00", "#B07A1A", "#D09A3A", "#E6B35A", "#F5D99A", "#FFF3D1"] },
+      "pending-bg": { "role": "secondary", "displayName": "대기 황 바탕", "canonical": "#FFF3D1", "darkValue": "#3A2E12", "tonalRamp": ["#3A2E12", "#5C3D00", "#8A5A00", "#B07A1A", "#D09A3A", "#E6B35A", "#F5D99A", "#FFF3D1"] },
+      "danger": { "role": "secondary", "displayName": "거부 적", "canonical": "#C8322B", "darkValue": "#F06A5E", "tonalRamp": ["#3E1F1C", "#6B1F1A", "#8F2620", "#B3261E", "#C8322B", "#F06A5E", "#FBE4E2", "#FBE9E7"] },
+      "danger-bg": { "role": "secondary", "displayName": "거부 적 바탕", "canonical": "#FBE4E2", "darkValue": "#3E1F1C", "tonalRamp": ["#3E1F1C", "#6B1F1A", "#8F2620", "#B3261E", "#C8322B", "#F06A5E", "#FBE4E2", "#FBE9E7"] },
+      "ok": { "role": "secondary", "displayName": "승인 녹", "canonical": "#1E6B41", "darkValue": "#6CCB8F", "tonalRamp": ["#16311F", "#1A4A2E", "#1E6B41", "#2E8A58", "#4AAA72", "#6CCB8F", "#A8E2BE", "#E3F3EA"] },
+      "ok-bg": { "role": "secondary", "displayName": "승인 녹 바탕", "canonical": "#E3F3EA", "darkValue": "#16311F", "tonalRamp": ["#16311F", "#1A4A2E", "#1E6B41", "#2E8A58", "#4AAA72", "#6CCB8F", "#A8E2BE", "#E3F3EA"] },
+      "real": { "role": "tertiary", "displayName": "실전 적", "canonical": "#B3261E", "darkValue": "#FF7B70", "tonalRamp": ["#3E1F1C", "#6B1F1A", "#8F2620", "#B3261E", "#D04A40", "#FF7B70", "#FBE4E2", "#FBE9E7"] },
+      "real-bg": { "role": "tertiary", "displayName": "실전 적 바탕", "canonical": "#FBE9E7", "darkValue": "#3E1F1C", "tonalRamp": ["#3E1F1C", "#6B1F1A", "#8F2620", "#B3261E", "#D04A40", "#FF7B70", "#FBE4E2", "#FBE9E7"] },
+      "paper-env": { "role": "tertiary", "displayName": "모의 청", "canonical": "#1F4E9B", "darkValue": "#8FB4F0", "tonalRamp": ["#1B2A44", "#163A73", "#1F4E9B", "#2860BF", "#4A80D8", "#6FA3F5", "#8FB4F0", "#E8F0FB"] },
+      "paper-env-bg": { "role": "tertiary", "displayName": "모의 청 바탕", "canonical": "#E8F0FB", "darkValue": "#1B2A44", "tonalRamp": ["#1B2A44", "#163A73", "#1F4E9B", "#2860BF", "#4A80D8", "#6FA3F5", "#8FB4F0", "#E8F0FB"] },
+      "focus": { "role": "secondary", "displayName": "포커스 링", "canonical": "#2860BF", "darkValue": "#6FA3F5", "tonalRamp": ["#1B2A44", "#163A73", "#1F4E9B", "#2860BF", "#4A80D8", "#6FA3F5", "#8FB4F0", "#E8F0FB"] }
+    },
+    "typographyMeta": {
+      "display": { "displayName": "Display (큰 숫자)", "purpose": "성과 블록의 NAV 같은 절당 한 개의 큰 숫자(.big). 900, 1.3125rem." },
+      "headline": { "displayName": "Headline (페이지 제목)", "purpose": "h1. 아래 .sub 가 날짜·장 상태를 받는다." },
+      "title": { "displayName": "Title (절 제목)", "purpose": "h2 .sec-h, 2px 먹 밑줄. 플레이트 제목·상태 줄 값도 800." },
+      "body": { "displayName": "Body", "purpose": "기본 본문·내비 항목 0.875rem." },
+      "tape": { "displayName": "Tape (표·컨트롤)", "purpose": "표 셀·버튼·입력·상태 줄·대화상자 본문 0.8125rem. 실제 본문 크기." },
+      "label": { "displayName": "Label", "purpose": "표 머리글·배지·칩·필드 라벨·주석 0.75rem. 대문자·자간 확장 없음." },
+      "mono": { "displayName": "Mono", "purpose": "JSON 뷰어·STATUS.md 원문 전용." }
+    },
+    "shadows": [
+      { "name": "shadow", "value": "0 2px 8px rgba(23, 24, 26, 0.12)", "darkValue": "0 2px 10px rgba(0, 0, 0, 0.5)", "purpose": "지면 위에 떠 있는 층(모바일 내비 서랍·토스트·확인 대화상자)에만." }
+    ],
+    "motion": [
+      { "name": "motion", "value": "160ms", "purpose": "버튼·내비 배경/글자색 전환, 서랍 슬라이드(ease-out). prefers-reduced-motion 이면 0ms." },
+      { "name": "shimmer", "value": "1.4s linear infinite", "purpose": "스켈레톤 셀 반짝임." }
+    ],
+    "borders": [
+      { "name": "rule-w", "value": "1px", "purpose": "표 행·입력·판 테두리." },
+      { "name": "rule-strong-w", "value": "2px", "purpose": "표 머리·절 제목·상태 줄 위선·상단 바 밑선·대화상자 테두리." },
+      { "name": "nav-active", "value": "3px", "purpose": "활성 내비 항목 오른쪽 먹 세로선." }
+    ],
+    "shell": [
+      { "name": "shell-top", "value": "54px" },
+      { "name": "shell-nav", "value": "188px" },
+      { "name": "cols-aside", "value": "330px" }
+    ],
+    "breakpoints": [
+      { "name": "drawer", "value": "1023px", "purpose": "이하: 내비 서랍, 2열→1열, 장 상태 숨김." },
+      { "name": "compact", "value": "599px", "purpose": "이하: 상단 바 브랜드 글자·계좌 배지·ok/neutral 배지 숨김." }
+    ],
+    "theme": { "attribute": "data-theme", "values": ["light", "dark"], "storageKey": "trader.theme", "systemFollow": true }
+  },
+  "components": [
+    {
+      "name": "Button",
+      "kind": "button",
+      "refersTo": "button",
+      "description": "기본 버튼. 먹 테두리, 판 바탕, 누르면 먹으로 반전.",
+      "html": "<button class=\"ds-btn\">새로고침</button>",
+      "css": ".ds-btn { display: inline-flex; align-items: center; gap: var(--s-1, 4px); padding: 5px var(--s-3, 12px); border: 1px solid var(--ink, #17181A); border-radius: var(--radius, 4px); background: var(--panel, #FCFBF8); color: var(--ink, #17181A); font-family: 'Pretendard Variable', Pretendard, sans-serif; font-size: var(--t-sm, 0.8125rem); font-weight: 700; cursor: pointer; transition: background 160ms, color 160ms; } .ds-btn:hover { background: var(--sel, #EDEAE0); } .ds-btn:active { background: var(--ink, #17181A); color: var(--paper, #F6F4EE); } .ds-btn:focus-visible { outline: 2px solid var(--focus, #2860BF); outline-offset: 2px; } .ds-btn:disabled { opacity: 0.45; cursor: not-allowed; }"
+    },
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "먹 바탕 반전 버튼. 승인·저장 같은 1차 동작.",
+      "html": "<button class=\"ds-btn-primary\">승인</button>",
+      "css": ".ds-btn-primary { display: inline-flex; align-items: center; gap: 4px; padding: 5px var(--s-3, 12px); border: 1px solid var(--ink, #17181A); border-radius: var(--radius, 4px); background: var(--ink, #17181A); color: var(--paper, #F6F4EE); font-family: 'Pretendard Variable', Pretendard, sans-serif; font-size: var(--t-sm, 0.8125rem); font-weight: 700; cursor: pointer; transition: background 160ms, color 160ms; } .ds-btn-primary:hover { background: var(--ink-2, #585D64); } .ds-btn-primary:focus-visible { outline: 2px solid var(--focus, #2860BF); outline-offset: 2px; }"
+    },
+    {
+      "name": "Danger Button",
+      "kind": "button",
+      "refersTo": "button-danger",
+      "description": "거부·실전 제어. 적 테두리 + 적 글자, 누르면 적으로 반전.",
+      "html": "<button class=\"ds-btn-danger\">거부</button>",
+      "css": ".ds-btn-danger { display: inline-flex; align-items: center; gap: 4px; padding: 5px var(--s-3, 12px); border: 1px solid var(--danger, #C8322B); border-radius: var(--radius, 4px); background: var(--panel, #FCFBF8); color: var(--danger, #C8322B); font-family: 'Pretendard Variable', Pretendard, sans-serif; font-size: var(--t-sm, 0.8125rem); font-weight: 700; cursor: pointer; transition: background 160ms, color 160ms; } .ds-btn-danger:hover { background: var(--danger-bg, #FBE4E2); } .ds-btn-danger:active { background: var(--danger, #C8322B); color: var(--paper, #F6F4EE); } .ds-btn-danger:focus-visible { outline: 2px solid var(--focus, #2860BF); outline-offset: 2px; }"
+    },
+    {
+      "name": "Input",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "텍스트·선택 입력. 판 바탕 + 1px 괘선, 30px 높이, 포커스는 청 외곽선.",
+      "html": "<label class=\"ds-field\"><span>종목</span><input class=\"ds-input\" type=\"text\" placeholder=\"005930\" /></label>",
+      "css": ".ds-field { display: inline-flex; flex-direction: column; gap: 2px; font-family: 'Pretendard Variable', Pretendard, sans-serif; font-size: var(--t-xs, 0.75rem); color: var(--ink-2, #585D64); } .ds-field > span { font-weight: 600; } .ds-input { padding: 5px var(--s-2, 8px); border: 1px solid var(--rule, #DAD6CC); border-radius: var(--radius, 4px); background: var(--panel, #FCFBF8); color: var(--ink, #17181A); font: inherit; font-size: var(--t-sm, 0.8125rem); min-height: 30px; caret-color: var(--ink, #17181A); font-variant-numeric: tabular-nums; } .ds-input:hover { border-color: var(--ink-3, #7A7F86); } .ds-input:focus-visible { outline: 2px solid var(--focus, #2860BF); outline-offset: 2px; }"
+    },
+    {
+      "name": "Badges",
+      "kind": "chip",
+      "refersTo": "badge",
+      "description": "의미 배지: 환경(모의/실전)·모드·상태·결정. 실전만 적 테두리, 결정은 글자만.",
+      "html": "<span class=\"ds-badge\">조회 전용</span> <span class=\"ds-badge ds-badge-paper\">모의</span> <span class=\"ds-badge ds-badge-real\">실전</span> <span class=\"ds-badge ds-badge-pending\">미승인 2</span> <span class=\"ds-badge ds-badge-ok\">체결</span> <span class=\"ds-badge ds-badge-danger\">거부</span> <span class=\"ds-badge ds-badge-action ds-up\">매수</span> <span class=\"ds-badge ds-badge-action ds-dn\">매도</span>",
+      "css": ".ds-badge { display: inline-block; font-family: 'Pretendard Variable', Pretendard, sans-serif; font-size: var(--t-xs, 0.75rem); font-weight: 700; line-height: 1.3; padding: 1px var(--s-2, 8px); border: 1px solid var(--rule, #DAD6CC); border-radius: var(--radius, 4px); color: var(--ink-2, #585D64); background: var(--panel, #FCFBF8); white-space: nowrap; } .ds-badge-paper { color: var(--paper-env, #1F4E9B); background: var(--paper-env-bg, #E8F0FB); border-color: transparent; } .ds-badge-real { color: var(--real, #B3261E); background: var(--real-bg, #FBE9E7); border-color: var(--real, #B3261E); } .ds-badge-pending { color: var(--pending, #8A5A00); background: var(--pending-bg, #FFF3D1); border-color: transparent; } .ds-badge-ok { color: var(--ok, #1E6B41); background: var(--ok-bg, #E3F3EA); border-color: transparent; } .ds-badge-danger { color: var(--danger, #C8322B); background: var(--danger-bg, #FBE4E2); border-color: transparent; } .ds-badge-action { border-color: transparent; background: transparent; padding-left: 0; font-weight: 800; letter-spacing: 0.02em; color: var(--ink, #17181A); } .ds-up { color: var(--up, #C8322B); } .ds-dn { color: var(--dn, #2860BF); }"
+    },
+    {
+      "name": "Chip",
+      "kind": "chip",
+      "refersTo": "chip",
+      "description": "제거 가능한 항목(관심종목). 판 바탕 + 1px 괘선 + x 글리프.",
+      "html": "<span class=\"ds-chip\">005930 삼성전자 <button class=\"ds-chip-x\" aria-label=\"제거\"><svg width=\"12\" height=\"12\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\"><path d=\"m4 4 8 8M12 4l-8 8\"/></svg></button></span>",
+      "css": ".ds-chip { display: inline-flex; align-items: center; gap: 4px; padding: 2px var(--s-2, 8px); border: 1px solid var(--rule, #DAD6CC); border-radius: var(--radius, 4px); background: var(--panel, #FCFBF8); color: var(--ink, #17181A); font-family: 'Pretendard Variable', Pretendard, sans-serif; font-size: var(--t-xs, 0.75rem); } .ds-chip-x { border: 0; background: none; padding: 0; cursor: pointer; display: inline-flex; color: var(--ink-2, #585D64); } .ds-chip-x:hover { color: var(--ink, #17181A); } .ds-chip-x:focus-visible { outline: 2px solid var(--focus, #2860BF); outline-offset: 2px; }"
+    },
+    {
+      "name": "Side Navigation",
+      "kind": "nav",
+      "refersTo": "sidenav-link",
+      "description": "좌측 내비 188px. 활성 항목은 용지 바탕 + 800 + 오른쪽 3px 먹선.",
+      "html": "<nav class=\"ds-sidenav\"><a class=\"ds-nav-link ds-active\" href=\"#\">대시보드</a><a class=\"ds-nav-link\" href=\"#\">오늘의 실행</a><a class=\"ds-nav-link\" href=\"#\">주문/승인</a><a class=\"ds-nav-link\" href=\"#\">계좌</a><a class=\"ds-nav-link\" href=\"#\">성과</a></nav>",
+      "css": ".ds-sidenav { width: 188px; background: var(--panel, #FCFBF8); border-right: 1px solid var(--rule, #DAD6CC); padding: var(--s-3, 12px) 0; font-family: 'Pretendard Variable', Pretendard, sans-serif; } .ds-nav-link { display: block; padding: var(--s-2, 8px) var(--s-5, 24px); color: var(--ink-2, #585D64); font-size: var(--t-md, 0.875rem); text-decoration: none; border-right: 3px solid transparent; transition: background 160ms, color 160ms; } .ds-nav-link:hover { background: var(--sel, #EDEAE0); color: var(--ink, #17181A); } .ds-nav-link.ds-active { color: var(--ink, #17181A); font-weight: 800; background: var(--paper, #F6F4EE); border-right-color: var(--ink, #17181A); } .ds-nav-link:focus-visible { outline: 2px solid var(--focus, #2860BF); outline-offset: -2px; }"
+    },
+    {
+      "name": "Tape (시세표)",
+      "kind": "custom",
+      "refersTo": "tape-cell",
+      "description": "시그니처 표. 2px 먹 머리선 + 1px 행 괘선, 이름 셀 기호, 우측정렬 tabular 숫자, ▲▼ 적청, 선택 행 음영.",
+      "html": "<table class=\"ds-tape\"><thead><tr><th>종목</th><th class=\"ds-num\">현재가</th><th class=\"ds-num\">등락</th><th>결정</th><th class=\"ds-num\">확신</th></tr></thead><tbody><tr class=\"ds-sel\"><td><span class=\"ds-nm\"><span class=\"ds-mark\"><svg width=\"12\" height=\"12\" viewBox=\"0 0 16 16\"><circle cx=\"8\" cy=\"8\" r=\"4.5\" fill=\"currentColor\"/></svg></span>삼성전자<small>005930 · KR</small></span></td><td class=\"ds-num\">71,200원</td><td class=\"ds-num\"><span class=\"ds-delta ds-up\"><svg width=\"10\" height=\"10\" viewBox=\"0 0 16 16\"><path d=\"M8 3.5 13 12H3z\" fill=\"currentColor\"/></svg>1.53%</span></td><td><span class=\"ds-action ds-up\">매수</span></td><td class=\"ds-num\">0.72</td></tr><tr><td><span class=\"ds-nm\"><span class=\"ds-mark\"><svg width=\"12\" height=\"12\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\"><circle cx=\"8\" cy=\"8\" r=\"4.25\"/></svg></span>SK하이닉스<small>000660 · KR</small></span></td><td class=\"ds-num\">188,500원</td><td class=\"ds-num\"><span class=\"ds-delta ds-dn\"><svg width=\"10\" height=\"10\" viewBox=\"0 0 16 16\"><path d=\"M8 12.5 3 4h10z\" fill=\"currentColor\"/></svg>0.84%</span></td><td><span class=\"ds-action ds-hold\">보유</span></td><td class=\"ds-num\">0.50</td></tr></tbody></table>",
+      "css": ".ds-tape { border-collapse: collapse; width: 100%; font-family: 'Pretendard Variable', Pretendard, sans-serif; font-variant-numeric: tabular-nums; color: var(--ink, #17181A); } .ds-tape th, .ds-tape td { padding: var(--s-2, 8px); text-align: left; vertical-align: top; font-size: var(--t-sm, 0.8125rem); white-space: nowrap; } .ds-tape thead th { font-size: var(--t-xs, 0.75rem); font-weight: 600; color: var(--ink-2, #585D64); border-bottom: 2px solid var(--rule-strong, #17181A); } .ds-tape tbody td { border-bottom: 1px solid var(--rule, #DAD6CC); } .ds-tape .ds-num { text-align: right; } .ds-tape tbody tr:hover td { background: color-mix(in srgb, var(--sel, #EDEAE0) 50%, transparent); } .ds-tape tbody tr.ds-sel td { background: var(--sel, #EDEAE0); } .ds-nm { font-weight: 700; display: inline-flex; align-items: center; } .ds-nm small { font-weight: 500; color: var(--ink-2, #585D64); margin-left: 4px; font-size: 0.75rem; } .ds-mark { display: inline-flex; width: 16px; justify-content: center; margin-right: 2px; } .ds-delta { display: inline-flex; align-items: center; gap: 3px; } .ds-up { color: var(--up, #C8322B); } .ds-dn { color: var(--dn, #2860BF); } .ds-action { font-size: 0.75rem; font-weight: 800; letter-spacing: 0.02em; } .ds-hold { color: var(--ink-2, #585D64); }"
+    },
+    {
+      "name": "Section",
+      "kind": "card",
+      "refersTo": "plate",
+      "description": "절 제목 + 2px 먹선 + 오른쪽 보조문. 카드 대신 절이 지면을 나눈다.",
+      "html": "<section class=\"ds-sec\"><h2 class=\"ds-sec-h\"><span>오늘의 시세표</span><span class=\"ds-sec-aside\">● 보유 ○ 선정 ☆ 관심</span></h2><p class=\"ds-sec-body\">절 내용이 괘선 아래 그대로 이어진다.</p></section>",
+      "css": ".ds-sec { font-family: 'Pretendard Variable', Pretendard, sans-serif; color: var(--ink, #17181A); } .ds-sec-h { display: flex; align-items: baseline; justify-content: space-between; gap: var(--s-3, 12px); padding-bottom: 4px; margin: 0 0 var(--s-2, 8px); border-bottom: 2px solid var(--rule-strong, #17181A); font-size: var(--t-md, 0.875rem); font-weight: 800; } .ds-sec-aside { font-size: var(--t-xs, 0.75rem); font-weight: 500; color: var(--ink-2, #585D64); } .ds-sec-body { margin: 0; font-size: var(--t-sm, 0.8125rem); }"
+    },
+    {
+      "name": "Pipeline Plate",
+      "kind": "card",
+      "refersTo": "plate",
+      "description": "파이프라인 단계 판. 모든 단계가 같은 크기, 윗선 2px, 완료면 먹 + 녹 체크.",
+      "html": "<ul class=\"ds-plates\"><li class=\"ds-plate ds-done\"><div class=\"ds-plate-h\"><svg width=\"14\" height=\"14\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\" class=\"ds-check\"><path d=\"m3 8.5 3.2 3L13 4.5\"/></svg>수집</div><div class=\"ds-plate-sum\">시세·재무·뉴스 00_inputs</div></li><li class=\"ds-plate\"><div class=\"ds-plate-h\"><span class=\"ds-plate-dot\"></span>애널리스트</div><div class=\"ds-plate-sum\">아직 없음</div></li></ul>",
+      "css": ".ds-plates { list-style: none; padding: 0; margin: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: var(--s-2, 8px); font-family: 'Pretendard Variable', Pretendard, sans-serif; } .ds-plate { border: 1px solid var(--rule, #DAD6CC); border-top: 2px solid var(--rule, #DAD6CC); border-radius: var(--radius, 4px); padding: var(--s-2, 8px) var(--s-3, 12px); min-height: 96px; display: flex; flex-direction: column; gap: 4px; background: var(--panel, #FCFBF8); color: var(--ink-2, #585D64); } .ds-plate.ds-done { border-top-color: var(--ink, #17181A); color: var(--ink, #17181A); } .ds-plate-h { display: flex; align-items: center; gap: 4px; font-weight: 800; font-size: var(--t-sm, 0.8125rem); } .ds-check { color: var(--ok, #1E6B41); } .ds-plate-dot { width: 10px; height: 10px; border-radius: 50%; border: 1.5px solid var(--rule, #DAD6CC); } .ds-plate-sum { font-size: var(--t-xs, 0.75rem); }"
+    },
+    {
+      "name": "Toast",
+      "kind": "custom",
+      "refersTo": "toast",
+      "description": "우하단 알림. 먹 바탕 + 미색 글자, 오류는 적, 성공은 녹. 떠 있는 층이라 그림자.",
+      "html": "<div class=\"ds-toast\">승인했어요 · 주문 접수</div> <div class=\"ds-toast ds-toast-error\">토큰이 없어 제어할 수 없어요</div>",
+      "css": ".ds-toast { display: inline-block; padding: var(--s-2, 8px) var(--s-3, 12px); background: var(--ink, #17181A); color: var(--paper, #F6F4EE); border-radius: var(--radius, 4px); box-shadow: var(--shadow, 0 2px 8px rgba(23, 24, 26, 0.12)); font-family: 'Pretendard Variable', Pretendard, sans-serif; font-size: var(--t-sm, 0.8125rem); max-width: 360px; margin: 4px; } .ds-toast-error { background: var(--danger, #C8322B); }"
+    }
+  ],
+  "narrative": {
+    "northStar": "아침 식탁의 증권면",
+    "overview": "trader 웹 UI 는 아침 신문의 증권면 시세표다. 미색 용지(`paper`) 위에 먹 잉크(`ink`)로 찍힌 한 줄 한 종목의 표가 화면의 몸통이고, 포지션·결정·주문·성과가 전부 같은 열 리듬(이름 셀 + 기호, 우측정렬 tabular 숫자, 2px 머리선 + 1px 행 괘선)으로 읽힌다. 색은 장식이 아니라 데이터다. 적(`up`)은 상승·매수, 청(`dn`)은 하락·매도, 황(`pending`)은 눌러야 할 것(미승인·대기), 실전 계좌는 적색 테두리 표식으로 어느 화면에서도 모의와 구분된다. 밤에는 같은 지면을 먹 바탕(`dark-paper`)에 미색 글자로 뒤집되 적청과 괘선 리듬은 그대로 둔다.\n\n밀도는 운영 콘솔의 밀도다: 분 단위 데이터를 하루 몇 번 1~2분에 읽는 자리라 숫자는 촘촘하고 설명은 한 줄이다. 위계는 서체 하나(Pretendard)의 크기·굵기 대비 하나로만 만들고, 그림자·카드 격자·큰 KPI 타일은 쓰지 않는다. 선택한 행만 미색 음영(`sel`)으로 들리고 나머지는 지면에 가라앉는다. 상태는 색이 아니라 기호(● 보유, ○ 선정, ☆ 관심, ▲▼ 등락)로 먼저 말한다.\n\n거부한 것(방향 계약으로 확인): 같은 크기 카드 격자 + 큰 숫자 KPI 타일 + 파란 강조의 범주 표준, 터미널·블룸버그 코스튬, 이모지·유니코드 기호 아이콘.",
+    "keyCharacteristics": [
+      "모든 표가 같은 열 문법 — 2px 먹 머리선, 1px 미색 행 괘선, 우측정렬 `tnum` 숫자, 이름 셀 굵게 + 코드 작게",
+      "적청황은 데이터 의미 전용(등락·결정 방향·대기·실전), 브랜드 강조색 없음",
+      "서체 하나(Pretendard Variable, 자체 호스팅), rem 고정 스케일 6단, 굵기 400~900 으로만 위계",
+      "평면. 그림자는 떠 있는 층(서랍·토스트·대화상자)에만, 반경 4px 하나",
+      "라이트/다크가 같은 변수 이름을 공유하고 `tokens.test.ts` 가 두 테마 모두 4.5:1 대비를 고정"
+    ],
+    "rules": [
+      { "name": "The Ink-Only Emphasis Rule", "body": "강조는 먹의 굵기(2px 선, 굵기 800~900, 먹 바탕 반전)로만 한다. 적·청·황·녹은 등락·결정 방향·상태·환경이라는 데이터 의미가 있을 때만 쓰고, 브랜드나 장식으로 쓰지 않는다.", "section": "colors" },
+      { "name": "The Hex-In-One-File Rule", "body": "hex 는 `web/src/styles/tokens.css` 에만 적고 나머지 CSS·TSX 는 `var(--…)` 만 쓴다. 차트(`chart.ts`)는 런타임에 같은 변수를 `getComputedStyle` 로 읽는다.", "section": "colors" },
+      { "name": "The Red-Is-Up Rule", "body": "한국 관행대로 상승이 적, 하락이 청이다. 색과 함께 반드시 ▲▼ 기호가 붙어 색각 이상에서도 읽힌다.", "section": "colors" },
+      { "name": "The One Face Rule", "body": "서체는 Pretendard 하나. 외부 폰트·CDN 금지(오프라인 번들). 위계는 크기·굵기 대비로만 만들고 색·자간·대문자로 만들지 않는다.", "section": "typography" },
+      { "name": "The Tabular Rule", "body": "숫자가 들어가는 모든 셀은 `.num`(우측정렬 + `tabular-nums` + `nowrap`)이다. body 가 이미 `tnum` 이라 숫자 열은 어디서든 맞는다.", "section": "typography" },
+      { "name": "The One Big Number Rule", "body": "1.3125rem 보다 큰 글자는 없다(`--t-2xl` 1.75rem 은 정의만 있고 쓰이지 않는다). 성과의 NAV 처럼 절당 한 숫자만 `big` 을 쓴다.", "section": "typography" },
+      { "name": "The Flat-Page Rule", "body": "지면 안의 요소(표·절·배지·버튼·플레이트)는 그림자가 없다. 그림자 하나(`--shadow`)는 지면 위에 떠 있는 층(서랍·토스트·대화상자)에만 쓴다.", "section": "elevation" },
+      { "name": "The Rule-Weight Rule", "body": "구분은 괘선 굵기로 한다 — 머리·절 제목·상태 줄 위선·대화상자 테두리는 2px 먹선, 행·입력·판 테두리는 1px 미색 괘선. 실전 계좌면 상단 바 밑선이 2px 적선이 된다.", "section": "elevation" }
+    ],
+    "dos": [
+      "Do 모든 표를 `Table`/`Th`/`Td` 로 만들고 숫자 열은 `num`, 등락은 `Delta`, 종목 이름 셀은 `Mark` + `nm` 으로 — 열 문법 하나.",
+      "Do 새 색이 필요하면 `tokens.css` 의 `:root` 와 `[data-theme=\"dark\"]` 에 같은 이름으로 함께 추가하고 `tokens.test.ts` 의 4.5:1 대비 검사를 통과시킨다.",
+      "Do 상태를 기호·라벨과 색으로 병행한다(▲▼, ●○☆, 배지 문구). 색만으로 구분하지 않는다.",
+      "Do 실전 계좌는 `real` 배지(적 테두리)·상단 바 적선·select 적 테두리 세 가지로 전 화면에서 표시한다.",
+      "Do 아이콘은 `Glyph` 16px 격자 SVG 에 추가한다(stroke 1.5, `currentColor`).",
+      "Do 절은 `Section` 으로 — 제목 + 2px 먹선 + 보조문 자리. 큰 숫자는 절당 하나(`big`).",
+      "Do 빈 화면에는 `EmptyState` 로 \"무엇을 하면 채워지는지\" 한 줄을 넣는다."
+    ],
+    "donts": [
+      "Don't `tokens.css` 밖에 hex 를 적지 않는다(`chart.ts` 의 폴백 사본 제외). 인라인 `style` 은 데이터로 정해지는 폭·flex 비율에만.",
+      "Don't 같은 크기 카드 격자, KPI 타일, 파란 브랜드 강조를 들이지 않는다. 강조는 먹의 굵기다.",
+      "Don't 지면 안 요소에 그림자를 주지 않는다. `--shadow` 는 서랍·토스트·대화상자 전용.",
+      "Don't 적·청을 등락·결정 방향·거부·실전 외의 의미로 쓰지 않는다. 황은 대기·주의 외에 쓰지 않는다.",
+      "Don't 두 번째 서체, 대문자 변환, 자간 확장, 1.3125rem 보다 큰 글자, 4px 외의 반경(스켈레톤·점 제외)을 들이지 않는다.",
+      "Don't 이모지·유니코드 기호를 아이콘으로 쓰지 않는다. 전부 `Glyph`.",
+      "Don't 실시간 틱 연출(깜빡임·카운터 애니메이션)을 넣지 않는다. 움직임은 160ms 배경·색 전환과 서랍 슬라이드, 스켈레톤 반짝임뿐이다."
+    ]
+  }
+}

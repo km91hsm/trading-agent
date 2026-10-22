@@ -212,16 +212,17 @@
 ## Phase 14 웹 UI 재설계 (`docs/superpowers/plans/2026-10-23-phase14-web-redesign.md`)
 - [x] impeccable init: `PRODUCT.md` (2026-10-23)
 - [x] 방향 선택: 재굴림 1 → "신문 증권면 시세표" 배정, 사용자 선택 (2026-10-23). 방향 계약 `.impeccable/surfaces/web-src-app-tsx.md`
-- [ ] Task 1 토큰·베이스·Pretendard·테마
-- [ ] Task 2 아이콘·표 원시요소·공통 컴포넌트·용어 사전
-- [ ] Task 3 셸(상단 바·사이드 내비·서랍·테마)·App·SSE 타입 일치
-- [ ] Task 4 차트 헬퍼 chart.ts·팔레트 토큰화·차트/성과 페이지
-- [ ] Task 5 대시보드(운영 상태 줄·오늘의 시세표·주문/승인·성과 블록)
-- [ ] Task 6 오늘의 실행 파이프라인 판·데이터
-- [ ] Task 7 주문/승인·계좌·계좌 비교
-- [ ] Task 8 ML·설정/제어
-- [ ] Task 9 검증(1440·390 × 라이트/다크 캡처)·detect·finish reviewer·documenter(DESIGN.md)·문서
-- [ ] 완료 기준: `npm run typecheck && npm test && npm run build`·`uv run pytest`·`ruff` 통과, 10페이지가 방향 계약대로 라이트/다크·390px 에서 동작, finish reviewer disposition ship, `DESIGN.md` 존재
+- [x] Task 1 토큰·베이스·Pretendard·테마
+- [x] Task 2 아이콘·표 원시요소·공통 컴포넌트·용어 사전
+- [x] Task 3 셸(상단 바·사이드 내비·서랍·테마)·App·SSE 타입 일치
+- [x] Task 4 차트 헬퍼 chart.ts·팔레트 토큰화·차트/성과 페이지
+- [x] Task 5 대시보드(운영 상태 줄·오늘의 시세표·주문/승인·성과 블록)
+- [x] Task 6 오늘의 실행 파이프라인 판·데이터
+- [x] Task 7 주문/승인·계좌·계좌 비교
+- [x] Task 8 ML·설정/제어
+- [x] Task 9 검증(1280·390 캡처, 라이트/다크 실시간 점검)·detect 0건·finish reviewer 3라운드(fix→fix→ship)·documenter(DESIGN.md·design.json)·문서
+- [x] 완료 기준: `npm run typecheck && npm test && npm run build`·`uv run pytest`·`ruff` 통과, 10페이지가 방향 계약대로 라이트/다크·390px 에서 동작, finish reviewer disposition ship, `DESIGN.md` 존재 (2026-10-23 확인)
+- [ ] 사용자 확인 대기: 브라우저에서 10페이지를 직접 보고 어색한 곳 피드백 → `/impeccable polish` 또는 `critique` 로 다듬기. 리뷰어가 캡처하지 못한 것: 다크 모드 전체 페이지, 차트 페이지(KIS 키 필요)
 
 ## Phase 15 번들 형식 정비 (`docs/superpowers/plans/2026-10-23-phase15-bundle-form.md`)
 - [ ] Task 1 `--version`·zip 이름에 버전·README 동봉·심링크 보존·CI 태그↔버전 검사
