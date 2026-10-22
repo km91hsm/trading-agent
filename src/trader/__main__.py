@@ -12,7 +12,9 @@ from pathlib import Path
 
 
 def _pause_if_console() -> None:
-    if sys.platform == "win32" and sys.stdin is not None and getattr(sys.stdin, "isatty", lambda: False)():
+    if sys.platform != "win32" or sys.stdin is None:
+        return
+    if getattr(sys.stdin, "isatty", lambda: False)():
         try:
             input("오류로 종료됐습니다. Enter 를 누르면 닫힙니다")
         except EOFError:

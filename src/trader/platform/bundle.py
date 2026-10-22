@@ -23,8 +23,8 @@ def executable() -> Path:
 
 
 def cli_executable() -> Path:
-    """콘솔 CLI 실행파일. 창 없는 TraderApp 으로 떠도 세션의 `trader tool`·launchd 의 `trader daemon` 은
-    이것을 쓴다 (같은 폴더의 trader[.exe]; 없으면 자기 자신)."""
+    """콘솔 CLI 실행파일. 창 없는 TraderApp 으로 떠도 세션의 `trader tool`·launchd 의
+    `trader daemon` 은 이것을 쓴다 (같은 폴더의 trader[.exe]; 없으면 자기 자신)."""
     exe = executable()
     if not is_frozen():
         return exe
@@ -66,6 +66,13 @@ def daemon_argv() -> list[str]:
     if is_frozen():
         return [str(cli_executable()), "daemon"]
     return [sys.executable, "-m", "trader", "daemon"]
+
+
+def icons_dir() -> Path:
+    """트레이 아이콘 PNG 가 있는 폴더: 번들 `_internal/icons`, 개발 `packaging/icons`."""
+    if is_frozen():
+        return resource_dir() / "icons"
+    return Path(__file__).resolve().parents[3] / "packaging" / "icons"
 
 
 def templates_dir() -> Path:

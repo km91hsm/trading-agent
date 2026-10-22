@@ -766,8 +766,12 @@ def run(
     web: bool = True,
     scheduler_factory: Callable[[], Any] | None = None,
     lock_path: Path | None = None,
+    install_signals: bool = True,
 ) -> dict:
-    """잠금 → (web 스레드) → 잡 등록 → scheduler.start(). 반환은 start 가 끝난 뒤(종료 시)."""
+    """잠금 → (web 스레드) → 잡 등록 → scheduler.start(). 반환은 start 가 끝난 뒤(종료 시).
+
+    install_signals=False 는 트레이 모드(데몬이 비메인 스레드): 시그널은 호출자가 메인 스레드에서
+    건다."""
     base = deps.state if deps.state is not None else paths.state_dir()
     lock = Lock(lock_path or base / "daemon.lock")
     if not lock.acquire():
@@ -800,7 +804,8 @@ def run(
                 misfire_grace_time=120,
             )
         logger.info("데몬 시작: 잡 %d개, web=%s", len(jobs), web)
-        _install_signals(scheduler, deps.stop_event)
+        if install_signals:
+            _install_signals(scheduler, deps.stop_event)
         try:
             scheduler.start()
         except (KeyboardInterrupt, SystemExit):

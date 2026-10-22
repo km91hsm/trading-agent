@@ -1014,6 +1014,9 @@ def app_cmd(
     no_browser: bool = typer.Option(False, "--no-browser", help="브라우저를 열지 않음"),
     browser_delay: float = typer.Option(1.5, "--browser-delay", help="웹 기동 뒤 브라우저까지 초"),
     dry_run: bool = typer.Option(False, "--dry-run", help="세션·monitor 를 dry_run 으로"),
+    tray: bool = typer.Option(
+        False, "--tray", help="메뉴바/작업표시줄 아이콘으로 제어 (데몬은 백그라운드 스레드)"
+    ),
 ) -> None:
     """번들 더블클릭 진입점: 초기화 → 데몬(스케줄 + 웹 UI) → 브라우저 (§10.2)."""
     import webbrowser
@@ -1042,13 +1045,98 @@ def app_cmd(
 
     if not no_browser:
         threading.Thread(target=open_when_ready, name="trader-open-browser", daemon=True).start()
-    try:
-        r = daemon_mod.run(deps, web=True)
-    finally:
-        finished.set()
+    if tray:
+        r = _run_with_tray(deps, daemon_mod, url=url, finished=finished)
+    else:
+        try:
+            r = daemon_mod.run(deps, web=True)
+        finally:
+            finished.set()
     if not r.get("ok"):
         typer.echo(f"오류: {r.get('error')}", err=True)
         raise typer.Exit(code=1)
+
+
+def _run_with_tray(deps, daemon_mod, *, url: str, finished: threading.Event) -> dict:
+    """데몬을 스레드에서 돌리고 메인 스레드는 트레이(pystray 는 메인 스레드 필수)를 맡는다.
+
+    종료(메뉴·시그널)는 scheduler.shutdown(wait=True) → 데몬 스레드가 잠금을 풀고 끝난 뒤 돌아온다.
+    pystray 가 없으면 경고 뒤 데몬 스레드를 기다리는 것으로 대신한다(터미널 모드와 같다)."""
+    import signal
+    import webbrowser
+
+    from trader.platform import bundle, procs, tray
+
+    holder: dict[str, Any] = {}
+    result: dict[str, Any] = {}
+
+    def scheduler_factory():
+        from apscheduler.schedulers.blocking import BlockingScheduler
+
+        holder["scheduler"] = BlockingScheduler(timezone=KST)
+        return holder["scheduler"]
+
+    def run_daemon() -> None:
+        try:
+            r = daemon_mod.run(
+                deps, web=True, install_signals=False, scheduler_factory=scheduler_factory
+            )
+            result.update(r)
+        except Exception as e:  # noqa: BLE001 - 스레드에서 죽으면 트레이가 알아야 한다
+            result.update(ok=False, error=str(e))
+        finally:
+            finished.set()
+
+    worker = threading.Thread(target=run_daemon, name="trader-daemon")
+    worker.start()
+    # 잠금 실패처럼 바로 끝나는 경우는 트레이를 띄우지 않는다
+    finished.wait(1.0)
+    if finished.is_set():
+        worker.join()
+        return result
+
+    quitting = threading.Event()
+
+    def shutdown() -> None:
+        if quitting.is_set():
+            return
+        quitting.set()
+        deps.stop_event.set()
+        sched = holder.get("scheduler")
+        if sched is not None:
+            try:
+                sched.shutdown(wait=True)
+            except Exception:  # noqa: BLE001
+                pass
+
+    def on_signal(signum, frame) -> None:
+        logging.getLogger("trader.daemon").info("시그널 %s 수신, 트레이·데몬을 종료합니다", signum)
+        threading.Thread(target=shutdown, name="trader-shutdown", daemon=True).start()
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            signal.signal(sig, on_signal)
+        except (ValueError, OSError):
+            pass
+
+    conn_factory = deps.conn_factory
+    try:
+        tray.run_tray(
+            state_fn=lambda: tray.read_state(conn_factory, url),
+            on_toggle_pause=lambda: tray.toggle_pause(conn_factory),
+            on_open_web=lambda: webbrowser.open(url),
+            on_open_logs=lambda: procs.open_folder(paths.state_dir() / "logs"),
+            on_quit=shutdown,
+            icon_dir=bundle.icons_dir(),
+            stop_event=deps.stop_event,
+        )
+    except tray.TrayUnavailable as e:
+        typer.echo(f"트레이 없이 실행합니다 ({e}). 종료는 Ctrl+C.")
+        worker.join()
+        return result
+    shutdown()
+    worker.join()
+    return result
 
 
 def _wait_for_port(

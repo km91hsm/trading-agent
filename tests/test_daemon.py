@@ -722,3 +722,14 @@ def test_schedule_analyze_key_is_optional():
     assert sched.kr.analyze is None and not hasattr(sched.kr, "analyze_hm")
     jobs = {j.id for j in daemon.build_jobs(sched, Settings(), markets=["KR"])}
     assert "kr_scan_analyze" in jobs
+
+
+def test_daemon_run_skips_signals_when_asked(project, conn, monkeypatch):
+    """트레이 모드는 데몬을 비메인 스레드에서 돌리므로 시그널 설치를 호출자가 맡는다."""
+    called = []
+    monkeypatch.setattr(daemon, "_install_signals", lambda *a, **k: called.append(a))
+    deps = _deps(conn, FakeMarket(), now=lambda: datetime.now(UTC))
+    daemon.run(deps, web=False, scheduler_factory=FakeScheduler, install_signals=False)
+    assert called == []
+    daemon.run(deps, web=False, scheduler_factory=FakeScheduler)
+    assert len(called) == 1

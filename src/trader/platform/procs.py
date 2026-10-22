@@ -6,6 +6,17 @@ import os
 import sys
 
 
+def open_folder(path: os.PathLike[str] | str) -> None:
+    """OS 파일 탐색기로 폴더를 연다 (트레이 '로그 폴더 열기')."""
+    import subprocess
+
+    if sys.platform == "win32":
+        os.startfile(str(path))  # type: ignore[attr-defined]
+        return
+    opener = "open" if sys.platform == "darwin" else "xdg-open"
+    subprocess.Popen([opener, str(path)], shell=False)
+
+
 def pid_alive(pid: int) -> bool:
     if pid <= 0:
         return False

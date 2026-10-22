@@ -110,6 +110,7 @@ def test_configure_without_stdout_skips_stream_handler(project, monkeypatch):
     monkeypatch.setattr(sys, "stdout", None)
     monkeypatch.setattr(sys, "stderr", None)
     logging_setup.configure(project / "state")
-    mine = [h for h in logging.getLogger().handlers if getattr(h, "name", None) == logging_setup._HANDLER_NAME]
+    root = logging.getLogger()
+    mine = [h for h in root.handlers if getattr(h, "name", None) == logging_setup._HANDLER_NAME]
     assert len(mine) == 1 and not any(type(h) is logging.StreamHandler for h in mine)
     logging_setup.reset()

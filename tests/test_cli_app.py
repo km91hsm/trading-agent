@@ -164,3 +164,98 @@ def test_version_flag_prints_version():
     r = CliRunner().invoke(app, ["--version"])
     assert r.exit_code == 0, r.stdout
     assert r.stdout.startswith("trader ") and r.stdout.split()[1][0].isdigit()
+
+
+def _paper_only(project):
+    import yaml
+
+    bundle.first_run_init(project)
+    acct = {"id": "paper-main", "env": "paper", "cano": "0", "markets": ["KR"], "mode": "auto"}
+    (project / "config" / "accounts.yaml").write_text(
+        yaml.safe_dump({"accounts": [acct]}), encoding="utf-8"
+    )
+
+
+def test_app_tray_runs_daemon_in_thread_and_quits(project, monkeypatch):
+    """--tray: 데몬은 스레드(시그널 미설치), 메인 스레드는 트레이. 종료 메뉴가 스케줄러를
+    wait=True 로 내리고 데몬 스레드가 끝난 뒤에야 명령이 돌아온다."""
+    import threading
+
+    from trader.platform import tray
+
+    _paper_only(project)
+    monkeypatch.setattr(cli, "_build_market", lambda s: None)
+    monkeypatch.setattr(cli, "_build_brokers", lambda s, a: [])
+    monkeypatch.setattr(cli, "_wait_for_port", lambda *a, **kw: True)
+    monkeypatch.setattr("webbrowser.open", lambda url: True)
+    seen: dict = {}
+    stopped = threading.Event()
+
+    class Sched:
+        def shutdown(self, wait=False):
+            seen["shutdown_wait"] = wait
+            stopped.set()
+
+    def fake_run(deps, **kw):
+        seen.update(kw)
+        sched = kw["scheduler_factory"]()
+        seen["sched"] = sched
+        stopped.wait(3)  # scheduler.start() 가 shutdown 까지 블로킹하는 것을 흉내
+        seen["daemon_thread"] = threading.current_thread().name
+        return {"ok": True}
+
+    def fake_tray(**kw):
+        seen["tray_thread"] = threading.current_thread().name
+        kw["on_quit"]()
+
+    monkeypatch.setattr("trader.daemon.run", fake_run)
+    monkeypatch.setattr(
+        "apscheduler.schedulers.blocking.BlockingScheduler", lambda *a, **k: Sched()
+    )
+    monkeypatch.setattr(tray, "run_tray", fake_tray)
+    r = CliRunner().invoke(app, ["app", "--tray", "--browser-delay", "0"])
+    assert r.exit_code == 0, r.stdout
+    assert seen["install_signals"] is False and seen["web"] is True
+    assert seen["shutdown_wait"] is True
+    assert seen["tray_thread"] == "MainThread" and seen["daemon_thread"] != "MainThread"
+
+
+def test_app_tray_falls_back_without_pystray(project, monkeypatch):
+    from trader.platform import tray
+
+    _paper_only(project)
+    monkeypatch.setattr(cli, "_build_market", lambda s: None)
+    monkeypatch.setattr(cli, "_build_brokers", lambda s, a: [])
+    monkeypatch.setattr(cli, "_wait_for_port", lambda *a, **kw: True)
+    monkeypatch.setattr("webbrowser.open", lambda url: True)
+
+    def slow_run(deps, **kw):
+        import time
+
+        time.sleep(1.5)  # 실제 데몬처럼 트레이가 뜬 뒤에도 살아 있다
+        return {"ok": True}
+
+    monkeypatch.setattr("trader.daemon.run", slow_run)
+
+    def no_tray(**kw):
+        raise tray.TrayUnavailable("pystray 없음")
+
+    monkeypatch.setattr(tray, "run_tray", no_tray)
+    r = CliRunner().invoke(app, ["app", "--tray", "--browser-delay", "0"])
+    assert r.exit_code == 0, r.stdout
+    assert "트레이" in r.stdout
+
+
+def test_app_tray_exits_when_daemon_fails_early(project, monkeypatch):
+    from trader.platform import tray
+
+    _paper_only(project)
+    monkeypatch.setattr(cli, "_build_market", lambda s: None)
+    monkeypatch.setattr(cli, "_build_brokers", lambda s, a: [])
+    monkeypatch.setattr("trader.daemon.run", lambda deps, **kw: {"ok": False, "error": "잠금 실패"})
+    def must_not_run(**kw):
+        raise AssertionError("트레이가 떠선 안 된다")
+
+    monkeypatch.setattr(tray, "run_tray", must_not_run)
+    r = CliRunner().invoke(app, ["app", "--tray", "--no-browser"])
+    assert r.exit_code == 1
