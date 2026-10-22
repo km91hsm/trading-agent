@@ -22,6 +22,17 @@ def executable() -> Path:
     return exe.resolve() if is_frozen() else exe
 
 
+def cli_executable() -> Path:
+    """콘솔 CLI 실행파일. 창 없는 TraderApp 으로 떠도 세션의 `trader tool`·launchd 의 `trader daemon` 은
+    이것을 쓴다 (같은 폴더의 trader[.exe]; 없으면 자기 자신)."""
+    exe = executable()
+    if not is_frozen():
+        return exe
+    suffix = ".exe" if sys.platform == "win32" else ""
+    cli = exe.parent / f"trader{suffix}"
+    return cli.resolve() if cli.exists() else exe
+
+
 def bundle_root() -> Path:
     """실행파일 폴더(frozen) 또는 저장소 루트."""
     if is_frozen():
@@ -47,13 +58,13 @@ def tool_command() -> str:
 
 def tool_bin_dir() -> Path:
     """도구 명령이 풀리도록 세션 PATH 앞에 둘 디렉터리 (실행파일 폴더 또는 venv bin)."""
-    return executable().parent
+    return cli_executable().parent
 
 
 def daemon_argv() -> list[str]:
     """데몬 등록(launchd·작업 스케줄러)에 쓰는 argv."""
     if is_frozen():
-        return [str(executable()), "daemon"]
+        return [str(cli_executable()), "daemon"]
     return [sys.executable, "-m", "trader", "daemon"]
 
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 import time
 from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
@@ -67,9 +68,11 @@ def configure(state_dir: Path, level: str = "INFO", *, name: str | None = None) 
     log_dir = Path(state_dir) / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     formatter = logging.Formatter(_FORMAT)
-    stream_handler = logging.StreamHandler()
     fname = f"trader-{name}.log" if name else "trader.log"
-    for h in (file_handler(log_dir / fname), stream_handler):
+    handlers: list[logging.Handler] = [file_handler(log_dir / fname)]
+    if sys.stderr is not None:  # 창 없는 실행파일(TraderApp)은 stderr 가 None — 파일 핸들러만
+        handlers.append(logging.StreamHandler())
+    for h in handlers:
         h.set_name(_HANDLER_NAME)
         h.setFormatter(formatter)
         root.addHandler(h)

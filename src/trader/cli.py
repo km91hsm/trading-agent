@@ -41,7 +41,7 @@ app.add_typer(kis_app, name="kis")
 def _force_utf8() -> None:
     """콘솔 출력을 UTF-8 로 고정한다 (Windows cp949 대비)."""
     for stream in (sys.stdout, sys.stderr):
-        if hasattr(stream, "reconfigure"):
+        if stream is not None and hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8", errors="replace")
 
 

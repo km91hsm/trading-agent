@@ -8,10 +8,11 @@ from __future__ import annotations
 
 import sys
 import traceback
+from pathlib import Path
 
 
 def _pause_if_console() -> None:
-    if sys.platform == "win32" and getattr(sys.stdin, "isatty", lambda: False)():
+    if sys.platform == "win32" and sys.stdin is not None and getattr(sys.stdin, "isatty", lambda: False)():
         try:
             input("오류로 종료됐습니다. Enter 를 누르면 닫힙니다")
         except EOFError:
@@ -27,8 +28,10 @@ def main() -> None:
     if not (bundle.is_frozen() and len(sys.argv) == 1):
         cli.app()
         return
+    # 창 없는 실행파일(TraderApp)은 트레이 모드, 콘솔 trader 는 지금처럼 터미널 모드
+    windowed = Path(sys.executable).stem.lower().startswith("traderapp")
     try:
-        cli.app(["app"])
+        cli.app(["app", "--tray"] if windowed else ["app"])
     except SystemExit as e:
         if e.code not in (0, None):
             _pause_if_console()

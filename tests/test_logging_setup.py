@@ -98,3 +98,18 @@ def test_rotation_permission_error_keeps_writing_same_file(project, monkeypatch)
     assert "잠긴 파일에 기록" in (log_dir / "trader.log").read_text(encoding="utf-8")
     assert mine.rolloverAt > int(time.time())  # 다음 회전 시각으로 미룬다
     assert not list(log_dir.glob("trader.log.*"))
+
+
+def test_configure_without_stdout_skips_stream_handler(project, monkeypatch):
+    """창 없는 TraderApp 은 stdout 이 None — 파일 핸들러만 붙이고 죽지 않는다."""
+    import logging
+    import sys
+
+    from trader import logging_setup
+
+    monkeypatch.setattr(sys, "stdout", None)
+    monkeypatch.setattr(sys, "stderr", None)
+    logging_setup.configure(project / "state")
+    mine = [h for h in logging.getLogger().handlers if getattr(h, "name", None) == logging_setup._HANDLER_NAME]
+    assert len(mine) == 1 and not any(type(h) is logging.StreamHandler for h in mine)
+    logging_setup.reset()

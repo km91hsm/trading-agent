@@ -43,3 +43,32 @@ def test_trader_home_still_wins_when_frozen(tmp_path, monkeypatch):
     home.mkdir()
     monkeypatch.setenv("TRADER_HOME", str(home))
     assert paths.project_root() == home.resolve()
+
+
+def test_cli_executable_prefers_console_binary(tmp_path, monkeypatch):
+    """창 없는 TraderApp 으로 떠도 세션의 `trader tool`·launchd 의 `trader daemon` 은 콘솔 CLI 를 쓴다."""
+    exe_dir = tmp_path / "dist" / "trader"
+    _freeze(monkeypatch, exe_dir)
+    (exe_dir / "trader").write_text("", encoding="utf-8")
+    monkeypatch.setattr(sys, "executable", str(exe_dir / "TraderApp"))
+    assert bundle.executable() == (exe_dir / "TraderApp").resolve()
+    assert bundle.cli_executable() == (exe_dir / "trader").resolve()
+    assert bundle.tool_bin_dir() == exe_dir.resolve()
+    assert bundle.daemon_argv() == [str((exe_dir / "trader").resolve()), "daemon"]
+
+
+def test_cli_executable_falls_back_to_self(tmp_path, monkeypatch):
+    exe_dir = tmp_path / "dist" / "trader"
+    _freeze(monkeypatch, exe_dir)
+    assert bundle.cli_executable() == bundle.executable()
+
+
+def test_spec_exe_names_differ_case_insensitively():
+    """Windows 는 대소문자를 무시하므로 Trader.exe/trader.exe 를 같이 둘 수 없다."""
+    import re
+
+    spec = (paths.Path(__file__).resolve().parents[2] / "packaging" / "trader.spec").read_text(encoding="utf-8")
+    names = re.findall(r'EXE\((?:.|\n)*?name="([^"]+)"', spec)
+    assert len(names) == 2, names
+    assert names[0].lower() != names[1].lower()
+    assert "trader" in names and "TraderApp" in names
