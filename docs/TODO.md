@@ -230,5 +230,6 @@
 - [x] Task 3 macOS `Trader.app` — TRADER_HOME 은 `.app` 옆, CLI 심링크, 배포 폴더 조립·스모크
 - [x] Task 4 트레이 메뉴 모델·pystray 어댑터 (`platform/tray.py`) (Phase 10 이연 회수)
 - [x] Task 5 `trader app --tray` — 데몬 스레드 + 메인 스레드 시그널/트레이, 종료가 세션을 기다린 뒤 잠금 해제
-- [ ] Task 6 문서·CLAUDE.md·TODO·로컬 실빌드
-- [ ] 완료 기준: `uv run pytest`·`ruff` 통과, 로컬 `build.py` 로 `dist/trader/{Trader.app, trader→, README.md}` + `trader-<버전>-macos-arm64.zip`(심링크 보존). 실기(사용자 확인 대기): zip 풀고 `Trader.app` 더블클릭 → 메뉴바 아이콘·브라우저 → 메뉴에서 일시정지/재개·종료; Windows 는 CI zip 으로 `TraderApp.exe` 작업표시줄 아이콘 확인
+- [x] Task 6 문서·CLAUDE.md·TODO·로컬 실빌드 (2026-10-23: `dist/trader/{Trader.app, trader→, README.md}`, `trader-0.1.3-macos-x86_64.zip` 심링크 405개 보존·309MB, 스모크 통과)
+- [x] 완료 기준(코드): `uv run pytest` 937건·`ruff` 통과, 로컬 `build.py` 로 `dist/trader/{Trader.app, trader→, README.md}` + `trader-0.1.3-macos-x86_64.zip`(심링크 보존) (2026-10-23 확인)
+- [ ] 실기(사용자 확인 대기): zip 풀고 `Trader.app` 더블클릭 → 메뉴바 ▲ 아이콘·브라우저 → 메뉴에서 일시정지/재개·로그 폴더·종료(실행 중 세션 대기 후 잠금 해제). 우클릭 열기 1회 필요. Windows 는 CI zip 으로 `TraderApp.exe` 작업표시줄 아이콘·콘솔 창 없음 확인. 릴리스 태그는 `pyproject` 버전과 같아야 CI 가 통과(`v0.1.4` 로 올릴 것)
