@@ -1,0 +1,65 @@
+// 용어 사전. 비개발자도 읽을 수 있게 라벨 + 한 줄 설명. Term 컴포넌트와 Badge 가 쓴다.
+
+export type TermEntry = { label: string; help: string };
+
+export const GLOSSARY: Record<string, TermEntry> = {
+  "action.BUY": { label: "매수", help: "새로 사는 결정. 목표 비중만큼 산다." },
+  "action.SELL": { label: "매도", help: "보유분을 전부 파는 결정." },
+  "action.HOLD": { label: "보유", help: "사지도 팔지도 않고 그대로 둔다." },
+  "action.ADD": { label: "추가 매수", help: "이미 보유한 종목을 목표 비중까지 더 산다." },
+  "action.TRIM": { label: "일부 매도", help: "보유분 일부를 팔아 목표 비중으로 줄인다." },
+  target_weight: { label: "목표 비중", help: "주문 뒤 이 종목이 계좌 평가액에서 차지할 비율." },
+  stop_loss: { label: "손절선", help: "이 가격 아래로 내려가면 monitor 가 즉시 전량 매도한다." },
+  take_profit: { label: "익절선", help: "이 가격에 닿으면 재평가 세션을 띄운다(자동 매도는 아님)." },
+  confidence: { label: "확신", help: "트레이더가 낸 0~1 확신. 0.5 미만이면 리스크 게이트가 수량을 반으로 줄인다." },
+  stance: { label: "성향", help: "최근 5거래일 실현손익이 음수면 보수(한도 축소), 아니면 보통." },
+  "stance.normal": { label: "보통", help: "종목당 25%·5종목 한도." },
+  "stance.conservative": { label: "보수", help: "최근 손실 뒤 축소 한도: 종목당 15%·2종목." },
+  "mode.auto": { label: "자동", help: "리스크 게이트를 통과한 주문을 바로 낸다." },
+  "mode.approve": { label: "승인", help: "주문 전에 사람 승인을 기다린다(30분 뒤 만료)." },
+  "mode.off": { label: "끔", help: "판정만 기록하고 주문은 내지 않는다." },
+  dry_run: { label: "모의 실행", help: "판정·기록까지만 하고 주문·승인 요청은 내지 않는다." },
+  trigger: { label: "트리거", help: "익절선·±7%·무효화 조건에 닿아 재평가 세션을 띄운 신호." },
+  sycophantic: { label: "토론 붕괴", help: "강세·약세가 한쪽으로 쏠려 라운드 0 의견을 우선한 경우." },
+  paused: { label: "일시정지", help: "거래 중단. 판정만 기록하고 주문·승인을 내지 않는다." },
+  nav: { label: "순자산(NAV)", help: "현금 + 보유 평가금액." },
+  mdd: { label: "최대 낙폭(MDD)", help: "기간 중 고점 대비 가장 크게 내려간 비율." },
+  benchmark_1n: { label: "1/N 벤치마크", help: "유니버스 전 종목에 같은 비중으로 매일 재배분했을 때의 수익." },
+  convergence: { label: "토론 수렴율", help: "토론이 붕괴하지 않고 끝난 결정의 비율." },
+  calibration: { label: "보정", help: "애널리스트 신호의 과거 적중률. 만기 결정 60건부터 켜진다." },
+  "stage.00_inputs": { label: "입력", help: "시세·재무·뉴스·수급·커뮤니티 수집 결과." },
+  "stage.05_quant": { label: "퀀트", help: "승격된 ML 모델의 상대 순위 확률." },
+  "stage.10_analyst": { label: "애널리스트", help: "기술·가치·뉴스/거시·심리 4명의 리포트." },
+  "stage.20_debate": { label: "토론", help: "강세·약세 리서처의 라운드별 주장." },
+  "stage.25_research_summary": { label: "요약", help: "토론을 합친 요약과 수렴 감시 결과." },
+  "stage.30_decision": { label: "결정", help: "트레이더의 최종 결정(action·비중·손절·익절)." },
+  "stage.31_decision": { label: "재평가", help: "트리거 뒤 다시 낸 결정(라운드 번호 붙음)." },
+  "stage.35_calibration": { label: "보정", help: "애널리스트 신호 적중률(만기 결정 60건부터)." },
+  "stage.40_risk_check": { label: "리스크 게이트", help: "계좌별 한도 판정. 거부 사유는 전부 적힌다." },
+  "stage.41_risk_check": { label: "재평가 게이트", help: "재평가 결정의 계좌별 한도 판정." },
+  "stage.45_stop_loss": { label: "손절 판정", help: "monitor 가 손절선 도달로 낸 계좌별 판정." },
+  "stage.50_order": { label: "주문", help: "계좌별 주문 요청·응답·상태." },
+  "stage.51_order": { label: "재평가 주문", help: "재평가 결정으로 나간 주문." },
+  "stage.55_order_sl": { label: "손절 주문", help: "손절로 나간 주문." },
+  "status.pending": { label: "대기", help: "승인을 기다리는 중." },
+  "status.approved": { label: "승인됨", help: "사람이 승인해 주문이 나갔다." },
+  "status.rejected": { label: "거부", help: "사람 또는 브로커가 거부했다." },
+  "status.expired": { label: "만료", help: "30분 안에 승인되지 않았거나 당일 마감으로 소멸했다." },
+  "status.accepted": { label: "접수", help: "브로커가 주문을 받았다(체결 전)." },
+  "status.filled": { label: "체결", help: "주문이 체결됐다." },
+  "status.cancelled": { label: "취소", help: "주문이 취소됐다." },
+  "status.failed": { label: "실패", help: "브로커가 주문을 거부했거나 오류가 났다." },
+  "status.unknown": { label: "상태 미확인", help: "요청은 나갔지만 응답을 못 받았다. 체결 동기화가 확정한다." },
+  "status.external": { label: "외부 주문", help: "이 시스템 밖(HTS 등)에서 낸 주문의 체결." },
+  "status.running": { label: "실행 중", help: "세션이 아직 돌고 있다." },
+  "status.ok": { label: "성공", help: "" },
+  "status.error": { label: "오류", help: "" },
+};
+
+export function termLabel(k: string): string {
+  return GLOSSARY[k]?.label ?? k;
+}
+
+export function termHelp(k: string): string {
+  return GLOSSARY[k]?.help ?? "";
+}
