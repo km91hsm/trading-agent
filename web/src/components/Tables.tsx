@@ -225,7 +225,7 @@ export function RiskChecksTable({ rows }: { rows: RiskCheck[] }) {
               </span>
             </Td>
             <Td>{r.action ? <Badge kind="action" value={r.action} /> : "—"}</Td>
-            <Td>{r.approved ? <Badge kind="ok" value="승인" /> : r.action === "HOLD" ? <Badge kind="neutral" value="주문 없음" /> : <Badge kind="status" value="rejected" />}</Td>
+            <Td className={r.approved ? "gate ok" : r.action === "HOLD" ? "gate muted" : "gate no"}>{r.approved ? `승인${r.adjusted_qty ? ` · ${r.adjusted_qty}주` : ""}` : r.action === "HOLD" ? "보유 · 주문 없음" : `거부 · ${r.reasons[0] ?? "사유 없음"}`}</Td>
             <Td num>{r.adjusted_qty ?? "—"}</Td>
             <Td className="muted wrap">{r.reasons.join(" / ") || "—"}</Td>
           </tr>

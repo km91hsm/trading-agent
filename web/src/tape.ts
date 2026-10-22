@@ -74,7 +74,7 @@ export function parseWatch(w: string): [string, string] {
   return [/^\d{6}$/.test(w) ? "KR" : "US", w];
 }
 
-function gateText(
+export function gateFor(
   d: Decision,
   rc: RiskCheck | undefined,
   order: Order | undefined,
@@ -156,7 +156,7 @@ export function buildTape(input: TapeInput): TapeRow[] {
     row.action = d.action;
     row.confidence = d.confidence;
     row.decisionId = d.id;
-    row.gate = gateText(d, rc, order, approval, now);
+    row.gate = gateFor(d, rc, order, approval, now);
     rows.set(k, row);
   }
   for (const w of input.watch) {

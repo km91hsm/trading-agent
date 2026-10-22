@@ -9,7 +9,7 @@ import { ErrorBox } from "../components/Tables";
 import { Term } from "../components/Term";
 import { fmtDate, fmtMoney, fmtPct, fmtTime, minutesLeft } from "../format";
 import { useApp, useLoad } from "../hooks";
-import { buildTape, marketPhase } from "../tape";
+import { buildTape, gateFor, marketPhase, type TapeRow } from "../tape";
 import type {
   Approval,
   CallsResp,
@@ -25,6 +25,8 @@ import type {
 
 type ModelsResp = { active: { version: string; metrics: { alpha: number | null; accuracy: number | null } } | null };
 type RlResp = { active: { version: string } | null; experiments: Array<{ version: string }> };
+/** 행마다 체크포인트에서 읽는 보조 정보 (30_decision 의 손절·익절·근거, 00_inputs 의 종목명). */
+type RowDetail = { name: string | null; stop_loss: string | null; take_profit: string | null; rationale: string | null };
 
 /** 시장별 오늘(운영일): KR 은 KST 날짜, US 는 뉴욕 날짜. */
 function runDates(now: Date): Record<string, string> {
@@ -33,10 +35,21 @@ function runDates(now: Date): Record<string, string> {
   return { KR: f("Asia/Seoul"), US: f("America/New_York") };
 }
 
+/** 데몬 생존은 API 가 없어 마지막 잡 시각으로 추정한다 — 정직하게 "신호" 라고 부른다. */
+function daemonSignal(lastRun: Run | undefined, now: Date): { text: string; stale: boolean } {
+  if (!lastRun) return { text: "신호 없음", stale: true };
+  const mins = Math.max(0, Math.round((now.getTime() - new Date(lastRun.started_at).getTime()) / 60000));
+  const ago = mins < 60 ? `${mins}분 전` : mins < 48 * 60 ? `${Math.round(mins / 60)}시간 전` : `${Math.round(mins / 1440)}일 전`;
+  return { text: `${lastRun.kind} ${ago}`, stale: mins > 90 };
+}
+
+const str = (v: unknown): string | null => (v === null || v === undefined || v === "" ? null : String(v));
+
 export function Dashboard() {
   const { accounts, accountId, events, tick } = useApp();
   const acct = accounts.find((a) => a.id === accountId);
   const markets = acct?.markets ?? [];
+  const otherAccounts = accounts.filter((a) => a.id !== accountId);
   const [now, setNow] = useState(() => new Date());
   useEffect(() => setNow(new Date()), [tick]); // 원장 이벤트마다 시각·운영일을 다시 잡는다
   const dates = useMemo(() => runDates(now), [now]);
@@ -54,6 +67,19 @@ export function Dashboard() {
   const checks = useLoad(() => (accountId ? getJson<RiskCheck[]>(withAccount("/api/risk-checks", accountId)) : null), [accountId, tick]);
   const orders = useLoad(() => (accountId ? getJson<Order[]>(withAccount("/api/orders", accountId)) : null), [accountId, tick]);
   const approvals = useLoad(() => (accountId ? getJson<Approval[]>(withAccount("/api/approvals", accountId)) : null), [accountId, tick]);
+  const otherChecks = useLoad(
+    () =>
+      otherAccounts.length
+        ? Promise.all(
+            otherAccounts.map((a) =>
+              getJson<RiskCheck[]>(withAccount("/api/risk-checks", a.id))
+                .then((rows) => [a.id, rows] as const)
+                .catch(() => [a.id, [] as RiskCheck[]] as const),
+            ),
+          ).then((pairs) => Object.fromEntries(pairs) as Record<string, RiskCheck[]>)
+        : null,
+    [otherAccounts.map((a) => a.id).join(), tick],
+  );
   const watch = useLoad(() => getJson<{ tickers: string[] }>("/api/control/watchlist"), [tick]);
   const calls = useLoad(() => getJson<CallsResp>("/api/calls", { days: "1" }), [tick]);
   const runs = useLoad(() => getJson<Run[]>("/api/runs", { limit: "30" }), [tick]);
@@ -86,26 +112,50 @@ export function Dashboard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [pfKR.data, pfUS.data, decisions.data, checks.data, orders.data, approvals.data, watch.data, dates, now],
   );
-  const selRow = tape.find((r) => r.key === sel) ?? null;
-  const selDecision = useLoad(
+  // 행별 보조 정보: 결정이 있는 행만, 30_decision + 00_inputs 두 파일 (로컬 서버라 N 요청이 부담 없다)
+  const decidedKeys = tape.filter((r) => r.decisionId).map((r) => r.key).join();
+  const details = useLoad(
     () =>
-      selRow?.decisionId
-        ? getJson<Checkpoint>("/api/checkpoint", {
-            ticker: selRow.ticker,
-            market: selRow.market,
-            date: dates[selRow.market],
-            stage: "30_decision",
-          })
+      decidedKeys
+        ? Promise.all(
+            tape
+              .filter((r) => r.decisionId)
+              .map(async (r) => {
+                const q = { ticker: r.ticker, market: r.market, date: dates[r.market] };
+                const [dec, inp] = await Promise.all([
+                  getJson<Checkpoint>("/api/checkpoint", { ...q, stage: "30_decision" }).catch(() => null),
+                  getJson<Checkpoint>("/api/checkpoint", { ...q, stage: "00_inputs" }).catch(() => null),
+                ]);
+                const d = (dec?.data ?? {}) as Record<string, unknown>;
+                const meta = ((inp?.data as Record<string, unknown> | undefined)?.meta ?? {}) as Record<string, unknown>;
+                const detail: RowDetail = {
+                  name: str(meta.name),
+                  stop_loss: str(d.stop_loss),
+                  take_profit: str(d.take_profit),
+                  rationale: str(d.rationale),
+                };
+                return [r.key, detail] as const;
+              }),
+          ).then((pairs) => Object.fromEntries(pairs) as Record<string, RowDetail>)
         : null,
-    [selRow?.decisionId],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [decidedKeys, dates.KR, dates.US],
   );
-  const selData = (selDecision.data?.data ?? null) as Record<string, unknown> | null;
+  const detailOf = (r: TapeRow): RowDetail | undefined => details.data?.[r.key];
+  const otherGate = (r: TapeRow, acctId: string) => {
+    if (!r.decisionId) return null;
+    const d = (decisions.data ?? []).find((x) => x.id === r.decisionId);
+    const rc = (otherChecks.data?.[acctId] ?? []).filter((x) => x.decision_id === r.decisionId).sort((a, b) => b.id - a.id)[0];
+    return d ? gateFor(d, rc, undefined, undefined, now) : null;
+  };
+  const selRow = tape.find((r) => r.key === sel) ?? null;
 
   const todayOrders = (orders.data ?? []).filter((o) => fmtDate(o.created_at) === dates.KR || fmtDate(o.created_at) === dates.US);
   const pendingApprovals = (approvals.data ?? []).filter((a) => a.status === "pending");
   const runsToday = (runs.data ?? []).filter((r) => fmtDate(r.started_at) === dates.KR);
   const errorsToday = runsToday.filter((r) => r.status === "error");
   const lastRun = runs.data?.[0];
+  const signal = daemonSignal(lastRun, now);
   const cap = settings.data?.llm?.daily_session_cap;
   const loading = (pfKR.loading || pfUS.loading || decisions.loading) && !tape.length;
   const anyError = pfKR.error || pfUS.error || decisions.error || checks.error || orders.error || approvals.error;
@@ -155,6 +205,12 @@ export function Dashboard() {
           </Td>
           <Td num>{vs1n === null ? "—" : <Delta value={vs1n} pct />}</Td>
         </tr>
+        <tr>
+          <Td>
+            <Term k="convergence" />
+          </Td>
+          <Td num>{fmtPct(rep.convergence_rate, 0)}</Td>
+        </tr>
       </tbody>
     );
   };
@@ -165,18 +221,12 @@ export function Dashboard() {
         <h1>대시보드</h1>
         <p className="sub">
           {fmtDate(now.toISOString())} · {phase.label} · {fmtTime(now.toISOString(), "KR")} KST
-          {acct && (
-            <>
-              {" "}
-              · {acct.id} <Badge kind="env" value={acct.env} /> <Badge kind="mode" value={acct.mode} />
-            </>
-          )}
         </p>
       </header>
 
       <div className="statusline" role="status">
-        <span>
-          마지막 잡 <b>{lastRun ? `${lastRun.kind} ${fmtTime(lastRun.started_at, "KR")}` : "없음"}</b>
+        <span className={signal.stale ? "err" : ""} title="데몬 생존을 직접 묻는 API 가 없어 마지막 잡 시각으로 추정한다">
+          데몬 신호 <b>{signal.text}</b>
         </span>
         <span>
           오늘 세션 <b>{calls.data?.sessions_today ?? 0}{cap ? ` / ${cap}` : ""}</b> · ${(calls.data?.cost_today ?? 0).toFixed(2)}
@@ -219,61 +269,77 @@ export function Dashboard() {
                     <Th num>
                       <Term k="confidence" />
                     </Th>
+                    <Th num>
+                      <Term k="stop_loss" />
+                    </Th>
                     <Th>게이트 · {accountId}</Th>
+                    {otherAccounts.map((a) => (
+                      <Th key={a.id}>
+                        {a.id} <Badge kind="env" value={a.env} />
+                      </Th>
+                    ))}
                   </tr>
                 </thead>
                 <tbody>
-                  {tape.map((r) => (
-                    <tr
-                      key={r.key}
-                      className={r.key === sel ? "sel clickable" : "clickable"}
-                      aria-selected={r.key === sel}
-                      onClick={() => setSel(r.key === sel ? null : r.key)}
-                    >
-                      <Td>
-                        <Mark kind={r.mark} />{" "}
-                        <span className="nm">
-                          {r.ticker}
-                          <small>{r.market}</small>
-                        </span>
-                      </Td>
-                      <Td num>
-                        <Num value={r.price} market={r.market} />
-                      </Td>
-                      <Td num>{r.qty || "—"}</Td>
-                      <Td num>{r.weight === null ? "—" : fmtPct(r.weight, 1)}</Td>
-                      <Td>{r.action ? <Badge kind="action" value={r.action} /> : <span className="muted">—</span>}</Td>
-                      <Td num>{r.confidence === null ? "—" : r.confidence.toFixed(2)}</Td>
-                      <Td className={r.gate.approved === false ? "gate no" : r.gate.approved ? "gate ok" : "gate muted"}>{r.gate.text}</Td>
-                    </tr>
-                  ))}
+                  {tape.map((r) => {
+                    const dt = detailOf(r);
+                    return (
+                      <tr
+                        key={r.key}
+                        className={r.key === sel ? "sel clickable" : "clickable"}
+                        aria-selected={r.key === sel}
+                        onClick={() => setSel(r.key === sel ? null : r.key)}
+                      >
+                        <Td>
+                          <Mark kind={r.mark} />{" "}
+                          <span className="nm">
+                            {dt?.name ?? r.ticker}
+                            <small>{dt?.name ? `${r.ticker} · ${r.market}` : r.market}</small>
+                          </span>
+                        </Td>
+                        <Td num>
+                          <Num value={r.price} market={r.market} />
+                        </Td>
+                        <Td num>{r.qty || "—"}</Td>
+                        <Td num>{r.weight === null ? "—" : fmtPct(r.weight, 1)}</Td>
+                        <Td>{r.action ? <Badge kind="action" value={r.action} /> : <span className="muted">—</span>}</Td>
+                        <Td num>{r.confidence === null ? "—" : r.confidence.toFixed(2)}</Td>
+                        <Td num>{dt?.stop_loss ? <Num value={dt.stop_loss} market={r.market} /> : "—"}</Td>
+                        <Td className={r.gate.approved === false ? "gate no" : r.gate.approved ? "gate ok" : "gate muted"}>{r.gate.text}</Td>
+                        {otherAccounts.map((a) => {
+                          const g = otherGate(r, a.id);
+                          return (
+                            <Td key={a.id} className={g?.approved === false ? "gate no" : g?.approved ? "gate ok" : "gate muted"}>
+                              {g ? g.text : "—"}
+                            </Td>
+                          );
+                        })}
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </Table>
             ) : (
               <EmptyState
                 title="오늘 결정도 보유도 아직 없어요"
-                hint="scan → analyze 가 돌면 채워져요. 데몬이 떠 있는지, 설정/제어의 일시정지 여부를 확인하세요."
+                hint="scan → analyze 가 돌면 채워져요. 위 '데몬 신호' 가 오래됐거나 일시정지면 먼저 그쪽을 보세요."
               />
             )}
             {selRow && (
               <div className="why-box">
                 {selRow.decisionId ? (
-                  selDecision.loading ? (
+                  details.loading && !details.data ? (
                     <span className="muted">근거 불러오는 중…</span>
-                  ) : selData ? (
+                  ) : detailOf(selRow) ? (
                     <>
-                      <b>{selRow.ticker}</b> {String(selData.rationale ?? "근거 없음")}
+                      <b>{detailOf(selRow)?.name ?? selRow.ticker}</b> {detailOf(selRow)?.rationale ?? "근거 없음"}
                       <span className="muted">
-                        {" "}
-                        · <Term k="target_weight" /> {selData.target_weight === undefined ? "—" : fmtPct(Number(selData.target_weight), 0)}
                         {" · "}
-                        <Term k="stop_loss" /> {fmtMoney(selData.stop_loss as string | null, selRow.market)}
-                        {" · "}
-                        <Term k="take_profit" /> {fmtMoney(selData.take_profit as string | null, selRow.market)}
+                        <Term k="take_profit" /> {fmtMoney(detailOf(selRow)?.take_profit, selRow.market)}
                       </span>
                     </>
                   ) : (
-                    <span className="muted">{selDecision.error ?? "결정 체크포인트 없음"}</span>
+                    <span className="muted">결정 체크포인트 없음</span>
                   )
                 ) : (
                   <span className="muted">오늘 이 종목의 결정이 없어요. 보유분은 monitor 가 손절선·트리거만 봅니다.</span>

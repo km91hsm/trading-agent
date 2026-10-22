@@ -63,9 +63,6 @@
 .tape tbody tr.clickable {
   cursor: pointer;
 }
-.tape tbody tr[data-env="real"] td:first-child {
-  box-shadow: inset 3px 0 0 var(--real);
-}
 .th-sort {
   background: none;
   border: 0;
@@ -316,7 +313,7 @@
   gap: var(--s-1);
   padding: 2px var(--s-2);
   border: 1px solid var(--rule);
-  border-radius: 999px;
+  border-radius: var(--radius);
   background: var(--panel);
   font-size: var(--t-xs);
 }
