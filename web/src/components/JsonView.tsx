@@ -2,10 +2,11 @@
 export function JsonView({ value, name, depth = 0 }: { value: unknown; name?: string; depth?: number }) {
   const label = name !== undefined ? <span className="k">{name}: </span> : null;
   if (value === null || typeof value !== "object") {
+    const kind = value === null ? "object" : typeof value;
     return (
       <div className="leaf">
         {label}
-        <span className={`v ${typeof value}`}>{typeof value === "string" ? value : JSON.stringify(value)}</span>
+        <span className={`v ${kind}`}>{typeof value === "string" ? value : JSON.stringify(value)}</span>
       </div>
     );
   }

@@ -162,3 +162,22 @@ describe("ApprovalsTable / ErrorBox", () => {
     expect(html(<ErrorBox error="500 Internal" />)).toContain("오류: 500 Internal");
   });
 });
+
+import { SettingsPage } from "./pages/Settings";
+import { ToastProvider } from "./components/Toast";
+
+describe("SettingsPage", () => {
+  it("토큰이 없으면 제어 버튼이 disabled", () => {
+    const out = html(
+      <AppContext.Provider value={fakeState({ events: null })}>
+        <ToastProvider>
+          <SettingsPage />
+        </ToastProvider>
+      </AppContext.Provider>,
+    );
+    // 일시정지·재개·변경·추가 네 버튼 모두 disabled
+    const disabled = (out.match(/<button[^>]*disabled=""/g) ?? []).length;
+    expect(disabled).toBeGreaterThanOrEqual(4);
+    expect(out).toContain("제어 토큰");
+  });
+});

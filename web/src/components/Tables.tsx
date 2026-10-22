@@ -1,4 +1,5 @@
 // 원장 표 네 개 (포지션·주문·승인·리스크 판정) — 시세표 열 문법(Table 원시요소)으로.
+import { useMemo } from "react";
 import { fmtDate, fmtDelta, fmtMoney, fmtTime, minutesLeft } from "../format";
 import type { Approval, Order, Position, RiskCheck } from "../types";
 import { Badge } from "./Badge";
@@ -121,7 +122,7 @@ export function ApprovalsTable({
   onApprove,
   onReject,
   realAccounts = [],
-  now = new Date(),
+  now,
 }: {
   rows: Approval[];
   onApprove?: (a: Approval) => void;
@@ -129,6 +130,7 @@ export function ApprovalsTable({
   realAccounts?: string[];
   now?: Date;
 }) {
+  const at = useMemo(() => now ?? new Date(), [now]);
   if (!rows.length) return <EmptyState title="승인 요청이 없어요" hint="승인 모드 계좌의 주문이 게이트를 통과하면 30분 동안 여기서 기다려요." />;
   const canAct = !!(onApprove && onReject);
   return (
@@ -150,7 +152,7 @@ export function ApprovalsTable({
       <tbody>
         {rows.map((a) => {
           const real = realAccounts.includes(a.account_id);
-          const left = minutesLeft(a.expires_at, now);
+          const left = minutesLeft(a.expires_at, at);
           const m = a.order.market ?? "KR";
           return (
             <tr key={a.id} data-env={real ? "real" : "paper"}>

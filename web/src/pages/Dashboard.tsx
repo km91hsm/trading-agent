@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { getJson, withAccount } from "../api";
 import { Badge } from "../components/Badge";
 import { EmptyState } from "../components/EmptyState";
@@ -37,7 +37,8 @@ export function Dashboard() {
   const { accounts, accountId, events, tick } = useApp();
   const acct = accounts.find((a) => a.id === accountId);
   const markets = acct?.markets ?? [];
-  const now = useMemo(() => new Date(), [tick]);
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => setNow(new Date()), [tick]); // 원장 이벤트마다 시각·운영일을 다시 잡는다
   const dates = useMemo(() => runDates(now), [now]);
   const [sel, setSel] = useState<string | null>(null);
 

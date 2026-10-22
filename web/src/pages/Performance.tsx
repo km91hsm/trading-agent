@@ -18,11 +18,9 @@ const pctNum = (v: number | null | undefined) => (v === null || v === undefined 
 export function PerformancePage() {
   const { accountId, accounts, tick, theme } = useApp();
   const acct = accounts.find((a) => a.id === accountId);
-  const [market, setMarket] = useState<Market>("KR");
-  useEffect(() => {
-    // 계좌를 바꾸면 그 계좌가 쓰는 첫 시장으로 맞춘다 (KR 을 쓰지 않는 계좌에서 400 방지)
-    if (acct && !acct.markets.includes(market)) setMarket(acct.markets[0] ?? "KR");
-  }, [acct, market]);
+  const [marketSel, setMarket] = useState<Market | null>(null);
+  // 계좌가 쓰지 않는 시장을 고른 채 계좌를 바꾸면 그 계좌의 첫 시장으로 (KR 을 쓰지 않는 계좌에서 400 방지)
+  const market: Market = marketSel && acct?.markets.includes(marketSel) ? marketSel : (acct?.markets[0] ?? "KR");
   const [days, setDays] = useState(30);
   const box = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);

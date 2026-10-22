@@ -7,7 +7,7 @@ import type { Theme } from "../theme";
 import { Badge } from "./Badge";
 import { Glyph, type GlyphName } from "./Glyph";
 
-export const LINKS: Array<[string, string]> = [
+const LINKS: Array<[string, string]> = [
   ["/", "대시보드"],
   ["/today", "오늘의 실행"],
   ["/orders", "주문/승인"],

@@ -627,3 +627,9 @@ pre.status {
 .pend-text {
   color: var(--pending);
 }
+.chips {
+  margin-top: var(--s-2);
+}
+.num-l {
+  text-align: left;
+}
