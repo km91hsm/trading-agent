@@ -1,6 +1,5 @@
 import { useState } from "react";
 import { getJson, postJson, withAccount } from "../api";
-import { Badge } from "../components/Badge";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { Section } from "../components/Section";
 import { Skeleton } from "../components/Skeleton";
@@ -42,11 +41,6 @@ export function OrdersPage() {
       <header className="page-h">
         <h1>주문/승인</h1>
         <p className="sub">
-          {acct ? (
-            <>
-              {acct.id} <Badge kind="env" value={acct.env} /> <Badge kind="mode" value={acct.mode} /> ·{" "}
-            </>
-          ) : null}
           승인 요청은 30분 뒤 만료되고 한 번만 실행돼요.{" "}
           {!token && <span className="pend-text">승인·거부하려면 설정/제어에서 토큰을 넣으세요.</span>}
         </p>
