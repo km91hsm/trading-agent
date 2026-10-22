@@ -567,3 +567,60 @@ pre.status {
   font-weight: 900;
   letter-spacing: -0.01em;
 }
+
+/* 파이프라인 판: 모든 단계가 같은 크기, 한 기준선 */
+.plates {
+  list-style: none;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: var(--s-2);
+}
+.plate {
+  border: var(--rule-w) solid var(--rule);
+  border-top: var(--rule-strong-w) solid var(--rule);
+  border-radius: var(--radius);
+  padding: var(--s-2) var(--s-3);
+  min-height: 96px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-1);
+  background: var(--panel);
+  color: var(--ink-2);
+}
+.plate.done {
+  border-top-color: var(--ink);
+  color: var(--ink);
+}
+.plate[data-optional] {
+  border-style: dashed;
+}
+.plate-h {
+  display: flex;
+  align-items: center;
+  gap: var(--s-1);
+  font-weight: 800;
+  font-size: var(--t-sm);
+}
+.plate-h .glyph {
+  color: var(--ok);
+}
+.plate-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 1.5px solid var(--rule);
+}
+.plate-sum {
+  font-size: var(--t-xs);
+  flex: 1;
+}
+.plate-files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-1);
+}
+.scroll-box {
+  max-height: 420px;
+  overflow: auto;
+}

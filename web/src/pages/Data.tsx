@@ -1,9 +1,15 @@
 import { useState } from "react";
 import { getJson } from "../api";
+import { EmptyState } from "../components/EmptyState";
+import { Section } from "../components/Section";
+import { Skeleton } from "../components/Skeleton";
+import { Table, Td, Th } from "../components/Table";
 import { ErrorBox } from "../components/Tables";
 import { useApp, useLoad } from "../hooks";
 import { type FeatureRow, type HistoryResp, KEY_COLUMNS, type LatestResp, type SortDir, fmt, sortRows } from "./features";
 import { TodayPage } from "./Today";
+
+const NUMERIC = new Set(KEY_COLUMNS.filter((c) => c !== "ticker" && c !== "sector"));
 
 function FeatureStore() {
   const { tick } = useApp();
@@ -13,7 +19,10 @@ function FeatureStore() {
   const [ticker, setTicker] = useState<string | null>(null);
   const latest = useLoad(() => getJson<LatestResp>(`/api/features/latest?market=${market}`), [market, tick]);
   const history = useLoad(
-    () => (ticker ? getJson<HistoryResp>(`/api/features/history?market=${market}&ticker=${encodeURIComponent(ticker)}&days=120`) : null),
+    () =>
+      ticker
+        ? getJson<HistoryResp>(`/api/features/history?market=${market}&ticker=${encodeURIComponent(ticker)}&days=120`)
+        : null,
     [market, ticker],
   );
   const onSort = (k: string) => {
@@ -26,72 +35,112 @@ function FeatureStore() {
   const rows: FeatureRow[] = sortRows(latest.data?.rows ?? [], sortKey, dir);
   const histCols = ["date", ...KEY_COLUMNS.filter((c) => c !== "ticker" && c !== "sector")];
   return (
-    <section>
-      <h2>피처 스토어</h2>
-      <p className="muted">
-        state/features/&lt;date&gt;.parquet 의 종목별 최신 행. `*_vs_sector` 는 같은 날·같은 섹터(config/sectors.yaml) 중앙값 대비,
-        결측(-)은 워밍업·미수집. 헤더를 누르면 정렬, 행을 누르면 아래에 최근 120행.
-      </p>
-      <div className="row">
-        <select value={market} onChange={(e) => { setMarket(e.target.value as "KR" | "US"); setTicker(null); }}>
-          <option value="KR">KR</option>
-          <option value="US">US</option>
-        </select>
-        <span className="muted">기준일 {latest.data?.asof ?? "-"} · {rows.length}종목</span>
-      </div>
-      <ErrorBox error={latest.error} />
-      {latest.data && !rows.length && <p className="muted">피처 행 없음 — `trader features backfill` 뒤 다시 보세요</p>}
-      {rows.length > 0 && (
-        <div style={{ overflowX: "auto" }}>
-          <table>
+    <>
+      <Section
+        title="피처 스토어"
+        aside={
+          <>
+            기준일 {latest.data?.asof ?? "—"} · {rows.length}종목
+          </>
+        }
+      >
+        <p className="note">
+          종목별 최신 행. <code>*_vs_sector</code> 는 같은 날·같은 섹터 중앙값 대비, 결측(-)은 워밍업·미수집. 머리를 누르면
+          정렬, 행을 누르면 아래에 최근 120행.
+        </p>
+        <div className="row">
+          <label className="field">
+            <span>시장</span>
+            <select
+              value={market}
+              onChange={(e) => {
+                setMarket(e.target.value as "KR" | "US");
+                setTicker(null);
+              }}
+            >
+              <option value="KR">KR</option>
+              <option value="US">US</option>
+            </select>
+          </label>
+        </div>
+        <ErrorBox error={latest.error} />
+        {latest.loading && !latest.data ? (
+          <Skeleton rows={6} cols={8} />
+        ) : rows.length ? (
+          <Table dense caption="피처 스토어 최신 행">
             <thead>
               <tr>
                 {KEY_COLUMNS.map((c) => (
-                  <th key={c} style={{ cursor: "pointer", whiteSpace: "nowrap" }} onClick={() => onSort(c)}>
-                    {c}{sortKey === c ? (dir === "asc" ? " ▲" : " ▼") : ""}
-                  </th>
+                  <Th key={c} num={NUMERIC.has(c)} onSort={() => onSort(c)} sorted={sortKey === c ? dir : null}>
+                    {c}
+                  </Th>
                 ))}
               </tr>
             </thead>
             <tbody>
               {rows.map((r) => (
-                <tr key={String(r.ticker)} className={r.ticker === ticker ? "sel" : ""} style={{ cursor: "pointer" }} onClick={() => setTicker(String(r.ticker))}>
-                  {KEY_COLUMNS.map((c) => <td key={c}>{fmt(r[c])}</td>)}
+                <tr
+                  key={String(r.ticker)}
+                  className={r.ticker === ticker ? "sel clickable" : "clickable"}
+                  aria-selected={r.ticker === ticker}
+                  onClick={() => setTicker(String(r.ticker))}
+                >
+                  {KEY_COLUMNS.map((c) => (
+                    <Td key={c} num={NUMERIC.has(c)}>
+                      {fmt(r[c])}
+                    </Td>
+                  ))}
                 </tr>
               ))}
             </tbody>
-          </table>
-        </div>
-      )}
+          </Table>
+        ) : (
+          latest.data && <EmptyState title="피처 행이 없어요" hint="`trader features backfill` 뒤 다시 보세요." />
+        )}
+      </Section>
       {ticker && (
-        <>
-          <h3>{market} {ticker} 최근 120행</h3>
+        <Section title={`${market} ${ticker} 최근 120행`} aside="최신 날짜가 위">
           <ErrorBox error={history.error} />
-          {history.data && !history.data.rows.length && <p className="muted">행 없음</p>}
-          {history.data && history.data.rows.length > 0 && (
-            <div style={{ overflowX: "auto", maxHeight: 420, overflowY: "auto" }}>
-              <table>
+          {history.loading && !history.data ? (
+            <Skeleton rows={4} cols={8} />
+          ) : history.data && history.data.rows.length ? (
+            <div className="scroll-box">
+              <Table dense caption="피처 이력">
                 <thead>
-                  <tr>{histCols.map((c) => <th key={c} style={{ whiteSpace: "nowrap" }}>{c}</th>)}</tr>
+                  <tr>
+                    {histCols.map((c) => (
+                      <Th key={c} num={c !== "date"}>
+                        {c}
+                      </Th>
+                    ))}
+                  </tr>
                 </thead>
                 <tbody>
                   {[...history.data.rows].reverse().map((r) => (
-                    <tr key={String(r.date)}>{histCols.map((c) => <td key={c}>{fmt(r[c])}</td>)}</tr>
+                    <tr key={String(r.date)}>
+                      {histCols.map((c) => (
+                        <Td key={c} num={c !== "date"}>
+                          {fmt(r[c])}
+                        </Td>
+                      ))}
+                    </tr>
                   ))}
                 </tbody>
-              </table>
+              </Table>
             </div>
+          ) : (
+            history.data && <EmptyState title="이력이 없어요" />
           )}
-        </>
+        </Section>
       )}
-    </section>
+    </>
   );
 }
 
 export function DataPage() {
   return (
     <>
-      <TodayPage title="데이터 탐색 (00_inputs)" inputsOnly />
+      <TodayPage title="데이터" inputsOnly />
       <FeatureStore />
     </>
   );

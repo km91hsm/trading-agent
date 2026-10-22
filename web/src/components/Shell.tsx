@@ -1,5 +1,5 @@
 // 앱 셸: 상단 바(브랜드·계좌·장 상태·상태 배지·테마) + 좌측 내비(좁으면 서랍) + 본문.
-import { useEffect, useState, type ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { NavLink, useLocation } from "react-router-dom";
 import { useApp } from "../hooks";
 import { marketPhase } from "../tape";
@@ -24,14 +24,15 @@ const THEME_NEXT: Record<Theme, Theme> = { light: "dark", dark: "system", system
 const THEME_GLYPH: Record<Theme, GlyphName> = { light: "sun", dark: "moon", system: "system" };
 const THEME_LABEL: Record<Theme, string> = { light: "라이트", dark: "다크", system: "시스템" };
 
-export function Shell({ children, now = new Date() }: { children: ReactNode; now?: Date }) {
+export function Shell({ children, now }: { children: ReactNode; now?: Date }) {
   const { accounts, accountId, setAccountId, token, events, theme, setTheme } = useApp();
   const [open, setOpen] = useState(false);
   const loc = useLocation();
-  useEffect(() => setOpen(false), [loc.pathname]);
+  // 경로가 바뀔 때마다 장 상태를 다시 계산한다 (초 단위 갱신은 필요 없다)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const phase = useMemo(() => marketPhase(now ?? new Date()), [now, loc.pathname]);
   const acct = accounts.find((a) => a.id === accountId);
   const env = acct?.env ?? "paper";
-  const phase = marketPhase(now);
   return (
     <div className="shell" data-env={env}>
       <header className="topbar">
@@ -88,7 +89,7 @@ export function Shell({ children, now = new Date() }: { children: ReactNode; now
       </header>
       <nav id="sidenav" className={open ? "sidenav open" : "sidenav"} aria-label="주 메뉴">
         {LINKS.map(([to, label]) => (
-          <NavLink key={to} to={to} end={to === "/"}>
+          <NavLink key={to} to={to} end={to === "/"} onClick={() => setOpen(false)}>
             {label}
           </NavLink>
         ))}
