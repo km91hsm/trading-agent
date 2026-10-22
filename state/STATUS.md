@@ -1,4 +1,4 @@
-# 시스템 상태 (생성: 2026-10-22 22:41 KST)
+# 시스템 상태 (생성: 2026-10-23 01:30 KST)
 
 ## 실행 제어
 - 일시정지: 아니오
@@ -12,24 +12,24 @@
 | real-main | real | off | KR,US | KR normal, US normal |
 
 ## 마지막 실행
+- analyze KR 2026-10-22T16:13:28.978456+00:00 → ok
 - analyze US 2026-10-20T09:08:19.086937+00:00 → ok
 - analyze KR 2026-10-17T07:16:55.300801+00:00 → ok
 - analyze KR 2026-10-17T06:29:17.941831+00:00 → ok
 - analyze KR 2026-10-17T00:53:21.290488+00:00 → ok
-- scan KR 2026-10-09T03:27:14.318886+00:00 → ok
 
 ## 오늘 LLM 호출
 - 0건, $0.00
 
 ## 최근 결정
+- 2026-10-23 KR 005930: HOLD w=0.0 conf=0.5
 - 2026-10-20 US AAPL: HOLD w=0.0 conf=0.5
 - 2026-10-17 KR 005930: HOLD w=0.0 conf=0.5
-- 2026-10-17 KR 000660: HOLD w=0.0 conf=0.5
 
 ## 성과(30일)
-- paper-main KR:  MDD  (1일)
+- paper-main KR: +0.0% MDD 0.0% (2일)
 - paper-main US:  MDD  (1일)
-- real-main KR:  MDD  (1일)
+- real-main KR: +0.0% MDD 0.0% (2일)
 - real-main US:  MDD  (1일)
 
 ## ML 모델
@@ -39,7 +39,7 @@
 - rl_sizer 20261020_074936: RL 0.001463 / 고정 0.01133 / LLM 0.0 · 미승격
 
 ## 결정 분포(30일)
-- HOLD 4
+- HOLD 5
 - 토론 수렴율: 0%
 
 ## 미승인 주문
@@ -62,6 +62,8 @@
 - Phase 12 ML 3단계 (`docs/superpowers/plans/2026-10-20-phase12-ml3.md`): 6/7
 - 2026-10-20 정리(Phase 12 보류 항목 회수, 추천대로 진행): 5/5
 - Phase 13 US 재무 history·섹터 자동 분류 (`docs/superpowers/plans/2026-10-20-phase13-us-history-sectors.md`): 4/4
+- Phase 14 웹 UI 재설계 (`docs/superpowers/plans/2026-10-23-phase14-web-redesign.md`): 12/13
+- Phase 15 번들 형식 정비 (`docs/superpowers/plans/2026-10-23-phase15-bundle-form.md`): 7/8
 
 ## 다음 할 일
 - 실기(사용자 확인 대기): 처음부터 끝까지 bundle 경로로 1회 실행해 리서처 라운드 0·1 묶음이 Agent 프롬프트에 전문으로 들어가는지 세션 기록으로 확인 (`uv run trader analyze --ticker 005930 --dry-run`, 체크포인트 비운 뒤, 약 $2.5)
