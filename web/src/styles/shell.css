@@ -1,0 +1,196 @@
+/* 셸: 상단 바 54px + 좌측 내비 188px + 본문. 1024px 미만은 내비가 서랍이 된다. */
+
+.shell {
+  min-height: 100vh;
+  display: grid;
+  grid-template-rows: var(--shell-top) 1fr;
+  grid-template-columns: var(--shell-nav) 1fr;
+}
+.topbar {
+  grid-column: 1 / 3;
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  padding: 0 var(--s-4);
+  background: var(--panel);
+  border-bottom: var(--rule-strong-w) solid var(--rule-strong);
+}
+.shell[data-env="real"] .topbar {
+  border-bottom-color: var(--real);
+}
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  font-weight: 900;
+  font-size: var(--t-lg);
+  letter-spacing: -0.01em;
+  margin-right: var(--s-2);
+}
+.brand .glyph {
+  color: var(--ink);
+}
+.acct {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+}
+.acct select {
+  min-height: 30px;
+}
+.acct[data-env="real"] select {
+  border-color: var(--real);
+}
+.phase {
+  font-size: var(--t-xs);
+  white-space: nowrap;
+}
+.spacer {
+  flex: 1;
+}
+.status-badges {
+  display: flex;
+  gap: var(--s-2);
+  align-items: center;
+}
+.badge-link {
+  display: inline-flex;
+}
+.nav-toggle,
+.theme-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  background: var(--panel);
+  cursor: pointer;
+  color: var(--ink);
+}
+.nav-toggle:hover,
+.theme-btn:hover {
+  background: var(--sel);
+}
+.nav-toggle {
+  display: none;
+}
+.sidenav {
+  grid-row: 2;
+  background: var(--panel);
+  border-right: var(--rule-w) solid var(--rule);
+  padding: var(--s-3) 0;
+  position: sticky;
+  top: var(--shell-top);
+  align-self: start;
+  height: calc(100vh - var(--shell-top));
+  overflow-y: auto;
+}
+.sidenav a {
+  display: block;
+  padding: var(--s-2) var(--s-5);
+  color: var(--ink-2);
+  font-size: var(--t-md);
+  border-right: 3px solid transparent;
+  transition: background var(--motion), color var(--motion);
+}
+.sidenav a:hover {
+  background: var(--sel);
+  color: var(--ink);
+}
+.sidenav a.active {
+  color: var(--ink);
+  font-weight: 800;
+  background: var(--paper);
+  border-right-color: var(--ink);
+}
+main {
+  grid-row: 2;
+  padding: var(--s-4) var(--s-6) var(--s-8);
+  min-width: 0;
+}
+.page-h {
+  margin-bottom: var(--s-3);
+}
+.page-h .sub {
+  color: var(--ink-2);
+  font-size: var(--t-sm);
+  margin-top: 2px;
+}
+.statusline {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2) var(--s-5);
+  padding: var(--s-2) 0;
+  margin: var(--s-3) 0 var(--s-4);
+  border-top: var(--rule-strong-w) solid var(--rule-strong);
+  border-bottom: var(--rule-w) solid var(--rule-strong);
+  font-size: var(--t-sm);
+}
+.statusline b {
+  font-weight: 800;
+}
+.statusline .err {
+  color: var(--danger);
+}
+.cols {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 330px;
+  gap: var(--s-5);
+  align-items: start;
+}
+.cols-2 {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: var(--s-5);
+  align-items: start;
+}
+
+@media (max-width: 1023px) {
+  .shell {
+    grid-template-columns: 1fr;
+  }
+  .nav-toggle {
+    display: inline-flex;
+  }
+  .sidenav {
+    position: fixed;
+    top: var(--shell-top);
+    left: 0;
+    width: min(280px, 80vw);
+    height: calc(100vh - var(--shell-top));
+    transform: translateX(-100%);
+    transition: transform var(--motion) ease-out;
+    box-shadow: var(--shadow);
+    z-index: 15;
+  }
+  .sidenav.open {
+    transform: translateX(0);
+  }
+  .phase {
+    display: none;
+  }
+  main {
+    padding: var(--s-4) var(--s-4) var(--s-7);
+  }
+  .cols,
+  .cols-2 {
+    grid-template-columns: 1fr;
+  }
+}
+@media (max-width: 599px) {
+  .status-badges .badge-ok,
+  .status-badges .badge-neutral {
+    display: none;
+  }
+  .brand span {
+    display: none;
+  }
+  .acct .badge {
+    display: none;
+  }
+}

@@ -1,6 +1,8 @@
 import { Suspense, lazy } from "react";
 import { BrowserRouter, Route, Routes } from "react-router-dom";
-import { Nav } from "./components/Nav";
+import { Shell } from "./components/Shell";
+import { Skeleton } from "./components/Skeleton";
+import { ToastProvider } from "./components/Toast";
 import { AppContext, useAppState } from "./hooks";
 import { AccountPage } from "./pages/Account";
 import { ComparePage } from "./pages/Compare";
@@ -21,26 +23,27 @@ export default function App() {
   const state = useAppState();
   return (
     <AppContext.Provider value={state}>
-      <BrowserRouter>
-        <Nav />
-        <main>
-          <Suspense fallback={<p className="muted">불러오는 중…</p>}>
-            <Routes>
-              <Route path="/" element={<Dashboard />} />
-              <Route path="/account" element={<AccountPage />} />
-              <Route path="/compare" element={<ComparePage />} />
-              <Route path="/today" element={<TodayPage />} />
-              <Route path="/orders" element={<OrdersPage />} />
-              <Route path="/chart" element={<ChartPage />} />
-              <Route path="/data" element={<DataPage />} />
-              <Route path="/ml" element={<MlPage />} />
-              <Route path="/performance" element={<PerformancePage />} />
-              <Route path="/settings" element={<SettingsPage />} />
-              <Route path="*" element={<Dashboard />} />
-            </Routes>
-          </Suspense>
-        </main>
-      </BrowserRouter>
+      <ToastProvider>
+        <BrowserRouter>
+          <Shell>
+            <Suspense fallback={<Skeleton rows={6} />}>
+              <Routes>
+                <Route path="/" element={<Dashboard />} />
+                <Route path="/account" element={<AccountPage />} />
+                <Route path="/compare" element={<ComparePage />} />
+                <Route path="/today" element={<TodayPage />} />
+                <Route path="/orders" element={<OrdersPage />} />
+                <Route path="/chart" element={<ChartPage />} />
+                <Route path="/data" element={<DataPage />} />
+                <Route path="/ml" element={<MlPage />} />
+                <Route path="/performance" element={<PerformancePage />} />
+                <Route path="/settings" element={<SettingsPage />} />
+                <Route path="*" element={<Dashboard />} />
+              </Routes>
+            </Suspense>
+          </Shell>
+        </BrowserRouter>
+      </ToastProvider>
     </AppContext.Provider>
   );
 }

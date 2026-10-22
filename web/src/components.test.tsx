@@ -78,3 +78,54 @@ describe("Badge / EmptyState / Glyph / Term", () => {
     expect(out).toContain("title=");
   });
 });
+
+import { MemoryRouter } from "react-router-dom";
+import { Shell } from "./components/Shell";
+import { AppContext, type AppState } from "./hooks";
+
+function fakeState(over: Partial<AppState> = {}): AppState {
+  return {
+    accounts: [
+      { id: "paper-main", env: "paper", markets: ["KR", "US"], mode: "auto", yaml_mode: "auto", stance_by_market: {}, nav_by_market: {}, pending_approvals: 0 },
+      { id: "real-main", env: "real", markets: ["KR"], mode: "off", yaml_mode: "off", stance_by_market: {}, nav_by_market: {}, pending_approvals: 2 },
+    ],
+    accountId: "paper-main",
+    setAccountId: () => {},
+    token: null,
+    setToken: () => {},
+    events: { orders: 0, approvals_pending: 2, approvals: 0, runs: 0, decisions: 0, triggers: 0, watchlist: "", paused: true },
+    tick: 0,
+    reloadAccounts: () => {},
+    theme: "system",
+    setTheme: () => {},
+    ...over,
+  };
+}
+
+describe("Shell", () => {
+  const render = (over: Partial<AppState> = {}) =>
+    html(
+      <AppContext.Provider value={fakeState(over)}>
+        <MemoryRouter>
+          <Shell now={new Date("2026-10-23T13:41:00+09:00")}>
+            <p>본문</p>
+          </Shell>
+        </MemoryRouter>
+      </AppContext.Provider>,
+    );
+  it("실전 계좌를 고르면 셸에 data-env=real 표식이 붙는다", () => {
+    expect(render({ accountId: "real-main" })).toContain('class="shell" data-env="real"');
+    expect(render()).toContain('class="shell" data-env="paper"');
+  });
+  it("미승인·일시정지 배지와 조회 전용 배지, 장 상태를 보여 준다", () => {
+    const out = render();
+    expect(out).toContain("미승인 2");
+    expect(out).toContain("일시정지");
+    expect(out).toContain("조회 전용");
+    expect(out).toContain("KR 정규장 · US 개장 전");
+    expect(out).toContain("본문");
+  });
+  it("토큰이 있으면 제어 가능 배지", () => {
+    expect(render({ token: "T" })).toContain("제어 가능");
+  });
+});

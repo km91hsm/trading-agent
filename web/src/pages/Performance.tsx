@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { LineSeries, createChart, type IChartApi, type Time } from "lightweight-charts";
 import { getJson, withAccount } from "../api";
-import { AccountPicker } from "../components/AccountPicker";
 import { ErrorBox } from "../components/Tables";
 import { useApp, useLoad } from "../hooks";
 import type { Market } from "../types";
@@ -70,7 +69,6 @@ export function PerformancePage() {
     <section>
       <h1>성과</h1>
       <div className="row">
-        <AccountPicker />
         <label>
           시장
           <select value={market} onChange={(e) => setMarket(e.target.value as Market)}>

@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
 import { getJson, postJson, withAccount } from "../api";
-import { AccountPicker } from "../components/AccountPicker";
 import { ApprovalsTable, ErrorBox, OrdersTable, PositionsTable } from "../components/Tables";
 import { useApp, useLoad } from "../hooks";
 import { stanceText } from "../stance";
@@ -32,7 +31,6 @@ export function AccountPage() {
     <section>
       <h1>계좌 상세</h1>
       <div className="row">
-        <AccountPicker />
         <label>
           시장
           <select value={market} onChange={(e) => setMarket(e.target.value as Market)}>

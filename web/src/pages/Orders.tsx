@@ -1,6 +1,5 @@
 import { useState } from "react";
 import { getJson, postJson, withAccount } from "../api";
-import { AccountPicker } from "../components/AccountPicker";
 import { ApprovalsTable, ErrorBox, OrdersTable, RiskChecksTable } from "../components/Tables";
 import { useApp, useLoad } from "../hooks";
 import type { Approval, Order, RiskCheck } from "../types";
@@ -42,7 +41,6 @@ export function OrdersPage() {
     <section>
       <h1>주문/승인</h1>
       <div className="row">
-        <AccountPicker />
         {!token && <span className="muted">승인·거부는 설정에서 토큰을 넣어야 합니다</span>}
         {msg && <span>{msg}</span>}
       </div>

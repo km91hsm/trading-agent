@@ -4,6 +4,7 @@ import "pretendard/dist/web/variable/pretendardvariable-dynamic-subset.css";
 import "./styles/tokens.css";
 import "./styles/base.css";
 import "./styles/components.css";
+import "./styles/shell.css";
 import App from "./App";
 import { applyTheme, themeStore } from "./theme";
 

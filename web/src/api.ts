@@ -82,8 +82,9 @@ export type EventSnapshot = {
   approvals_pending: number;
   approvals: number;
   runs: number;
-  calls: number;
   decisions: number;
+  triggers: number;
+  watchlist: string;
   paused: boolean;
 };
 

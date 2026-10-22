@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useState } from "react";
 import { getJson, subscribeEvents, tokenStore, type EventSnapshot } from "./api";
+import { applyTheme, themeStore, watchSystemTheme, type Theme } from "./theme";
 import type { Account } from "./types";
 
 export type AppState = {
@@ -11,6 +12,8 @@ export type AppState = {
   events: EventSnapshot | null;
   tick: number; // 이벤트가 올 때마다 증가 → 페이지가 다시 읽는다
   reloadAccounts: () => void;
+  theme: Theme;
+  setTheme: (t: Theme) => void;
 };
 
 export const AppContext = createContext<AppState | null>(null);
@@ -35,6 +38,7 @@ export function useAppState(): AppState {
   const [token, setTokenRaw] = useState<string | null>(() => tokenStore.get());
   const [events, setEvents] = useState<EventSnapshot | null>(null);
   const [tick, setTick] = useState(0);
+  const [theme, setThemeRaw] = useState<Theme>(() => themeStore.get());
 
   const reloadAccounts = useCallback(() => {
     getJson<Account[]>("/api/accounts")
@@ -48,6 +52,8 @@ export function useAppState(): AppState {
   useEffect(() => {
     reloadAccounts();
   }, [reloadAccounts]);
+
+  useEffect(() => watchSystemTheme(document, () => themeStore.get()), []);
 
   useEffect(() => {
     return subscribeEvents((snap) => {
@@ -69,7 +75,12 @@ export function useAppState(): AppState {
     tokenStore.set(t);
     setTokenRaw(t || null);
   };
-  return { accounts, accountId, setAccountId, token, setToken, events, tick, reloadAccounts };
+  const setTheme = (t: Theme) => {
+    themeStore.set(t);
+    setThemeRaw(t);
+    applyTheme(document, t);
+  };
+  return { accounts, accountId, setAccountId, token, setToken, events, tick, reloadAccounts, theme, setTheme };
 }
 
 export type Loaded<T> = { data: T | null; error: string | null; loading: boolean; reload: () => void };
