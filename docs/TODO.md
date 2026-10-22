@@ -208,3 +208,17 @@
 - [x] `trader universe sectors --market KR|US [--all] [--write]`: KIS 업종(KR `bstp_kor_isnm`, US `e_icod` — 둘 다 한글 업종명)을 `kr_industry_to_sector`/`us_industry_to_sector` 표로 바꿔 빠진 종목만 제안, `--write` 는 `kr:`/`us:` 블록 끝에 덧붙임(기존 항목·주석 불변). tr_id `OVS_PRICE_DETAIL`
 - [x] 실기(2026-10-20): KR 199·US 51 전체 조회 → 표에 없던 업종 보완(KR 일반서비스→기타·의료·정밀기기, US 는 코드가 아니라 업종명으로 와 표를 업종명으로 재작성). 수동 매핑과 KRX 업종이 다른 KR 41종목(지주사 '금융', 2차전지 '전기·전자' 등)은 의도된 수동 판단이라 유지. US 3종목(HON·LIN·WMT)은 KIS 가 업종을 주지 않음(수동 항목 있음)
 - [x] 보류 항목 회수(2026-10-20): EDGAR 정정 공시(10-K/A·10-Q/A)는 같은 결산일 원본을 덮음(asof 까지 제출분만), 상대 라벨은 market 결측 행을 조용히 버리지 않고 ValueError, `universe sectors --write` 는 templates 를 KIS 제안이 아닌 config 값으로 동기화(`sector_suggest.sync`, config 에만 있던 수동 항목 포함)
+
+## Phase 14 웹 UI 재설계 (`docs/superpowers/plans/2026-10-23-phase14-web-redesign.md`)
+- [x] impeccable init: `PRODUCT.md` (2026-10-23)
+- [x] 방향 선택: 재굴림 1 → "신문 증권면 시세표" 배정, 사용자 선택 (2026-10-23). 방향 계약 `.impeccable/surfaces/web-src-app-tsx.md`
+- [ ] Task 1 토큰·베이스·Pretendard·테마
+- [ ] Task 2 아이콘·표 원시요소·공통 컴포넌트·용어 사전
+- [ ] Task 3 셸(상단 바·사이드 내비·서랍·테마)·App·SSE 타입 일치
+- [ ] Task 4 차트 헬퍼 chart.ts·팔레트 토큰화·차트/성과 페이지
+- [ ] Task 5 대시보드(운영 상태 줄·오늘의 시세표·주문/승인·성과 블록)
+- [ ] Task 6 오늘의 실행 파이프라인 판·데이터
+- [ ] Task 7 주문/승인·계좌·계좌 비교
+- [ ] Task 8 ML·설정/제어
+- [ ] Task 9 검증(1440·390 × 라이트/다크 캡처)·detect·finish reviewer·documenter(DESIGN.md)·문서
+- [ ] 완료 기준: `npm run typecheck && npm test && npm run build`·`uv run pytest`·`ruff` 통과, 10페이지가 방향 계약대로 라이트/다크·390px 에서 동작, finish reviewer disposition ship, `DESIGN.md` 존재
