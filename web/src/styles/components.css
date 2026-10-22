@@ -544,3 +544,26 @@ pre.status {
   font-size: var(--t-sm);
   color: var(--ink-2);
 }
+
+/* 대시보드 */
+.statusline .pend {
+  color: var(--pending);
+}
+.gate.ok {
+  color: var(--ok);
+}
+.gate.no {
+  color: var(--danger);
+  font-weight: 700;
+}
+.why-box {
+  padding: var(--s-2) var(--s-2);
+  border-bottom: var(--rule-w) solid var(--rule);
+  font-size: var(--t-sm);
+  background: var(--sel);
+}
+.big {
+  font-size: var(--t-xl);
+  font-weight: 900;
+  letter-spacing: -0.01em;
+}

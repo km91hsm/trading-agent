@@ -145,3 +145,27 @@ export type PerformanceReport = {
   decision_distribution: Record<string, number>;
   convergence_rate: number | null;
 };
+
+export type Run = {
+  id: number;
+  kind: string;
+  market: string | null;
+  started_at: string;
+  finished_at: string | null;
+  status: string;
+  error: string | null;
+};
+
+export type CallsResp = {
+  calls: Array<{ id: number; agent: string; model: string | null; cost_usd: number | null; created_at: string; status?: string }>;
+  sessions_today: number;
+  cost_today: number;
+};
+
+export type SystemSettings = {
+  markets?: string[];
+  risk?: Record<string, unknown>;
+  debate_rounds?: number;
+  web?: Record<string, unknown>;
+  llm?: { budget_usd?: number; daily_session_cap?: number };
+};
