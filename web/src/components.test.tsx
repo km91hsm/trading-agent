@@ -129,3 +129,36 @@ describe("Shell", () => {
     expect(render({ token: "T" })).toContain("제어 가능");
   });
 });
+
+import { ApprovalsTable, ErrorBox } from "./components/Tables";
+import type { Approval } from "./types";
+
+const approval: Approval = {
+  id: 41,
+  decision_id: 1,
+  account_id: "real-main",
+  status: "pending",
+  requested_at: "2026-10-23T04:52:00+00:00",
+  expires_at: "2026-10-23T05:22:00+00:00",
+  decided_at: null,
+  order: { ticker: "000660", side: "TRIM", qty: 4, price: "230000", market: "KR" },
+};
+
+describe("ApprovalsTable / ErrorBox", () => {
+  it("토큰이 없으면(핸들러 없음) 승인·거부 버튼을 그리지 않는다", () => {
+    const out = html(<ApprovalsTable rows={[approval]} realAccounts={["real-main"]} />);
+    expect(out).not.toContain(">승인<");
+    expect(out).toContain('data-env="real"');
+    expect(out).toContain("230,000원");
+  });
+  it("핸들러가 있으면 pending 행에 승인·거부 버튼", () => {
+    const out = html(<ApprovalsTable rows={[approval]} onApprove={() => {}} onReject={() => {}} now={new Date("2026-10-23T04:55:00+00:00")} />);
+    expect(out).toContain(">승인<");
+    expect(out).toContain(">거부<");
+    expect(out).toContain("27분 뒤");
+  });
+  it("401 오류는 토큰 안내를 앞에 붙인다", () => {
+    expect(html(<ErrorBox error="토큰이 필요합니다" />)).toContain("설정/제어에서 토큰을 넣으세요");
+    expect(html(<ErrorBox error="500 Internal" />)).toContain("오류: 500 Internal");
+  });
+});

@@ -624,3 +624,6 @@ pre.status {
   max-height: 420px;
   overflow: auto;
 }
+.pend-text {
+  color: var(--pending);
+}

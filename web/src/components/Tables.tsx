@@ -1,50 +1,118 @@
+// 원장 표 네 개 (포지션·주문·승인·리스크 판정) — 시세표 열 문법(Table 원시요소)으로.
+import { fmtDate, fmtDelta, fmtMoney, fmtTime, minutesLeft } from "../format";
 import type { Approval, Order, Position, RiskCheck } from "../types";
+import { Badge } from "./Badge";
+import { EmptyState } from "./EmptyState";
+import { Delta, Num, Table, Td, Th } from "./Table";
+import { Term } from "./Term";
 
 export function ErrorBox({ error }: { error: string | null }) {
-  return error ? <div className="error">오류: {error}</div> : null;
+  if (!error) return null;
+  const auth = /토큰|401/.test(error);
+  return (
+    <div className="error" role="alert">
+      {auth ? "제어하려면 설정/제어에서 토큰을 넣으세요 — " : "오류: "}
+      {error}
+    </div>
+  );
 }
 
-export function PositionsTable({ rows }: { rows: Position[] }) {
-  if (!rows.length) return <p className="muted">보유 종목 없음</p>;
+export function PositionsTable({ rows, nav }: { rows: Position[]; nav?: string | null }) {
+  if (!rows.length) return <EmptyState title="보유 종목이 없어요" hint="매수가 체결되면 다음 판정 때 스냅샷에 잡혀요." />;
+  const navN = nav ? Number(nav) : NaN;
   return (
-    <table>
+    <Table caption="보유 종목">
       <thead>
         <tr>
-          <th>종목</th><th>수량</th><th>평균단가</th><th>현재가</th><th>평가금액</th>
+          <Th>종목</Th>
+          <Th num>수량</Th>
+          <Th num>평균단가</Th>
+          <Th num>현재가</Th>
+          <Th num>평단 대비</Th>
+          <Th num>평가금액</Th>
+          <Th num>비중</Th>
         </tr>
       </thead>
       <tbody>
-        {rows.map((p) => (
-          <tr key={p.ticker}>
-            <td>{p.ticker}</td><td>{p.qty}</td><td>{p.avg_price}</td><td>{p.current_price}</td>
-            <td>{p.eval_amount}</td>
-          </tr>
-        ))}
+        {rows.map((p) => {
+          const d = fmtDelta(p.current_price, p.avg_price);
+          const ev = p.eval_amount ? Number(p.eval_amount) : NaN;
+          return (
+            <tr key={`${p.market}:${p.ticker}`}>
+              <Td>
+                <span className="nm">
+                  {p.ticker}
+                  <small>{p.market}</small>
+                </span>
+              </Td>
+              <Td num>{p.qty}</Td>
+              <Td num>
+                <Num value={p.avg_price} market={p.market} />
+              </Td>
+              <Td num>
+                <Num value={p.current_price} market={p.market} />
+              </Td>
+              <Td num>{d ? <Delta value={d.pct} pct /> : "—"}</Td>
+              <Td num>
+                <Num value={p.eval_amount} market={p.market} />
+              </Td>
+              <Td num>{Number.isFinite(navN) && navN > 0 && Number.isFinite(ev) ? `${((ev / navN) * 100).toFixed(1)}%` : "—"}</Td>
+            </tr>
+          );
+        })}
       </tbody>
-    </table>
+    </Table>
   );
 }
 
 export function OrdersTable({ rows }: { rows: Order[] }) {
-  if (!rows.length) return <p className="muted">주문 없음</p>;
+  if (!rows.length) return <EmptyState title="주문이 없어요" hint="결정이 매수·매도로 나고 리스크 게이트를 통과하면 쌓여요." />;
   return (
-    <table>
+    <Table dense caption="주문">
       <thead>
         <tr>
-          <th>시각(UTC)</th><th>종목</th><th>방향</th><th>수량</th><th>가격</th><th>상태</th>
-          <th>접수번호</th><th>모드</th><th>메시지</th>
+          <Th>날짜</Th>
+          <Th>시각</Th>
+          <Th>종목</Th>
+          <Th>방향</Th>
+          <Th num>수량</Th>
+          <Th num>가격</Th>
+          <Th num>금액</Th>
+          <Th>상태</Th>
+          <Th>모드</Th>
+          <Th>접수번호</Th>
+          <Th>메시지</Th>
         </tr>
       </thead>
       <tbody>
         {rows.map((o) => (
-          <tr key={o.id} className={o.status}>
-            <td>{o.created_at.slice(0, 19)}</td><td>{o.market} {o.ticker}</td><td>{o.side}</td>
-            <td>{o.qty}</td><td>{o.price ?? "시장가"}</td><td>{o.status}</td>
-            <td>{o.order_no ?? "-"}</td><td>{o.mode}</td><td className="muted">{o.message}</td>
+          <tr key={o.id} data-status={o.status}>
+            <Td>{fmtDate(o.created_at)}</Td>
+            <Td>{fmtTime(o.created_at, o.market)}</Td>
+            <Td>
+              <span className="nm">
+                {o.ticker}
+                <small>{o.market}</small>
+              </span>
+            </Td>
+            <Td>{o.side}</Td>
+            <Td num>{o.qty}</Td>
+            <Td num>{o.price ? <Num value={o.price} market={o.market} /> : "시장가"}</Td>
+            <Td num>
+              <Num value={o.amount} market={o.market} />
+            </Td>
+            <Td>
+              <Badge kind="status" value={o.status} />
+            </Td>
+            <Td>
+              <Badge kind="mode" value={o.mode} />
+            </Td>
+            <Td className="muted">{o.order_no ?? "—"}</Td>
+            <Td className="muted">{o.message}</Td>
           </tr>
         ))}
       </tbody>
-    </table>
+    </Table>
   );
 }
 
@@ -52,63 +120,115 @@ export function ApprovalsTable({
   rows,
   onApprove,
   onReject,
+  realAccounts = [],
+  now = new Date(),
 }: {
   rows: Approval[];
-  onApprove?: (id: number) => void;
-  onReject?: (id: number) => void;
+  onApprove?: (a: Approval) => void;
+  onReject?: (a: Approval) => void;
+  realAccounts?: string[];
+  now?: Date;
 }) {
-  if (!rows.length) return <p className="muted">승인 요청 없음</p>;
+  if (!rows.length) return <EmptyState title="승인 요청이 없어요" hint="승인 모드 계좌의 주문이 게이트를 통과하면 30분 동안 여기서 기다려요." />;
+  const canAct = !!(onApprove && onReject);
   return (
-    <table>
+    <Table dense caption="승인 요청">
       <thead>
         <tr>
-          <th>#</th><th>계좌</th><th>주문</th><th>상태</th><th>요청</th><th>만료</th>
-          {onApprove && <th>처리</th>}
+          <Th>#</Th>
+          <Th>계좌</Th>
+          <Th>종목</Th>
+          <Th>방향</Th>
+          <Th num>수량</Th>
+          <Th num>가격</Th>
+          <Th>상태</Th>
+          <Th>요청</Th>
+          <Th>만료</Th>
+          {canAct && <Th>처리</Th>}
         </tr>
       </thead>
       <tbody>
-        {rows.map((a) => (
-          <tr key={a.id}>
-            <td>{a.id}</td><td>{a.account_id}</td>
-            <td>
-              {a.order.side} {a.order.market} {a.order.ticker} {a.order.qty}주 @{a.order.price ?? "시장가"}
-            </td>
-            <td>{a.status}</td><td>{a.requested_at.slice(0, 19)}</td><td>{a.expires_at.slice(0, 19)}</td>
-            {onApprove && onReject && (
-              <td>
-                {a.status === "pending" && (
-                  <>
-                    <button onClick={() => onApprove(a.id)}>승인</button>{" "}
-                    <button className="danger" onClick={() => onReject(a.id)}>거부</button>
-                  </>
-                )}
-              </td>
-            )}
-          </tr>
-        ))}
+        {rows.map((a) => {
+          const real = realAccounts.includes(a.account_id);
+          const left = minutesLeft(a.expires_at, now);
+          const m = a.order.market ?? "KR";
+          return (
+            <tr key={a.id} data-env={real ? "real" : "paper"}>
+              <Td>{a.id}</Td>
+              <Td>
+                {a.account_id} <Badge kind="env" value={real ? "real" : "paper"} />
+              </Td>
+              <Td>
+                <span className="nm">
+                  {a.order.ticker}
+                  <small>{m}</small>
+                </span>
+              </Td>
+              <Td>{a.order.side}</Td>
+              <Td num>{a.order.qty}</Td>
+              <Td num>{a.order.price ? fmtMoney(a.order.price, m) : "시장가"}</Td>
+              <Td>
+                <Badge kind="status" value={a.status} />
+              </Td>
+              <Td>
+                {fmtDate(a.requested_at)} {fmtTime(a.requested_at, "KR")}
+              </Td>
+              <Td>{a.status === "pending" ? (left === null ? "—" : `${left}분 뒤`) : fmtTime(a.expires_at, "KR")}</Td>
+              {canAct && (
+                <Td>
+                  {a.status === "pending" && (
+                    <span className="row tight">
+                      <button type="button" className="btn btn-sm btn-primary" onClick={() => onApprove?.(a)}>
+                        승인
+                      </button>
+                      <button type="button" className="btn btn-sm btn-danger" onClick={() => onReject?.(a)}>
+                        거부
+                      </button>
+                    </span>
+                  )}
+                </Td>
+              )}
+            </tr>
+          );
+        })}
       </tbody>
-    </table>
+    </Table>
   );
 }
 
 export function RiskChecksTable({ rows }: { rows: RiskCheck[] }) {
-  if (!rows.length) return <p className="muted">판정 없음</p>;
+  if (!rows.length) return <EmptyState title="리스크 판정이 없어요" hint="결정이 나면 계좌마다 한도 판정이 기록돼요." />;
   return (
-    <table>
+    <Table dense caption="리스크 판정">
       <thead>
         <tr>
-          <th>날짜</th><th>종목</th><th>결정</th><th>승인</th><th>수량</th><th>사유</th>
+          <Th>날짜</Th>
+          <Th>종목</Th>
+          <Th>결정</Th>
+          <Th>판정</Th>
+          <Th num>수량</Th>
+          <Th>
+            사유 (<Term k="stance">전부 기록</Term>)
+          </Th>
         </tr>
       </thead>
       <tbody>
         {rows.map((r) => (
           <tr key={r.id}>
-            <td>{r.date}</td><td>{r.market} {r.ticker}</td><td>{r.action}</td>
-            <td>{r.approved ? "예" : "아니오"}</td><td>{r.adjusted_qty ?? "-"}</td>
-            <td className="muted">{r.reasons.join(" / ")}</td>
+            <Td>{r.date ?? fmtDate(r.created_at)}</Td>
+            <Td>
+              <span className="nm">
+                {r.ticker ?? "—"}
+                <small>{r.market}</small>
+              </span>
+            </Td>
+            <Td>{r.action ? <Badge kind="action" value={r.action} /> : "—"}</Td>
+            <Td>{r.approved ? <Badge kind="ok" value="승인" /> : <Badge kind="status" value="rejected" />}</Td>
+            <Td num>{r.adjusted_qty ?? "—"}</Td>
+            <Td className="muted">{r.reasons.join(" / ") || "—"}</Td>
           </tr>
         ))}
       </tbody>
-    </table>
+    </Table>
   );
 }
