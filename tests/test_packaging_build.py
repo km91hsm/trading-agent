@@ -41,3 +41,42 @@ def test_force_utf8_lets_korean_result_json_print(monkeypatch):
     print(json.dumps({"init": "생성: config/accounts.yaml"}, ensure_ascii=False))
     sys.stdout.flush()
     assert "생성" in raw.getvalue().decode("utf-8")
+
+
+def test_dist_name_uses_version_and_friendly_platform():
+    build = _load_build()
+    assert build.dist_name("0.1.3", "darwin", "arm64") == "trader-0.1.3-macos-arm64"
+    assert build.dist_name("0.1.3", "darwin", "x86_64") == "trader-0.1.3-macos-x86_64"
+    assert build.dist_name("0.1.3", "win32", "AMD64") == "trader-0.1.3-windows-x86_64"
+    assert build.dist_name("0.2.0", "linux", "aarch64") == "trader-0.2.0-linux-arm64"
+
+
+def test_project_version_reads_pyproject():
+    build = _load_build()
+    v = build.project_version()
+    assert v and v[0].isdigit()
+
+
+def test_make_zip_preserves_symlinks_and_includes_readme(tmp_path):
+    """zip 이 심링크를 실제 파일로 풀어 넣으면 268MB 가 396MB 가 된다 — 링크는 링크로."""
+    import os
+    import stat
+    import zipfile
+
+    build = _load_build()
+    dist = tmp_path / "trader"
+    (dist / "Trader.app" / "Contents" / "MacOS").mkdir(parents=True)
+    real = dist / "Trader.app" / "Contents" / "MacOS" / "trader"
+    real.write_text("bin", encoding="utf-8")
+    os.symlink("Trader.app/Contents/MacOS/trader", dist / "trader")
+    readme = tmp_path / "bundle-usage.md"
+    readme.write_text("# 사용법\n", encoding="utf-8")
+    out = build.make_zip(dist, "trader-0.1.3-macos-arm64", readme=readme)
+    assert out.name == "trader-0.1.3-macos-arm64.zip"
+    with zipfile.ZipFile(out) as zf:
+        names = zf.namelist()
+        assert "trader/README.md" in names
+        info = zf.getinfo("trader/trader")
+        assert stat.S_ISLNK(info.external_attr >> 16)
+        assert zf.read("trader/trader").decode() == "Trader.app/Contents/MacOS/trader"
+        assert zf.read("trader/Trader.app/Contents/MacOS/trader").decode() == "bin"

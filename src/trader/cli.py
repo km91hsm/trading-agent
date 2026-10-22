@@ -95,8 +95,24 @@ def _boot(
     return out
 
 
+def _version_callback(value: bool) -> None:
+    if value:
+        from importlib.metadata import PackageNotFoundError, version
+
+        try:
+            v = version("trader")
+        except PackageNotFoundError:
+            v = "0.0.0"
+        typer.echo(f"trader {v}")
+        raise typer.Exit()
+
+
 @app.callback()
-def main() -> None:
+def main(
+    version: bool = typer.Option(
+        False, "--version", help="버전을 출력하고 끝낸다", callback=_version_callback, is_eager=True
+    ),
+) -> None:
     _force_utf8()
 
 

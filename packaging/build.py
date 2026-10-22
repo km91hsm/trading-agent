@@ -10,7 +10,9 @@ import argparse
 import json
 import os
 import platform
+import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -109,14 +111,46 @@ def smoke(exe: Path) -> dict:
     return out
 
 
-def make_zip() -> Path:
-    name = f"trader-{sys.platform}-{platform.machine().lower()}"
-    target = ROOT / "dist" / f"{name}.zip"
+PLATFORM_NAMES = {"darwin": "macos", "win32": "windows", "linux": "linux"}
+ARCH_NAMES = {"amd64": "x86_64", "x64": "x86_64", "aarch64": "arm64"}
+
+
+def project_version() -> str:
+    """버전의 출처는 pyproject.toml 하나 (태그·zip 이름·Info.plist 가 같은 값을 쓴다)."""
+    text = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    m = re.search(r'^version\s*=\s*"([^"]+)"', text, re.M)
+    if not m:
+        raise SystemExit("pyproject.toml 에 version 이 없습니다")
+    return m.group(1)
+
+
+def dist_name(version: str, sys_platform: str, machine: str) -> str:
+    """zip 이름: trader-<버전>-<macos|windows|linux>-<arch>."""
+    arch = machine.lower()
+    arch = ARCH_NAMES.get(arch, arch)
+    return f"trader-{version}-{PLATFORM_NAMES.get(sys_platform, sys_platform)}-{arch}"
+
+
+def make_zip(dist_dir: Path, name: str, *, readme: Path | None = None) -> Path:
+    """dist_dir 을 `trader/` 최상위로 압축한다. 심링크는 링크로 보존하고(macOS framework·CLI 링크가
+    실제 파일로 풀리면 크기가 1.5배가 된다), README 가 있으면 최상위에 동봉한다."""
+    if readme is not None:
+        shutil.copy2(readme, dist_dir / "README.md")
+    target = dist_dir.parent / f"{name}.zip"
     if target.exists():
         target.unlink()
     with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as zf:
-        for p in sorted(DIST.rglob("*")):
-            zf.write(p, Path("trader") / p.relative_to(DIST))
+        for p in sorted(dist_dir.rglob("*")):
+            arc = (Path("trader") / p.relative_to(dist_dir)).as_posix()
+            if p.is_symlink():
+                zi = zipfile.ZipInfo(arc)
+                zi.create_system = 3  # unix: external_attr 의 상위 16비트가 st_mode
+                zi.external_attr = (stat.S_IFLNK | 0o755) << 16
+                zf.writestr(zi, os.readlink(p))
+            elif p.is_dir():
+                continue
+            else:
+                zf.write(p, arc)
     return target
 
 
@@ -125,14 +159,23 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--skip-web", action="store_true", help="웹 빌드 생략 (기존 web/dist 사용)")
     ap.add_argument("--skip-smoke", action="store_true")
+    ap.add_argument("--check-tag", metavar="TAG", help="v<버전> 태그가 pyproject 버전과 같은지만 확인하고 끝낸다")
     args = ap.parse_args()
+    if args.check_tag:
+        want = f"v{project_version()}"
+        if args.check_tag != want:
+            raise SystemExit(f"태그 {args.check_tag} 가 pyproject 버전 {want} 과 다릅니다")
+        print(want)
+        return
     if not args.skip_web:
         build_web()
     exe = build_bundle()
     result = {"exe": str(exe)}
     if not args.skip_smoke:
         result["smoke"] = smoke(exe)
-    result["zip"] = str(make_zip())
+    name = dist_name(project_version(), sys.platform, platform.machine())
+    result["zip"] = str(make_zip(DIST, name, readme=ROOT / "docs" / "bundle-usage.md"))
+    result["zip_name"] = f"{name}.zip"
     print(json.dumps(result, ensure_ascii=False, indent=1))
 
 

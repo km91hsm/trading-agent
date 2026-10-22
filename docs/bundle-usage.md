@@ -1,7 +1,7 @@
 # 번들(실행파일) 사용법 — macOS · Windows
 
-Python·uv 를 설치하지 않고 쓰는 배포본입니다. GitHub Releases 의 `trader-darwin-*.zip`(macOS) 또는
-`trader-win32-*.zip`(Windows) 을 받아 압축을 풉니다.
+Python·uv 를 설치하지 않고 쓰는 배포본입니다. GitHub Releases 의 `trader-<버전>-macos-<arm64|x86_64>.zip`(macOS) 또는
+`trader-<버전>-windows-x86_64.zip`(Windows) 을 받아 압축을 풉니다. 압축 안 최상위 `README.md` 가 이 문서입니다.
 
 ## 1. 폴더 구조
 

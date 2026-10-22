@@ -158,3 +158,9 @@ def test_selfcheck_reports_optional_modules(project):
     assert set(data["optional"]) == {"lightgbm", "stable_baselines3"}
     assert all(isinstance(v, bool) for v in data["optional"].values())
     assert data["ok"] is True
+
+
+def test_version_flag_prints_version():
+    r = CliRunner().invoke(app, ["--version"])
+    assert r.exit_code == 0, r.stdout
+    assert r.stdout.startswith("trader ") and r.stdout.split()[1][0].isdigit()

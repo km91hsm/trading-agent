@@ -169,7 +169,7 @@
 - [x] `packaging/trader.spec`·`packaging/build.py`·`.github/workflows/build.yml`; macOS 로컬 빌드·스모크 통과(2026-10-20, 268MB/zip 144MB; frozen 에서 `--help`·`init`·`status`·`tool status`·`web --help`·`control show` 정상)
 - [x] `docs/bundle-usage.md`, CLAUDE.md 규칙
 - [x] `v*` 태그 푸시 → GitHub Actions 가 번들을 릴리스에 첨부 (2026-10-22 v0.1.3: macOS arm64·**x86_64(Intel, macos-15-intel 추가)**·Windows 3종. v0.1.0~0.1.2 는 Windows 경로·cp1252 인코딩·로그 회전 문제로 Windows zip 이 빠졌었음)
-- [ ] 실기(사용자 확인 대기): v0.1.3 zip 을 풀어 더블클릭 → 웹 UI → `kis ping` (macOS 우클릭 열기·Windows SmartScreen 1회). Intel Mac 은 `trader-darwin-x86_64.zip`
+- [ ] 실기(사용자 확인 대기): v0.1.3 zip 을 풀어 더블클릭 → 웹 UI → `kis ping` (macOS 우클릭 열기·Windows SmartScreen 1회). Intel Mac 은 `trader-<버전>-macos-x86_64.zip`(v0.1.3 까지는 `trader-darwin-x86_64.zip`)
 - 범위 조정: 코드 서명·공증(개인 사용), 트레이 앱, lightgbm·torch 번들, 자동 업데이트는 제외(플랜 표)
 
 ## Phase 11 ML 2단계 (`docs/superpowers/plans/2026-10-20-phase11-ml2.md`)
@@ -225,7 +225,7 @@
 - [ ] 사용자 확인 대기: 브라우저에서 10페이지를 직접 보고 어색한 곳 피드백 → `/impeccable polish` 또는 `critique` 로 다듬기. 리뷰어가 캡처하지 못한 것: 다크 모드 전체 페이지, 차트 페이지(KIS 키 필요)
 
 ## Phase 15 번들 형식 정비 (`docs/superpowers/plans/2026-10-23-phase15-bundle-form.md`)
-- [ ] Task 1 `--version`·zip 이름에 버전·README 동봉·심링크 보존·CI 태그↔버전 검사
+- [x] Task 1 `--version`·zip 이름에 버전·README 동봉·심링크 보존·CI 태그↔버전 검사 (2026-10-23)
 - [ ] Task 2 앱 아이콘(`packaging/icons/`)·창 없는 `TraderApp` 실행파일 + 콘솔 CLI `trader` (`bundle.cli_executable`)
 - [ ] Task 3 macOS `Trader.app` — TRADER_HOME 은 `.app` 옆, CLI 심링크, 배포 폴더 조립·스모크
 - [ ] Task 4 트레이 메뉴 모델·pystray 어댑터 (`platform/tray.py`) (Phase 10 이연 회수)

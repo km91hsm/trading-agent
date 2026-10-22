@@ -127,7 +127,7 @@ RL 사이저는 실험 단계라 모의 계좌·BUY/ADD 에만 섀도 기록하�
 
 ## 6. 번들(실행파일)
 
-Python 없이 쓰는 배포본은 GitHub Releases 의 `trader-darwin-{arm64,x86_64}.zip`·`trader-win32-*.zip` 입니다.
+Python 없이 쓰는 배포본은 GitHub Releases 의 `trader-<버전>-macos-{arm64,x86_64}.zip`·`trader-<버전>-windows-x86_64.zip` 입니다.
 더블클릭(= `trader app`) 하나로 초기화 → 데몬 + 웹 UI → 브라우저가 열립니다. 사용법과 주의점은 `docs/bundle-usage.md`.
 빌드는 `uv run --group build python packaging/build.py`, CI(`.github/workflows/build.yml`)가 `v*` 태그에 세 OS 번들을 첨부합니다.
 `claude` CLI 는 번들하지 않습니다(구독 인증).
