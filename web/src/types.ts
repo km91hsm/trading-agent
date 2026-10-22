@@ -124,3 +124,24 @@ export type Checkpoint = {
   data: unknown;
   call: unknown;
 };
+
+export type PerformanceBench = { return: number | null; series: Array<{ time: string; value: number }> };
+export type PerformanceReport = {
+  account_id: string;
+  market: string;
+  days: number;
+  nav: Array<{ time: string; value: string }>;
+  metrics: {
+    return: number | null;
+    mdd: number | null;
+    sortino: number | null;
+    days: number;
+    start: string | null;
+    end: string | null;
+  };
+  benchmarks: { one_over_n: PerformanceBench; buy_and_hold: PerformanceBench; quant: PerformanceBench | null };
+  cost_sensitivity: Record<string, number>;
+  turnover: number;
+  decision_distribution: Record<string, number>;
+  convergence_rate: number | null;
+};

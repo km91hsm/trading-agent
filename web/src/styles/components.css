@@ -505,3 +505,42 @@ pre.status {
   height: 8px;
   background: var(--ink);
 }
+
+/* 차트 */
+.chart {
+  width: 100%;
+  min-height: 460px;
+  border: var(--rule-w) solid var(--rule);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.chart-sm {
+  min-height: 320px;
+}
+.legend {
+  list-style: none;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-4);
+  margin-top: var(--s-2);
+  font-size: var(--t-xs);
+  color: var(--ink-2);
+}
+.legend li {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-1);
+}
+.legend-sq {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  background: var(--pending);
+}
+.sub-h {
+  margin-top: var(--s-4);
+  margin-bottom: var(--s-1);
+  font-size: var(--t-sm);
+  color: var(--ink-2);
+}

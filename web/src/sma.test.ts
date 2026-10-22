@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Time } from "lightweight-charts";
-import { sma } from "./pages/Chart";
+import { sma } from "./chart";
 
 describe("sma", () => {
   it("n 번째 봉부터 평균을 낸다", () => {

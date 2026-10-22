@@ -1,28 +1,22 @@
 import { useEffect, useRef, useState } from "react";
 import { LineSeries, createChart, type IChartApi, type Time } from "lightweight-charts";
 import { getJson, withAccount } from "../api";
+import { chartOptions, chartPalette } from "../chart";
+import { Badge } from "../components/Badge";
+import { EmptyState } from "../components/EmptyState";
+import { Section } from "../components/Section";
+import { Skeleton } from "../components/Skeleton";
+import { Delta, Table, Td, Th } from "../components/Table";
 import { ErrorBox } from "../components/Tables";
+import { Term } from "../components/Term";
+import { fmtPct } from "../format";
 import { useApp, useLoad } from "../hooks";
-import type { Market } from "../types";
+import type { Market, PerformanceBench, PerformanceReport } from "../types";
 
-type Bench = { return: number | null; series: Array<{ time: string; value: number }> };
-type Report = {
-  account_id: string;
-  market: string;
-  days: number;
-  nav: Array<{ time: string; value: string }>;
-  metrics: { return: number | null; mdd: number | null; sortino: number | null; days: number; start: string | null; end: string | null };
-  benchmarks: { one_over_n: Bench; buy_and_hold: Bench; quant: Bench | null };
-  cost_sensitivity: Record<string, number>;
-  turnover: number;
-  decision_distribution: Record<string, number>;
-  convergence_rate: number | null;
-};
-
-const pct = (v: number | null | undefined) => (v === null || v === undefined ? "-" : `${(v * 100).toFixed(2)}%`);
+const pctNum = (v: number | null | undefined) => (v === null || v === undefined ? null : v * 100);
 
 export function PerformancePage() {
-  const { accountId, accounts, tick } = useApp();
+  const { accountId, accounts, tick, theme } = useApp();
   const acct = accounts.find((a) => a.id === accountId);
   const [market, setMarket] = useState<Market>("KR");
   useEffect(() => {
@@ -33,7 +27,10 @@ export function PerformancePage() {
   const box = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const rep = useLoad(
-    () => (accountId ? getJson<Report>(withAccount(`/api/performance?market=${market}&days=${days}`, accountId)) : null),
+    () =>
+      accountId
+        ? getJson<PerformanceReport>(withAccount(`/api/performance?market=${market}&days=${days}`, accountId))
+        : null,
     [accountId, market, days, tick],
   );
 
@@ -44,68 +41,166 @@ export function PerformancePage() {
       chartRef.current = null;
       return;
     }
-    const chart = createChart(box.current, { height: 320, layout: { textColor: "#ddd", background: { color: "#161a22" } }, grid: { vertLines: { color: "#222" }, horzLines: { color: "#222" } } });
+    const p = chartPalette(box.current);
+    const chart = createChart(box.current, chartOptions(p, 320));
     chartRef.current = chart;
     const base = parseFloat(rep.data.nav[0].value) || 1;
-    const nav = chart.addSeries(LineSeries, { color: "#f5a524", title: "NAV" });
-    nav.setData(rep.data.nav.map((p) => ({ time: p.time as Time, value: parseFloat(p.value) / base })));
-    const add = (b: Bench | null, color: string, title: string) => {
+    const nav = chart.addSeries(LineSeries, { color: p.ink, title: "NAV", lineWidth: 2 });
+    nav.setData(rep.data.nav.map((pt) => ({ time: pt.time as Time, value: parseFloat(pt.value) / base })));
+    const add = (b: PerformanceBench | null, color: string, title: string) => {
       if (!b || !b.series.length) return;
       const s = chart.addSeries(LineSeries, { color, title, lineWidth: 1 });
-      s.setData(b.series.map((p) => ({ time: p.time as Time, value: p.value })));
+      s.setData(b.series.map((pt) => ({ time: pt.time as Time, value: pt.value })));
     };
-    add(rep.data.benchmarks.one_over_n, "#8b5cf6", "1/N");
-    add(rep.data.benchmarks.buy_and_hold, "#2f81f7", "B&H");
-    add(rep.data.benchmarks.quant, "#22c55e", "quant");
+    add(rep.data.benchmarks.one_over_n, p.pending, "1/N");
+    add(rep.data.benchmarks.buy_and_hold, p.dn, "B&H");
+    add(rep.data.benchmarks.quant, p.ok, "quant");
     chart.timeScale().fitContent();
     return () => {
       chart.remove();
       chartRef.current = null;
     };
-  }, [rep.data]);
+  }, [rep.data, theme]);
 
   const m = rep.data?.metrics;
+  const b = rep.data?.benchmarks;
+  const dist = Object.entries(rep.data?.decision_distribution ?? {});
   return (
-    <section>
-      <h1>성과</h1>
+    <>
+      <header className="page-h">
+        <h1>성과</h1>
+        <p className="sub">
+          <Term k="nav" /> 는 판정 때마다 찍은 스냅샷, 벤치마크는 피처 스토어 종가. 실전 전환 준비도는 `trader readiness`.
+        </p>
+      </header>
       <div className="row">
-        <label>
-          시장
+        <label className="field">
+          <span>시장</span>
           <select value={market} onChange={(e) => setMarket(e.target.value as Market)}>
-            {(acct?.markets ?? ["KR"]).map((x) => (<option key={x}>{x}</option>))}
+            {(acct?.markets ?? ["KR"]).map((x) => (
+              <option key={x}>{x}</option>
+            ))}
           </select>
         </label>
-        <label>
-          기간(일)
+        <label className="field">
+          <span>기간(일)</span>
           <select value={days} onChange={(e) => setDays(Number(e.target.value))}>
-            {[30, 60, 90, 180, 365].map((d) => (<option key={d} value={d}>{d}</option>))}
+            {[30, 60, 90, 180, 365].map((d) => (
+              <option key={d} value={d}>
+                {d}
+              </option>
+            ))}
           </select>
         </label>
+        {acct && <Badge kind="env" value={acct.env} />}
       </div>
       <ErrorBox error={rep.error} />
-      {m && (
-        <div className="cards">
-          <div className="card"><h3>수익률</h3><div>{pct(m.return)}</div><div className="muted">{m.start} ~ {m.end} ({m.days}일)</div></div>
-          <div className="card"><h3>MDD</h3><div>{pct(m.mdd)}</div></div>
-          <div className="card"><h3>Sortino</h3><div>{m.sortino ?? "-"}</div></div>
-          <div className="card"><h3>회전율</h3><div>{pct(rep.data?.turnover ?? 0)}</div></div>
-          <div className="card"><h3>1/N</h3><div>{pct(rep.data?.benchmarks.one_over_n.return)}</div></div>
-          <div className="card"><h3>B&H</h3><div>{pct(rep.data?.benchmarks.buy_and_hold.return)}</div></div>
-          <div className="card"><h3>퀀트 단독</h3><div>{pct(rep.data?.benchmarks.quant?.return)}</div></div>
+      {rep.loading && !rep.data && <Skeleton rows={5} />}
+      {rep.data && (
+        <div className="cols-2">
+          <Section title="지표" aside={m?.start && m?.end ? `${m.start} ~ ${m.end} · ${m.days}일` : `${days}일`}>
+            <Table dense caption="성과 지표">
+              <tbody>
+                <tr>
+                  <Td>수익률</Td>
+                  <Td num>
+                    <Delta value={pctNum(m?.return)} pct />
+                  </Td>
+                </tr>
+                <tr>
+                  <Td>
+                    <Term k="mdd" />
+                  </Td>
+                  <Td num>
+                    <Delta value={pctNum(m?.mdd)} pct />
+                  </Td>
+                </tr>
+                <tr>
+                  <Td>Sortino</Td>
+                  <Td num>{m?.sortino ?? "—"}</Td>
+                </tr>
+                <tr>
+                  <Td>회전율</Td>
+                  <Td num>{fmtPct(rep.data.turnover)}</Td>
+                </tr>
+                <tr>
+                  <Td>
+                    <Term k="benchmark_1n" />
+                  </Td>
+                  <Td num>
+                    <Delta value={pctNum(b?.one_over_n.return)} pct />
+                  </Td>
+                </tr>
+                <tr>
+                  <Td>보유 종목 B&amp;H</Td>
+                  <Td num>
+                    <Delta value={pctNum(b?.buy_and_hold.return)} pct />
+                  </Td>
+                </tr>
+                <tr>
+                  <Td>퀀트 상위 5 단독</Td>
+                  <Td num>{b?.quant ? <Delta value={pctNum(b.quant.return)} pct /> : <span className="muted">승격 모델 없음</span>}</Td>
+                </tr>
+                <tr>
+                  <Td>
+                    <Term k="convergence" />
+                  </Td>
+                  <Td num>{fmtPct(rep.data.convergence_rate)}</Td>
+                </tr>
+              </tbody>
+            </Table>
+          </Section>
+          <Section title="비용 민감도" aside="왕복 비용을 바꿨을 때의 수익률">
+            <Table dense caption="비용 민감도">
+              <thead>
+                <tr>
+                  {Object.keys(rep.data.cost_sensitivity).map((k) => (
+                    <Th key={k} num>
+                      {k}bp
+                    </Th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  {Object.values(rep.data.cost_sensitivity).map((v, i) => (
+                    <Td key={i} num>
+                      <Delta value={pctNum(v)} pct />
+                    </Td>
+                  ))}
+                </tr>
+              </tbody>
+            </Table>
+            <h3 className="sub-h">결정 분포</h3>
+            <Table dense caption="결정 분포">
+              <tbody>
+                {dist.length ? (
+                  dist.map(([k, v]) => (
+                    <tr key={k}>
+                      <Td>
+                        <Badge kind="action" value={k} />
+                      </Td>
+                      <Td num>{v}</Td>
+                    </tr>
+                  ))
+                ) : (
+                  <tr>
+                    <Td colSpan={2} className="muted">
+                      기간 안 결정 없음
+                    </Td>
+                  </tr>
+                )}
+              </tbody>
+            </Table>
+          </Section>
         </div>
       )}
-      <div ref={box} className="chart" style={{ minHeight: 320 }} />
-      {rep.data && rep.data.nav.length < 2 && <p className="muted">스냅샷이 2일 이상 쌓이면 곡선이 표시됩니다.</p>}
-      <h2>비용 민감도 (왕복 bp)</h2>
-      <table>
-        <thead><tr>{Object.keys(rep.data?.cost_sensitivity ?? {}).map((k) => (<th key={k}>{k}bp</th>))}</tr></thead>
-        <tbody><tr>{Object.values(rep.data?.cost_sensitivity ?? {}).map((v, i) => (<td key={i}>{pct(v)}</td>))}</tr></tbody>
-      </table>
-      <h2>결정 분포 · 수렴율</h2>
-      <ul className="inline">
-        {Object.entries(rep.data?.decision_distribution ?? {}).map(([k, v]) => (<li key={k}>{k} <b>{v}</b></li>))}
-        <li>수렴율 <b>{rep.data?.convergence_rate === null || rep.data?.convergence_rate === undefined ? "-" : pct(rep.data.convergence_rate)}</b></li>
-      </ul>
-    </section>
+      <Section title="NAV 곡선" aside="시작일 = 1 로 정규화 · NAV(먹) · 1/N(황) · B&H(청) · quant(녹)">
+        <div ref={box} className="chart chart-sm" />
+        {rep.data && rep.data.nav.length < 2 && (
+          <EmptyState title="곡선을 그릴 스냅샷이 아직 부족해요" hint="판정이 이틀 이상 쌓이면 표시됩니다." />
+        )}
+      </Section>
+    </>
   );
 }
