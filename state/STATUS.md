@@ -1,4 +1,4 @@
-# 시스템 상태 (생성: 2026-10-23 01:30 KST)
+# 시스템 상태 (생성: 2026-10-23 02:27 KST)
 
 ## 실행 제어
 - 일시정지: 아니오
@@ -22,9 +22,9 @@
 - 0건, $0.00
 
 ## 최근 결정
-- 2026-10-23 KR 005930: HOLD w=0.0 conf=0.5
-- 2026-10-20 US AAPL: HOLD w=0.0 conf=0.5
-- 2026-10-17 KR 005930: HOLD w=0.0 conf=0.5
+- 2026-10-23 KR 삼성전자 005930: HOLD w=0.0 conf=0.5
+- 2026-10-20 US Apple Inc. AAPL: HOLD w=0.0 conf=0.5
+- 2026-10-17 KR 삼성전자 005930: HOLD w=0.0 conf=0.5
 
 ## 성과(30일)
 - paper-main KR: +0.0% MDD 0.0% (2일)
@@ -64,6 +64,7 @@
 - Phase 13 US 재무 history·섹터 자동 분류 (`docs/superpowers/plans/2026-10-20-phase13-us-history-sectors.md`): 4/4
 - Phase 14 웹 UI 재설계 (`docs/superpowers/plans/2026-10-23-phase14-web-redesign.md`): 12/13
 - Phase 15 번들 형식 정비 (`docs/superpowers/plans/2026-10-23-phase15-bundle-form.md`): 7/8
+- Phase 16 운영 가시성 (`docs/superpowers/plans/2026-10-23-phase16-ops-visibility.md`): 5/7
 
 ## 다음 할 일
 - 실기(사용자 확인 대기): 처음부터 끝까지 bundle 경로로 1회 실행해 리서처 라운드 0·1 묶음이 Agent 프롬프트에 전문으로 들어가는지 세션 기록으로 확인 (`uv run trader analyze --ticker 005930 --dry-run`, 체크포인트 비운 뒤, 약 $2.5)

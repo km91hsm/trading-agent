@@ -116,8 +116,14 @@ def test_daemon_endpoint_without_daemon_lists_schedule(client, deps):
     assert r["alive"] is False and r["jobs"] == []  # schedule 없음 → 예정표 비움
     deps.schedule = ScheduleConfig.model_validate(
         {
-            "kr": {"scan": "07:30", "monitor": {"start": "09:00", "end": "15:30", "interval_s": 60}},
-            "us": {"scan": "21:30", "monitor": {"start": "23:30", "end": "06:00", "interval_s": 60}},
+            "kr": {
+                "scan": "07:30",
+                "monitor": {"start": "09:00", "end": "15:30", "interval_s": 60},
+            },
+            "us": {
+                "scan": "21:30",
+                "monitor": {"start": "23:30", "end": "06:00", "interval_s": 60},
+            },
             "reflect": "16:30",
             "ml_train": {"weekday": "sat", "time": "10:00"},
         }

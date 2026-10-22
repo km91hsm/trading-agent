@@ -233,3 +233,12 @@
 - [x] Task 6 문서·CLAUDE.md·TODO·로컬 실빌드 (2026-10-23: `dist/trader/{Trader.app, trader→, README.md}`, `trader-0.1.3-macos-x86_64.zip` 심링크 405개 보존·309MB, 스모크 통과)
 - [x] 완료 기준(코드): `uv run pytest` 937건·`ruff` 통과, 로컬 `build.py` 로 `dist/trader/{Trader.app, trader→, README.md}` + `trader-0.1.3-macos-x86_64.zip`(심링크 보존) (2026-10-23 확인)
 - [ ] 실기(사용자 확인 대기): zip 풀고 `Trader.app` 더블클릭 → 메뉴바 ▲ 아이콘·브라우저 → 메뉴에서 일시정지/재개·로그 폴더·종료(실행 중 세션 대기 후 잠금 해제). 우클릭 열기 1회 필요. Windows 는 CI zip 으로 `TraderApp.exe` 작업표시줄 아이콘·콘솔 창 없음 확인. 릴리스 태그는 `pyproject` 버전과 같아야 CI 가 통과(`v0.1.4` 로 올릴 것)
+
+## Phase 16 운영 가시성 (`docs/superpowers/plans/2026-10-23-phase16-ops-visibility.md`)
+- [x] Task 1 종목명 — 원장 `ticker_names`(잔고·00_inputs 관측 시 upsert) + `names.py`(캐시 JSON 폴백, 네트워크 없음) + 알림·STATUS·텔레그램 '이름 코드' 표기 + `/api/names` + 프런트 `Ticker` (2026-10-23)
+- [x] Task 2 Claude 사용량 — 상태줄 관측 파일(`llm.usage_file`, `~/.claude/statusline-command.sh` 1줄) + `agent_calls` 5시간·7일 창 + `/api/system/usage` + 대시보드 블록
+- [x] Task 3 데몬 하트비트 — `heartbeat.py`(`state/daemon_heartbeat.json`) + `run_job`·APScheduler 리스너 + `/api/system/daemon` + 대시보드 데몬 상태·잡 표 + 텔레그램 `/status` 한 줄
+- [x] Task 4 '작동 방식' 페이지(`/how`) + 오늘의 실행 단계 링크
+- [x] 완료 기준(코드): `uv run pytest`·`ruff`·`npm run typecheck && npm test && npm run build` 통과, Chrome 으로 대시보드·오늘·주문·/how 확인 (2026-10-23 확인)
+- [ ] 사용자 확인 대기: 데몬을 켠 상태(`trader daemon` 또는 Trader.app)에서 대시보드 상태줄이 '데몬 실행 중 · n시간째' 로 바뀌고 잡 표의 마지막 실행·다음 예정이 채워지는지, 텔레그램 `/status` 에 "데몬 pid … 최근 잡:" 줄이 오는지
+- [ ] 사용자 확인 대기: 터미널에서 대화형 `claude` 를 한 번 연 뒤 대시보드 'Claude 사용량' 블록에 5시간·7일 사용률이 뜨는지(`~/.claude/rate_limits.json` 생성). 값은 대화형 세션이 상태줄을 그릴 때만 갱신된다

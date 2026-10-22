@@ -242,7 +242,7 @@ export function Dashboard() {
         <span title="구독 사용률 마지막 관측값 (대화형 claude 상태줄)">
           Claude{" "}
           <b>
-            {usage.data?.rate_limits ? `5h ${Math.round(usage.data.rate_limits.five_hour?.used_pct ?? 0)}% · 7d ${Math.round(usage.data.rate_limits.seven_day?.used_pct ?? 0)}%` : "관측 없음"}
+            {usage.data?.rate_limits ? `5h ${Math.round(usage.data.rate_limits.five_hour?.used_pct ?? 0)}% · 7d ${Math.round(usage.data.rate_limits.seven_day?.used_pct ?? 0)}%` : usage.data ? "관측 없음" : "확인 중"}
           </b>
         </span>
         <span className={pendingApprovals.length ? "pend" : ""}>

@@ -176,7 +176,7 @@ export function TodayPage({ title = "오늘의 실행", inputsOnly = false }: { 
                   setStage("");
                 }}
               >
-                <Ticker market={market} ticker={t} showMarket={false} /> <small className="muted">{today.data?.tickers[t].length}</small>
+                <Ticker market={market} ticker={t} showMarket={false} /> <small className="muted">· {today.data?.tickers[t].length}단계</small>
               </button>
             ))}
           </div>
