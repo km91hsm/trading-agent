@@ -226,9 +226,9 @@
 
 ## Phase 15 번들 형식 정비 (`docs/superpowers/plans/2026-10-23-phase15-bundle-form.md`)
 - [x] Task 1 `--version`·zip 이름에 버전·README 동봉·심링크 보존·CI 태그↔버전 검사 (2026-10-23)
-- [ ] Task 2 앱 아이콘(`packaging/icons/`)·창 없는 `TraderApp` 실행파일 + 콘솔 CLI `trader` (`bundle.cli_executable`)
-- [ ] Task 3 macOS `Trader.app` — TRADER_HOME 은 `.app` 옆, CLI 심링크, 배포 폴더 조립·스모크
-- [ ] Task 4 트레이 메뉴 모델·pystray 어댑터 (`platform/tray.py`) (Phase 10 이연 회수)
-- [ ] Task 5 `trader app --tray` — 데몬 스레드 + 메인 스레드 시그널/트레이, 종료가 세션을 기다린 뒤 잠금 해제
+- [x] Task 2 앱 아이콘(`packaging/icons/`)·창 없는 `TraderApp` 실행파일 + 콘솔 CLI `trader` (`bundle.cli_executable`)
+- [x] Task 3 macOS `Trader.app` — TRADER_HOME 은 `.app` 옆, CLI 심링크, 배포 폴더 조립·스모크
+- [x] Task 4 트레이 메뉴 모델·pystray 어댑터 (`platform/tray.py`) (Phase 10 이연 회수)
+- [x] Task 5 `trader app --tray` — 데몬 스레드 + 메인 스레드 시그널/트레이, 종료가 세션을 기다린 뒤 잠금 해제
 - [ ] Task 6 문서·CLAUDE.md·TODO·로컬 실빌드
 - [ ] 완료 기준: `uv run pytest`·`ruff` 통과, 로컬 `build.py` 로 `dist/trader/{Trader.app, trader→, README.md}` + `trader-<버전>-macos-arm64.zip`(심링크 보존). 실기(사용자 확인 대기): zip 풀고 `Trader.app` 더블클릭 → 메뉴바 아이콘·브라우저 → 메뉴에서 일시정지/재개·종료; Windows 는 CI zip 으로 `TraderApp.exe` 작업표시줄 아이콘 확인

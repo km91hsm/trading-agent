@@ -7,8 +7,12 @@ Python·uv 를 설치하지 않고 쓰는 배포본입니다. GitHub Releases �
 
 ```
 trader/                ← 이 폴더가 TRADER_HOME. 폴더째 다른 PC 로 복사해도 된다
-  trader (.exe)        ← 유일한 실행파일. 더블클릭 = 데몬 + 웹 UI + 브라우저
-  _internal/           ← Python 런타임·라이브러리·에이전트 프롬프트·웹 (건드리지 않음)
+  Trader.app           ← macOS: 더블클릭 = 메뉴바 아이콘 + 데몬 + 웹 UI + 브라우저 (Dock 에는 안 뜬다)
+  trader               ← macOS: 터미널용 CLI (Trader.app 안의 실행파일로 가는 링크)
+  TraderApp.exe        ← Windows: 더블클릭 = 작업표시줄 아이콘 + 데몬 + 웹 UI + 브라우저 (콘솔 창 없음)
+  trader.exe           ← Windows: 터미널용 CLI
+  _internal/           ← Windows 전용. 런타임·라이브러리·에이전트 프롬프트·웹 (macOS 는 .app 안에 있다)
+  README.md            ← 이 문서
   config/              ← settings·accounts·universe·schedule·sources·ml .yaml (첫 실행 때 생성)
   secrets/.env         ← API 키 (첫 실행 때 .env.example 만 생김 → 복사해서 채운다)
   state/               ← 원장 DB·runs·logs·features·models (실행하며 생김, 백업 대상)
@@ -28,8 +32,9 @@ trader/                ← 이 폴더가 TRADER_HOME. 폴더째 다른 PC 로 �
 
 ## 3. 첫 실행
 
-1. `trader`(.exe) 를 더블클릭합니다. 처음에는 `config/`·`secrets/.env.example`·`docs/` 가 만들어지고
-   웹 UI(http://127.0.0.1:8787)가 열립니다. 키가 없으면 수집·세션은 실패하지만 UI 는 뜹니다.
+1. `Trader.app`(macOS) 또는 `TraderApp.exe`(Windows) 를 더블클릭합니다. 메뉴바(작업표시줄)에 ▲ 아이콘이
+   뜨고, 처음에는 `config/`·`secrets/.env.example`·`docs/` 가 만들어지며 웹 UI(http://127.0.0.1:8787)가
+   열립니다. 키가 없으면 수집·세션은 실패하지만 UI 는 뜹니다.
    - macOS: 서명이 없어 "확인되지 않은 개발자" 경고가 뜨면 **우클릭 → 열기** 를 한 번 합니다. 그래도
      "악성 소프트웨어인지 확인할 수 없다" 로 막히면 터미널에서 `xattr -dr com.apple.quarantine trader/`
      를 한 번 실행합니다(압축 파일의 격리 표시 제거).
@@ -45,7 +50,10 @@ trader/                ← 이 폴더가 TRADER_HOME. 폴더째 다른 PC 로 �
 
 ## 4. 평소 운용
 
-- 더블클릭(= `trader app`) 하나로 스케줄 데몬 + 웹 UI 가 돕니다. 창을 닫으면 멈춥니다.
+- 더블클릭(= `trader app --tray`) 하나로 스케줄 데몬 + 웹 UI 가 돕니다. 메뉴바(작업표시줄)의 ▲ 아이콘 메뉴:
+  **웹 UI 열기 / 일시정지·재개 / 로그 폴더 열기 / 종료**. 종료는 실행 중인 분석 세션이 끝나길 기다린 뒤
+  내려갑니다(최대 `llm.timeout_s`). 아이콘 제목(툴팁)이 "일시정지" · "미승인 n" · "실행 중" 을 보여 줍니다.
+- 터미널에서 창과 함께 보고 싶으면 `./trader app`(트레이 없음, Ctrl+C 로 종료).
 - 로그온 시 자동 시작: `./trader install` (해제 `--uninstall`). 데몬 로그는 `state/logs/`.
 - 텔레그램: 알림 수신, `/approve <id>`·`/reject <id>`·`/status`·`/pause`·`/resume`·`/mode <계좌> <모드>`.
 - 웹 UI 는 대시보드(운영 상태 한 줄 → 오늘의 시세표 → 주문·승인 → 성과)·오늘의 실행(종목별 파이프라인 판)·주문/승인·계좌·계좌 비교·차트·성과·데이터·ML·설정/제어 10페이지입니다. 상단 바의 계좌 선택이 전역이며 실전 계좌는 어디서나 빨간 표식으로 구분됩니다. 라이트/다크는 상단 바 오른쪽 버튼(기본은 시스템 설정).
@@ -56,7 +64,8 @@ trader/                ← 이 폴더가 TRADER_HOME. 폴더째 다른 PC 로 �
 
 ## 5. 업데이트·백업
 
-- 새 zip 을 풀어 **`_internal/` 과 실행파일만** 교체합니다. `config/ secrets/ state/` 는 그대로 둡니다.
+- 새 zip 을 풀어 **`Trader.app`·`trader`(macOS) 또는 `_internal/`·실행파일 둘(Windows)만** 교체합니다.
+  `config/ secrets/ state/` 는 그대로 둡니다. 버전은 `./trader --version`.
 - 백업은 `config/ secrets/ state/` 세 폴더면 충분합니다.
 
 ## 6. 문제가 날 때
