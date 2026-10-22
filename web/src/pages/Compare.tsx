@@ -9,12 +9,14 @@ import { ErrorBox } from "../components/Tables";
 import { Term } from "../components/Term";
 import { fmtPct } from "../format";
 import { useApp, useLoad } from "../hooks";
+import { labelOf } from "../names";
 import type { Decision, Outcome } from "../types";
+import { Ticker } from "../components/Ticker";
 
 type Detail = { decision: Decision & { data: Record<string, unknown> }; outcomes: Outcome[] };
 
 export function ComparePage() {
-  const { accounts, tick } = useApp();
+  const { accounts, tick, names } = useApp();
   const [sel, setSel] = useState<number | null>(null);
   const list = useLoad(() => getJson<Decision[]>("/api/decisions", { days: "30" }), [tick]);
   const detail = useLoad(() => (sel ? getJson<Detail>(`/api/decisions/${sel}/outcomes`) : null), [sel, tick]);
@@ -51,10 +53,7 @@ export function ComparePage() {
                   <tr key={x.id} className={sel === x.id ? "sel clickable" : "clickable"} aria-selected={sel === x.id} onClick={() => setSel(x.id)}>
                     <Td>{x.date}</Td>
                     <Td>
-                      <span className="nm">
-                        {x.ticker}
-                        <small>{x.market}</small>
-                      </span>
+                      <Ticker market={x.market} ticker={x.ticker} />
                     </Td>
                     <Td>
                       <Badge kind="action" value={x.action} />
@@ -69,7 +68,7 @@ export function ComparePage() {
             <EmptyState title="최근 30일 결정이 없어요" hint="analyze 가 돌면 종목당 하루 한 건씩 쌓여요." />
           )}
         </Section>
-        <Section title={d ? `${d.market} ${d.ticker} · ${d.date}` : "계좌별 결과"} aside={d ? <Badge kind="action" value={d.action} /> : undefined}>
+        <Section title={d ? `${d.market} ${labelOf(names, d.market, d.ticker)} · ${d.date}` : "계좌별 결과"} aside={d ? <Badge kind="action" value={d.action} /> : undefined}>
           <ErrorBox error={detail.error} />
           {detail.loading && !detail.data ? (
             <Skeleton rows={3} cols={5} />

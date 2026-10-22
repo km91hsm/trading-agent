@@ -1,5 +1,6 @@
-import { createContext, useCallback, useContext, useEffect, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import { getJson, subscribeEvents, tokenStore, type EventSnapshot } from "./api";
+import { groupByMarket, missingKeys, type NameMap } from "./names";
 import { applyTheme, themeStore, watchSystemTheme, type Theme } from "./theme";
 import type { Account } from "./types";
 
@@ -14,6 +15,8 @@ export type AppState = {
   reloadAccounts: () => void;
   theme: Theme;
   setTheme: (t: Theme) => void;
+  names: NameMap; // "KR:005930" → "삼성전자" (서버 /api/names, 원장·캐시만)
+  ensureNames: (market: string, tickers: string[]) => void; // 모르는 종목을 모아 300ms 뒤 1회 요청
 };
 
 export const AppContext = createContext<AppState | null>(null);
@@ -39,6 +42,46 @@ export function useAppState(): AppState {
   const [events, setEvents] = useState<EventSnapshot | null>(null);
   const [tick, setTick] = useState(0);
   const [theme, setThemeRaw] = useState<Theme>(() => themeStore.get());
+  const [names, setNames] = useState<NameMap>({});
+  const namesRef = useRef<NameMap>({});
+  const requested = useRef<Set<string>>(new Set());
+  const pending = useRef<Set<string>>(new Set());
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const mergeNames = useCallback((got: NameMap) => {
+    namesRef.current = { ...namesRef.current, ...got };
+    setNames(namesRef.current);
+  }, []);
+  const flushNames = useCallback(() => {
+    timer.current = null;
+    const groups = groupByMarket(pending.current);
+    pending.current = new Set();
+    for (const [market, tickers] of Object.entries(groups)) {
+      getJson<NameMap>("/api/names", { market, tickers: tickers.join(",") })
+        .then(mergeNames)
+        .catch(() => {
+          /* 이름은 보조 정보 — 실패해도 코드만 보인다 */
+        });
+    }
+  }, [mergeNames]);
+  const ensureNames = useCallback(
+    (market: string, tickers: string[]) => {
+      const keys = missingKeys(namesRef.current, requested.current, market, tickers);
+      if (!keys.length) return;
+      for (const k of keys) {
+        requested.current.add(k);
+        pending.current.add(k);
+      }
+      if (timer.current === null) timer.current = setTimeout(flushNames, 300);
+    },
+    [flushNames],
+  );
+  useEffect(() => {
+    getJson<NameMap>("/api/names")
+      .then(mergeNames)
+      .catch(() => {
+        /* 무시 */
+      });
+  }, [mergeNames]);
 
   const reloadAccounts = useCallback(() => {
     getJson<Account[]>("/api/accounts")
@@ -80,7 +123,7 @@ export function useAppState(): AppState {
     setThemeRaw(t);
     applyTheme(document, t);
   };
-  return { accounts, accountId, setAccountId, token, setToken, events, tick, reloadAccounts, theme, setTheme };
+  return { accounts, accountId, setAccountId, token, setToken, events, tick, reloadAccounts, theme, setTheme, names, ensureNames };
 }
 
 export type Loaded<T> = { data: T | null; error: string | null; loading: boolean; reload: () => void };

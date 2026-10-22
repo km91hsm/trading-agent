@@ -5,6 +5,7 @@ import { EmptyState } from "./components/EmptyState";
 import { Glyph } from "./components/Glyph";
 import { Delta, Mark, Num, Table, Td, Th } from "./components/Table";
 import { Term } from "./components/Term";
+import { Ticker } from "./components/Ticker";
 
 const html = (el: React.ReactElement) => renderToStaticMarkup(el);
 
@@ -98,6 +99,8 @@ function fakeState(over: Partial<AppState> = {}): AppState {
     reloadAccounts: () => {},
     theme: "system",
     setTheme: () => {},
+    names: { "KR:005930": "삼성전자" },
+    ensureNames: () => {},
     ...over,
   };
 }
@@ -179,5 +182,21 @@ describe("SettingsPage", () => {
     const disabled = (out.match(/<button[^>]*disabled=""/g) ?? []).length;
     expect(disabled).toBeGreaterThanOrEqual(4);
     expect(out).toContain("제어 토큰");
+  });
+});
+
+describe("Ticker", () => {
+  it("이름을 알면 '이름 + 코드 · 시장', 모르면 코드만", () => {
+    const withName = html(
+      <AppContext.Provider value={fakeState()}>
+        <Ticker market="KR" ticker="005930" />
+      </AppContext.Provider>,
+    );
+    expect(withName).toContain("삼성전자");
+    expect(withName).toContain("<small>005930 · KR</small>");
+    const unknown = html(<Ticker market="US" ticker="AAPL" />); // 컨텍스트 없이도 그린다
+    expect(unknown).toContain(">AAPL<small>US</small>");
+    const noMarket = html(<Ticker market="KR" ticker="000660" name="SK하이닉스" showMarket={false} />);
+    expect(noMarket).toContain("SK하이닉스<small>000660</small>");
   });
 });

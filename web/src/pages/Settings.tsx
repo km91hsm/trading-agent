@@ -10,7 +10,9 @@ import { Term } from "../components/Term";
 import { useToast } from "../components/Toast";
 import { termHelp } from "../glossary";
 import { useApp, useLoad } from "../hooks";
+import { parseWatch } from "../tape";
 import type { Theme } from "../theme";
+import { Ticker } from "../components/Ticker";
 
 const THEMES: Array<[Theme, string]> = [
   ["light", "라이트"],
@@ -170,7 +172,7 @@ export function SettingsPage() {
             <div className="row tight chips">
               {(watch.data?.tickers ?? []).map((t) => (
                 <span className="chip" key={t}>
-                  {t}
+                  <Ticker market={parseWatch(t)[0]} ticker={parseWatch(t)[1]} />
                   <button type="button" aria-label={`${t} 제거`} disabled={!token} onClick={() => changeWatch("remove", t)}>
                     <Glyph name="x" size={12} />
                   </button>

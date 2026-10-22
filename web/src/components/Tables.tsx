@@ -6,6 +6,7 @@ import { Badge } from "./Badge";
 import { EmptyState } from "./EmptyState";
 import { Delta, Num, Table, Td, Th } from "./Table";
 import { Term } from "./Term";
+import { Ticker } from "./Ticker";
 
 export function ErrorBox({ error }: { error: string | null }) {
   if (!error) return null;
@@ -41,10 +42,7 @@ export function PositionsTable({ rows, nav }: { rows: Position[]; nav?: string |
           return (
             <tr key={`${p.market}:${p.ticker}`}>
               <Td>
-                <span className="nm">
-                  {p.ticker}
-                  <small>{p.market}</small>
-                </span>
+                <Ticker market={p.market} ticker={p.ticker} />
               </Td>
               <Td num>{p.qty}</Td>
               <Td num>
@@ -91,10 +89,7 @@ export function OrdersTable({ rows }: { rows: Order[] }) {
             <Td>{fmtDate(o.created_at)}</Td>
             <Td>{fmtTime(o.created_at, o.market)}</Td>
             <Td>
-              <span className="nm">
-                {o.ticker}
-                <small>{o.market}</small>
-              </span>
+              <Ticker market={o.market} ticker={o.ticker} />
             </Td>
             <Td>{o.side}</Td>
             <Td num>{o.qty}</Td>
@@ -161,10 +156,7 @@ export function ApprovalsTable({
                 {a.account_id} <Badge kind="env" value={real ? "real" : "paper"} />
               </Td>
               <Td>
-                <span className="nm">
-                  {a.order.ticker}
-                  <small>{m}</small>
-                </span>
+                <Ticker market={m} ticker={a.order.ticker ?? "—"} />
               </Td>
               <Td>{a.order.side}</Td>
               <Td num>{a.order.qty}</Td>
@@ -219,10 +211,7 @@ export function RiskChecksTable({ rows }: { rows: RiskCheck[] }) {
           <tr key={r.id}>
             <Td>{r.date ?? fmtDate(r.created_at)}</Td>
             <Td>
-              <span className="nm">
-                {r.ticker ?? "—"}
-                <small>{r.market}</small>
-              </span>
+              <Ticker market={r.market ?? "KR"} ticker={r.ticker ?? "—"} />
             </Td>
             <Td>{r.action ? <Badge kind="action" value={r.action} /> : "—"}</Td>
             <Td className={r.approved ? "gate ok" : r.action === "HOLD" ? "gate muted" : "gate no"}>{r.approved ? `승인${r.adjusted_qty ? ` · ${r.adjusted_qty}주` : ""}` : r.action === "HOLD" ? "보유 · 주문 없음" : `거부 · ${r.reasons[0] ?? "사유 없음"}`}</Td>

@@ -7,10 +7,11 @@ import { ApprovalsTable, ErrorBox, OrdersTable, RiskChecksTable } from "../compo
 import { useToast } from "../components/Toast";
 import { fmtMoney } from "../format";
 import { useApp, useLoad } from "../hooks";
+import { labelOf } from "../names";
 import type { Approval, Order, RiskCheck } from "../types";
 
 export function OrdersPage() {
-  const { accountId, accounts, token, tick } = useApp();
+  const { accountId, accounts, token, tick, names } = useApp();
   const toast = useToast();
   const acct = accounts.find((a) => a.id === accountId);
   const [pendingAct, setPendingAct] = useState<{ action: "approve" | "reject"; a: Approval } | null>(null);
@@ -72,7 +73,7 @@ export function OrdersPage() {
         body={
           pendingAct ? (
             <>
-              <b>{pendingAct.a.account_id}</b> · {pendingAct.a.order.market} {pendingAct.a.order.ticker} {pendingAct.a.order.side}{" "}
+              <b>{pendingAct.a.account_id}</b> · {pendingAct.a.order.market} {labelOf(names, pendingAct.a.order.market ?? "KR", pendingAct.a.order.ticker ?? "")} {pendingAct.a.order.side}{" "}
               {pendingAct.a.order.qty}주 @ {pendingAct.a.order.price ? fmtMoney(pendingAct.a.order.price, pendingAct.a.order.market ?? "KR") : "시장가"}
               <br />
               실제 돈이 나갑니다. 승인하면 바로 브로커에 주문합니다.

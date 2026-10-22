@@ -23,6 +23,12 @@ logger = logging.getLogger("trader.kis")
 US_EXCHANGE_CODE = "NASD"
 
 
+def _name(v: Any) -> str | None:
+    """잔고 응답의 종목명. 빈 값은 None."""
+    s = str(v or "").strip()
+    return s or None
+
+
 class KisBroker:
     def __init__(self, account: AccountConfig, client: KisClient) -> None:
         if client.env != account.env:
@@ -88,6 +94,7 @@ class KisBroker:
                     current_price=_dec(r.get("prpr")),
                     eval_amount=_dec(r.get("evlu_amt")),
                     pnl_pct=float(_dec(r.get("evlu_pfls_rt"))) / 100,
+                    name=_name(r.get("prdt_name")),
                 )
             )
         return out
@@ -121,6 +128,7 @@ class KisBroker:
                     eval_amount=_dec(r.get("ovrs_stck_evlu_amt")),
                     pnl_pct=float(_dec(r.get("evlu_pfls_rt"))) / 100,
                     exchange=US_QUOTE_EXCHANGE.get(str(r.get("ovrs_excg_cd") or "").upper()),
+                    name=_name(r.get("ovrs_item_name")),
                 )
             )
         return out

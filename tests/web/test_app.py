@@ -91,3 +91,18 @@ def test_hosts_for_bind_and_wildcard_allows_lan_host(project, conn):
     deps.extra_hosts.extend(_hosts_for_bind("0.0.0.0"))
     c = TestClient(create_app(deps))
     assert c.get("/api/system/health", headers={"Host": "192.168.0.10:8787"}).status_code == 200
+
+
+def test_usage_endpoint_reports_windows_and_observed_limits(client, deps, conn, tmp_path):
+    import json
+
+    r = client.get("/api/system/usage").json()
+    assert r["rate_limits"] is None and r["windows"]["today"] == {"sessions": 0, "cap": 12}
+    p = tmp_path / "rl.json"
+    p.write_text(
+        json.dumps({"at": 0, "rate_limits": {"five_hour": {"used_percentage": 3}}}),
+        encoding="utf-8",
+    )
+    deps.settings.llm.usage_file = str(p)
+    r = client.get("/api/system/usage").json()
+    assert r["rate_limits"]["five_hour"]["used_pct"] == 3.0 and "/usage" in r["note"]

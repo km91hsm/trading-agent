@@ -786,3 +786,34 @@ def close_stale_running(conn: sqlite3.Connection, *, older_than_iso: str) -> int
     )
     conn.commit()
     return cur.rowcount
+
+
+# --- 종목명 (Phase 16) ---------------------------------------------------------
+
+
+def upsert_ticker_name(
+    conn: sqlite3.Connection, market: str, ticker: str, name: str | None, source: str
+) -> bool:
+    """관측한 종목명을 적는다(최근 관측 우선). 빈 이름·코드와 같은 이름은 무시한다."""
+    clean = (name or "").strip()
+    if not clean or clean == ticker:
+        return False
+    conn.execute(
+        "INSERT INTO ticker_names(market, ticker, name, source, updated_at) VALUES (?, ?, ?, ?, ?) "
+        "ON CONFLICT(market, ticker) DO UPDATE SET name=excluded.name, source=excluded.source, "
+        "updated_at=excluded.updated_at",
+        (market, ticker, clean, source, now_iso()),
+    )
+    conn.commit()
+    return True
+
+
+def ticker_names(
+    conn: sqlite3.Connection, market: str | None = None
+) -> dict[tuple[str, str], str]:
+    sql = "SELECT market, ticker, name FROM ticker_names"
+    params: tuple = ()
+    if market is not None:
+        sql += " WHERE market=?"
+        params = (market,)
+    return {(r["market"], r["ticker"]): r["name"] for r in conn.execute(sql, params)}

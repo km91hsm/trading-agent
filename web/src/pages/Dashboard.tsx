@@ -7,8 +7,11 @@ import { Skeleton } from "../components/Skeleton";
 import { Delta, Mark, Num, Table, Td, Th } from "../components/Table";
 import { ErrorBox } from "../components/Tables";
 import { Term } from "../components/Term";
+import { UsageBlock } from "../components/Usage";
 import { fmtDate, fmtMoney, fmtPct, fmtTime, minutesLeft } from "../format";
 import { useApp, useLoad } from "../hooks";
+import { labelOf } from "../names";
+import type { UsageResp } from "../usage";
 import { buildTape, gateFor, marketPhase, type TapeRow } from "../tape";
 import type {
   Approval,
@@ -22,6 +25,7 @@ import type {
   Run,
   SystemSettings,
 } from "../types";
+import { Ticker } from "../components/Ticker";
 
 type ModelsResp = { active: { version: string; metrics: { alpha: number | null; accuracy: number | null } } | null };
 type RlResp = { active: { version: string } | null; experiments: Array<{ version: string }> };
@@ -46,12 +50,20 @@ function daemonSignal(lastRun: Run | undefined, now: Date): { text: string; stal
 const str = (v: unknown): string | null => (v === null || v === undefined || v === "" ? null : String(v));
 
 export function Dashboard() {
-  const { accounts, accountId, events, tick } = useApp();
+  const { accounts, accountId, events, tick, names } = useApp();
   const acct = accounts.find((a) => a.id === accountId);
   const markets = acct?.markets ?? [];
   const otherAccounts = accounts.filter((a) => a.id !== accountId);
   const [now, setNow] = useState(() => new Date());
   useEffect(() => setNow(new Date()), [tick]); // 원장 이벤트마다 시각·운영일을 다시 잡는다
+  const [minute, setMinute] = useState(0); // 원장과 무관한 것(데몬·사용량)은 60초마다 다시 읽는다
+  useEffect(() => {
+    const id = setInterval(() => {
+      setMinute((m) => m + 1);
+      setNow(new Date());
+    }, 60_000);
+    return () => clearInterval(id);
+  }, []);
   const dates = useMemo(() => runDates(now), [now]);
   const [sel, setSel] = useState<string | null>(null);
 
@@ -84,6 +96,7 @@ export function Dashboard() {
   const calls = useLoad(() => getJson<CallsResp>("/api/calls", { days: "1" }), [tick]);
   const runs = useLoad(() => getJson<Run[]>("/api/runs", { limit: "30" }), [tick]);
   const settings = useLoad(() => getJson<SystemSettings>("/api/system/settings"), []);
+  const usage = useLoad(() => getJson<UsageResp>("/api/system/usage"), [tick, minute]);
   const models = useLoad(() => getJson<ModelsResp>("/api/ml/models"), [tick]);
   const rl = useLoad(() => getJson<RlResp>("/api/rl/experiments"), [tick]);
   const perfKR = useLoad(
@@ -231,6 +244,12 @@ export function Dashboard() {
         <span>
           오늘 세션 <b>{calls.data?.sessions_today ?? 0}{cap ? ` / ${cap}` : ""}</b> · ${(calls.data?.cost_today ?? 0).toFixed(2)}
         </span>
+        <span title="구독 사용률 마지막 관측값 (대화형 claude 상태줄)">
+          Claude{" "}
+          <b>
+            {usage.data?.rate_limits ? `5h ${Math.round(usage.data.rate_limits.five_hour?.used_pct ?? 0)}% · 7d ${Math.round(usage.data.rate_limits.seven_day?.used_pct ?? 0)}%` : "관측 없음"}
+          </b>
+        </span>
         <span className={pendingApprovals.length ? "pend" : ""}>
           미승인 <b>{pendingApprovals.length}건</b>
           {earliestExpiry !== undefined ? ` (${earliestExpiry}분 뒤 만료)` : ""}
@@ -292,10 +311,7 @@ export function Dashboard() {
                       >
                         <Td>
                           <Mark kind={r.mark} />{" "}
-                          <span className="nm">
-                            {dt?.name ?? r.ticker}
-                            <small>{dt?.name ? `${r.ticker} · ${r.market}` : r.market}</small>
-                          </span>
+                          <Ticker market={r.market} ticker={r.ticker} name={dt?.name} />
                         </Td>
                         <Td num>
                           <Num value={r.price} market={r.market} />
@@ -332,7 +348,7 @@ export function Dashboard() {
                     <span className="muted">근거 불러오는 중…</span>
                   ) : detailOf(selRow) ? (
                     <>
-                      <b>{detailOf(selRow)?.name ?? selRow.ticker}</b> {detailOf(selRow)?.rationale ?? "근거 없음"}
+                      <b>{labelOf(names, selRow.market, selRow.ticker)}</b> {detailOf(selRow)?.rationale ?? "근거 없음"}
                       <span className="muted">
                         {" · "}
                         <Term k="take_profit" /> {fmtMoney(detailOf(selRow)?.take_profit, selRow.market)}
@@ -366,10 +382,7 @@ export function Dashboard() {
                     <tr key={`a${a.id}`}>
                       <Td>{fmtTime(a.requested_at, a.order.market ?? "KR")}</Td>
                       <Td>
-                        <span className="nm">
-                          {a.order.ticker}
-                          <small>{a.order.market}</small>
-                        </span>
+                        <Ticker market={a.order.market ?? "KR"} ticker={a.order.ticker ?? "—"} />
                       </Td>
                       <Td>{a.order.side}</Td>
                       <Td num>{a.order.qty}</Td>
@@ -385,10 +398,7 @@ export function Dashboard() {
                     <tr key={o.id}>
                       <Td>{fmtTime(o.created_at, o.market)}</Td>
                       <Td>
-                        <span className="nm">
-                          {o.ticker}
-                          <small>{o.market}</small>
-                        </span>
+                        <Ticker market={o.market} ticker={o.ticker} />
                       </Td>
                       <Td>{o.side}</Td>
                       <Td num>{o.qty}</Td>
@@ -418,6 +428,9 @@ export function Dashboard() {
             ) : (
               <EmptyState title="성과를 낼 스냅샷이 없어요" hint="판정이 쌓이면 NAV 와 벤치마크가 표시돼요." />
             )}
+          </Section>
+          <Section title="Claude 사용량" aside="구독 창 · 세션">
+            <UsageBlock data={usage.data} now={now} />
           </Section>
           <Section title="모델" aside="승격 상태">
             <Table dense caption="모델 승격 상태">

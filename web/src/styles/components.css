@@ -640,3 +640,48 @@ pre.status {
 .num-l {
   text-align: left;
 }
+
+/* Claude 사용량: 미터 두 개(5시간·7일) + 세션 표. 색은 상태 토큰만 */
+.usage .meters {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--s-3);
+  padding: var(--s-2) 0;
+}
+.meter-h {
+  display: flex;
+  justify-content: space-between;
+  font-size: var(--t-sm);
+}
+.meter-h b {
+  font-variant-numeric: tabular-nums;
+}
+.meter-bar {
+  height: 6px;
+  background: var(--sel);
+  border: 1px solid var(--rule);
+  margin: var(--s-1) 0 2px;
+}
+.meter-bar span {
+  display: block;
+  height: 100%;
+  background: var(--ok);
+  transition: width var(--motion);
+}
+.meter[data-level="warn"] .meter-bar span {
+  background: var(--pending);
+}
+.meter[data-level="danger"] .meter-bar span {
+  background: var(--danger);
+}
+.meter small {
+  font-size: var(--t-xs);
+}
+.usage .note {
+  font-size: var(--t-xs);
+  color: var(--ink-2);
+  margin: var(--s-1) 0;
+}
+.usage .note.err {
+  color: var(--danger);
+}

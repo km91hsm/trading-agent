@@ -81,6 +81,7 @@ class Position(BaseModel):
     eval_amount: Decimal
     pnl_pct: float
     exchange: str | None = None  # US 시세용 거래소(NAS|NYS|AMS), 잔고 ovrs_excg_cd 에서. KR 은 None
+    name: str | None = None  # 잔고 응답 종목명(KR prdt_name, US ovrs_item_name) → ticker_names
 
 
 class Cash(BaseModel):

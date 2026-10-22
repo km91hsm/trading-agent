@@ -50,6 +50,8 @@ class LlmSettings(BaseModel):
     budget_usd: float = 5.0
     timeout_s: int = 600
     daily_session_cap: int = 12
+    # 대화형 Claude Code 상태줄이 남기는 구독 사용률 관측 파일 (usage.py). 비우면 표시 안 함
+    usage_file: str | None = "~/.claude/rate_limits.json"
 
 
 class WebSettings(BaseModel):

@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from contextlib import closing
 from importlib.metadata import PackageNotFoundError, version
 
 from fastapi import APIRouter, Request
 
+from trader import usage
 from trader.platform import paths
 
 router = APIRouter(prefix="/system", tags=["system"])
@@ -42,4 +44,24 @@ def settings(request: Request) -> dict:
         "models": dict(s.models),
         "web": s.web.model_dump(),
         "llm": {"budget_usd": s.llm.budget_usd, "daily_session_cap": s.llm.daily_session_cap},
+    }
+
+
+USAGE_NOTE = "정확한 구독 사용률은 claude 에서 /usage 로 확인. 여기 값은 마지막 관측값"
+
+
+@router.get("/usage")
+def usage_view(request: Request) -> dict:
+    """Claude 사용량: 상태줄 관측 파일(있으면) + 이 저장소 세션의 5시간·7일 창 집계."""
+    deps = request.app.state.deps
+    now = deps.now()
+    path = usage.usage_file(deps.settings.llm.usage_file)
+    limits = usage.read_rate_limits(path, now) if path is not None else None
+    with closing(deps.conn_factory()) as conn:
+        windows = usage.ledger_windows(conn, now, cap=deps.settings.llm.daily_session_cap)
+    return {
+        "rate_limits": limits,
+        "usage_file": str(path) if path is not None else None,
+        "windows": windows,
+        "note": USAGE_NOTE,
     }

@@ -7,6 +7,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
+from trader import names
 from trader.control import control
 from trader.ledger import repo
 from trader.notify.telegram import parse_command
@@ -21,8 +22,9 @@ def _mode_label(conn, account) -> str:
 
 def approval_line(a: dict) -> str:
     o = a["order"]
+    shown = names.label(str(o.get("ticker")), o.get("name"))
     return (
-        f"#{a['id']} {a['account_id']} {o.get('side')} {o.get('ticker')} {o.get('qty')}주 "
+        f"#{a['id']} {a['account_id']} {o.get('side')} {shown} {o.get('qty')}주 "
         f"@{o.get('price') or '시장가'} 만료 {a['expires_at']}"
     )
 

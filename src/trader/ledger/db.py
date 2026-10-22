@@ -195,6 +195,19 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
         9,  # 세션 턴 수 (비용·실패 원인 분석 단서). 세션 1회 = agent_calls 1행
         ["ALTER TABLE agent_calls ADD COLUMN num_turns INTEGER"],
     ),
+    (
+        10,  # Phase 16: 종목명. 잔고·00_inputs 에서 관측할 때 적고 캐시 JSON 이 폴백 (names.py)
+        [
+            """CREATE TABLE IF NOT EXISTS ticker_names (
+                market TEXT NOT NULL,
+                ticker TEXT NOT NULL,
+                name TEXT NOT NULL,
+                source TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY(market, ticker)
+            )""",
+        ],
+    ),
 ]
 
 

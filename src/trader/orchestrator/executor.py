@@ -16,6 +16,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
+from trader import names
 from trader.agents.schemas import Decision
 from trader.broker.errors import UNKNOWN_RESPONSE_CODE, KisApiError
 from trader.broker.models import OrderRequest, OrderResult
@@ -25,6 +26,7 @@ from trader.ledger import repo
 from trader.notify.telegram import Notifier, NullNotifier
 from trader.orchestrator.run_store import checkpoint_payload as _wrap
 from trader.orchestrator.run_store import run_dir, write_checkpoint
+from trader.platform import paths
 from trader.risk import rules
 from trader.risk import stance as stance_mod
 
@@ -32,6 +34,7 @@ logger = logging.getLogger("trader.executor")
 
 APPROVAL_TTL = timedelta(minutes=30)
 QUOTE_PRICE_KEY = "quote_price"  # approvals.order_json 에 덧붙이는 요청 시 현재가
+NAME_KEY = "name"  # approvals.order_json 에 덧붙이는 종목명 (표시용, OrderRequest 에는 없다)
 
 
 @dataclass
@@ -99,6 +102,15 @@ def _update_breaker(
         logger.warning("서킷브레이커 갱신 실패 %s: %s", account.id, e)
 
 
+def _cache_dir(ctx: ExecContext) -> Path:
+    return (ctx.state or paths.state_dir()) / "cache"
+
+
+def _label(ctx: ExecContext, market: str, ticker: str) -> str:
+    """알림용 '이름 코드' 표기 (원장·캐시만, 네트워크 없음)."""
+    return names.display(ctx.conn, _cache_dir(ctx), market, ticker)
+
+
 def build_portfolio(
     conn: sqlite3.Connection,
     broker: Any,
@@ -114,6 +126,8 @@ def build_portfolio(
     else:
         pos_list, cash = broker.get_positions(market), broker.get_cash(market)
     positions = {p.ticker: p for p in pos_list}
+    for p in positions.values():  # 잔고 응답의 종목명은 추가 호출 없이 얻는 이름이다
+        repo.upsert_ticker_name(conn, p.market, p.ticker, getattr(p, "name", None), "balance")
     nav = cash.total + sum((p.eval_amount for p in positions.values()), Decimal(0))
     prev = repo.latest_nav_before(conn, account.id, today, market=market)
     today_pnl = float(nav / prev - 1) if prev else 0.0
@@ -395,6 +409,9 @@ def _request_approval(
     order = request.model_dump(mode="json")
     if quote_price is not None:
         order[QUOTE_PRICE_KEY] = str(quote_price)
+    shown = _label(ctx, request.market, request.ticker)
+    if shown != request.ticker:
+        order[NAME_KEY] = shown[: -len(request.ticker) - 1]
     aid = repo.create_approval(
         ctx.conn,
         decision_id=decision_id or 0,
@@ -405,7 +422,7 @@ def _request_approval(
     )
     price = f" @{request.price}" if request.price is not None else " 시장가"
     ctx.notifier.send(
-        f"[승인 요청 #{aid}] {account.id} {request.side} {request.ticker} {request.qty}주{price}\n"
+        f"[승인 요청 #{aid}] {account.id} {request.side} {shown} {request.qty}주{price}\n"
         f"사유: {'; '.join(verdict.reasons) or '한도 내'}\n"
         f"/approve {aid} 또는 /reject {aid} (30분 내)"
     )
@@ -423,6 +440,7 @@ def _place(
     quote_price: Decimal | None = None,
     order_stage: str = "50_order",
 ) -> dict:
+    shown = _label(ctx, request.market, request.ticker)
     try:
         result = broker.place_order(request)
         status = "accepted" if result.accepted else "rejected"
@@ -436,7 +454,7 @@ def _place(
             logger.error("주문 응답 없음 %s %s: %s", account.id, request.ticker, e)
             _notify_quietly(
                 ctx,
-                f"[주문 상태 미확인] {account.id} {request.side} {request.ticker} {request.qty}주 "
+                f"[주문 상태 미확인] {account.id} {request.side} {shown} {request.qty}주 "
                 f"응답을 받지 못함 — KIS 앱에서 확인, 체결 동기화(fills sync)가 확정함: {e.msg1}",
             )
         else:
@@ -487,7 +505,7 @@ def _place(
         )
         _notify_quietly(
             ctx,
-            f"[긴급: 주문 기록 실패] {account.id} {request.side} {request.ticker} {request.qty}주 "
+            f"[긴급: 주문 기록 실패] {account.id} {request.side} {shown} {request.qty}주 "
             f"접수번호 {result.order_no or '-'} ({status}) — 원장에 없으니 수동 확인 필요: {e}",
         )
         raise OrderBookkeepingError(result.order_no, e) from e
@@ -506,7 +524,7 @@ def _place(
         head = "[주문]" if result.accepted else "[주문 실패]"
         _notify_quietly(
             ctx,
-            f"{head} {account.id} {request.side} {request.ticker} {request.qty}주 "
+            f"{head} {account.id} {request.side} {shown} {request.qty}주 "
             f"({mode}) 접수번호 {result.order_no or '-'} {result.message}",
         )
     return payload["result"] | {"status": status}
@@ -571,6 +589,7 @@ def approve(ctx: ExecContext, approval_id: int) -> dict:
             "error": f"계좌 모드가 approve 가 아님({mode}): 승인 미실행 (요청은 pending 유지)",
         }
     order = dict(a["order"])
+    order.pop(NAME_KEY, None)  # 표시용 — OrderRequest(extra=forbid) 에는 없다
     raw_quote = order.pop(QUOTE_PRICE_KEY, None)
     quote_price = Decimal(str(raw_quote)) if raw_quote is not None else None
     request = OrderRequest.model_validate(order)
@@ -609,7 +628,9 @@ def reject(ctx: ExecContext, approval_id: int) -> dict:
     if a is None:
         return {"ok": False, "error": err}
     repo.decide_approval(ctx.conn, approval_id, "rejected", decided_at=ctx.now().isoformat())
+    o = a["order"]
     ctx.notifier.send(
-        f"[거부] 승인 요청 #{approval_id} {a['account_id']} {a['order'].get('ticker')}"
+        f"[거부] 승인 요청 #{approval_id} {a['account_id']} "
+        f"{names.label(str(o.get('ticker')), o.get(NAME_KEY))}"
     )
     return {"ok": True, "approval_id": approval_id}

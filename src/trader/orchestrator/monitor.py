@@ -17,6 +17,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 from typing import Any
 
+from trader import names
 from trader.agents.schemas import Decision
 from trader.broker.errors import KisApiError
 from trader.broker.models import Position
@@ -25,6 +26,7 @@ from trader.control import control
 from trader.ledger import repo
 from trader.notify.telegram import Notifier, NullNotifier
 from trader.orchestrator import executor, resume, tools
+from trader.platform import paths
 
 logger = logging.getLogger("trader.monitor")
 
@@ -41,6 +43,10 @@ class Signal:
 
 
 _NON_PRICE_WORDS = ("거래량", "시총", "시가총액", "억", "만주", "%", "RSI", "배수", "PER", "PBR")
+
+
+def _label(ctx: MonitorContext, market: str, ticker: str) -> str:
+    return names.display(ctx.conn, (ctx.state or paths.state_dir()) / "cache", market, ticker)
 
 
 def parse_price_conditions(conditions: list[str]) -> list[tuple[str, Decimal]]:
@@ -267,7 +273,9 @@ def monitor_once(ctx: MonitorContext, *, market: str, today: date) -> dict:
                     f"실패: {type(e).__name__}: {e}"[:200],
                     handled_at=ctx.now().isoformat(),
                 )
-            ctx.notifier.send(f"[재평가 실패] {market} {pos.ticker}: {type(e).__name__}: {e}")
+            ctx.notifier.send(
+                f"[재평가 실패] {market} {_label(ctx, market, pos.ticker)}: {type(e).__name__}: {e}"
+            )
             continue
         for tid in tids[1:]:  # 같은 세션이 나머지 트리거도 처리한 것으로 표시 (실패도 같은 표시)
             repo.mark_trigger_handled(
@@ -340,7 +348,8 @@ def _sell_now(
         if not control.get_flag(ctx.conn, key):
             control.set_flag(ctx.conn, key, True)
             ctx.notifier.send(
-                f"[손절 보류: 일시정지] {market} {pos.ticker} 현재가 {quote} ≤ 손절선 "
+                f"[손절 보류: 일시정지] {market} {_label(ctx, market, pos.ticker)} "
+                f"현재가 {quote} ≤ 손절선 "
                 f"{sig.detail.get('level')} — 재개하면 다음 점검에서 매도"
             )
         return 0
@@ -376,7 +385,8 @@ def _sell_now(
     order = r.get("order")
     if order and order.get("accepted"):
         ctx.notifier.send(
-            f"[손절] {account.id} {market} {pos.ticker} {r.get('qty')}주 즉시 매도 "
+            f"[손절] {account.id} {market} {_label(ctx, market, pos.ticker)} "
+            f"{r.get('qty')}주 즉시 매도 "
             f"(현재가 {quote}, 손절선 {sig.detail.get('level')}) 접수번호 {order.get('order_no')}"
         )
         return 1

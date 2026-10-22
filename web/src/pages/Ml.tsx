@@ -10,6 +10,7 @@ import { ErrorBox } from "../components/Tables";
 import { Term } from "../components/Term";
 import { fmtPct } from "../format";
 import { useApp, useLoad } from "../hooks";
+import { Ticker } from "../components/Ticker";
 
 type Metrics = { accuracy: number | null; baseline: number | null; alpha: number | null; n_test: number | null };
 type Model = {
@@ -144,10 +145,7 @@ function RlSection() {
                 <tr key={r.id}>
                   <Td>{r.decision_date ?? r.created_at.slice(0, 10)}</Td>
                   <Td>
-                    <span className="nm">
-                      {r.ticker ?? "—"}
-                      <small>{r.market ?? ""}</small>
-                    </span>
+                    <Ticker market={r.market ?? "KR"} ticker={r.ticker ?? "—"} />
                   </Td>
                   <Td>{r.model_version}</Td>
                   <Td num>{num3(r.llm_weight)}</Td>

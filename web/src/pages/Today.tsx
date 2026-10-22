@@ -9,8 +9,10 @@ import { Skeleton } from "../components/Skeleton";
 import { ErrorBox } from "../components/Tables";
 import { Term } from "../components/Term";
 import { useApp, useLoad } from "../hooks";
+import { labelOf } from "../names";
 import { pipelineStages, stageSummary, type Stage } from "../pipeline";
 import type { Checkpoint, Market } from "../types";
+import { Ticker } from "../components/Ticker";
 
 type TodayResp = { date: string; market: string; tickers: Record<string, string[]> };
 
@@ -82,7 +84,7 @@ function StagePlates({
 }
 
 export function TodayPage({ title = "오늘의 실행", inputsOnly = false }: { title?: string; inputsOnly?: boolean }) {
-  const { tick } = useApp();
+  const { tick, names } = useApp();
   const [market, setMarket] = useState<Market>("KR");
   const [date, setDate] = useState("");
   const [ticker, setTicker] = useState("");
@@ -167,7 +169,7 @@ export function TodayPage({ title = "오늘의 실행", inputsOnly = false }: { 
                   setStage("");
                 }}
               >
-                {t} <small className="muted">{today.data?.tickers[t].length}</small>
+                <Ticker market={market} ticker={t} showMarket={false} /> <small className="muted">{today.data?.tickers[t].length}</small>
               </button>
             ))}
           </div>
@@ -176,7 +178,7 @@ export function TodayPage({ title = "오늘의 실행", inputsOnly = false }: { 
         )}
       </Section>
       {ticker && (
-        <Section title={`${market} ${ticker}`} aside={inputsOnly ? undefined : <>단계 {stages.filter((s) => s.done).length} / {stages.length}</>}>
+        <Section title={`${market} ${labelOf(names, market, ticker)}`} aside={inputsOnly ? undefined : <>단계 {stages.filter((s) => s.done).length} / {stages.length}</>}>
           <StagePlates
             stages={showStages}
             summaries={summaries.data ?? {}}

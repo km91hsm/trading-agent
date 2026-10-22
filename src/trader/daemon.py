@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from trader import names
 from trader.config import KST, MARKET_TZ, AccountConfig, ScheduleConfig, Settings
 from trader.control import control
 from trader.ledger import db
@@ -483,6 +484,7 @@ def _analyze_body(deps: DaemonDeps, market: str, *, scan_error: str | None = Non
             stopped = True
             break
         conn = deps.conn_factory()
+        shown = names.display(conn, _cache_dir(deps), market, t["ticker"])
         try:
             res = runner(
                 SessionSpec(
@@ -499,7 +501,7 @@ def _analyze_body(deps: DaemonDeps, market: str, *, scan_error: str | None = Non
         except Exception as e:  # noqa: BLE001 - 한 종목 세션 실패가 나머지를 막지 않는다
             logger.exception("analyze 세션 기동 실패 %s %s", market, t["ticker"])
             failed.append(t["ticker"])
-            deps.notifier.send(f"[analyze 실패] {market} {t['ticker']}: {type(e).__name__}: {e}")
+            deps.notifier.send(f"[analyze 실패] {market} {shown}: {type(e).__name__}: {e}")
             continue
         finally:
             conn.close()
@@ -510,7 +512,7 @@ def _analyze_body(deps: DaemonDeps, market: str, *, scan_error: str | None = Non
             )
         else:
             failed.append(t["ticker"])
-            deps.notifier.send(f"[analyze 실패] {market} {t['ticker']}: {res.error}")
+            deps.notifier.send(f"[analyze 실패] {market} {shown}: {res.error}")
     return {
         "targets": len(targets),
         "ok": ok,
@@ -703,6 +705,10 @@ def _scan_analyze_body(deps: DaemonDeps, market: str) -> dict:
         logger.exception("scan 실패 %s", market)
         scan_error = f"{type(e).__name__}: {e}"  # 알림은 _analyze_body 가 원인과 함께 1건만
     return _analyze_body(deps, market, scan_error=scan_error)
+
+
+def _cache_dir(deps: DaemonDeps) -> Path:
+    return (deps.state or paths.state_dir()) / "cache"
 
 
 def job_body(deps: DaemonDeps, job: Job) -> Callable[[], Any]:

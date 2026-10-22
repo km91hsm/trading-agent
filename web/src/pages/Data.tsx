@@ -6,13 +6,15 @@ import { Skeleton } from "../components/Skeleton";
 import { Table, Td, Th } from "../components/Table";
 import { ErrorBox } from "../components/Tables";
 import { useApp, useLoad } from "../hooks";
+import { labelOf } from "../names";
 import { type FeatureRow, type HistoryResp, KEY_COLUMNS, type LatestResp, type SortDir, fmt, sortRows } from "./features";
 import { TodayPage } from "./Today";
+import { Ticker } from "../components/Ticker";
 
 const NUMERIC = new Set(KEY_COLUMNS.filter((c) => c !== "ticker" && c !== "sector"));
 
 function FeatureStore() {
-  const { tick } = useApp();
+  const { tick, names } = useApp();
   const [market, setMarket] = useState<"KR" | "US">("KR");
   const [sortKey, setSortKey] = useState("ticker");
   const [dir, setDir] = useState<SortDir>("asc");
@@ -87,7 +89,7 @@ function FeatureStore() {
                 >
                   {KEY_COLUMNS.map((c) => (
                     <Td key={c} num={NUMERIC.has(c)}>
-                      {fmt(r[c])}
+                      {c === "ticker" ? <Ticker market={market} ticker={String(r.ticker)} showMarket={false} /> : fmt(r[c])}
                     </Td>
                   ))}
                 </tr>
@@ -99,7 +101,7 @@ function FeatureStore() {
         )}
       </Section>
       {ticker && (
-        <Section title={`${market} ${ticker} 최근 120행`} aside="최신 날짜가 위">
+        <Section title={`${market} ${labelOf(names, market, ticker)} 최근 120행`} aside="최신 날짜가 위">
           <ErrorBox error={history.error} />
           {history.loading && !history.data ? (
             <Skeleton rows={4} cols={8} />

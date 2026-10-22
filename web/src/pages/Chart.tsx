@@ -15,10 +15,11 @@ import { Section } from "../components/Section";
 import { Skeleton } from "../components/Skeleton";
 import { ErrorBox } from "../components/Tables";
 import { useApp, useLoad } from "../hooks";
+import { labelOf } from "../names";
 import type { ChartData, ChartInterval, Market } from "../types";
 
 export function ChartPage() {
-  const { accounts, theme } = useApp();
+  const { accounts, theme, names } = useApp();
   const [ticker, setTicker] = useState("005930");
   const [market, setMarket] = useState<Market>("KR");
   const [exchange, setExchange] = useState("NAS");
@@ -147,7 +148,7 @@ export function ChartPage() {
         </button>
       </form>
       <Section
-        title={`${q.market} ${q.ticker}`}
+        title={`${q.market} ${labelOf(names, q.market, q.ticker)}`}
         aside={
           data.data?.interval === "1m" && data.data.session_date
             ? `세션 ${data.data.session_date} (${data.data.tz})`

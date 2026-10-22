@@ -7,9 +7,11 @@ import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 
+from trader import names
 from trader.config import KST, AccountConfig, Settings
 from trader.control.control import is_paused
 from trader.ledger import metrics, repo
+from trader.notify.commands import approval_line
 from trader.orchestrator.executor import effective_mode
 from trader.platform import paths
 
@@ -60,7 +62,9 @@ def _today_calls(conn: sqlite3.Connection, now: datetime) -> tuple[int, float]:
     return int(row["n"]), float(row["c"])
 
 
-def _recent_decisions(runs_dir: Path, limit: int = 3) -> list[str]:
+def _recent_decisions(
+    runs_dir: Path, limit: int = 3, conn: sqlite3.Connection | None = None
+) -> list[str]:
     """state/runs 에서 최근 30_decision.json 을 수정시각 순으로 읽어 한 줄씩 만든다."""
     import json
 
@@ -76,8 +80,9 @@ def _recent_decisions(runs_dir: Path, limit: int = 3) -> list[str]:
         except (OSError, ValueError):
             continue
         date_s, market, ticker = f.parts[-4], f.parts[-3], f.parts[-2]
+        shown = names.display(conn, names.default_cache_dir(), market, ticker)
         out.append(
-            f"{date_s} {market} {ticker}: {data.get('action')} "
+            f"{date_s} {market} {shown}: {data.get('action')} "
             f"w={data.get('target_weight')} conf={data.get('confidence')}"
         )
     return out
@@ -178,7 +183,7 @@ def build_status(
         lines.append("아직 실행 기록 없음")
     n, cost = _today_calls(conn, now)
     lines += ["", "## 오늘 LLM 호출", f"- {n}건, ${cost:.2f}"]
-    decisions = _recent_decisions(paths.state_dir() / "runs", limit=3)
+    decisions = _recent_decisions(paths.state_dir() / "runs", limit=3, conn=conn)
     if decisions:
         lines += ["", "## 최근 결정"]
         lines += [f"- {d}" for d in decisions]
@@ -196,12 +201,7 @@ def build_status(
     pending = metrics.pending_approvals(conn)
     lines += ["", "## 미승인 주문"]
     if pending:
-        for p in pending:
-            o = p["order"]
-            lines.append(
-                f"- #{p['id']} {p['account_id']} {o.get('side')} {o.get('ticker')} "
-                f"{o.get('qty')}주 @{o.get('price') or '시장가'} 만료 {p['expires_at']}"
-            )
+        lines += [f"- {approval_line(p)}" for p in pending]
     else:
         lines.append("- 없음")
     lines += ["", "## 구현 진행도"]
