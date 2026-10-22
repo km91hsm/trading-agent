@@ -194,3 +194,9 @@ main {
     display: none;
   }
 }
+.statusline .ok b {
+  color: var(--ok);
+}
+.statusline .warn b {
+  color: var(--pending);
+}

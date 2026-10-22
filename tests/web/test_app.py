@@ -96,6 +96,7 @@ def test_hosts_for_bind_and_wildcard_allows_lan_host(project, conn):
 def test_usage_endpoint_reports_windows_and_observed_limits(client, deps, conn, tmp_path):
     import json
 
+    deps.settings.llm.usage_file = None  # 개발 머신의 ~/.claude/rate_limits.json 에 기대지 않는다
     r = client.get("/api/system/usage").json()
     assert r["rate_limits"] is None and r["windows"]["today"] == {"sessions": 0, "cap": 12}
     p = tmp_path / "rl.json"
@@ -106,3 +107,20 @@ def test_usage_endpoint_reports_windows_and_observed_limits(client, deps, conn, 
     deps.settings.llm.usage_file = str(p)
     r = client.get("/api/system/usage").json()
     assert r["rate_limits"]["five_hour"]["used_pct"] == 3.0 and "/usage" in r["note"]
+
+
+def test_daemon_endpoint_without_daemon_lists_schedule(client, deps):
+    from trader.config import ScheduleConfig
+
+    r = client.get("/api/system/daemon").json()
+    assert r["alive"] is False and r["jobs"] == []  # schedule 없음 → 예정표 비움
+    deps.schedule = ScheduleConfig.model_validate(
+        {
+            "kr": {"scan": "07:30", "monitor": {"start": "09:00", "end": "15:30", "interval_s": 60}},
+            "us": {"scan": "21:30", "monitor": {"start": "23:30", "end": "06:00", "interval_s": 60}},
+            "reflect": "16:30",
+            "ml_train": {"weekday": "sat", "time": "10:00"},
+        }
+    )
+    r = client.get("/api/system/daemon").json()
+    assert any(j["id"] == "kr_scan_analyze" for j in r["jobs"]) and r["pid"] is None

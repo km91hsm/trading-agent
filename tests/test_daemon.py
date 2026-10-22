@@ -2,6 +2,7 @@ import json
 import os
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
+from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 from conftest import make_account
@@ -167,9 +168,19 @@ class FakeScheduler:
     def __init__(self):
         self.jobs = []
         self.started = False
+        self.listeners = []
 
     def add_job(self, fn, trigger, **kw):
         self.jobs.append((kw.get("id"), trigger, fn))
+
+    def add_listener(self, cb, mask):
+        self.listeners.append((cb, mask))
+
+    def get_jobs(self):
+        return [SimpleNamespace(id=j[0], next_run_time=None) for j in self.jobs]
+
+    def get_job(self, job_id):
+        return SimpleNamespace(id=job_id, next_run_time=datetime(2026, 10, 23, 7, 30, tzinfo=UTC))
 
     def start(self):
         self.started = True
@@ -186,6 +197,72 @@ def test_daemon_run_registers_jobs_with_fake_scheduler(project, conn):
     ids = {j[0] for j in sched.jobs}
     assert {"kr_scan_analyze", "us_monitor", "telegram_poll"} <= ids
     assert not (project / "state" / "daemon.lock").exists()  # start 반환 후 해제
+
+
+def test_daemon_run_writes_heartbeat_and_listener_sets_next(project, conn):
+    import json
+
+    from trader import heartbeat
+
+    sched = FakeScheduler()
+    deps = _deps(conn, FakeMarket(), now=lambda: datetime.now(UTC))
+    daemon.run(deps, web=False, scheduler_factory=lambda: sched)
+    p = project / "state" / "daemon_heartbeat.json"
+    data = json.loads(p.read_text(encoding="utf-8"))
+    assert data["pid"] == os.getpid() and "kr_monitor" in data["jobs"] and data["stopped_at"]
+    # 리스너: 스케줄러 시작 이벤트 → 모든 잡의 next_run, 잡 이벤트 → 그 잡의 next_run·missed
+    assert len(sched.listeners) == 2
+    on_started, on_job = sched.listeners[0][0], sched.listeners[1][0]
+    on_started(SimpleNamespace(code=1))
+    from apscheduler import events as ev
+
+    on_job(SimpleNamespace(code=ev.EVENT_JOB_MISSED, job_id="kr_scan_analyze"))
+    data = json.loads(p.read_text(encoding="utf-8"))
+    assert data["jobs"]["kr_scan_analyze"]["last_status"] == "missed"
+    assert data["jobs"]["kr_scan_analyze"]["next_run"] == "2026-10-23T07:30:00+00:00"
+    st = heartbeat.read_status(
+        project / "state",
+        datetime.now(UTC),
+        daemon.build_jobs(SCHED, Settings(), markets=["KR", "US"]),
+    )
+    assert st["alive"] is False and any(j["id"] == "kr_monitor" for j in st["jobs"])
+
+
+def test_run_job_records_heartbeat_for_interval_jobs(conn, tmp_path):
+    from trader import heartbeat
+
+    hb = heartbeat.Heartbeat(tmp_path / "hb.json")
+    daemon.run_job(
+        "kr_monitor",
+        lambda: {"skipped": "closed"},
+        conn_factory=lambda: db.connect(),
+        interval=True,
+        heartbeat=hb,
+    )
+    daemon.run_job(
+        "kr_monitor",
+        lambda: {"error": "x"},
+        conn_factory=lambda: db.connect(),
+        interval=True,
+        heartbeat=hb,
+    )
+    import json
+
+    data = json.loads((tmp_path / "hb.json").read_text(encoding="utf-8"))
+    assert (
+        data["jobs"]["kr_monitor"]["last_status"] == "error"
+        and data["jobs"]["kr_monitor"]["last_error"] == "x"
+    )
+    daemon.run_job(
+        "kr_monitor",
+        lambda: {"skipped": "closed"},
+        conn_factory=lambda: db.connect(),
+        interval=True,
+        heartbeat=hb,
+    )
+    data = json.loads((tmp_path / "hb.json").read_text(encoding="utf-8"))
+    assert data["jobs"]["kr_monitor"]["last_status"] == "skipped"
+    assert conn.execute("SELECT COUNT(*) FROM runs").fetchone()[0] == 1  # runs 행 정책은 그대로
 
 
 def test_daemon_run_refuses_when_locked(project, conn):
@@ -602,6 +679,7 @@ def test_build_jobs_merges_scan_and_analyze_into_one_job():
 
 def test_scan_analyze_body_runs_scan_then_analyze(conn, monkeypatch):
     order = []
+
     def scan(deps, m):
         order.append(("scan", m))
         return {"ok": 1}
@@ -634,6 +712,7 @@ def test_scan_analyze_body_scan_failure_still_runs_analyze_and_notifies(conn, mo
 
     called = []
     monkeypatch.setattr(daemon, "_scan_body", boom)
+
     def analyze(deps, m, **kw):
         called.append(m)
         return {"targets": 0, "error": "_scan 없음"}

@@ -22,9 +22,11 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from trader import heartbeat as heartbeat_mod
 from trader import names
 from trader.config import KST, MARKET_TZ, AccountConfig, ScheduleConfig, Settings
 from trader.control import control
+from trader.heartbeat import Heartbeat
 from trader.ledger import db
 from trader.notify.telegram import Notifier, NullNotifier
 from trader.orchestrator import run_store
@@ -272,10 +274,14 @@ def run_job(
     *,
     conn_factory: Callable[[], sqlite3.Connection],
     interval: bool = False,
+    heartbeat: Heartbeat | None = None,
 ) -> Any:
     """잡 본체를 감싼다. cron 잡은 runs 에 시작·종료를 남기고, interval 잡(monitor·텔레그램)은
-    오류일 때만 남긴다(분 단위 행 폭주 방지). 예외는 로그·error 행으로 삼킨다."""
+    오류일 때만 남긴다(분 단위 행 폭주 방지). 예외는 로그·error 행으로 삼킨다.
+    하트비트(있으면)는 interval 잡 포함 모든 잡의 시작·종료·상태를 파일에 남긴다."""
     run_id: int | None = None
+    if heartbeat is not None:
+        heartbeat.job_started(name, datetime.now(UTC))
     if not interval:
         conn = conn_factory()
         try:
@@ -293,8 +299,18 @@ def run_job(
             db.finish_run(conn, run_id, "error", f"{type(e).__name__}: {e}")
         finally:
             conn.close()
+        if heartbeat is not None:
+            heartbeat.job_finished(name, datetime.now(UTC), "error", f"{type(e).__name__}: {e}")
         return None
     err = result.get("error") if isinstance(result, dict) else None
+    if heartbeat is not None:
+        skipped = isinstance(result, dict) and "skipped" in result
+        heartbeat.job_finished(
+            name,
+            datetime.now(UTC),
+            "error" if err else ("skipped" if skipped else "ok"),
+            str(err) if err else None,
+        )
     if run_id is None and err:  # interval 잡은 오류일 때만 행을 남긴다
         conn = conn_factory()
         try:
@@ -793,6 +809,9 @@ def run(
         if web and deps.web_app_factory is not None:
             _start_web(deps.web_app_factory(), deps.settings.web.bind, deps.settings.web.port)
         jobs = build_jobs(deps.schedule, deps.settings, markets=list(deps.settings.markets))
+        hb = Heartbeat(base / heartbeat_mod.FILE_NAME)
+        hb.start(pid=os.getpid(), started_at=datetime.now(UTC), jobs=jobs)
+        _install_heartbeat_listener(scheduler, hb)
         for job in jobs:
             scheduler.add_job(
                 partial(
@@ -801,6 +820,7 @@ def run(
                     job_body(deps, job),
                     conn_factory=deps.conn_factory,
                     interval=job.interval_s is not None,
+                    heartbeat=hb,
                 ),
                 _trigger(job),
                 id=job.id,
@@ -816,9 +836,49 @@ def run(
             scheduler.start()
         except (KeyboardInterrupt, SystemExit):
             logger.info("데몬 종료")
+        hb.stop(datetime.now(UTC))
         return {"ok": True, "jobs": len(jobs)}
     finally:
         lock.release()
+
+
+def _install_heartbeat_listener(scheduler: Any, hb: Heartbeat) -> None:
+    """APScheduler 이벤트로 잡별 '다음 예정'·놓침을 하트비트에 적는다 (리스너가 없는 가짜는 통과).
+
+    run_job 이 예외를 삼키므로 JOB_ERROR 는 사실상 오지 않고 결과는 run_job 이 적는다. 여기서는
+    EXECUTED 뒤 next_run_time 갱신, MISSED·MAX_INSTANCES(앞 실행이 길어 건너뜀) 를 missed 로."""
+    add = getattr(scheduler, "add_listener", None)
+    if add is None:
+        return
+    try:
+        from apscheduler import events as ev
+    except ImportError:  # pragma: no cover - 의존성 누락
+        return
+
+    def _next(job_id: str) -> None:
+        try:
+            job = scheduler.get_job(job_id)
+            hb.set_next(job_id, getattr(job, "next_run_time", None), at=datetime.now(UTC))
+        except Exception as e:  # noqa: BLE001 - 하트비트는 보조 정보
+            logger.debug("next_run_time 조회 실패 %s: %s", job_id, e)
+
+    def on_started(_event: Any) -> None:
+        for job in scheduler.get_jobs():
+            _next(job.id)
+
+    def on_job(event: Any) -> None:
+        if event.code in (ev.EVENT_JOB_MISSED, ev.EVENT_JOB_MAX_INSTANCES):
+            hb.job_missed(event.job_id, datetime.now(UTC))
+        _next(event.job_id)
+
+    add(on_started, ev.EVENT_SCHEDULER_STARTED)
+    add(
+        on_job,
+        ev.EVENT_JOB_EXECUTED
+        | ev.EVENT_JOB_ERROR
+        | ev.EVENT_JOB_MISSED
+        | ev.EVENT_JOB_MAX_INSTANCES,
+    )
 
 
 def make_signal_handler(

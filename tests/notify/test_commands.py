@@ -101,3 +101,20 @@ def test_status_shows_effective_mode(conn):
     commands.poll_once(ctx, Recv(["/status"]))
     msg = sent.msgs[-1]
     assert "real-main=off" in msg and "강등" in msg and "real-main=auto" not in msg
+
+
+def test_status_includes_daemon_line(conn, project):
+    from datetime import UTC, datetime
+
+    from trader import heartbeat
+
+    sent = Sent()
+    ctx = _ctx(conn, sent)
+    commands.poll_once(ctx, Recv(["/status"]))
+    assert "데몬 기록 없음" in sent.msgs[-1]
+    hb = heartbeat.Heartbeat(project / "state" / heartbeat.FILE_NAME)
+    hb.start(pid=1, started_at=datetime.now(UTC), jobs=[])
+    hb.job_started("kr_monitor", datetime.now(UTC))
+    hb.job_finished("kr_monitor", datetime.now(UTC), "ok")
+    commands.poll_once(ctx, Recv(["/status"]))
+    assert "최근 잡: kr_monitor ok" in sent.msgs[-1]

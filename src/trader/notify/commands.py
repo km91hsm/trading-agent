@@ -7,11 +7,12 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from trader import names
+from trader import heartbeat, names
 from trader.control import control
 from trader.ledger import repo
 from trader.notify.telegram import parse_command
 from trader.orchestrator import executor
+from trader.platform import paths
 
 
 def _mode_label(conn, account) -> str:
@@ -27,6 +28,30 @@ def approval_line(a: dict) -> str:
         f"#{a['id']} {a['account_id']} {o.get('side')} {shown} {o.get('qty')}주 "
         f"@{o.get('price') or '시장가'} 만료 {a['expires_at']}"
     )
+
+
+def daemon_line(ectx: Any) -> str:
+    """하트비트 요약 한 줄: 가동 시간 + 최근에 돈 잡 3개 (/status 응답이 온다 = 데몬이 산 것)."""
+    base = ectx.state if ectx.state is not None else paths.state_dir()
+    st = heartbeat.read_status(base, ectx.now(), [])
+    hb = heartbeat._read_json(base / heartbeat.FILE_NAME) or {}
+    jobs = hb.get("jobs") if isinstance(hb.get("jobs"), dict) else {}
+    recent = sorted(
+        (
+            (j.get("last_end") or j.get("last_start") or "", jid, j.get("last_status"))
+            for jid, j in jobs.items()
+            if j.get("last_start")
+        ),
+        reverse=True,
+    )[:3]
+    up = st["uptime_s"]
+    head = (
+        f"데몬 pid {st['pid']} · 가동 {up // 3600}시간 {up % 3600 // 60}분"
+        if st["alive"] and up is not None
+        else "데몬 기록 없음"
+    )
+    tail = ", ".join(f"{jid} {status}" for _, jid, status in recent) or "잡 기록 없음"
+    return f"{head} · 최근 잡: {tail}"
 
 
 def _control_command(ectx: Any, name: str, arg: str | None) -> str:
@@ -88,7 +113,9 @@ def poll_once(ectx: Any, receiver: Any, *, echo: Callable[[str], None] = lambda 
             modes = ", ".join(_mode_label(conn, a) for a in ectx.accounts)
             body = "\n".join(approval_line(a) for a in pending) or "없음"
             paused = "일시정지" if control.is_paused(conn) else "실행 중"
-            ectx.notifier.send(f"[상태] {paused} · 계좌 모드: {modes}\n미승인 주문:\n{body}")
+            ectx.notifier.send(
+                f"[상태] {paused} · 계좌 모드: {modes}\n{daemon_line(ectx)}\n미승인 주문:\n{body}"
+            )
             echo(f"status → 미승인 {len(pending)}건")
             continue
         if name in ("pause", "resume", "mode", "watch"):

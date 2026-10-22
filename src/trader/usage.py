@@ -1,6 +1,7 @@
 """Claude 사용량: 구독 한도(5시간·7일)는 비대화형으로 읽을 공식 경로가 없다. 대화형 Claude Code 의
 상태줄 스크립트가 stdin 의 `rate_limits` 를 `llm.usage_file`(기본 ~/.claude/rate_limits.json)에
-남기면 그 **마지막 관측값**을 읽고, 이 저장소 몫은 원장 `agent_calls` 를 5시간·7일 창으로 집계한다."""
+남기면 그 **마지막 관측값**을 읽고, 이 저장소 몫은 원장 `agent_calls` 를 5시간·7일 창으로
+집계한다."""
 
 from __future__ import annotations
 

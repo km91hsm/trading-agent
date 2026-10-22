@@ -39,6 +39,7 @@ class WebDeps:
     notifier: Any = field(default_factory=NullNotifier)
     now: Callable[[], datetime] = field(default=lambda: datetime.now(UTC))
     extra_hosts: list[str] = field(default_factory=list)  # --host 로 다른 바인드를 쓸 때
+    schedule: Any | None = None  # ScheduleConfig: /api/system/daemon 의 잡 예정표 (없으면 빈 목록)
 
     def account(self, account_id: str) -> AccountConfig | None:
         return next((a for a in self.accounts if a.id == account_id), None)

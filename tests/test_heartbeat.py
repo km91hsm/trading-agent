@@ -1,4 +1,4 @@
-"""데몬 하트비트: state/daemon_heartbeat.json 왕복, 쓰기 실패 무시, read_status 의 alive/stale 판정."""
+"""데몬 하트비트: 하트비트 파일 왕복, 쓰기 실패 무시, read_status 의 alive/stale 판정."""
 
 import json
 from datetime import UTC, datetime, timedelta
@@ -21,7 +21,7 @@ def test_heartbeat_round_trip(tmp_path):
     hb.job_started("kr_scan_analyze", NOW + timedelta(minutes=1))
     hb.job_finished("kr_scan_analyze", NOW + timedelta(minutes=2), "error", error="boom")
     hb.job_missed("kr_scan_analyze", NOW + timedelta(minutes=3))
-    hb.set_next("kr_monitor", NOW + timedelta(minutes=4))
+    hb.set_next("kr_monitor", NOW + timedelta(minutes=4), at=NOW + timedelta(minutes=4))
     data = json.loads((tmp_path / "daemon_heartbeat.json").read_text(encoding="utf-8"))
     assert data["pid"] == 4242 and data["started_at"] == NOW.isoformat()
     assert data["updated_at"] == (NOW + timedelta(minutes=4)).isoformat()

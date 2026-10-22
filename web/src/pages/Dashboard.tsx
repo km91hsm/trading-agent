@@ -8,10 +8,12 @@ import { Delta, Mark, Num, Table, Td, Th } from "../components/Table";
 import { ErrorBox } from "../components/Tables";
 import { Term } from "../components/Term";
 import { UsageBlock } from "../components/Usage";
+import { JobsBlock } from "../components/Jobs";
 import { fmtDate, fmtMoney, fmtPct, fmtTime, minutesLeft } from "../format";
 import { useApp, useLoad } from "../hooks";
 import { labelOf } from "../names";
 import type { UsageResp } from "../usage";
+import { daemonText, type DaemonStatus } from "../jobs";
 import { buildTape, gateFor, marketPhase, type TapeRow } from "../tape";
 import type {
   Approval,
@@ -37,14 +39,6 @@ function runDates(now: Date): Record<string, string> {
   const f = (tz: string) =>
     new Intl.DateTimeFormat("en-CA", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit" }).format(now);
   return { KR: f("Asia/Seoul"), US: f("America/New_York") };
-}
-
-/** 데몬 생존은 API 가 없어 마지막 잡 시각으로 추정한다 — 정직하게 "신호" 라고 부른다. */
-function daemonSignal(lastRun: Run | undefined, now: Date): { text: string; stale: boolean } {
-  if (!lastRun) return { text: "신호 없음", stale: true };
-  const mins = Math.max(0, Math.round((now.getTime() - new Date(lastRun.started_at).getTime()) / 60000));
-  const ago = mins < 60 ? `${mins}분 전` : mins < 48 * 60 ? `${Math.round(mins / 60)}시간 전` : `${Math.round(mins / 1440)}일 전`;
-  return { text: `${lastRun.kind} ${ago}`, stale: mins > 90 };
 }
 
 const str = (v: unknown): string | null => (v === null || v === undefined || v === "" ? null : String(v));
@@ -97,6 +91,7 @@ export function Dashboard() {
   const runs = useLoad(() => getJson<Run[]>("/api/runs", { limit: "30" }), [tick]);
   const settings = useLoad(() => getJson<SystemSettings>("/api/system/settings"), []);
   const usage = useLoad(() => getJson<UsageResp>("/api/system/usage"), [tick, minute]);
+  const daemon = useLoad(() => getJson<DaemonStatus>("/api/system/daemon"), [tick, minute]);
   const models = useLoad(() => getJson<ModelsResp>("/api/ml/models"), [tick]);
   const rl = useLoad(() => getJson<RlResp>("/api/rl/experiments"), [tick]);
   const perfKR = useLoad(
@@ -167,8 +162,7 @@ export function Dashboard() {
   const pendingApprovals = (approvals.data ?? []).filter((a) => a.status === "pending");
   const runsToday = (runs.data ?? []).filter((r) => fmtDate(r.started_at) === dates.KR);
   const errorsToday = runsToday.filter((r) => r.status === "error");
-  const lastRun = runs.data?.[0];
-  const signal = daemonSignal(lastRun, now);
+  const signal = daemonText(daemon.data);
   const cap = settings.data?.llm?.daily_session_cap;
   const loading = (pfKR.loading || pfUS.loading || decisions.loading) && !tape.length;
   const anyError = pfKR.error || pfUS.error || decisions.error || checks.error || orders.error || approvals.error;
@@ -238,8 +232,9 @@ export function Dashboard() {
       </header>
 
       <div className="statusline" role="status">
-        <span className={signal.stale ? "err" : ""} title="데몬 생존을 직접 묻는 API 가 없어 마지막 잡 시각으로 추정한다">
-          데몬 신호 <b>{signal.text}</b>
+        <span className={signal.level === "none" ? "" : signal.level} title="daemon.lock 의 pid 생존 + 하트비트 파일(잡마다 갱신)">
+          데몬 <b>{signal.text}</b>
+          {daemon.data?.pid ? <span className="muted"> pid {daemon.data.pid}</span> : null}
         </span>
         <span>
           오늘 세션 <b>{calls.data?.sessions_today ?? 0}{cap ? ` / ${cap}` : ""}</b> · ${(calls.data?.cost_today ?? 0).toFixed(2)}
@@ -428,6 +423,9 @@ export function Dashboard() {
             ) : (
               <EmptyState title="성과를 낼 스냅샷이 없어요" hint="판정이 쌓이면 NAV 와 벤치마크가 표시돼요." />
             )}
+          </Section>
+          <Section title="데몬 잡" aside={daemon.data ? `${daemon.data.jobs.length}개 · 1분마다 갱신` : undefined}>
+            <JobsBlock data={daemon.data} now={now} />
           </Section>
           <Section title="Claude 사용량" aside="구독 창 · 세션">
             <UsageBlock data={usage.data} now={now} />

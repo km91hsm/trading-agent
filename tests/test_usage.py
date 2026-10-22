@@ -36,7 +36,8 @@ def test_read_rate_limits_parses_windows_and_age(tmp_path):
     )
     got = usage.read_rate_limits(p, NOW)
     assert got["age_s"] == 180 and got["observed_at"].startswith("2026-10-23T02:57")
-    assert got["five_hour"] == {"used_pct": 12.4, "resets_at": datetime.fromtimestamp(resets, UTC).isoformat()}
+    reset_iso = datetime.fromtimestamp(resets, UTC).isoformat()
+    assert got["five_hour"] == {"used_pct": 12.4, "resets_at": reset_iso}
     assert got["seven_day"] == {"used_pct": 40.0, "resets_at": None}
     assert got["spend_limit"] is None
 

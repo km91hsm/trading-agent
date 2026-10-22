@@ -1342,6 +1342,11 @@ def _web_deps(log_name: str | None = None):
         market = None
     if not secrets.WEB_TOKEN:
         log.warning("WEB_TOKEN 미설정: 제어 API 비활성(401)")
+    try:
+        schedule = config.load_schedule()
+    except config.ConfigError as e:  # 예정표만 빠진다
+        log.warning("schedule.yaml 을 읽지 못해 잡 예정표를 표시하지 않음: %s", e)
+        schedule = None
     return WebDeps(
         settings=settings,
         accounts=accounts,
@@ -1351,6 +1356,7 @@ def _web_deps(log_name: str | None = None):
         token=secrets.WEB_TOKEN or None,
         dist=paths.web_dist(),
         notifier=make_notifier(secrets),
+        schedule=schedule,
     )
 
 

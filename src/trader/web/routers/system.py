@@ -7,7 +7,7 @@ from importlib.metadata import PackageNotFoundError, version
 
 from fastapi import APIRouter, Request
 
-from trader import usage
+from trader import heartbeat, usage
 from trader.platform import paths
 
 router = APIRouter(prefix="/system", tags=["system"])
@@ -65,3 +65,18 @@ def usage_view(request: Request) -> dict:
         "windows": windows,
         "note": USAGE_NOTE,
     }
+
+
+@router.get("/daemon")
+def daemon_status(request: Request) -> dict:
+    """데몬 생존(daemon.lock pid)·하트비트(잡별 마지막 실행·다음 예정)·잡 예정표."""
+    from trader.daemon import build_jobs
+
+    deps = request.app.state.deps
+    base = deps.state if deps.state is not None else paths.state_dir()
+    jobs = (
+        build_jobs(deps.schedule, deps.settings, markets=list(deps.settings.markets))
+        if deps.schedule is not None
+        else []
+    )
+    return heartbeat.read_status(base, deps.now(), jobs)
