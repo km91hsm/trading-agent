@@ -1,0 +1,35 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "cream-palette",
+        "value": "*",
+        "files": [
+          ".impeccable/mocks/decision/assigned-r1.html"
+        ],
+        "createdAt": "2026-10-22T16:29:07.255Z",
+        "reason": "user chose the newspaper-paper world (#F6F4EE) on the decision page 2026-10-23; decision sketch, not shipped"
+      },
+      {
+        "rule": "cream-palette",
+        "value": "*",
+        "files": [
+          ".impeccable/mocks/decision/challenger-consumer.html"
+        ],
+        "createdAt": "2026-10-22T16:29:07.290Z",
+        "reason": "spent decision-round sketch (gitignored), not shipped"
+      },
+      {
+        "rule": "side-tab",
+        "value": "*",
+        "files": [
+          ".impeccable/mocks/decision/challenger-wayfinding.html"
+        ],
+        "createdAt": "2026-10-22T16:29:07.323Z",
+        "reason": "spent decision-round sketch (gitignored), not shipped"
+      }
+    ]
+  }
+}
