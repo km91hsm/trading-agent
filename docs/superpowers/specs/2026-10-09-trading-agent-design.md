@@ -199,7 +199,7 @@ trading-agent/
 |---|---|---|
 | technical | 일봉 250, 당일 분봉, 호가, 파이썬 계산 지표(SMA 5/20/60/120, RSI14, MACD, KDJ, 볼린저, ATR, ROC, 거래량 Z-score, 52주 고저 위치) | kis_market, indicators |
 | fundamental | KR: DART 3개년 + 최근 분기 재무, 비율(매출성장률·영업이익률·ROE·부채비율·PER/PBR/PSR·동종업 중앙값 대비), 30일 공시. US: EDGAR companyfacts 동일 비율 | dart, edgar |
-| news-macro | 종목 뉴스 20건·거시 10건(제목·요약·출처·수신 시각), 지표(KOSPI/S&P 선물, USD/KRW, 미 10년물, VIX, 기준금리), 7일 이벤트, 채널 자막 요약 | news(구글 RSS·네이버 API), macro(FRED·ECOS·KIS 지수), youtube, telegram_channel |
+| news-macro | 종목 뉴스 20건·거시 10건(제목·요약·출처·수신 시각), 지표(KOSPI/S&P 500/나스닥, USD/KRW, 달러지수(연준 광의), WTI, 미 10년물, VIX, 기준금리), 7일 이벤트, 채널 자막 요약 | news(구글 RSS·네이버 API), macro(FRED·ECOS·KIS 지수), youtube, telegram_channel |
 | sentiment | 외인·기관·개인 순매수 20일(KIS), 공매도·대차잔고(KRX), 커뮤니티 글 50건(§0.3 정책), 검색트렌드, `manual_inputs/` | kis_market, community, trends |
 | quant (LLM 아님) | 피처 스냅샷 → 모델 확률 | ml/features, ml/models/quant |
 

@@ -170,6 +170,8 @@ class ChannelsCfg(BaseModel):
 
     youtube: list[str] = Field(default_factory=list)
     telegram: list[str] = Field(default_factory=list)
+    naver_blog: list[str] = Field(default_factory=list)  # 블로그 id (rss.blog.naver.com/<id>.xml)
+    naver_blog_posts: int = Field(default=5, ge=1, le=20)  # 키워드 무관 최근 글 수
     max_videos: int = Field(default=3, ge=1, le=20)
     max_posts: int = Field(default=30, ge=1, le=200)
 

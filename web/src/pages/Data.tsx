@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { getJson } from "../api";
+import { getJson, postJson } from "../api";
 import { EmptyState } from "../components/EmptyState";
 import { Section } from "../components/Section";
 import { Skeleton } from "../components/Skeleton";
@@ -10,6 +10,7 @@ import { labelOf } from "../names";
 import { type FeatureRow, type HistoryResp, KEY_COLUMNS, type LatestResp, type SortDir, fmt, sortRows } from "./features";
 import { TodayPage } from "./Today";
 import { Ticker } from "../components/Ticker";
+import { useToast } from "../components/Toast";
 import { RunJobButton, useCanRun } from "../components/RunJob";
 
 const NUMERIC = new Set(KEY_COLUMNS.filter((c) => c !== "ticker" && c !== "sector"));
@@ -175,11 +176,92 @@ function FeatureStore() {
   );
 }
 
+type ManualNote = { received_at: string; title: string; url: string; note: string };
+
+/** '읽은 기사 붙여 넣기': 세이브티커처럼 자동 수집이 막힌 사이트에서 사람이 고른 기사를 시장 공통 수동 입력으로 남긴다. */
+function ManualInputs() {
+  const { token, tick } = useApp();
+  const toast = useToast();
+  const [market, setMarket] = useState<"KR" | "US">("KR");
+  const [title, setTitle] = useState("");
+  const [url, setUrl] = useState("");
+  const [note, setNote] = useState("");
+  const [n, setN] = useState(0);
+  const items = useLoad(() => getJson<{ items: ManualNote[] }>(`/api/control/manual-inputs?market=${market}`), [market, tick, n]);
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    try {
+      await postJson("/api/control/manual-inputs", { market, title, url, note }, token);
+      toast("저장했어요. 다음 분석의 분위기 입력에 들어가요.", "ok");
+      setTitle("");
+      setUrl("");
+      setNote("");
+      setN((x) => x + 1);
+    } catch (err) {
+      toast(`실패: ${(err as Error).message}`, "error");
+    }
+  };
+  return (
+    <Section title="읽은 기사 붙여 넣기" aside="시장 공통 수동 입력 · 토큰 필요">
+      <p className="note">
+        세이브티커처럼 자동 수집이 막힌 사이트에서 읽은 기사를 여기 적어 두면 그 시장의 다음 분석에서 분위기 애널리스트 입력(<code>sentiment.manual_inputs.market_notes</code>)으로 들어가요. 기준 시각 뒤에 적은 항목은 그날 분석에 들어가지 않아요.
+      </p>
+      <form className="row" onSubmit={submit} aria-label="읽은 기사 붙여 넣기">
+        <label className="field">
+          <span>시장</span>
+          <select value={market} onChange={(e) => setMarket(e.target.value as "KR" | "US")}>
+            <option>KR</option>
+            <option>US</option>
+          </select>
+        </label>
+        <label className="field">
+          <span>제목</span>
+          <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="기사 제목" size={28} required />
+        </label>
+        <label className="field">
+          <span>URL</span>
+          <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://" size={24} />
+        </label>
+        <label className="field">
+          <span>메모</span>
+          <input value={note} onChange={(e) => setNote(e.target.value)} placeholder="왜 중요한지 한 줄" size={28} />
+        </label>
+        <button type="submit" className="btn btn-primary" disabled={!token || !title.trim()} title={token ? undefined : "토큰이 필요해요 (설정/제어)"}>
+          저장
+        </button>
+      </form>
+      {items.data?.items.length ? (
+        <Table dense caption="시장 공통 수동 입력">
+          <thead>
+            <tr>
+              <Th>시각(UTC)</Th>
+              <Th>제목</Th>
+              <Th>메모</Th>
+            </tr>
+          </thead>
+          <tbody>
+            {items.data.items.map((it) => (
+              <tr key={it.received_at + it.title}>
+                <Td className="muted">{it.received_at.slice(0, 16).replace("T", " ")}</Td>
+                <Td>{it.url ? <a href={it.url} target="_blank" rel="noreferrer">{it.title}</a> : it.title}</Td>
+                <Td className="muted">{it.note || "—"}</Td>
+              </tr>
+            ))}
+          </tbody>
+        </Table>
+      ) : (
+        items.data && <EmptyState title={`${market} 시장 공통 메모가 없어요`} hint="위 폼에 읽은 기사를 적으면 여기 쌓여요." />
+      )}
+    </Section>
+  );
+}
+
 export function DataPage() {
   return (
     <>
       <TodayPage title="데이터" inputsOnly />
       <FeatureStore />
+      <ManualInputs />
     </>
   );
 }

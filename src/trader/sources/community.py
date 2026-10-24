@@ -376,7 +376,9 @@ def collect_community(
                 lambda: d.fetch("stockus", keywords=keywords, max_posts=cfg.max_posts),
             )
 
-        if channels is not None and (channels.youtube or channels.telegram):
+        if channels is not None and (
+            channels.youtube or channels.telegram or getattr(channels, "naver_blog", None)
+        ):
             ch = collect_channels(channels, keywords=keywords, asof=asof, http=http, now=now)
             for label, items in ch["sources"].items():
                 posts.extend(items)
@@ -398,11 +400,21 @@ def collect_channels(
     http: httpx.Client,
     now: Callable[[], datetime] = _utc_now,
 ) -> dict:
-    """YouTube·텔레그램 채널 수집을 한데 모은다 ({"sources": {...}, "errors": {...}})."""
+    """YouTube·텔레그램·네이버 블로그 채널 수집을 한데 모은다 ({"sources", "errors"})."""
+    from trader.sources.naver_blog import NaverBlogSource
     from trader.sources.telegram_channel import TelegramChannelSource
     from trader.sources.youtube import YouTubeSource
 
     out = {"sources": {}, "errors": {}}
+    if getattr(channels, "naver_blog", None):
+        r = NaverBlogSource(
+            list(channels.naver_blog),
+            http=http,
+            max_posts=getattr(channels, "naver_blog_posts", 5),
+            now=now,
+        ).fetch(asof=asof)
+        out["sources"].update(r["sources"])
+        out["errors"].update(r["errors"])
     if channels.youtube:
         r = YouTubeSource(
             list(channels.youtube), http=http, max_videos=channels.max_videos, now=now

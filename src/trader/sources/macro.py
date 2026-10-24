@@ -28,6 +28,11 @@ FRED_SERIES: dict[str, str] = {
     "us10y": "DGS10",
     "vix": "VIXCLS",
     "base_rate_us": "DFF",
+    # 2026-10-24 추가 (investing.com 대체): 연준 광의 달러지수(ICE DXY 와 구성이 달라 수치가 다름),
+    # WTI 현물, 나스닥 종합
+    "dxy": "DTWEXBGS",
+    "wti": "DCOILWTICO",
+    "nasdaq": "NASDAQCOM",
 }
 ECOS_SERIES: dict[str, tuple[str, str]] = {
     "base_rate_kr": ("722Y001", "0101000"),  # 한국은행 기준금리 (일별)

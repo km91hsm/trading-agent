@@ -373,7 +373,7 @@ def _sentiment(ticker, market, name, asof, cfg, deps, secrets=None) -> dict[str,
             now=now,
         ),
         "trends": skipped_section("phase8", now=now),
-        "manual_inputs": _manual(ticker, now),
+        "manual_inputs": _manual(ticker, market, asof, now),
     }
 
 
@@ -383,13 +383,17 @@ def _reddit_auth(secrets: Secrets | None) -> tuple[str, str, str] | None:
     return None
 
 
-def _manual(ticker: str, now) -> Section:
+def _manual(ticker: str, market: str, asof: datetime, now) -> Section:
+    """종목 파일 + 시장 공통 파일(`_market_<시장>.md`, asof 이전 항목만). 둘 다 없으면 건너뜀."""
     data = manual_inputs.read(ticker)
-    if data is None:
+    notes = manual_inputs.read_market(market, asof=asof)
+    if data is None and not notes:
         return skipped_section("no manual input", now=now)
-    if data.get("error"):
+    if data is not None and data.get("error"):
         return Section(data=None, received_at=now().isoformat(), error=data["error"])
-    return Section(data=data, received_at=now().isoformat(), error=None)
+    merged = dict(data or {"format": "market"})
+    merged["market_notes"] = notes
+    return Section(data=merged, received_at=now().isoformat(), error=None)
 
 
 def _name(ticker: str, market: Market, deps: InputDeps) -> str:

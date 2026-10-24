@@ -65,7 +65,7 @@ def test_no_key_error_section(respx_mock):
         now=lambda: T0,
     )
     assert out["kospi"]["data"]["value"] == 3250.12 and out["kospi"]["error"] is None
-    for key in ("sp500", "usdkrw", "us10y", "vix", "base_rate_us"):
+    for key in ("sp500", "usdkrw", "us10y", "vix", "base_rate_us", "dxy", "wti", "nasdaq"):
         assert out[key]["error"] == "no api key", key
     assert out["base_rate_kr"]["error"] == "no api key"
 

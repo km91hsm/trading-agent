@@ -14,7 +14,7 @@ from pydantic import BaseModel, ConfigDict
 
 from trader.control import control
 from trader.web.auth import require_token
-from trader.web.routers._common import deps_of
+from trader.web.routers._common import deps_of, require_market
 
 router = APIRouter(prefix="/control", tags=["control"], dependencies=[Depends(require_token)])
 
@@ -38,6 +38,17 @@ class WatchBody(BaseModel):
 
     action: Literal["add", "remove"]
     ticker: str
+
+
+class ManualInputBody(BaseModel):
+    """'읽은 기사 붙여 넣기': 시장 공통 수동 입력 한 항목 (`_market_<시장>.md`)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    market: Literal["KR", "US"]
+    title: str
+    url: str = ""
+    note: str = ""
 
 
 # 조회는 토큰 없음(다른 조회 API 와 같은 규칙), 변경은 위 router(토큰 필수)
@@ -137,3 +148,32 @@ def pause(request: Request) -> dict:
 @router.post("/resume")
 def resume(request: Request) -> dict:
     return _set_paused(request, False)
+
+
+@public_router.get("/manual-inputs")
+def manual_inputs_list(request: Request, market: str | None = None) -> dict:
+    """시장 공통 수동 입력 목록(최신 순). 종목별 파일은 포함하지 않는다."""
+    from trader.sources import manual_inputs
+
+    deps = deps_of(request)
+    m = require_market(market)
+    return {"market": m, "items": manual_inputs.read_market(m, state=deps.state)}
+
+
+@router.post("/manual-inputs")
+def manual_inputs_add(request: Request, body: ManualInputBody) -> dict:
+    from trader.sources import manual_inputs
+
+    deps = deps_of(request)
+    try:
+        item = manual_inputs.append_market(
+            body.market,
+            title=body.title,
+            url=body.url,
+            note=body.note,
+            now=deps.now(),
+            state=deps.state,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return item

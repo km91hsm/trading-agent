@@ -706,3 +706,26 @@ def test_us_fundamental_fetches_companyfacts_once_without_process_memo(project):
     build_inputs(**kw, deps=deps(edgar=e))
     assert e.calls == 2  # 수집마다 새로 받는다
     assert not hasattr(e, "_facts")
+
+
+def test_market_manual_notes_merge_into_manual_inputs(project):
+    from datetime import timedelta
+
+    from trader.sources import manual_inputs
+
+    c = SourcesConfig.model_validate(
+        {
+            "edgar": {"user_agent": "trader test@example.com"},
+            "news": {"enabled": False},
+            "macro": {"enabled": False},
+            "community": {"enabled": False},
+        }
+    )
+    manual_inputs.append_market("KR", title="시장 메모", now=T0 - timedelta(hours=1))
+    manual_inputs.append_market("KR", title="미래 메모", now=T0 + timedelta(hours=1))
+    d = build_inputs(
+        ticker="005930", market="KR", exchange=None, asof=T0, cfg=c, secrets=Secrets(), deps=deps()
+    )
+    mi = d["sentiment"]["manual_inputs"]
+    assert mi["error"] is None and mi["data"]["format"] == "market"
+    assert [n["title"] for n in mi["data"]["market_notes"]] == ["시장 메모"]
