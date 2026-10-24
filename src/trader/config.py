@@ -15,7 +15,14 @@ from zoneinfo import ZoneInfo
 
 import yaml
 from dotenv import dotenv_values
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 from trader.platform import paths
 
@@ -67,6 +74,8 @@ class HedgeCfg(BaseModel):
 
     enabled: bool = True
     max_weight_pct: float = Field(default=0.20, ge=0, le=0.5)
+    min_weight_pct: float = Field(default=0.05, ge=0, le=0.5)  # 시장 세션 제안의 하한 (Phase 18)
+    market_session: bool = True  # 매일 시장 세션(거시 애널리스트·토론·전략가) 실행 여부 (Phase 18)
     leverage: bool = True  # 3지표 모두 켜지면 −2x, 아니면 −1x
     bear_min_signals: int = Field(default=2, ge=1, le=3)
     exit_streak_days: int = Field(default=5, ge=1, le=30)
@@ -93,6 +102,12 @@ class HedgeCfg(BaseModel):
             "US": HedgeInstrument(symbol="SPY", exchange="AMS"),
         }
     )
+
+    @model_validator(mode="after")
+    def _weights(self) -> HedgeCfg:
+        if self.min_weight_pct > self.max_weight_pct:
+            raise ValueError("hedge.min_weight_pct 는 max_weight_pct 이하여야 합니다")
+        return self
 
     @field_validator("instruments", mode="before")
     @classmethod

@@ -374,6 +374,16 @@ def test_bundle_trader_has_reports_summary_context_within_limit(ctx, project):
         and b["context"]["portfolio"]["paper-main"]["positions"] == []
     )
     assert len(json.dumps(b, ensure_ascii=False).encode("utf-8")) < 24_000
+    assert b["context"]["market_view"] is None  # 오늘 시장 세션 제안 없음 (Phase 18)
+    from trader.control import control
+
+    control.set_flag(
+        ctx.conn,
+        "market_view:KR",
+        {"date": D.isoformat(), "stance": "RISK_OFF", "hedge_weight": 0.1, "leveraged": False},
+    )
+    b2 = tools.checkpoint_bundle(ctx, ticker="005930", market="KR", date=D, kind="trader")["data"]
+    assert b2["context"]["market_view"]["stance"] == "RISK_OFF"
     assert "note" not in b  # 실기 크기에서는 손실 축약 없이 들어가야 한다
     assert "evidence" not in b["reports"][0]  # 트레이더 묶음은 evidence 를 뺀다
     assert set(b["research_summary"]["round0"]["bull"]) < set(

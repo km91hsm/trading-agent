@@ -626,6 +626,63 @@ def _regime_body(deps: DaemonDeps, market: str) -> dict:
     return out
 
 
+def _market_view_body(deps: DaemonDeps, market: str) -> dict:
+    """시장 세션(Phase 18): 국면 갱신 뒤 운영일 1회. 거시 애널리스트 → 토론 → 전략가 제안.
+    실패·상한이면 제안 없이(규칙 기본값) 간다. 알림은 제안이 왔을 때만 1건."""
+    from trader.orchestrator import market_view as mv
+    from trader.orchestrator import tools
+    from trader.orchestrator.run_store import run_date_for
+
+    cfg = deps.settings.hedge
+    if not cfg.enabled or not cfg.market_session:
+        return {"skipped": "hedge.market_session=false"}
+    today = run_date_for(market, deps.now())
+    conn = deps.conn_factory()
+    try:
+        if mv.load_view(conn, market, today) is not None:
+            return {"skipped": "오늘 이미 제안 있음"}
+        cap_hit = tools.sessions_today(conn, deps.now()) >= deps.settings.llm.daily_session_cap
+        inputs = mv.build_inputs(
+            conn,
+            market,
+            today,
+            settings=deps.settings,
+            asof=deps.now(),
+            market_client=deps.market_client,
+            secrets=deps.secrets,
+            accounts=deps.accounts,
+            brokers=deps.brokers,
+            state=deps.state,
+            now=deps.now,
+        )
+        out = mv.run_market_view(
+            deps.settings,
+            conn,
+            deps.accounts,
+            market=market,
+            date=today,
+            inputs=inputs,
+            cap_hit=cap_hit,
+            state=deps.state,
+            now=deps.now,
+            brokers=deps.brokers,
+            session_runner=deps.session_runner,
+        )
+    finally:
+        conn.close()
+    view = out.get("view")
+    if view:
+        deps.notifier.send(
+            f"[시장 뷰] {market} {view.get('stance')} 헤지 제안 "
+            f"{float(view.get('hedge_weight') or 0):.0%}"
+            f"{'' if view.get('leveraged', True) else ' (레버리지 거부)'} "
+            f"· {str(view.get('rationale') or '')[:80]}"
+        )
+    elif out.get("error"):
+        deps.notifier.send(f"[시장 세션 실패] {market}: {out['error']} — 규칙 기본값으로 진행")
+    return out
+
+
 def _hedge_body(deps: DaemonDeps, market: str) -> dict:
     """monitor 첫 창 안 틱에서 운영일 1회: bear 면 인버스 진입, 벗어났으면 해제(paused 면 보류)."""
     from trader.orchestrator import hedge as hedge_mod
@@ -870,6 +927,11 @@ def _scan_analyze_body(deps: DaemonDeps, market: str) -> dict:
     `_scan.json` 없음을 알림·error 로 남긴다). 세션을 세기 전에 stale running 을 정리한다."""
     _close_stale_sessions(deps)
     _regime_body(deps, market)  # 국면 갱신: 스크리너·트레이더 입력(context.regime)·게이트가 읽는다
+    try:
+        _market_view_body(deps, market)  # 시장 세션(Phase 18): 헤지 비중 제안, 실패해도 계속
+    except Exception as e:  # noqa: BLE001 - 시장 세션 실패가 스캔을 막지 않는다
+        logger.exception("시장 세션 실패 %s", market)
+        deps.notifier.send(f"[시장 세션 실패] {market}: {type(e).__name__}: {e}")
     scan_error: str | None = None
     try:
         _scan_body(deps, market)
@@ -979,6 +1041,8 @@ def queued_job_body(
     kind, p = req["kind"], req["params"]
     if kind == "scan_analyze":
         return lambda: _scan_analyze_body(deps, p["market"])
+    if kind == "market_view":
+        return lambda: _market_view_body(deps, p["market"])
     if kind == "analyze_ticker":
         return lambda: _analyze_ticker_request(deps, p)
     if kind in ("features_backfill", "features_snapshot", "features_derive"):

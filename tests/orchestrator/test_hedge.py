@@ -180,3 +180,66 @@ def test_regime_state_defaults_to_bull_when_disabled_or_missing(conn):
     assert executor.regime_state(ctx, "KR") == "bear"
     ctx.settings = Settings(hedge=HedgeCfg(enabled=False))
     assert executor.regime_state(ctx, "KR") == "bull"
+
+
+# --- Phase 18: 시장 세션 제안 반영 -------------------------------------------------
+
+
+def _view(conn, **over):
+    v = {
+        "date": D.isoformat(),
+        "market": "KR",
+        "stance": "RISK_OFF",
+        "hedge_weight": 0.12,
+        "leveraged": True,
+        "confidence": 0.7,
+    }
+    v.update(over)
+    control.set_flag(conn, "market_view:KR", v)
+
+
+def test_proposal_weight_is_used_within_bounds(project, conn):
+    ctx = _ctx(conn)
+    _set_regime(conn, "bear", 2)
+    _view(conn, hedge_weight=0.12)
+    out = hedge.rebalance(ctx, market="KR", today=D, cfg=CFG, quote_fn=lambda i: Decimal("5000"))
+    assert out["action"] == "enter" and out["weight"] == 0.12
+    assert out["view"]["stance"] == "RISK_OFF"
+    paper = next(r for r in out["results"] if r["account_id"] == "paper-main")
+    assert paper["qty"] == 240  # 1000만 × 12% / 5000
+    dec = repo.latest_decision(conn, "KR", "114800")
+    assert "시장 세션 제안 RISK_OFF 12%" in dec["data"]["rationale"]
+
+
+def test_proposal_below_min_is_raised_to_min(project, conn):
+    ctx = _ctx(conn)
+    _set_regime(conn, "bear", 2)
+    _view(conn, hedge_weight=0.01)
+    out = hedge.rebalance(ctx, market="KR", today=D, cfg=CFG, quote_fn=lambda i: Decimal("5000"))
+    assert out["weight"] == 0.05
+    paper = next(r for r in out["results"] if r["account_id"] == "paper-main")
+    assert paper["qty"] == 100
+
+
+def test_proposal_can_refuse_leverage_but_not_force_entry(project, conn):
+    ctx = _ctx(conn)
+    _set_regime(conn, "bear", 3)
+    _view(conn, leveraged=False)
+    out = hedge.rebalance(ctx, market="KR", today=D, cfg=CFG, quote_fn=lambda i: Decimal("5000"))
+    assert out["ticker"] == "114800"  # 3/3 이지만 제안이 레버리지 거부 → −1x
+    # bear 가 아니면 RISK_OFF 제안이 와도 진입하지 않는다 (규칙 우선)
+    ctx2 = _ctx(conn)
+    _set_regime(conn, "neutral", 1)
+    _view(conn, date=date(2026, 10, 25).isoformat(), hedge_weight=0.2)
+    out2 = hedge.rebalance(
+        ctx2, market="KR", today=date(2026, 10, 25), cfg=CFG, quote_fn=lambda i: Decimal("5000")
+    )
+    assert out2["action"] == "none" and out2["view"]["hedge_weight"] == 0.2
+
+
+def test_stale_proposal_is_ignored(project, conn):
+    ctx = _ctx(conn)
+    _set_regime(conn, "bear", 2)
+    _view(conn, date="2026-10-23", hedge_weight=0.05)  # 어제 제안
+    out = hedge.rebalance(ctx, market="KR", today=D, cfg=CFG, quote_fn=lambda i: Decimal("5000"))
+    assert out["view"] is None and out["weight"] == 0.2

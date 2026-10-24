@@ -48,7 +48,7 @@ class SessionSpec:
     tickers: list[dict[str, Any]]  # [{"ticker": str, "exchange": str | None}]
     dry_run: bool = True
     asof: datetime | None = None  # tool collect 에 넘길 기준 시각 (없으면 세션 시작 시각)
-    kind: str = "analyze"  # analyze | screen | resume | reflect
+    kind: str = "analyze"  # analyze | screen | resume | reflect | market
     candidates: list[dict[str, Any]] = field(default_factory=list)  # screen 모드 입력
     entries: list[dict[str, Any]] = field(default_factory=list)  # reflect 모드 입력
     trigger: dict[str, Any] | None = None  # resume 모드 입력 (Phase 6 monitor)
@@ -250,9 +250,12 @@ def run_session(
         raise PipelineError(
             f"오늘 세션 상한({settings.llm.daily_session_cap})에 도달해 세션을 띄우지 않습니다"
         )
-    run_kind = {"screen": "scan", "resume": "monitor", "reflect": "reflect"}.get(
-        spec.kind, "analyze"
-    )
+    run_kind = {
+        "screen": "scan",
+        "resume": "monitor",
+        "reflect": "reflect",
+        "market": "market",
+    }.get(spec.kind, "analyze")
     run_id = db.start_run(conn, run_kind, spec.market) if conn is not None else None
     started = now()
 
@@ -270,6 +273,10 @@ def run_session(
             if spec.kind == "reflect":
                 written += fake.run_fake_reflect(
                     ctx, market=spec.market, date=spec.date, entries=spec.entries
+                )
+            if spec.kind == "market":
+                written += fake.run_fake_market(
+                    ctx, market=spec.market, date=spec.date, debate_rounds=settings.debate_rounds
                 )
             for t in spec.tickers:
                 written += fake.run_fake_ticker(
@@ -323,6 +330,7 @@ def run_session(
         names = {
             "screen": registry.SCREEN_AGENTS,
             "reflect": registry.REFLECT_AGENTS,
+            "market": registry.MARKET_AGENTS,
         }.get(spec.kind, registry.AGENTS)
         agents_file.write_text(
             json.dumps(registry.agents_json(names, settings, agents_dir), ensure_ascii=False),

@@ -110,3 +110,55 @@ def test_hedge_failure_does_not_block_monitor(conn, monkeypatch):
     monkeypatch.setattr(daemon, "_hedge_body", boom)
     out = daemon._monitor_body(deps, "KR")
     assert out["checked"] == 7 and out["hedge"]["error"].startswith("RuntimeError")
+
+
+# --- Phase 18: 시장 세션 ------------------------------------------------------------
+
+
+def test_market_view_body_runs_fake_session_once_and_notifies(conn, monkeypatch):
+    monkeypatch.setenv("FAKE_CLAUDE", "1")
+    deps = _hedge_deps(conn, closes=[100] * 30 + [95, 90, 85, 80, 75, 70])
+    daemon._regime_body(deps, "KR")
+    out = daemon._market_view_body(deps, "KR")
+    assert out["view"]["stance"] == "RISK_OFF" and out["view"]["hedge_weight"] == 0.1
+    assert any("[시장 뷰] KR RISK_OFF" in m for m in deps.notifier.msgs)
+    assert conn.execute("SELECT COUNT(*) FROM runs WHERE kind='market'").fetchone()[0] == 1
+    # 같은 날 다시 부르면 세션을 띄우지 않는다
+    assert daemon._market_view_body(deps, "KR")["skipped"] == "오늘 이미 제안 있음"
+    # 그 뒤 헤지는 제안 비중(10%)으로 진입
+    deps.market_client.prices = {"114800": Decimal("5000")}
+    hedge_out = daemon._hedge_body(deps, "KR")
+    assert hedge_out["action"] == "enter" and hedge_out["weight"] == 0.1
+    assert regime.summary(conn, ["KR"], today=NOW.date())[0]["view"]["stance"] == "RISK_OFF"
+    assert "제안 10%" in regime.line(conn, ["KR"], today=NOW.date())
+
+
+def test_market_view_body_skips_when_disabled_or_cap_hit(conn, monkeypatch):
+    monkeypatch.setenv("FAKE_CLAUDE", "1")
+    deps = _hedge_deps(conn, closes=[100] * 36)
+    deps.settings = Settings(hedge=HedgeCfg(market_session=False))
+    assert "market_session" in daemon._market_view_body(deps, "KR")["skipped"]
+    deps.settings = Settings(hedge=CFG)
+    monkeypatch.setattr("trader.orchestrator.tools.sessions_today", lambda conn, now: 99)
+    out = daemon._market_view_body(deps, "KR")
+    assert out["skipped"] == "세션 상한" and not deps.notifier.msgs
+
+
+def test_scan_analyze_body_calls_market_view_after_regime(conn, monkeypatch):
+    deps = _hedge_deps(conn, closes=[100] * 36)
+    order = []
+    monkeypatch.setattr(daemon, "_regime_body", lambda d, m: order.append("regime"))
+    monkeypatch.setattr(daemon, "_market_view_body", lambda d, m: order.append("view"))
+    monkeypatch.setattr(daemon, "_scan_body", lambda d, m: order.append("scan"))
+    monkeypatch.setattr(daemon, "_analyze_body", lambda d, m, scan_error=None: {"ok": True})
+    daemon._scan_analyze_body(deps, "KR")
+    assert order == ["regime", "view", "scan"]
+
+
+def test_market_view_queue_kind(conn):
+    from trader import jobs as jobq
+
+    assert jobq.validate("market_view", {"market": "US"}) == {"market": "US"}
+    assert jobq.is_heavy("market_view") and jobq.label("market_view", {"market": "US"}) == (
+        "US 시장 세션"
+    )

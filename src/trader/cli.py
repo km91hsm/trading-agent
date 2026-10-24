@@ -37,7 +37,6 @@ kis_app = typer.Typer(help="KIS 브로커 도구", no_args_is_help=True)
 app.add_typer(kis_app, name="kis")
 
 
-
 def _force_utf8() -> None:
     """콘솔 출력을 UTF-8 로 고정한다 (Windows cp949 대비)."""
     for stream in (sys.stdout, sys.stderr):
@@ -357,8 +356,7 @@ def collect(
         from trader.orchestrator.run_store import run_dir as _rd
 
         existed = (
-            not force
-            and _rc(_rd(_rdf(market, when), market, ticker), "00_inputs") is not None  # type: ignore[arg-type]
+            not force and _rc(_rd(_rdf(market, when), market, ticker), "00_inputs") is not None  # type: ignore[arg-type]
         )
         path = _collect_and_save()(
             ticker=ticker,
@@ -1020,8 +1018,10 @@ def init_cmd() -> None:
     created = bundle.first_run_init(paths.project_root())
     typer.echo("생성: " + (", ".join(created) or "없음 (이미 초기화됨)"))
     if not paths.secrets_path().exists():
-        typer.echo("다음: secrets/.env.example 을 secrets/.env 로 복사해 키를 넣고, "
-                   "config/accounts.yaml 의 계좌번호를 채우세요")
+        typer.echo(
+            "다음: secrets/.env.example 을 secrets/.env 로 복사해 키를 넣고, "
+            "config/accounts.yaml 의 계좌번호를 채우세요"
+        )
 
 
 @app.command("app")
@@ -1410,6 +1410,63 @@ def _hosts_for_bind(bind: str) -> list[str]:
     return [] if bind in ("127.0.0.1", "localhost", "::1") else ["*"]
 
 
+market_tool_app = typer.Typer(help="시장 세션 도구 (Phase 18)", no_args_is_help=True)
+tool_app.add_typer(market_tool_app, name="market")
+
+
+@market_tool_app.command("bundle")
+def tool_market_bundle(
+    market: str = typer.Option(..., "--market"),
+    date: str = typer.Option(..., "--date"),
+    kind: str = typer.Option(..., "--kind", help="analyst | researcher | strategist"),
+    round: int | None = typer.Option(None, "--round"),
+    side: str | None = typer.Option(None, "--side"),
+) -> None:
+    from trader.orchestrator import tools
+
+    _tool_run(tools.market_bundle, market=market, date=date, kind=kind, round=round, side=side)
+
+
+@market_tool_app.command("write")
+def tool_market_write(
+    market: str = typer.Option(..., "--market"),
+    date: str = typer.Option(..., "--date"),
+    stage: str = typer.Option(..., "--stage", help="_market_analyst | _market_debate_r<n>_<side>"),
+    agent: str | None = typer.Option(None, "--agent"),
+    json_text: str | None = typer.Option(None, "--json", help="JSON (없으면 stdin)"),
+) -> None:
+    from trader.orchestrator import tools
+
+    _tool_run(
+        tools.market_write,
+        market=market,
+        date=date,
+        stage=stage,
+        payload=_payload_arg(json_text),
+        agent=agent,
+    )
+
+
+@market_tool_app.command("summarize")
+def tool_market_summarize(
+    market: str = typer.Option(..., "--market"), date: str = typer.Option(..., "--date")
+) -> None:
+    from trader.orchestrator import tools
+
+    _tool_run(tools.market_summarize, market=market, date=date)
+
+
+@tool_app.command("submit-market-view")
+def tool_submit_market_view(
+    market: str = typer.Option(..., "--market"),
+    date: str = typer.Option(..., "--date"),
+    json_text: str | None = typer.Option(None, "--json", help="HedgeProposal JSON (없으면 stdin)"),
+) -> None:
+    from trader.orchestrator import tools
+
+    _tool_run(tools.submit_market_view, market=market, date=date, payload=_payload_arg(json_text))
+
+
 @tool_app.command("submit-screen")
 def tool_submit_screen(
     market: str = typer.Option(..., "--market"),
@@ -1729,9 +1786,7 @@ def rl_train(
         raise config.ConfigError(f"시장은 KR 또는 US: {market}")
     if seeds is not None:
         rl_cfg = cfg.models.rl_sizer.model_copy(update={"seeds": seeds})
-        cfg = cfg.model_copy(
-            update={"models": cfg.models.model_copy(update={"rl_sizer": rl_cfg})}
-        )
+        cfg = cfg.model_copy(update={"models": cfg.models.model_copy(update={"rl_sizer": rl_cfg})})
     conn = db.connect()
     db.init_schema(conn)
     try:

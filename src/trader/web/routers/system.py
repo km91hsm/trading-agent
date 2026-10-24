@@ -81,6 +81,8 @@ def regime_status(request: Request) -> dict:
         "max_weight_pct": h.max_weight_pct,
         "leverage": h.leverage,
         "bear_min_signals": h.bear_min_signals,
+        "market_session": h.market_session,
+        "min_weight_pct": h.min_weight_pct,
         "instruments": {
             m: {k: v.model_dump() for k, v in d.items()} for m, d in h.instruments.items()
         },

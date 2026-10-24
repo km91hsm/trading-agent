@@ -696,6 +696,7 @@ def test_scan_analyze_body_runs_scan_then_analyze(conn, monkeypatch):
 
     monkeypatch.setattr(daemon, "_scan_body", scan)
     monkeypatch.setattr(daemon, "_analyze_body", analyze)
+    monkeypatch.setattr(daemon, "_market_view_body", lambda d, m: {"skipped": "test"})
     deps = _deps(conn, FakeMarket(), now=lambda: datetime(2026, 10, 8, 0, 0, tzinfo=UTC))
     r = daemon._scan_analyze_body(deps, "KR")
     assert order == [("scan", "KR"), ("analyze", "KR")] and r["targets"] == 2
@@ -724,6 +725,7 @@ def test_scan_analyze_body_scan_failure_still_runs_analyze_and_notifies(conn, mo
         return {"targets": 0, "error": "_scan 없음"}
 
     monkeypatch.setattr(daemon, "_analyze_body", analyze)
+    monkeypatch.setattr(daemon, "_market_view_body", lambda d, m: {"skipped": "test"})
     deps = _deps(conn, FakeMarket(), now=lambda: datetime(2026, 10, 8, 0, 0, tzinfo=UTC))
     deps.notifier = Sent()
     r = daemon._scan_analyze_body(deps, "KR")
@@ -741,6 +743,7 @@ def test_scan_analyze_job_closes_stale_running_before_sessions(conn, monkeypatch
     conn.commit()
     monkeypatch.setattr(daemon, "_scan_body", lambda deps, m: {"ok": 1})
     monkeypatch.setattr(daemon, "_analyze_body", lambda deps, m, **kw: {"targets": 0})
+    monkeypatch.setattr(daemon, "_market_view_body", lambda d, m: {"skipped": "test"})
     deps = _deps(conn, FakeMarket(), now=lambda: now)
     daemon._scan_analyze_body(deps, "KR")
     row = conn.execute("SELECT status FROM agent_calls").fetchone()
@@ -791,6 +794,7 @@ def test_scan_failure_is_reported_once_with_cause(conn, monkeypatch):
         raise ValueError("screener 폭발")
 
     monkeypatch.setattr(daemon, "_scan_body", boom)
+    monkeypatch.setattr(daemon, "_market_view_body", lambda d, m: {"skipped": "test"})
     deps = _deps(conn, FakeMarket(), now=lambda: datetime(2026, 10, 8, 0, 0, tzinfo=UTC))
     deps.notifier = Sent()
     r = daemon._scan_analyze_body(deps, "KR")

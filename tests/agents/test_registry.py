@@ -95,10 +95,21 @@ def test_agents_json_appends_schema_when_md_lacks_it():
 
 
 def test_common_rules_identical_prefix_across_all_agents():
-    """공통 규칙 6문장은 괄호 보충 전까지 모든 md(10개)에서 같아야 한다."""
+    """공통 규칙 6문장은 괄호 보충 전까지 모든 md(12개)에서 같아야 한다."""
     import re
 
-    names = [*AGENTS, *registry.SCREEN_AGENTS, *registry.REFLECT_AGENTS, registry.ORCHESTRATOR]
+    names = list(
+        dict.fromkeys(
+            [
+                *AGENTS,
+                *registry.SCREEN_AGENTS,
+                *registry.REFLECT_AGENTS,
+                *registry.MARKET_AGENTS,
+                registry.ORCHESTRATOR,
+            ]
+        )
+    )
+    assert len(names) == 12
     canon = None
     for name in names:
         body = load_agent(name, REPO_AGENTS).prompt
@@ -108,3 +119,22 @@ def test_common_rules_identical_prefix_across_all_agents():
         prefixes = [ln.split("(", 1)[0].strip().rstrip(".") for ln in lines]
         canon = canon or prefixes
         assert prefixes == canon, name
+
+
+def test_market_agents_and_hedge_proposal_schema():
+    """시장 세션(Phase 18): 에이전트 4개, strategist 에 HedgeProposal 스키마 1회 부착,
+    오케스트레이터 프롬프트에 market 모드 절·스키마 줄."""
+    assert registry.MARKET_AGENTS == (
+        "analyst-market",
+        "researcher-bull",
+        "researcher-bear",
+        "strategist",
+    )
+    j = agents_json(registry.MARKET_AGENTS, Settings(), REPO_AGENTS)
+    assert set(j) == set(registry.MARKET_AGENTS)
+    assert '"hedge_weight"' in j["strategist"]["prompt"]
+    assert j["strategist"]["prompt"].count("스키마:") == 1
+    assert j["analyst-market"]["model"] == "sonnet"  # md 기본, settings.models.analyst 가 우선
+    p = orchestrator_prompt(Settings(), REPO_AGENTS)
+    assert "## market 모드" in p and "HedgeProposal 스키마" in p
+    assert "submit-market-view" in p

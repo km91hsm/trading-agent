@@ -264,3 +264,14 @@
 - [ ] 실기(사용자 확인 대기): `FAKE_CLAUDE=1 uv run trader daemon --dry-run` → 대시보드 상태줄 '국면' 칩·잡 표 '실행' 열 → `KR 스캔 → 분석` 클릭 → 작업 대기열 "대기 → 실행 중 → 완료" → 데이터 페이지 '3년 백필 실행'(진행 문구) → ML 페이지 모델 생성; 계좌 페이지 섹터 비중 표(보유 없으면 '현금' 행); 데몬 끈 `trader web` 에서 버튼 비활성·409
 - [ ] 실기(사용자 확인 대기, 모의): 국면이 bear 로 바뀐 첫 영업일 09:00 monitor 틱에 `[헤지 진입]` 알림·`46_hedge_paper-main`·`56_order_hedge_paper-main`·`decisions.source='hedge'` 확인, 해제 때 `[헤지 해제]`
 - [ ] 이연(다음 Phase): 텔레그램 `/run <kind>`(`jobs.enqueue` 호출 10줄), CLI `trader jobs list|run`, 헤지 상품 교체(−1x↔−2x) 규칙, 국면 지표에 신용잔고·외인 수급 추가 검토
+
+## Phase 18 시장 세션 — 거시 애널리스트 + 강세/약세 토론 + 전략가 헤지 제안 (`docs/superpowers/plans/2026-10-24-phase18-market-session.md`)
+- [x] M1 `schemas.HedgeProposal`·`registry.MARKET_AGENTS`(`analyst-market`·`researcher-bull/bear`·`strategist`)·md 신규 2개(공통 규칙 6문장)·`orchestrator.md` `## market 모드`·researcher md `scope: market` 단락·trader md `context.market_view` (2026-10-24)
+- [x] M2 `tools.market_bundle|market_write|market_summarize|submit_market_view`(`_market_*` 단계, 전제조건·round 상한·side/round 일치, 플래그 `control.market_view:<market>`) + CLI `tool market bundle|write|summarize`·`tool submit-market-view`
+- [x] M3 `orchestrator/market_view.build_inputs|save_inputs|run_market_view|load_view|clamp_weight` + `SessionSpec.kind="market"`(run kind `market`, `MARKET_AGENTS`) + `fake.run_fake_market`
+- [x] M4 `HedgeCfg.market_session·min_weight_pct`(settings/templates) + `hedge.rebalance` 제안 반영(bear 진입 비중 clamp·레버리지 거부·bear 아니면 무시·어제 제안 무시)
+- [x] M5 데몬 `_market_view_body`(regime 뒤, 운영일 1회, 알림 `[시장 뷰]`) + 대기열 kind `market_view` + 트레이더 `context.market_view` + `regime.summary.view`/`line` '제안 n%' + 대시보드 칩·STATUS 줄·텔레그램
+- [x] 완료 기준(코드): `uv run pytest`·`ruff`·`npm run typecheck && npm test && npm run build` 통과 (2026-10-24)
+- [ ] 실기(사용자 확인 대기): `FAKE_CLAUDE=1 uv run trader daemon --dry-run` 뒤 scan 시각(또는 대시보드 `KR 스캔 → 분석` '지금 실행')에 `state/runs/<date>/KR/_market_inputs.json`·`_market_analyst`·`_market_debate_r0_*`·`_market_summary`·`_market_view.json` 5종과 `[시장 뷰]` 알림, 대시보드 국면 칩 꼬리 "(KR 제안 n%)"(bear 일 때만)
+- [ ] 실기(사용자 확인 대기, 약 $1~2): `FAKE_CLAUDE` 없이 시장 세션 1회 — 아침 scan_analyze 로그의 `[시장 뷰]` 와 `_market_view.json` 의 rationale 이 거시 입력을 실제로 인용하는지. 하루 세션 상한(12)에 시장 세션 KR·US 2회가 포함되므로 analyze 종목이 많은 날은 `llm.daily_session_cap` 조정
+- [ ] 이연(다음 Phase): 오늘의 실행 페이지에 시장 단계 파일 표시, 시장 세션 결과를 종목 세션 스크리너 입력에도 전달, 제안 적중률 복기(reflect 에 `_market_view` 포함)

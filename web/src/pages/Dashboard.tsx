@@ -15,7 +15,7 @@ import { useApp, useLoad } from "../hooks";
 import { labelOf } from "../names";
 import type { UsageResp } from "../usage";
 import { daemonText, type DaemonStatus } from "../jobs";
-import { regimeText, type RegimeResp } from "../sectors";
+import { proposalText, regimeText, type RegimeResp } from "../sectors";
 import { buildTape, gateFor, marketPhase, type TapeRow } from "../tape";
 import type {
   Approval,
@@ -262,7 +262,7 @@ export function Dashboard() {
         </span>
         <span className={regimeChip.level === "none" ? "" : regimeChip.level === "warn" ? "pend" : regimeChip.level} title={regimeChip.title || "지수 proxy 200일선·20일 수익률·변동성 3지표 (매일 scan 앞 판정)"}>
           <Term k="regime" /> <b>{regimeChip.text}</b>
-          {regime.data?.enabled && regime.data.markets.some((m) => m.state === "bear") ? <span className="muted"> · 헤지 {Math.round(regime.data.max_weight_pct * 100)}%</span> : null}
+          {regime.data?.enabled && regime.data.markets.some((m) => m.state === "bear") ? <span className="muted"> · 헤지 {Math.round(regime.data.max_weight_pct * 100)}%{proposalText(regime.data) ? ` (${proposalText(regime.data)})` : ""}</span> : null}
         </span>
       </div>
 

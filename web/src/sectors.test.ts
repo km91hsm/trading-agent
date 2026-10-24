@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { capLinePct, regimeText, sectorRows, type RegimeResp } from "./sectors";
+import { capLinePct, proposalText, regimeText, sectorRows, type RegimeResp } from "./sectors";
 
 describe("섹터 비중", () => {
   it("행 변환: 비중·막대·상한 초과(현금·헤지 제외)", () => {
@@ -35,5 +35,13 @@ describe("국면 칩", () => {
     expect(r.level).toBe("err");
     expect(r.title).toContain("200일선 아래, 20일 수익률 약세");
     expect(regimeText({ ...base, markets: [m("KR", "neutral", 1)] }).level).toBe("warn");
+  });
+  it("시장 세션 제안 꼬리", () => {
+    const view = { stance: "RISK_OFF" as const, hedge_weight: 0.12, leveraged: false, confidence: 0.7 };
+    expect(proposalText(null)).toBe("");
+    expect(proposalText({ ...base, markets: [m("KR", "bear", 2)] })).toBe("");
+    expect(proposalText({ ...base, markets: [{ ...m("KR", "bear", 2), view }] })).toBe("KR 제안 12%");
+    expect(proposalText({ ...base, markets: [{ ...m("KR", "bull", 0), view }] })).toBe("");
+    expect(regimeText({ ...base, markets: [{ ...m("KR", "bear", 2), view }] }).title).toContain("위험 회피 12%");
   });
 });

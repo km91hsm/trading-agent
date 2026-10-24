@@ -50,8 +50,28 @@ export type RegimeMarket = {
   since: string | null;
   asof: string | null;
   signals: { ma_below: boolean | null; momentum_weak: boolean | null; vol_high: boolean | null };
+  /** 오늘 시장 세션(거시 애널리스트·토론·전략가)의 헤지 제안. 없으면 null (Phase 18). */
+  view?: { stance: "RISK_ON" | "NEUTRAL" | "RISK_OFF"; hedge_weight: number; leveraged: boolean; confidence: number } | null;
 };
-export type RegimeResp = { enabled: boolean; max_weight_pct: number; leverage: boolean; bear_min_signals: number; markets: RegimeMarket[] };
+export type RegimeResp = {
+  enabled: boolean;
+  max_weight_pct: number;
+  leverage: boolean;
+  bear_min_signals: number;
+  market_session?: boolean;
+  min_weight_pct?: number;
+  markets: RegimeMarket[];
+};
+
+export const STANCE_LABEL: Record<string, string> = { RISK_ON: "위험 선호", NEUTRAL: "중립", RISK_OFF: "위험 회피" };
+
+/** 칩 꼬리: "제안 12%" (bear 시장에 오늘 제안이 있을 때만). 없으면 "". */
+export function proposalText(r: RegimeResp | null): string {
+  if (!r?.enabled) return "";
+  const bears = r.markets.filter((m) => m.state === "bear" && m.view);
+  if (!bears.length) return "";
+  return bears.map((m) => `${m.market} 제안 ${Math.round((m.view!.hedge_weight ?? 0) * 100)}%`).join(" · ");
+}
 
 export const REGIME_LABEL: Record<string, string> = { bull: "상승", neutral: "중립", bear: "하락" };
 const SIGNAL_LABEL: Record<string, string> = { ma_below: "200일선 아래", momentum_weak: "20일 수익률 약세", vol_high: "변동성 높음" };
@@ -69,7 +89,8 @@ export function regimeText(r: RegimeResp | null): { text: string; level: "ok" | 
       const on = Object.entries(m.signals)
         .filter(([, v]) => v)
         .map(([k]) => SIGNAL_LABEL[k] ?? k);
-      return `${m.market}: ${on.length ? on.join(", ") : "지표 없음"}${m.since ? ` (${m.since}~)` : ""}`;
+      const v = m.view ? ` · 시장 세션 ${STANCE_LABEL[m.view.stance] ?? m.view.stance} ${Math.round(m.view.hedge_weight * 100)}%` : "";
+      return `${m.market}: ${on.length ? on.join(", ") : "지표 없음"}${m.since ? ` (${m.since}~)` : ""}${v}`;
     })
     .join(" / ");
   return { text, level, title };

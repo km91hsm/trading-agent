@@ -59,6 +59,10 @@ class ScanAnalyzeParams(_P):
     market: Market
 
 
+class MarketViewParams(_P):
+    market: Market
+
+
 class AnalyzeTickerParams(_P):
     market: Market
     ticker: str = Field(min_length=1, max_length=12, pattern=r"^[A-Za-z0-9.\-]+$")
@@ -82,6 +86,7 @@ PARAMS: dict[str, type[BaseModel]] = {
     "ml_train": MlTrainParams,
     "rl_train": RlTrainParams,
     "scan_analyze": ScanAnalyzeParams,
+    "market_view": MarketViewParams,
     "analyze_ticker": AnalyzeTickerParams,
     "reflect": ReflectParams,
     "fills_sync": EmptyParams,
@@ -97,6 +102,7 @@ _KIND_LABEL = {
     "ml_train": "퀀트 학습",
     "rl_train": "RL 학습",
     "scan_analyze": "스캔 → 분석",
+    "market_view": "시장 세션",
     "analyze_ticker": "종목 분석",
     "reflect": "복기",
     "fills_sync": "체결 동기화",

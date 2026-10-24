@@ -200,3 +200,69 @@ def run_fake_ticker(
             raise tools.ToolError(r["error"])
         written.append("30_decision")
     return written
+
+
+def run_fake_market(
+    ctx: tools.ToolContext, *, market: str, date: date, debate_rounds: int = 1
+) -> list[str]:
+    """market 모드: 거시 리포트(NEUTRAL) → 토론 r0(+반박) → 요약 → HedgeProposal.
+    국면이 bear 면 RISK_OFF 0.10, 아니면 RISK_ON 0.0
+    (파이썬 규칙이 어차피 bear 아니면 진입 안 함)."""
+    from trader.orchestrator.run_store import market_dir, read_checkpoint
+
+    d = market_dir(date, market, ctx.state)
+    inputs = (read_checkpoint(d, "_market_inputs") or {}).get("data") or {}
+    proxy = inputs.get("proxy") or tools.MARKET_PROXY_LABEL.get(market, market)
+    written: list[str] = []
+    r = tools.market_write(
+        ctx,
+        market=market,
+        date=date,
+        stage="_market_analyst",
+        payload=fake_report(proxy, date.isoformat(), "news_macro"),
+        agent="analyst-market",
+        call_meta=_call("analyst-market"),
+    )
+    if not r["ok"]:
+        raise tools.ToolError(r["error"])
+    written.append("_market_analyst")
+    for rnd in range(0, min(debate_rounds, 1) + 1):
+        for side in ("bull", "bear"):
+            r = tools.market_write(
+                ctx,
+                market=market,
+                date=date,
+                stage=f"_market_debate_r{rnd}_{side}",
+                payload=fake_turn(side, rnd),
+                agent=f"researcher-{side}",
+                call_meta=_call(f"researcher-{side}"),
+            )
+            if not r["ok"]:
+                raise tools.ToolError(r["error"])
+            written.append(f"_market_debate_r{rnd}_{side}")
+    r = tools.market_summarize(ctx, market=market, date=date)
+    if not r["ok"]:
+        raise tools.ToolError(r["error"])
+    written.append("_market_summary")
+    bear = (inputs.get("regime") or {}).get("state") == "bear"
+    r = tools.submit_market_view(
+        ctx,
+        market=market,
+        date=date,
+        payload={
+            "market": market,
+            "stance": "RISK_OFF" if bear else "RISK_ON",
+            "hedge_weight": 0.10 if bear else 0.0,
+            "leveraged": False,
+            "confidence": 0.5,
+            "horizon_days": 20,
+            "rationale": "FAKE 모드: 국면 지표를 그대로 따름",
+            "invalidation_conditions": [],
+        },
+        agent="strategist",
+        call_meta=_call("strategist"),
+    )
+    if not r["ok"]:
+        raise tools.ToolError(r["error"])
+    written.append("_market_view")
+    return written

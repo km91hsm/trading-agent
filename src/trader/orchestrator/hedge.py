@@ -6,6 +6,10 @@ LLM 은 관여하지 않는다. 결정은 파이썬이 `Decision` 으로 만들�
 그대로 지킨다. 운영일에 1회(`control.hedge_done:<market>:<date>`)만 돌며 monitor 잡의 첫 창 안
 틱이 부른다(개장 뒤 실시간 시세). 보유 중 상품(−1x/−2x) 교체는 하지 않는다 — 진입 때 고른 것을
 해제까지 든다.
+
+Phase 18: 시장 세션의 제안(`market_view`, HedgeProposal)이 오늘 것으로 있으면 **bear 진입 비중**을
+`[min_weight_pct, max_weight_pct]` 안에서 조절하고 레버리지를 거부(`leveraged=false`)할 수 있다.
+진입 여부(bear)·해제는 제안과 무관하게 국면 규칙이 정한다.
 """
 
 from __future__ import annotations
@@ -22,6 +26,7 @@ from trader.config import HedgeCfg, HedgeInstrument
 from trader.control import control
 from trader.ledger import repo
 from trader.orchestrator import executor
+from trader.orchestrator import market_view as market_view_mod
 from trader.risk import regime as regime_mod
 
 logger = logging.getLogger("trader.hedge")
@@ -34,11 +39,23 @@ def done_key(market: str, today: date) -> str:
 
 
 def hedge_decision(
-    action: str, ticker: str, *, market: str, weight: float, price: Decimal, state: dict
+    action: str,
+    ticker: str,
+    *,
+    market: str,
+    weight: float,
+    price: Decimal,
+    state: dict,
+    view: dict | None = None,
 ) -> Decision:
     """파이썬이 만든 헤지 결정. KR 은 시장가, US 는 현재가 지정가(모의 서버 제약)."""
     sig = state.get("signals") or {}
     on = [k for k in ("ma_below", "momentum_weak", "vol_high") if sig.get(k)]
+    note = ""
+    if view and action == "BUY":
+        pct = float(view.get("hedge_weight") or 0) * 100
+        lev = "" if view.get("leveraged", True) else " 레버리지 거부"
+        note = f"; 시장 세션 제안 {view.get('stance')} {pct:.0f}%{lev}"
     return Decision(
         ticker=ticker,
         action=action,  # type: ignore[arg-type]
@@ -51,7 +68,7 @@ def hedge_decision(
         confidence=1.0,
         rationale=(
             f"국면 {state.get('state')}({state.get('count')}/3: {', '.join(on) or '-'}) 헤지 "
-            f"{'진입' if action == 'BUY' else '해제'} — 파이썬 규칙, LLM 비관여"
+            f"{'진입' if action == 'BUY' else '해제'} — 파이썬 규칙{note}"
         ),
         invalidation_conditions=["국면이 bear 를 벗어나면 전량 매도(파이썬)"],
     )
@@ -95,15 +112,28 @@ def rebalance(
     st = str(state.get("state") or "bull")
     tickers = cfg.tickers(market)
     held = _held_hedges(ctx, market, tickers)
-    out: dict[str, Any] = {"market": market, "state": st, "held": sorted(held), "action": "none"}
+    view = market_view_mod.load_view(ctx.conn, market, today)
+    out: dict[str, Any] = {
+        "market": market,
+        "state": st,
+        "held": sorted(held),
+        "action": "none",
+        "view": (
+            {k: view.get(k) for k in ("stance", "hedge_weight", "leveraged")} if view else None
+        ),
+    }
     if st == "bear" and not held:
-        inst = cfg.instrument(market, leveraged=int(state.get("count") or 0) >= 3)
+        leveraged = int(state.get("count") or 0) >= 3 and (
+            view is None or bool(view.get("leveraged", True))
+        )
+        inst = cfg.instrument(market, leveraged=leveraged)
         if inst is None:
             out["error"] = f"{market} 헤지 상품 미설정"
         else:
-            out.update(action="enter", ticker=inst.symbol)
+            weight = market_view_mod.clamp_weight(view, cfg)
+            out.update(action="enter", ticker=inst.symbol, weight=weight)
             out["results"] = _execute(
-                ctx, "BUY", inst, market, today, cfg, state, quote_fn, dry_run
+                ctx, "BUY", inst, market, today, cfg, state, quote_fn, dry_run, weight, view
             )
     elif st != "bear" and held:
         out["action"] = "exit"
@@ -121,7 +151,9 @@ def rebalance(
     return out
 
 
-def _execute(ctx, action, inst, market, today, cfg, state, quote_fn, dry_run) -> list[dict]:
+def _execute(
+    ctx, action, inst, market, today, cfg, state, quote_fn, dry_run, weight=None, view=None
+) -> list[dict]:
     try:
         price = Decimal(str(quote_fn(inst)))
     except (KisApiError, ValueError) as e:
@@ -131,7 +163,13 @@ def _execute(ctx, action, inst, market, today, cfg, state, quote_fn, dry_run) ->
     if price <= 0:
         return [{"error": "시세 0"}]
     dec = hedge_decision(
-        action, inst.symbol, market=market, weight=cfg.max_weight_pct, price=price, state=state
+        action,
+        inst.symbol,
+        market=market,
+        weight=cfg.max_weight_pct if weight is None else weight,
+        price=price,
+        state=state,
+        view=view,
     )
     did = repo.insert_hedge_decision(ctx.conn, today, market, inst.symbol, dec.model_dump())
     results = executor.execute(

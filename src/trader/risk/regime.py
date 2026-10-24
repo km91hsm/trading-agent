@@ -164,14 +164,30 @@ def backtest(
     return spans
 
 
-def summary(conn: sqlite3.Connection, markets: list[str]) -> list[dict]:
-    """시장별 국면 요약 (웹 /api/regime·STATUS·텔레그램). 기록이 없으면 state None."""
+def _view_today(conn: sqlite3.Connection, market: str, today: date | None) -> dict | None:
+    """오늘 시장 세션 제안(Phase 18) 요약. today 가 없으면 KST 오늘."""
+    from trader.config import KST
+    from trader.orchestrator.tools import market_view_today
+
+    d = today or datetime.now(KST).date()
+    v = market_view_today(conn, market, d)
+    if not v:
+        return None
+    return {k: v.get(k) for k in ("stance", "hedge_weight", "leveraged", "confidence")}
+
+
+def summary(
+    conn: sqlite3.Connection, markets: list[str], *, today: date | None = None
+) -> list[dict]:
+    """시장별 국면 요약 (웹 /api/regime·STATUS·텔레그램). 기록이 없으면 state None.
+    `view` 는 오늘 시장 세션의 제안(없으면 None)."""
     out = []
     for m in markets:
         r = load(conn, m) or {}
         sig = r.get("signals") or {}
         out.append(
             {
+                "view": _view_today(conn, m, today),
                 "market": m,
                 "state": r.get("state"),
                 "count": r.get("count"),
@@ -186,13 +202,15 @@ def summary(conn: sqlite3.Connection, markets: list[str]) -> list[dict]:
     return out
 
 
-def line(conn: sqlite3.Connection, markets: list[str]) -> str:
-    """한 줄 표기: 'KR bear(2/3) 10-24~ · US bull(0/3)'. 기록 없으면 '-'."""
+def line(conn: sqlite3.Connection, markets: list[str], *, today: date | None = None) -> str:
+    """한 줄 표기: 'KR bear(2/3) 10-24~ 제안 12% · US bull(0/3)'. 기록 없으면 '-'."""
     parts = []
-    for r in summary(conn, markets):
+    for r in summary(conn, markets, today=today):
         if r["state"] is None:
             parts.append(f"{r['market']} -")
         else:
             since = f" {r['since'][5:]}~" if r.get("since") else ""
-            parts.append(f"{r['market']} {r['state']}({r['count']}/3){since}")
+            v = r.get("view")
+            prop = f" 제안 {float(v['hedge_weight'] or 0):.0%}" if v else ""
+            parts.append(f"{r['market']} {r['state']}({r['count']}/3){since}{prop}")
     return " · ".join(parts)

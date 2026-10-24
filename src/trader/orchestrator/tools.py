@@ -147,7 +147,20 @@ def trader_context(
         **_memory_context(ctx, inputs, market),
         "calibration": calibration,
         "regime": _regime_context(ctx, market),
+        "market_view": _market_view_context(ctx, market),
     }
+
+
+def _market_view_context(ctx: ToolContext, market: Market) -> dict | None:
+    """오늘 시장 세션의 결론 요약 (Phase 18). 없으면 None."""
+    if ctx.conn is None or not ctx.settings.hedge.enabled:
+        return None
+    from trader.orchestrator.run_store import run_date_for
+
+    v = market_view_today(ctx.conn, market, run_date_for(market, ctx.now()))
+    if not v:
+        return None
+    return {k: v.get(k) for k in ("stance", "hedge_weight", "leveraged", "confidence", "rationale")}
 
 
 def _regime_context(ctx: ToolContext, market: Market) -> dict | None:
@@ -946,6 +959,243 @@ def _ingest_run(ctx: ToolContext, d: Path, date: date, market: Market, ticker: s
         cp = read_checkpoint(d, stage)
         if isinstance(cp, dict):
             repo.ingest_checkpoint(ctx.conn, date, market, ticker, stage, cp)
+
+
+# --- 시장 세션 (Phase 18): 시장 단위 체크포인트 `_market_*` ---------------------------
+
+MARKET_PROXY_LABEL = {"KR": "KOSPI200", "US": "SPX"}
+MARKET_VIEW_FLAG = "market_view:"
+_MARKET_DEBATE_RE = re.compile(r"^_market_debate_r(\d+)_(bull|bear)$")
+_MARKET_WRITABLE = ("_market_analyst", "_market_debate_r<n>_<bull|bear>")
+
+
+def _market_turns(d: Path) -> dict[int, dict[str, schemas.DebateTurn]]:
+    turns: dict[int, dict[str, schemas.DebateTurn]] = {}
+    for stage in list_checkpoints(d):
+        m = _MARKET_DEBATE_RE.match(stage)
+        if not m:
+            continue
+        data = read_checkpoint(d, stage) or {}
+        turns.setdefault(int(m.group(1)), {})[m.group(2)] = schemas.DebateTurn.model_validate(
+            data["data"]
+        )
+    return turns
+
+
+def _market_report(d: Path) -> dict | None:
+    cp = read_checkpoint(d, "_market_analyst")
+    return cp.get("data") if isinstance(cp, dict) and isinstance(cp.get("data"), dict) else None
+
+
+def _market_hedge_context(ctx: ToolContext, market: Market, inputs: dict) -> dict:
+    h = ctx.settings.hedge
+    return {
+        "max_weight_pct": h.max_weight_pct,
+        "min_weight_pct": h.min_weight_pct,
+        "leverage": h.leverage,
+        "instruments": {k: v.model_dump() for k, v in h.instruments.get(market, {}).items()},  # type: ignore[arg-type]
+        "held": (inputs.get("hedge") or {}).get("held", []),
+        "state": (inputs.get("regime") or {}).get("state"),
+    }
+
+
+def market_bundle(
+    ctx: ToolContext,
+    *,
+    market: Market,
+    date: date,
+    kind: str,
+    round: int | None = None,
+    side: str | None = None,
+) -> dict:
+    """시장 세션 서브에이전트 입력 묶음. kind=analyst(`_market_inputs`) |
+    researcher(round, side) | strategist(리포트 + 요약 + 국면·헤지·섹터 컨텍스트).
+    종목 경로(`@_guarded`)와 분리된 market_dir."""
+    if market not in ("KR", "US"):
+        return {"ok": False, "error": f"market 은 KR 또는 US: {market!r}"}
+    d = market_dir(date, market, ctx.state)
+    inputs = (read_checkpoint(d, "_market_inputs") or {}).get("data") or {}
+    if not inputs:
+        return {"ok": False, "error": "_market_inputs 없음 (파이썬이 세션 앞에서 만든다)"}
+    base = {"scope": "market", "market": market, "date": date.isoformat()}
+    if kind == "analyst":
+        return {"ok": True, "data": _shrink({**base, **inputs}, BUNDLE_LIMIT_BYTES)}
+    report = _market_report(d)
+    if report is None:
+        return {"ok": False, "error": "_market_analyst 없음 (거시 애널리스트 먼저)"}
+    if kind == "researcher":
+        if round is None or side not in ("bull", "bear"):
+            return {
+                "ok": False,
+                "error": "researcher 묶음은 --round 와 --side(bull|bear) 가 필요합니다",
+            }
+        turns = _market_turns(d)
+        own = opp = None
+        if round > 0:
+            prev = turns.get(round - 1, {})
+            own = prev.get(side)
+            opp = prev.get("bear" if side == "bull" else "bull")
+            if own is None or opp is None:
+                return {"ok": False, "error": f"라운드 {round - 1} 의 양측 턴이 모두 필요합니다"}
+        data = {
+            **base,
+            "proxy": inputs.get("proxy"),
+            "round": round,
+            "side": side,
+            "reports": [report],
+            "regime": inputs.get("regime"),
+            "own_previous": own.model_dump() if own else None,
+            "opponent_previous": opp.model_dump() if opp else None,
+        }
+        return {"ok": True, "data": _shrink(data, BUNDLE_LIMIT_BYTES)}
+    if kind == "strategist":
+        summ = read_checkpoint(d, "_market_summary")
+        if summ is None:
+            return {"ok": False, "error": "_market_summary 없음 (market summarize 먼저)"}
+        data = {
+            **base,
+            "proxy": inputs.get("proxy"),
+            "report": report,
+            "research_summary": _trader_summary(summ.get("data", summ)),
+            "regime": inputs.get("regime"),
+            "hedge": _market_hedge_context(ctx, market, inputs),
+            "sector_weights": inputs.get("sector_weights") or [],
+        }
+        return {"ok": True, "data": _shrink(data, BUNDLE_LIMIT_BYTES)}
+    return {"ok": False, "error": f"알 수 없는 kind: {kind} (analyst|researcher|strategist)"}
+
+
+def market_write(
+    ctx: ToolContext,
+    *,
+    market: Market,
+    date: date,
+    stage: str,
+    payload: dict,
+    agent: str | None = None,
+    call_meta: dict | None = None,
+) -> dict:
+    """LLM 쓰기 가능 시장 단계: `_market_analyst`(AnalystReport),
+    `_market_debate_r<n>_<side>`(DebateTurn)."""
+    if market not in ("KR", "US"):
+        return {"ok": False, "error": f"market 은 KR 또는 US: {market!r}"}
+    m = _MARKET_DEBATE_RE.match(stage)
+    if stage == "_market_analyst":
+        model: type = schemas.AnalystReport
+    elif m:
+        model = schemas.DebateTurn
+        if int(m.group(1)) > ctx.settings.debate_rounds:
+            return {
+                "ok": False,
+                "error": (
+                    f"라운드 {m.group(1)} 는 설정(debate_rounds="
+                    f"{ctx.settings.debate_rounds})을 넘습니다"
+                ),
+            }
+    else:
+        return {
+            "ok": False,
+            "error": f"쓸 수 없는 단계: {stage} (허용: {', '.join(_MARKET_WRITABLE)})",
+        }
+    try:
+        v = model.model_validate(_unescape(payload))
+    except ValidationError as e:
+        msgs = "; ".join(
+            f"{'.'.join(str(x) for x in err['loc'])}: {err['msg']}" for err in e.errors()
+        )
+        return {"ok": False, "error": f"스키마 검증 실패({model.__name__}): {msgs}"}
+    if m and (v.round != int(m.group(1)) or v.side != m.group(2)):
+        return {
+            "ok": False,
+            "error": (
+                f"파일명 r{m.group(1)}_{m.group(2)} 와 페이로드 "
+                f"round={v.round} side={v.side} 불일치"
+            ),
+        }
+    d = market_dir(date, market, ctx.state, create=True)
+    if read_checkpoint(d, "_market_inputs") is None:
+        return {"ok": False, "error": "_market_inputs 없음 (시장 세션 밖에서는 쓸 수 없다)"}
+    path = write_checkpoint(d, stage, _wrap(v.model_dump(), _call(agent, call_meta)))
+    return {"ok": True, "path": str(path), "stage": stage}
+
+
+def market_summarize(ctx: ToolContext, *, market: Market, date: date) -> dict:
+    """`_market_debate_*` 를 모아 `_market_summary`(수렴 감시 포함)를 만든다."""
+    if market not in ("KR", "US"):
+        return {"ok": False, "error": f"market 은 KR 또는 US: {market!r}"}
+    d = market_dir(date, market, ctx.state)
+    turns = _market_turns(d)
+    if 0 not in turns or set(turns[0]) != {"bull", "bear"}:
+        return {"ok": False, "error": "라운드 0 의 bull·bear 턴이 모두 필요합니다"}
+    final_round = max(r for r, sides in turns.items() if set(sides) == {"bull", "bear"})
+    try:
+        summ = summary_mod.research_summary(turns[0], turns[final_round], rounds=final_round)
+    except ValueError as e:
+        return {"ok": False, "error": str(e)}
+    path = write_checkpoint(d, "_market_summary", _wrap(summ, None))
+    return {
+        "ok": True,
+        "path": str(path),
+        "sycophantic": summ["sycophantic"],
+        "preferred": summ["preferred"],
+    }
+
+
+def submit_market_view(
+    ctx: ToolContext,
+    *,
+    market: Market,
+    date: date,
+    payload: dict,
+    agent: str = "strategist",
+    call_meta: dict | None = None,
+) -> dict:
+    """HedgeProposal 검증 → `_market_view.json` + `control.market_view:<market>`(오늘 날짜 포함).
+    전제: `_market_analyst` 와 `_market_summary` 가 있어야 한다(순서 강제)."""
+    from trader.control import control
+
+    if market not in ("KR", "US"):
+        return {"ok": False, "error": f"market 은 KR 또는 US: {market!r}"}
+    d = market_dir(date, market, ctx.state)
+    if _market_report(d) is None or read_checkpoint(d, "_market_summary") is None:
+        return {
+            "ok": False,
+            "error": "_market_analyst 와 _market_summary 가 있어야 제출할 수 있습니다",
+        }
+    try:
+        view = schemas.HedgeProposal.model_validate(_unescape(payload))
+    except ValidationError as e:
+        msgs = "; ".join(
+            f"{'.'.join(str(x) for x in err['loc'])}: {err['msg']}" for err in e.errors()
+        )
+        return {"ok": False, "error": f"스키마 검증 실패(HedgeProposal): {msgs}"}
+    if view.market != market:
+        return {
+            "ok": False,
+            "error": f"payload.market={view.market} 이 --market {market} 과 다릅니다",
+        }
+    call = _call(agent, call_meta)
+    path = write_checkpoint(d, "_market_view", _wrap(view.model_dump(), call))
+    if ctx.conn is not None:
+        control.set_flag(
+            ctx.conn,
+            f"{MARKET_VIEW_FLAG}{market}",
+            {"date": date.isoformat(), **view.model_dump(), "call": call},
+        )
+    logger.info("시장 뷰 저장 %s: %s %.0f%%", market, view.stance, view.hedge_weight * 100)
+    return {"ok": True, "path": str(path), "stance": view.stance, "hedge_weight": view.hedge_weight}
+
+
+def market_view_today(conn, market: str, today: date) -> dict | None:
+    """오늘 제출된 시장 뷰(없거나 어제 것이면 None). hedge.rebalance·trader_context 가 쓴다."""
+    from trader.control import control
+
+    if conn is None:
+        return None
+    v = control.get_flag(conn, f"{MARKET_VIEW_FLAG}{market}")
+    if not v or v.get("date") != today.isoformat():
+        return None
+    return v
 
 
 # --- submit-screen (Phase 6 scan) ---------------------------------------------

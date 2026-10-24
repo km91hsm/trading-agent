@@ -176,6 +176,28 @@ class Screened(BaseModel):
     rejected: list[str] = Field(default_factory=list)
 
 
+MarketStance = Literal["RISK_ON", "NEUTRAL", "RISK_OFF"]
+
+
+class HedgeProposal(BaseModel):
+    """strategist 출력 (Phase 18 시장 세션): 시장 방향 판단과 헤지 비중 **제안**.
+
+    파이썬 규칙이 최종 결정한다 — 국면 지표가 bear 가 아니면 진입하지 않고, bear 면 비중을
+    [hedge.min_weight_pct, hedge.max_weight_pct] 로 자른다.
+    레버리지는 거부(leveraged=false)만 가능."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    market: Literal["KR", "US"]
+    stance: MarketStance
+    hedge_weight: float = Field(ge=0, le=0.25)
+    leveraged: bool = False
+    confidence: float = Field(ge=0, le=1)
+    horizon_days: int = Field(ge=1)
+    rationale: str = Field(max_length=500)
+    invalidation_conditions: list[str]
+
+
 class CallMeta(BaseModel):
     """LLM 호출 기록 (체크포인트 `call` 필드)."""
 

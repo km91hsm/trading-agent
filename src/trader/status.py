@@ -120,6 +120,11 @@ def _regime_lines(conn: sqlite3.Connection, settings: Settings) -> list[str]:
     out.append(
         f"- 헤지 최대 {h.max_weight_pct:.0%} · 상품 {inst} · bear 기준 {h.bear_min_signals}/3"
     )
+    if h.market_session:
+        out.append(
+            f"- 시장 세션: 매일 scan 앞 1회(거시 애널리스트·강세/약세 토론·전략가), "
+            f"제안 비중 {h.min_weight_pct:.0%}~{h.max_weight_pct:.0%} — 진입은 bear 규칙만"
+        )
     return out
 
 

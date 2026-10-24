@@ -29,6 +29,13 @@ AGENTS: tuple[str, ...] = (
 ORCHESTRATOR = "orchestrator"
 SCREEN_AGENTS: tuple[str, ...] = ("screener",)
 REFLECT_AGENTS: tuple[str, ...] = ("reflector",)
+# Phase 18 시장 세션: 거시 애널리스트 1 + 리서처 토론 + 전략가(헤지 비중 제안)
+MARKET_AGENTS: tuple[str, ...] = (
+    "analyst-market",
+    "researcher-bull",
+    "researcher-bear",
+    "strategist",
+)
 
 
 @dataclass
@@ -88,6 +95,7 @@ def schema_model_for(name: str) -> type | None:
         "trader": schemas.Decision,
         "screener": schemas.Screened,
         "reflector": schemas.Reflection,
+        "strategist": schemas.HedgeProposal,
     }.get(name)
 
 
@@ -134,6 +142,9 @@ def orchestrator_prompt(settings: Settings, base: Path | None = None) -> str:
         "- Screened 스키마(screen 모드): " + schemas.json_schema(schemas.Screened) + "\n"
         "- Reflection 스키마(reflect 모드, 배열로 제출): "
         + schemas.json_schema(schemas.Reflection)
+        + "\n"
+        "- HedgeProposal 스키마(market 모드, strategist 출력): "
+        + schemas.json_schema(schemas.HedgeProposal)
         + "\n"
     )
     return body + runtime
