@@ -563,6 +563,115 @@ def _analyze_targets(
     }
 
 
+def _proxy_closes(deps: DaemonDeps, market: str, days: int = 260) -> list:
+    inst = deps.settings.hedge.index_proxy.get(market)  # type: ignore[arg-type]
+    if inst is None or deps.market_client is None:
+        return []
+    if market == "US":
+        candles = deps.market_client.get_daily_us(inst.symbol, inst.exchange or "AMS", days=days)
+    else:
+        candles = deps.market_client.get_daily_kr(inst.symbol, days=days)
+    return [c.close for c in candles]
+
+
+def _vix(deps: DaemonDeps, market: str) -> float | None:
+    """US 국면의 변동성 지표는 FRED VIX. 키가 없거나 실패하면 None → 실현변동성으로 대체."""
+    if market != "US" or deps.secrets is None or not getattr(deps.secrets, "FRED_API_KEY", None):
+        return None
+    try:
+        import httpx
+
+        from trader.sources.macro import Fred
+
+        with httpx.Client() as http:
+            return float(Fred(deps.secrets.FRED_API_KEY, http).latest("VIXCLS")["value"])
+    except Exception as e:  # noqa: BLE001 - VIX 는 보조 지표
+        logger.warning("VIX 조회 실패, 실현변동성으로 대체: %s", e)
+        return None
+
+
+def _regime_body(deps: DaemonDeps, market: str) -> dict:
+    """국면 판정 갱신 (scan_analyze 앞, 운영일 1회). 실패하면 직전 상태 유지 + 경고."""
+    from trader.orchestrator.run_store import run_date_for
+    from trader.risk import regime as regime_mod
+
+    if not deps.settings.hedge.enabled:
+        return {"skipped": "hedge.enabled=false"}
+    try:
+        closes = _proxy_closes(deps, market)
+        if not closes:
+            return {"error": "지수 proxy 일봉 없음"}
+        conn = deps.conn_factory()
+        try:
+            out = regime_mod.update(
+                conn,
+                market,
+                closes=closes,
+                cfg=deps.settings.hedge,
+                today=run_date_for(market, deps.now()),
+                vix=_vix(deps, market),
+                now=deps.now(),
+            )
+        finally:
+            conn.close()
+    except Exception as e:  # noqa: BLE001 - 국면 갱신 실패가 스캔을 막지 않는다
+        logger.exception("국면 판정 실패 %s", market)
+        deps.notifier.send(f"[국면 판정 실패] {market}: {type(e).__name__}: {e} — 직전 상태 유지")
+        return {"error": f"{type(e).__name__}: {e}"}
+    if out.get("state") != out.get("prev_state"):
+        deps.notifier.send(
+            f"[국면 전환] {market} {out.get('prev_state') or '-'} → {out['state']} "
+            f"({out['count']}/3)"
+        )
+    return out
+
+
+def _hedge_body(deps: DaemonDeps, market: str) -> dict:
+    """monitor 첫 창 안 틱에서 운영일 1회: bear 면 인버스 진입, 벗어났으면 해제(paused 면 보류)."""
+    from trader.orchestrator import hedge as hedge_mod
+    from trader.orchestrator.executor import ExecContext
+    from trader.orchestrator.run_store import run_date_for
+
+    cfg = deps.settings.hedge
+    if not cfg.enabled or deps.market_client is None:
+        return {"skipped": "비활성"}
+    today = run_date_for(market, deps.now())
+    conn = deps.conn_factory()
+    try:
+        if control.get_flag(conn, hedge_mod.done_key(market, today)):
+            return {"skipped": "오늘 이미 실행"}
+        if control.is_paused(conn):
+            flag = f"hedge_paused_notice:{market}:{today.isoformat()}"
+            if not control.get_flag(conn, flag):
+                control.set_flag(conn, flag, True)
+                deps.notifier.send(f"[헤지 보류: 일시정지] {market} — 재개하면 다음 틱에 실행")
+            return {"skipped": "일시정지"}
+        ectx = ExecContext(
+            settings=deps.settings,
+            accounts=deps.accounts,
+            conn=conn,
+            brokers=deps.brokers,
+            notifier=deps.notifier,
+            state=deps.state,
+            now=deps.now,
+        )
+        mc = deps.market_client
+
+        def quote(inst):
+            q = (
+                mc.get_price_us(inst.symbol, inst.exchange or "AMS")
+                if market == "US"
+                else mc.get_price_kr(inst.symbol)
+            )
+            return q.price
+
+        return hedge_mod.rebalance(
+            ectx, market=market, today=today, cfg=cfg, quote_fn=quote, dry_run=deps.dry_run
+        )
+    finally:
+        conn.close()
+
+
 def _monitor_body(deps: DaemonDeps, market: str) -> dict:
     from trader.orchestrator import monitor as monitor_mod
     from trader.orchestrator.run_store import run_date_for
@@ -570,6 +679,13 @@ def _monitor_body(deps: DaemonDeps, market: str) -> dict:
 
     if deps.market_client is None:
         return {"skipped": "시세 클라이언트 없음"}
+    hedge: dict | None = None
+    try:
+        hedge = _hedge_body(deps, market)
+    except Exception as e:  # noqa: BLE001 - 헤지 실패가 손절 점검을 막지 않는다
+        logger.exception("헤지 실행 실패 %s", market)
+        deps.notifier.send(f"[헤지 실패] {market}: {type(e).__name__}: {e}")
+        hedge = {"error": f"{type(e).__name__}: {e}"}
     conn = deps.conn_factory()
     try:
         ctx = monitor_mod.MonitorContext(
@@ -585,7 +701,12 @@ def _monitor_body(deps: DaemonDeps, market: str) -> dict:
             state=deps.state,
             exchanges={u.symbol: u.exchange for u in (deps.universe.us if deps.universe else [])},
         )
-        return monitor_mod.monitor_once(ctx, market=market, today=run_date_for(market, deps.now()))
+        out = monitor_mod.monitor_once(
+            ctx, market=market, today=run_date_for(market, deps.now())
+        )
+        if hedge and "skipped" not in hedge:
+            out["hedge"] = hedge
+        return out
     finally:
         conn.close()
 
@@ -748,6 +869,7 @@ def _scan_analyze_body(deps: DaemonDeps, market: str) -> dict:
     """scan 뒤 바로 analyze. scan 이 예외로 죽어도 통보하고 analyze 를 시도한다(_analyze_body 가
     `_scan.json` 없음을 알림·error 로 남긴다). 세션을 세기 전에 stale running 을 정리한다."""
     _close_stale_sessions(deps)
+    _regime_body(deps, market)  # 국면 갱신: 스크리너·트레이더 입력(context.regime)·게이트가 읽는다
     scan_error: str | None = None
     try:
         _scan_body(deps, market)

@@ -144,22 +144,42 @@ def test_snapshot_same_day_removes_sold_positions(conn):
         "eval_amount": "710000",
     }
     repo.snapshot_positions(
-        conn, account_id="paper-main", d=D, market="KR", nav=Decimal("1"), cash=Decimal("1"),
+        conn,
+        account_id="paper-main",
+        d=D,
+        market="KR",
+        nav=Decimal("1"),
+        cash=Decimal("1"),
         positions=[pos],
     )
     repo.snapshot_positions(
-        conn, account_id="paper-main", d=D, market="KR", nav=Decimal("2"), cash=Decimal("2"),
+        conn,
+        account_id="paper-main",
+        d=D,
+        market="KR",
+        nav=Decimal("2"),
+        cash=Decimal("2"),
         positions=[],
     )
     snap = views.latest_positions(conn, "paper-main", "KR")
     assert snap["positions"] == [] and snap["nav"] == "2"
     # 다른 시장의 같은 날 행은 건드리지 않는다
     repo.snapshot_positions(
-        conn, account_id="paper-main", d=D, market="US", nav=Decimal("3"), cash=Decimal("3"),
+        conn,
+        account_id="paper-main",
+        d=D,
+        market="US",
+        nav=Decimal("3"),
+        cash=Decimal("3"),
         positions=[{**pos, "ticker": "AAPL", "market": "US"}],
     )
     repo.snapshot_positions(
-        conn, account_id="paper-main", d=D, market="KR", nav=Decimal("2"), cash=Decimal("2"),
+        conn,
+        account_id="paper-main",
+        d=D,
+        market="KR",
+        nav=Decimal("2"),
+        cash=Decimal("2"),
         positions=[],
     )
     assert [p["ticker"] for p in views.latest_positions(conn, "paper-main", "US")["positions"]] == [
@@ -176,3 +196,31 @@ def test_decision_hydrate_is_shared_between_repo_and_views(conn):
     c = repo.latest_decision(conn, "KR", "005930")
     assert a == b == c and a["data"]["action"] == "BUY" and "json" not in a
     assert "json" in repo.get_decision(conn, dec_id)  # 기본은 원시 행
+
+
+def test_sector_weights_groups_unknown_hedge_and_cash():
+    sectors = {"005930": "반도체", "000660": "반도체", "005380": "자동차"}
+    rows = views.sector_weights(
+        [
+            {"ticker": "005930", "eval_amount": "3000000"},
+            {"ticker": "000660", "eval_amount": "1500000"},
+            {"ticker": "005380", "eval_amount": "1000000"},
+            {"ticker": "999999", "eval_amount": "500000"},
+            {"ticker": "114800", "eval_amount": "2000000"},
+        ],
+        "10000000",
+        sectors.get,
+        hedge_tickers={"114800"},
+        cash="2000000",
+    )
+    assert [r["sector"] for r in rows] == ["반도체", "헤지", "현금", "자동차", "기타"]
+    assert (
+        rows[0]["weight"] == 0.45
+        and rows[0]["count"] == 2
+        and rows[0]["tickers"] == ["005930", "000660"]
+    )
+    assert abs(sum(r["weight"] for r in rows) - 1.0) < 1e-9
+    assert views.sector_weights([], None, None) == []
+    assert (
+        views.sector_weights([{"ticker": "X", "eval_amount": "1"}], "0", None)[0]["weight"] is None
+    )

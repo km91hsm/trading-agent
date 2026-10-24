@@ -14,6 +14,7 @@ from trader.ledger import metrics, repo
 from trader.notify.commands import approval_line
 from trader.orchestrator.executor import effective_mode
 from trader.platform import paths
+from trader.risk import regime as regime_mod
 
 MAX_CHARS = 8000
 _OPEN = re.compile(r"^\s*- \[ \]\s*(.*)$")
@@ -105,6 +106,23 @@ def _perf_lines(conn: sqlite3.Connection, accounts: list[AccountConfig]) -> list
     return out or ["- 스냅샷 없음"]
 
 
+def _regime_lines(conn: sqlite3.Connection, settings: Settings) -> list[str]:
+    """시장별 국면(bull|neutral|bear, n/3)과 헤지 설정 한 줄. 헤지가 꺼져 있으면 그 사실만."""
+    h = settings.hedge
+    if not h.enabled:
+        return ["- 헤지 비활성 (hedge.enabled=false)"]
+    out = [f"- {regime_mod.line(conn, list(settings.markets))}"]
+    inst = ", ".join(
+        f"{m} {d.get('inverse').symbol if d.get('inverse') else '-'}"
+        + (f"/{d['inverse2x'].symbol}" if h.leverage and d.get("inverse2x") else "")
+        for m, d in h.instruments.items()
+    )
+    out.append(
+        f"- 헤지 최대 {h.max_weight_pct:.0%} · 상품 {inst} · bear 기준 {h.bear_min_signals}/3"
+    )
+    return out
+
+
 def _ml_lines() -> list[str]:
     try:
         from trader.ml import registry
@@ -187,6 +205,7 @@ def build_status(
     if decisions:
         lines += ["", "## 최근 결정"]
         lines += [f"- {d}" for d in decisions]
+    lines += ["", "## 국면·헤지", *_regime_lines(conn, settings)]
     lines += ["", "## 성과(30일)", *_perf_lines(conn, accounts)]
     lines += ["", "## ML 모델", *_ml_lines()]
     dist = metrics.decision_distribution(conn, days=30, now=now)

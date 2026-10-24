@@ -67,6 +67,27 @@ def usage_view(request: Request) -> dict:
     }
 
 
+@router.get("/regime")
+def regime_status(request: Request) -> dict:
+    """시장별 국면(Phase 17 H) + 헤지 설정 요약. 토큰 없음."""
+    from trader.risk import regime as regime_mod
+
+    deps = request.app.state.deps
+    h = deps.settings.hedge
+    with closing(deps.conn_factory()) as conn:
+        markets = regime_mod.summary(conn, list(deps.settings.markets))
+    return {
+        "enabled": h.enabled,
+        "max_weight_pct": h.max_weight_pct,
+        "leverage": h.leverage,
+        "bear_min_signals": h.bear_min_signals,
+        "instruments": {
+            m: {k: v.model_dump() for k, v in d.items()} for m, d in h.instruments.items()
+        },
+        "markets": markets,
+    }
+
+
 @router.get("/daemon")
 def daemon_status(request: Request) -> dict:
     """데몬 생존(daemon.lock pid)·하트비트(잡별 마지막 실행·다음 예정)·잡 예정표."""

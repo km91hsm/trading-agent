@@ -7,7 +7,9 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import Callable
 from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal
 
 from trader.config import KST
 from trader.ledger import metrics, repo
@@ -78,6 +80,45 @@ def latest_positions(conn: sqlite3.Connection, account_id: str, market: str) -> 
     return {"date": row["date"], "nav": row["nav"], "cash": row["cash"], "positions": positions}
 
 
+def sector_weights(
+    positions: list[dict],
+    nav: str | Decimal | None,
+    sector_of: Callable[[str], str | None] | None,
+    *,
+    hedge_tickers: set[str] | frozenset[str] = frozenset(),
+    cash: str | Decimal | None = None,
+) -> list[dict]:
+    """섹터별 평가금액·비중 (비중 내림차순). 모르는 종목은 '기타', 헤지 ETF 는 '헤지', 현금은
+    '현금' 행으로 합이 NAV 가 되게 한다. nav 가 없거나 0 이면 비중은 None."""
+    nav_d = Decimal(str(nav)) if nav not in (None, "") else None
+    buckets: dict[str, dict] = {}
+    for p in positions:
+        t = str(p.get("ticker"))
+        if t in hedge_tickers:
+            sector = "헤지"
+        else:
+            sector = (sector_of(t) if sector_of else None) or "기타"
+        b = buckets.setdefault(sector, {"sector": sector, "eval_amount": Decimal(0), "tickers": []})
+        b["eval_amount"] += Decimal(str(p.get("eval_amount") or 0))
+        b["tickers"].append(t)
+    if cash not in (None, ""):
+        buckets["현금"] = {"sector": "현금", "eval_amount": Decimal(str(cash)), "tickers": []}
+    rows = sorted(buckets.values(), key=lambda b: (-b["eval_amount"], b["sector"]))
+    out = []
+    for b in rows:
+        w = float(b["eval_amount"] / nav_d) if nav_d and nav_d > 0 else None
+        out.append(
+            {
+                "sector": b["sector"],
+                "eval_amount": str(b["eval_amount"]),
+                "weight": w,
+                "tickers": b["tickers"],
+                "count": len(b["tickers"]),
+            }
+        )
+    return out
+
+
 def list_decisions(
     conn: sqlite3.Connection,
     *,
@@ -88,7 +129,7 @@ def list_decisions(
     since = ((now or datetime.now(UTC)).astimezone(KST).date() - timedelta(days=days)).isoformat()
     sql = (
         "SELECT id, date, market, ticker, action, target_weight, confidence, session_id, "
-        "created_at FROM decisions WHERE date >= ?"
+        "created_at, source FROM decisions WHERE date >= ?"
     )
     args: list = [since]
     if market:

@@ -10,7 +10,7 @@ import os
 import re
 from decimal import Decimal
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
 import yaml
@@ -42,6 +42,81 @@ class RiskLimits(BaseModel):
     daily_loss_stop_pct: float = -0.05
     stop_loss_pct: float = -0.15
     min_cash_pct: float = 0.0
+    max_sector_pct: float = Field(default=0.40, gt=0, le=1)  # 같은 섹터 합계 상한 (BUY/ADD 뒤)
+
+
+class HedgeInstrument(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    symbol: str
+    exchange: Literal["NAS", "NYS", "AMS"] | None = None  # US 만
+
+
+def _coerce_instrument(v: Any) -> Any:
+    return {"symbol": v} if isinstance(v, str) else v
+
+
+class HedgeCfg(BaseModel):
+    """하락장 대응 (Phase 17 H): 국면 판정 3지표 + 인버스 ETF 헤지 슬리브. 전부 파이썬 규칙.
+
+    국면: ① 지수 proxy 종가 < 200일 SMA, ② 20거래일 수익률 ≤ momentum_min, ③ 변동성(US 는 FRED VIX ≥
+    vix_min, KR 은 proxy 20일 실현변동성 연율 ≥ realized_vol_min). count ≥ bear_min_signals → bear,
+    0 → bull, 그 외 neutral. bear 해제는 count ≤ 1 이 exit_streak_days 연속일 때(채찍질 방지)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    max_weight_pct: float = Field(default=0.20, ge=0, le=0.5)
+    leverage: bool = True  # 3지표 모두 켜지면 −2x, 아니면 −1x
+    bear_min_signals: int = Field(default=2, ge=1, le=3)
+    exit_streak_days: int = Field(default=5, ge=1, le=30)
+    ma_days: int = Field(default=200, ge=20, le=400)
+    momentum_days: int = Field(default=20, ge=5, le=120)
+    momentum_min: float = -0.05
+    vix_min: float = 25.0
+    realized_vol_min: float = 0.25
+    instruments: dict[Market, dict[Literal["inverse", "inverse2x"], HedgeInstrument]] = Field(
+        default_factory=lambda: {
+            "KR": {
+                "inverse": HedgeInstrument(symbol="114800"),
+                "inverse2x": HedgeInstrument(symbol="252670"),
+            },
+            "US": {
+                "inverse": HedgeInstrument(symbol="SH", exchange="AMS"),
+                "inverse2x": HedgeInstrument(symbol="SDS", exchange="AMS"),
+            },
+        }
+    )
+    index_proxy: dict[Market, HedgeInstrument] = Field(
+        default_factory=lambda: {
+            "KR": HedgeInstrument(symbol="069500"),
+            "US": HedgeInstrument(symbol="SPY", exchange="AMS"),
+        }
+    )
+
+    @field_validator("instruments", mode="before")
+    @classmethod
+    def _coerce_instruments(cls, v: Any) -> Any:
+        if not isinstance(v, dict):
+            return v
+        return {m: {k: _coerce_instrument(x) for k, x in (d or {}).items()} for m, d in v.items()}
+
+    @field_validator("index_proxy", mode="before")
+    @classmethod
+    def _coerce_proxy(cls, v: Any) -> Any:
+        if not isinstance(v, dict):
+            return v
+        return {m: _coerce_instrument(x) for m, x in v.items()}
+
+    def tickers(self, market: str) -> set[str]:
+        """그 시장의 헤지 종목 코드 (monitor·종목 수·섹터 계산·스캔에서 제외)."""
+        return {i.symbol for i in self.instruments.get(market, {}).values()}  # type: ignore[arg-type]
+
+    def instrument(self, market: str, *, leveraged: bool) -> HedgeInstrument | None:
+        d = self.instruments.get(market, {})  # type: ignore[arg-type]
+        if leveraged and self.leverage and "inverse2x" in d:
+            return d["inverse2x"]
+        return d.get("inverse")
 
 
 class LlmSettings(BaseModel):
@@ -86,6 +161,7 @@ class Settings(BaseModel):
 
     markets: list[Market] = Field(default_factory=lambda: ["KR", "US"])
     risk: RiskLimits = Field(default_factory=RiskLimits)
+    hedge: HedgeCfg = Field(default_factory=HedgeCfg)
     models: dict[str, str] = Field(default_factory=dict)
     debate_rounds: int = Field(default=1, ge=0, le=2)
     anonymize: bool = False

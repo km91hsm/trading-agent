@@ -165,3 +165,21 @@ def test_status_shows_effective_mode_for_unconfirmed_real_auto(conn, project):
     md = status.build_status(conn, Settings(), accounts, project / "docs" / "TODO.md", now=now)
     row = next(line for line in md.splitlines() if line.startswith("| real-main"))
     assert "| off" in row and "강등" in row
+
+
+def test_status_regime_section(conn, project):
+    from trader.risk import regime
+
+    p = project / "docs" / "TODO.md"
+    p.write_text(TODO, encoding="utf-8")
+    text = status.build_status(conn, Settings(), [make_account("paper-main", "paper", "auto")], p)
+    assert "## 국면·헤지" in text and "KR - · US -" in text and "헤지 최대 20%" in text
+    regime.update(
+        conn,
+        "KR",
+        closes=[100.0] * 210 + [100.0 - i for i in range(1, 31)],
+        cfg=Settings().hedge,
+        today=datetime.now(UTC).date(),
+    )
+    text = status.build_status(conn, Settings(), [make_account("paper-main", "paper", "auto")], p)
+    assert "KR bear(" in text

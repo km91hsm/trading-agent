@@ -146,6 +146,26 @@ def trader_context(
         "quant": quant,
         **_memory_context(ctx, inputs, market),
         "calibration": calibration,
+        "regime": _regime_context(ctx, market),
+    }
+
+
+def _regime_context(ctx: ToolContext, market: Market) -> dict | None:
+    """국면(Phase 17 H): {state, count, signals, since}. 기록이 없거나 원장이 없으면 None."""
+    if ctx.conn is None or not ctx.settings.hedge.enabled:
+        return None
+    from trader.risk import regime as regime_mod
+
+    r = regime_mod.load(ctx.conn, market)
+    if not r:
+        return None
+    sig = r.get("signals") or {}
+    return {
+        "state": r.get("state"),
+        "count": r.get("count"),
+        "signals": {k: sig.get(k) for k in ("ma_below", "momentum_weak", "vol_high")},
+        "since": r.get("since"),
+        "note": "bear: 게이트가 신규 BUY/ADD 거부·헤지 ETF 보유; neutral: 한도 축소",
     }
 
 

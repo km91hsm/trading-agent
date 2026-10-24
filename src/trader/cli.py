@@ -2045,6 +2045,70 @@ def backtest_cmd(
     typer.echo(json.dumps(r, ensure_ascii=False))
 
 
+regime_app = typer.Typer(help="시장 국면 (Phase 17 H): 조회·과거 재현", no_args_is_help=True)
+app.add_typer(regime_app, name="regime")
+
+
+@regime_app.command("show")
+@_config_errors
+def regime_show() -> None:
+    """시장별 현재 국면(control 플래그)과 헤지 설정을 JSON 으로."""
+    import json
+
+    from trader.ledger import db
+    from trader.risk import regime as regime_mod
+
+    configure(paths.state_dir())
+    settings = config.load_settings()
+    conn = db.connect()
+    db.init_schema(conn)
+    try:
+        out = {
+            "hedge": settings.hedge.model_dump(),
+            "markets": regime_mod.summary(conn, list(settings.markets)),
+        }
+    finally:
+        conn.close()
+    typer.echo(json.dumps(out, ensure_ascii=False, default=str))
+
+
+@regime_app.command("backtest")
+@_config_errors
+def regime_backtest(
+    market: str = typer.Option("KR", "--market", help="KR|US"),
+    days: int = typer.Option(1000, "--days", min=260, max=1000, help="지수 proxy 일봉 수"),
+) -> None:
+    """지수 proxy 일봉으로 과거 bear 구간을 재현한다 (임계값 확정용, 상태는 바꾸지 않음)."""
+    import json
+
+    from trader.risk import regime as regime_mod
+
+    configure(paths.state_dir())
+    settings = config.load_settings()
+    if market not in ("KR", "US"):
+        raise config.ConfigError(f"시장은 KR 또는 US: {market}")
+    inst = settings.hedge.index_proxy.get(market)  # type: ignore[arg-type]
+    if inst is None:
+        raise config.ConfigError(f"{market} index_proxy 미설정")
+    mc = _build_market(config.load_secrets())
+    candles = (
+        mc.get_daily_us(inst.symbol, inst.exchange or "AMS", days=days)
+        if market == "US"
+        else mc.get_daily_kr(inst.symbol, days=days)
+    )
+    rows = [(c.date, c.close) for c in candles]
+    spans = regime_mod.backtest(rows, settings.hedge)
+    out = {
+        "market": market,
+        "proxy": inst.symbol,
+        "candles": len(rows),
+        "range": [rows[0][0].isoformat(), rows[-1][0].isoformat()] if rows else None,
+        "bear_spans": spans,
+        "transitions": len(spans),
+    }
+    typer.echo(json.dumps(out, ensure_ascii=False, default=str))
+
+
 @app.command("readiness")
 @_config_errors
 def readiness_cmd() -> None:

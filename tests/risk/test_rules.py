@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 from helpers_agents import ok_decision
@@ -273,3 +273,79 @@ def test_tick_table():
     assert quantize_price("KR", Decimal("1234567")) == Decimal("1235000")
     assert quantize_price("US", Decimal("0.12345")) == Decimal("0.1235")
     assert quantize_price("US", Decimal("10.005")) == Decimal("10.01")
+
+
+# --- Phase 17 H: 국면·섹터 상한·헤지 면제 ------------------------------------------------
+
+
+def test_regime_neutral_tightens_limits_and_bear_blocks_buy():
+    lim = stance.limits_for_regime("neutral", LIMITS)
+    assert (lim.max_position_pct, lim.max_positions) == (0.15, 3)
+    assert stance.limits_for_regime("bull", LIMITS) == LIMITS
+    v = _eval(ok_decision(target_weight=0.2), regime="neutral")
+    assert v.adjusted_qty == 21 and any("neutral" in r for r in v.reasons)
+    v = _eval(ok_decision(), regime="bear")
+    assert not v.approved and any("bear" in r for r in v.reasons)
+    # bear 에서도 매도·손절은 통과
+    p = _portfolio(
+        positions={"005930": _pos("005930", 10, "70000")},
+        held_since={"005930": D - timedelta(days=30)},
+    )
+    v = _eval(ok_decision(action="SELL", target_weight=0.0), p, regime="bear")
+    assert v.approved and v.side == "SELL"
+
+
+def test_sector_cap_rejects_when_exceeded_and_skips_hedge_tickers():
+    sectors = {"005930": "반도체", "000660": "반도체", "114800": None, "005380": "자동차"}
+    p = _portfolio(
+        positions={
+            "000660": _pos("000660", 35, "100000"),  # 350만 = 35%
+            "114800": _pos("114800", 100, "5000"),  # 헤지 50만 — 계산 제외
+        },
+        sector_of=sectors.get,
+        hedge_tickers=frozenset({"114800"}),
+    )
+    # 005930 10% 추가 → 반도체 45% > 40% 거부
+    v = _eval(ok_decision(target_weight=0.10), p)
+    assert not v.approved and any("섹터 '반도체'" in r for r in v.reasons)
+    # 다른 섹터는 통과하고 종목 수도 헤지를 빼고 센다 (일반 1종목)
+    v = _eval(
+        ok_decision(ticker="005380", target_weight=0.10, limit_price=70000.0, stop_loss=65000.0), p
+    )
+    assert v.approved
+    assert len(p.equity_positions()) == 1
+    # 비중이 상한 안이면 같은 섹터도 통과 (반도체 35% + 4% = 39%)
+    v = _eval(ok_decision(target_weight=0.04, take_profit=80000.0), p)
+    assert v.approved
+
+
+def test_hedge_order_exempts_rules_and_uses_hedge_cap():
+    p = _portfolio(
+        positions={f"T{i}": _pos(f"T{i}", 1, "1000") for i in range(5)},  # 종목 수 상한 도달
+        today_buy_tickers={"114800"},
+        trades_this_week={"114800": 5},
+        today_pnl_pct=-0.10,
+        sector_of=lambda t: "기타",
+    )
+    dec = ok_decision(
+        ticker="114800", target_weight=0.20, order_type="MARKET", limit_price=None,
+        stop_loss=None, take_profit=None, confidence=1.0,
+    )  # fmt: skip
+    v = _eval(dec, p, price="5000", regime="bear", is_hedge=True, hedge_max_weight=0.20)
+    assert v.approved and v.adjusted_qty == 400  # 1000만 × 20% / 5000
+    # 일반 주문이면 같은 조건에서 거부 사유가 쌓인다
+    v2 = _eval(dec, p, price="5000", regime="bear")
+    assert not v2.approved and len(v2.reasons) >= 3
+    # 헤지 비중 상한이 25% 기본 대신 쓰인다
+    v3 = _eval(
+        {**dec, "target_weight": 0.25}, p, price="5000", is_hedge=True, hedge_max_weight=0.10
+    )
+    assert v3.adjusted_qty == 200
+    # 헤지 청산(SELL)은 최소 보유·주 2회를 면제
+    p2 = _portfolio(
+        positions={"114800": _pos("114800", 100, "5000")},
+        held_since={"114800": D},
+        trades_this_week={"114800": 5},
+    )
+    v4 = _eval({**dec, "action": "SELL", "target_weight": 0.0}, p2, price="5000", is_hedge=True)
+    assert v4.approved and v4.adjusted_qty == 100

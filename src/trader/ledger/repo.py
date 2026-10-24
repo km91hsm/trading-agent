@@ -142,6 +142,33 @@ def ingest_checkpoint(
     return None
 
 
+def insert_hedge_decision(
+    conn: sqlite3.Connection, d: date, market: str, ticker: str, data: dict
+) -> int:
+    """파이썬이 만든 헤지 결정 행(source='hedge'). 같은 날·종목이면 갱신. 메모리·분포 제외."""
+    conn.execute(
+        "INSERT INTO decisions(date, market, ticker, action, target_weight, confidence, "
+        "session_id, json, created_at, source) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, 'hedge') "
+        "ON CONFLICT(date, market, ticker) DO UPDATE SET action=excluded.action, "
+        "target_weight=excluded.target_weight, confidence=excluded.confidence, "
+        "json=excluded.json, source='hedge'",
+        (
+            d.isoformat(),
+            market,
+            ticker,
+            data.get("action"),
+            data.get("target_weight"),
+            data.get("confidence"),
+            json.dumps(data, ensure_ascii=False, default=str),
+            now_iso(),
+        ),
+    )
+    conn.commit()
+    did = decision_id(conn, d, market, ticker)
+    assert did is not None
+    return did
+
+
 def _hydrate_decision(row: sqlite3.Row) -> dict:
     """decisions 행의 json 열을 data 로 복원 (get_decision(hydrate=True)·latest_decision 공통)."""
     d = dict(row)

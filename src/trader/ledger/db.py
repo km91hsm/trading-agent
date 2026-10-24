@@ -227,6 +227,10 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
             "CREATE INDEX IF NOT EXISTS ix_job_requests_status ON job_requests(status, id)",
         ],
     ),
+    (
+        12,  # Phase 17 H: 결정 출처 'llm'|'hedge'(국면 헤지, 파이썬). 분포·메모리는 llm 만
+        ["ALTER TABLE decisions ADD COLUMN source TEXT NOT NULL DEFAULT 'llm'"],
+    ),
 ]
 
 

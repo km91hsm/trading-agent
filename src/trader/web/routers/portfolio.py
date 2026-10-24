@@ -19,14 +19,35 @@ router = APIRouter(prefix="/portfolio", tags=["portfolio"])
 def portfolio(request: Request, account_id: str | None = None, market: str | None = None) -> dict:
     acct = require_account(request, account_id)
     m = require_market(market, acct)
-    with closing(deps_of(request).conn_factory()) as conn:
+    deps = deps_of(request)
+    with closing(deps.conn_factory()) as conn:
+        snap = views.latest_positions(conn, acct.id, m)
         return {
             "account_id": acct.id,
             "market": m,
-            "snapshot": views.latest_positions(conn, acct.id, m),
+            "snapshot": snap,
+            "sectors": _sectors(deps, m, snap),
+            "max_sector_pct": deps.settings.risk.max_sector_pct,
             "orders": views.list_orders(conn, acct.id, limit=20),
             "approvals": views.list_approvals(conn, acct.id, status="pending"),
         }
+
+
+def _sectors(deps, market: str, snap: dict | None) -> list[dict]:
+    """섹터 비중 (Phase 17 S). sectors.yaml 을 못 읽으면 전부 '기타'."""
+    if not snap:
+        return []
+    try:
+        from trader.config import load_sectors
+
+        smap = load_sectors()
+        sector_of = lambda t: smap.sector_of(t, market)  # noqa: E731
+    except Exception:  # noqa: BLE001 - 섹터 맵은 선택 자료
+        sector_of = None
+    hedge = deps.settings.hedge.tickers(market) if deps.settings.hedge.enabled else set()
+    return views.sector_weights(
+        snap["positions"], snap["nav"], sector_of, hedge_tickers=hedge, cash=snap.get("cash")
+    )
 
 
 @router.post("/refresh", dependencies=[Depends(require_token)])

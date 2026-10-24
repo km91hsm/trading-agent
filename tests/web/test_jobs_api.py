@@ -75,3 +75,30 @@ def test_sse_snapshot_tracks_job_requests(conn):
     jobq.finish(conn, rid, "ok", now=NOW)
     s2 = sse.snapshot(conn)
     assert s2["jobs_active"] == 0 and s2["jobs_done"] == rid
+
+
+def test_regime_endpoint_and_portfolio_sectors(client, conn):
+    from datetime import UTC, datetime
+
+    from trader.risk import regime
+
+    r = client.get("/api/system/regime").json()
+    assert r["enabled"] is True and r["markets"][0]["state"] is None
+    assert r["instruments"]["KR"]["inverse"]["symbol"] == "114800"
+    regime.update(
+        conn,
+        "KR",
+        closes=[100.0] * 210 + [100.0 - i for i in range(1, 31)],
+        cfg=client.app.state.deps.settings.hedge,
+        today=datetime.now(UTC).date(),
+    )
+    r = client.get("/api/system/regime").json()
+    kr = next(m for m in r["markets"] if m["market"] == "KR")
+    assert kr["state"] == "bear" and kr["signals"]["ma_below"] is True
+    # 포트폴리오 응답에 섹터 비중·상한
+    client.post("/api/portfolio/refresh?account_id=paper-main&market=KR", headers=AUTH)
+    p = client.get("/api/portfolio?account_id=paper-main&market=KR").json()
+    assert p["max_sector_pct"] == 0.4 and isinstance(p["sectors"], list)
+    assert (
+        p["sectors"] and p["sectors"][-1]["sector"] in ("현금", "기타") or p["sectors"][0]["sector"]
+    )

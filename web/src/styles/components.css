@@ -793,3 +793,14 @@ label.check {
 .dialog-body p {
   margin: 0 0 var(--s-2);
 }
+
+/* 섹터 비중 막대 (Phase 17 S) */
+.bar-svg {
+  display: block;
+  width: 100%;
+  min-width: 120px;
+  height: 8px;
+}
+tr[data-over] .pend {
+  color: var(--pending);
+}

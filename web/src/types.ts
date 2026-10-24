@@ -94,6 +94,8 @@ export type Portfolio = {
   account_id: string;
   market: string;
   snapshot: Snapshot;
+  sectors?: Array<{ sector: string; eval_amount: string; weight: number | null; tickers: string[]; count: number }>;
+  max_sector_pct?: number;
   orders: Order[];
   approvals: Approval[];
 };

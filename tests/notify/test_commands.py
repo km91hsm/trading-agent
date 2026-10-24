@@ -118,3 +118,4 @@ def test_status_includes_daemon_line(conn, project):
     hb.job_finished("kr_monitor", datetime.now(UTC), "ok")
     commands.poll_once(ctx, Recv(["/status"]))
     assert "최근 잡: kr_monitor ok" in sent.msgs[-1]
+    assert "국면: KR -" in sent.msgs[-1]

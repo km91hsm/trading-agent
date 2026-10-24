@@ -27,6 +27,7 @@ from trader.notify.telegram import Notifier, NullNotifier
 from trader.orchestrator.run_store import checkpoint_payload as _wrap
 from trader.orchestrator.run_store import run_dir, write_checkpoint
 from trader.platform import paths
+from trader.risk import regime as regime_mod
 from trader.risk import rules
 from trader.risk import stance as stance_mod
 
@@ -48,6 +49,31 @@ class ExecContext:
     now: Callable[[], datetime] = field(default=lambda: datetime.now(UTC))
     holiday_fn: Callable[[date], bool] | None = None  # 보유 거래일 계산용 (KIS 휴장일, 캐시)
     rl_sizer: Any | None = None  # ml.rl.shadow.Sizer (Phase 9, 모의 계좌·BUY/ADD 에만)
+    sectors: Any | None = None  # config.SectorMap (섹터 상한). None 이면 첫 사용 때 load_sectors()
+
+
+def _sector_of(ctx: ExecContext, market: str) -> Callable[[str], str | None] | None:
+    """섹터 상한용 종목→섹터. sectors.yaml 을 못 읽으면 None(규칙 생략, 경고 1회)."""
+    if ctx.sectors is None:
+        from trader.config import load_sectors
+
+        try:
+            ctx.sectors = load_sectors()
+        except Exception as e:  # noqa: BLE001 - 섹터 맵이 없으면 상한 규칙만 빠진다
+            logger.warning("sectors.yaml 로드 실패, 섹터 상한 생략: %s", e)
+            ctx.sectors = False
+    if not ctx.sectors:
+        return None
+    sectors = ctx.sectors
+    return lambda t: sectors.sector_of(t, market)  # type: ignore[arg-type]
+
+
+def regime_state(ctx: ExecContext, market: str) -> str:
+    """국면(bull|neutral|bear). 헤지 기능이 꺼져 있거나 판정 기록이 없으면 bull."""
+    if not ctx.settings.hedge.enabled:
+        return "bull"
+    r = regime_mod.load(ctx.conn, market) or {}
+    return str(r.get("state") or "bull")
 
 
 def _holidays_between(
@@ -118,6 +144,8 @@ def build_portfolio(
     market: str,
     today: date,
     memory_settings: MemorySettings | None = None,
+    sector_of: Callable[[str], str | None] | None = None,
+    hedge_tickers: frozenset[str] = frozenset(),
 ) -> rules.Portfolio:
     """브로커 잔고·현금 + 원장 집계로 Portfolio 를 만들고 positions_snapshot 을 남긴다."""
     get_balance = getattr(broker, "get_balance", None)
@@ -163,6 +191,8 @@ def build_portfolio(
         today_order_amount=repo.today_order_amount(conn, account.id, today, market=market),
         held_since=repo.held_since(conn, account.id, tickers=list(positions)),
         trades_this_week=repo.trades_this_week(conn, account.id, today, market=market),
+        sector_of=sector_of,
+        hedge_tickers=hedge_tickers,
     )
 
 
@@ -258,11 +288,13 @@ def execute(
     is_stop_loss: bool = False,
     decision_id: int | None = None,
     resume_round: int | None = None,
+    is_hedge: bool = False,
 ) -> list[dict]:
     """계좌마다 판정·기록·(모드별) 주문. 계좌 하나의 실패가 다른 계좌를 막지 않는다.
 
     is_stop_loss 면 보유기간·주 2회 규칙을 면제하고 approve 계좌도 승인 없이 즉시 낸다(사후 통보).
     resume_round 는 재평가(31_decision_r<n>) 라운드로, 판정·주문 체크포인트 이름에 들어간다.
+    is_hedge 는 국면 헤지(인버스 ETF, Phase 17 H): 체크포인트 46_/56_, 게이트 면제, RL 비대상.
     """
     d = run_dir(date, market, decision.ticker, ctx.state)
     if decision_id is None:
@@ -270,6 +302,8 @@ def execute(
     # 손절·재평가는 오늘 분석의 40_/50_ 체크포인트를 덮어쓰지 않도록 별도 이름을 쓴다
     if is_stop_loss:
         risk_stage, order_stage = "45_stop_loss", "55_order_sl"
+    elif is_hedge:
+        risk_stage, order_stage = "46_hedge", "56_order_hedge"
     elif resume_round is not None:
         risk_stage, order_stage = f"41_risk_check_r{resume_round}", f"51_order_r{resume_round}"
     else:
@@ -281,9 +315,14 @@ def execute(
         ctx.rl_sizer is not None
         and decision_id is not None
         and not is_stop_loss
+        and not is_hedge
         and not dry_run  # dry-run·FAKE 세션의 제안은 실험 집계를 오염시킨다
         and decision.action in ("BUY", "ADD")
     )
+    regime = regime_state(ctx, market)
+    hedge_cfg = ctx.settings.hedge
+    hedge_tickers = frozenset(hedge_cfg.tickers(market)) if hedge_cfg.enabled else frozenset()
+    sector_of = _sector_of(ctx, market)
     for account in ctx.accounts:
         if market not in account.markets:
             continue
@@ -295,7 +334,14 @@ def execute(
             if broker is None:
                 raise KisApiError("NO_BROKER", f"계좌 {account.id} 브로커 없음(앱키 미설정)")
             portfolio = build_portfolio(
-                ctx.conn, broker, account, market, date, memory_settings=ctx.settings.memory
+                ctx.conn,
+                broker,
+                account,
+                market,
+                date,
+                memory_settings=ctx.settings.memory,
+                sector_of=sector_of,
+                hedge_tickers=hedge_tickers,
             )
             sized = decision
             if rl_eligible and account.env == "paper":
@@ -314,6 +360,9 @@ def execute(
                 holidays=_holidays_between(
                     ctx.holiday_fn, portfolio.held_since.get(decision.ticker), date
                 ),
+                regime=regime,
+                is_hedge=is_hedge,
+                hedge_max_weight=hedge_cfg.max_weight_pct if is_hedge else None,
             )
         except (KisApiError, ValueError) as e:
             verdict = rules.RiskVerdict(
@@ -345,6 +394,8 @@ def execute(
             verdict = _rl_record(ctx, account, decision, decision_id, rl_prop, verdict)
         if paused and verdict.approved:
             note = (note + "; " if note else "") + "일시정지 중: 판정만 기록, 주문·승인 요청 없음"
+        if regime != "bull" and not is_hedge:
+            note = (note + "; " if note else "") + f"국면 {regime}"
         verdict = verdict.model_copy(
             update={"mode": mode, "note": note, "stance": st, "dry_run": dry_run}
         )

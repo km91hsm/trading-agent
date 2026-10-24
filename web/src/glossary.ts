@@ -22,6 +22,8 @@ export const GLOSSARY: Record<string, TermEntry> = {
   trigger: { label: "트리거", help: "익절선·±7%·무효화 조건에 닿아 재평가 세션을 띄운 신호." },
   sycophantic: { label: "토론 붕괴", help: "강세·약세가 한쪽으로 쏠려 라운드 0 의견을 우선한 경우." },
   paused: { label: "일시정지", help: "거래 중단. 판정만 기록하고 주문·승인을 내지 않는다." },
+  regime: { label: "국면", help: "지수 proxy(KODEX 200·SPY)의 200일선·20일 수익률·변동성 3지표로 판정한 시장 상태. 하락(bear)이면 신규 매수를 막고 인버스 ETF 로 헤지한다." },
+  sector_weight: { label: "섹터 비중", help: "같은 섹터 보유 평가금액의 NAV 대비 합. 상한(기본 40%)을 넘기면 그 섹터의 신규 매수를 게이트가 거부한다." },
   job_queue: { label: "작업 대기열", help: "웹·데몬이 넣은 요청(스캔·분석·백필·학습)을 데몬이 한 번에 하나씩 순서대로 실행한다. 데몬이 꺼져 있으면 쌓이지 않는다." },
   nav: { label: "순자산(NAV)", help: "현금 + 보유 평가금액." },
   mdd: { label: "최대 낙폭(MDD)", help: "기간 중 고점 대비 가장 크게 내려간 비율." },

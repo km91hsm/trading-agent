@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from decimal import ROUND_FLOOR, Decimal
@@ -15,7 +16,7 @@ from trader.agents.schemas import Decision
 from trader.broker.models import Position
 from trader.config import RiskLimits
 from trader.risk import costs
-from trader.risk.stance import Stance, limits_for
+from trader.risk.stance import Stance, limits_for, limits_for_regime
 from trader.risk.ticks import quantize_price
 
 MIN_HOLD_TRADING_DAYS = 3
@@ -38,6 +39,13 @@ class Portfolio:
     today_order_amount: Decimal = Decimal(0)
     held_since: dict[str, date] = field(default_factory=dict)
     trades_this_week: dict[str, int] = field(default_factory=dict)
+    # Phase 17 H: 섹터 상한용 종목→섹터(없으면 섹터 규칙 생략), 헤지 ETF(종목 수·섹터 계산에서 제외)
+    sector_of: Callable[[str], str | None] | None = None
+    hedge_tickers: frozenset[str] = frozenset()
+
+    def equity_positions(self) -> dict[str, Position]:
+        """헤지 ETF 를 뺀 일반 보유 종목."""
+        return {t: p for t, p in self.positions.items() if t not in self.hedge_tickers}
 
 
 class RiskVerdict(BaseModel):
@@ -86,17 +94,27 @@ def evaluate(
     today: date,
     is_stop_loss: bool = False,
     holidays: set[date] | None = None,
+    regime: str = "bull",
+    is_hedge: bool = False,
+    hedge_max_weight: float | None = None,
 ) -> RiskVerdict:
+    """regime(bull|neutral|bear)·is_hedge 는 Phase 17 H: neutral 은 신규 매수 한도 축소, bear 는
+    일반 BUY/ADD 거부(SELL·TRIM·손절·헤지만 통과). 헤지 주문은 비용·보유기간·주 2회·중복·종목 수·
+    섹터·일일손실 규칙을 면제하고 비중 상한만 hedge_max_weight 로 바꾼다."""
     acct = portfolio.account_id
     if decision.action == "HOLD":
         return RiskVerdict(
             account_id=acct, approved=False, adjusted_qty=0, reasons=["HOLD: 주문 없음"]
         )
 
-    lim = limits_for(stance, limits)
+    lim = limits_for_regime(regime, limits_for(stance, limits))
+    if is_hedge and hedge_max_weight is not None:
+        lim = lim.model_copy(update={"max_position_pct": hedge_max_weight})
     side = "BUY" if decision.action in ("BUY", "ADD") else "SELL"
     reasons: list[str] = []
     rejected: list[str] = []
+    if regime == "neutral" and side == "BUY" and not is_hedge:
+        reasons.append("국면 neutral: 신규 매수 한도 축소(종목당 15%·3종목)")
     ticker = decision.ticker
     held = portfolio.positions.get(ticker)
     nav = portfolio.nav
@@ -168,11 +186,31 @@ def evaluate(
             qty = min(held.qty, _floor_qty(max(held.eval_amount - keep_value, Decimal(0)), price))
 
     # --- 거부 규칙 (전부 수집) ---------------------------------------------------------
-    if side == "BUY":
-        if held is None and len(portfolio.positions) >= lim.max_positions:
-            rejected.append(
-                f"보유 종목 수 {len(portfolio.positions)} 이 상한 {lim.max_positions} 에 도달"
+    if side == "BUY" and is_hedge:
+        if qty <= 0 and not rejected:
+            rejected.append("가능금액 부족으로 주문 수량 0")
+    elif side == "BUY":
+        if regime == "bear":
+            rejected.append("하락 국면(bear): 신규 매수·추가 매수 금지")
+        equities = portfolio.equity_positions()
+        if held is None and len(equities) >= lim.max_positions:
+            rejected.append(f"보유 종목 수 {len(equities)} 이 상한 {lim.max_positions} 에 도달")
+        if portfolio.sector_of is not None and nav > 0:
+            sector = portfolio.sector_of(ticker) or "기타"
+            others = sum(
+                (
+                    p.eval_amount
+                    for t, p in equities.items()
+                    if t != ticker and (portfolio.sector_of(t) or "기타") == sector
+                ),
+                Decimal(0),
             )
+            after = (others + current_value + buy_value) / nav
+            if after > Decimal(str(lim.max_sector_pct)):
+                rejected.append(
+                    f"섹터 '{sector}' 비중이 주문 뒤 {float(after):.0%} 로 상한 "
+                    f"{lim.max_sector_pct:.0%} 초과"
+                )
         if portfolio.today_pnl_pct <= lim.daily_loss_stop_pct:
             rejected.append(
                 f"일일 손실 {portfolio.today_pnl_pct:.2%} 이 한도 {lim.daily_loss_stop_pct:.0%} "
@@ -191,7 +229,7 @@ def evaluate(
             rejected.append("가능금액 부족으로 주문 수량 0")
     else:
         since = portfolio.held_since.get(ticker)
-        if since is not None and not is_stop_loss:
+        if since is not None and not is_stop_loss and not is_hedge:
             days = _trading_days_between(since, today, holidays)
             if days < MIN_HOLD_TRADING_DAYS:
                 rejected.append(
@@ -199,7 +237,11 @@ def evaluate(
                 )
         if qty <= 0 and not rejected:
             rejected.append("매도 수량 0")
-    if not is_stop_loss and portfolio.trades_this_week.get(ticker, 0) >= MAX_TRADES_PER_WEEK:
+    if (
+        not is_stop_loss
+        and not is_hedge
+        and portfolio.trades_this_week.get(ticker, 0) >= MAX_TRADES_PER_WEEK
+    ):
         rejected.append(f"종목당 주 {MAX_TRADES_PER_WEEK}회 거래 한도 초과")
 
     approved = not rejected and qty > 0

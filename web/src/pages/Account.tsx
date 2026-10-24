@@ -5,6 +5,7 @@ import { EmptyState } from "../components/EmptyState";
 import { Glyph } from "../components/Glyph";
 import { Section } from "../components/Section";
 import { Skeleton } from "../components/Skeleton";
+import { SectorTable } from "../components/Sectors";
 import { ApprovalsTable, ErrorBox, OrdersTable, PositionsTable } from "../components/Tables";
 import { Term } from "../components/Term";
 import { useToast } from "../components/Toast";
@@ -88,9 +89,18 @@ export function AccountPage() {
           <EmptyState title="아직 스냅샷이 없어요" hint="잔고 새로고침을 누르거나, 분석이 한 번 돌면 판정 때 찍혀요." />
         )}
       </Section>
-      <Section title="보유 종목" aside={`${snap?.positions.length ?? 0}종목`}>
-        {pf.loading && !pf.data ? <Skeleton rows={3} cols={7} /> : <PositionsTable rows={snap?.positions ?? []} nav={snap?.nav} />}
-      </Section>
+      <div className="cols-2">
+        <Section title="보유 종목" aside={`${snap?.positions.length ?? 0}종목`}>
+          {pf.loading && !pf.data ? <Skeleton rows={3} cols={7} /> : <PositionsTable rows={snap?.positions ?? []} nav={snap?.nav} />}
+        </Section>
+        <Section title="섹터 비중" aside={`상한 ${Math.round((pf.data?.max_sector_pct ?? 0.4) * 100)}% · 헤지·현금 제외`}>
+          {pf.loading && !pf.data ? (
+            <Skeleton rows={3} cols={5} />
+          ) : (
+            <SectorTable rows={pf.data?.sectors ?? []} market={market} maxSectorPct={pf.data?.max_sector_pct ?? 0.4} />
+          )}
+        </Section>
+      </div>
       <Section title="승인 요청">
         <ApprovalsTable rows={pf.data?.approvals ?? []} realAccounts={acct?.env === "real" ? [acct.id] : []} />
       </Section>

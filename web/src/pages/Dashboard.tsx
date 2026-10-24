@@ -15,6 +15,7 @@ import { useApp, useLoad } from "../hooks";
 import { labelOf } from "../names";
 import type { UsageResp } from "../usage";
 import { daemonText, type DaemonStatus } from "../jobs";
+import { regimeText, type RegimeResp } from "../sectors";
 import { buildTape, gateFor, marketPhase, type TapeRow } from "../tape";
 import type {
   Approval,
@@ -93,6 +94,7 @@ export function Dashboard() {
   const settings = useLoad(() => getJson<SystemSettings>("/api/system/settings"), []);
   const usage = useLoad(() => getJson<UsageResp>("/api/system/usage"), [tick, minute]);
   const daemon = useLoad(() => getJson<DaemonStatus>("/api/system/daemon"), [tick, minute]);
+  const regime = useLoad(() => getJson<RegimeResp>("/api/system/regime"), [tick]);
   const models = useLoad(() => getJson<ModelsResp>("/api/ml/models"), [tick]);
   const rl = useLoad(() => getJson<RlResp>("/api/rl/experiments"), [tick]);
   const perfKR = useLoad(
@@ -164,6 +166,7 @@ export function Dashboard() {
   const runsToday = (runs.data ?? []).filter((r) => fmtDate(r.started_at) === dates.KR);
   const errorsToday = runsToday.filter((r) => r.status === "error");
   const signal = daemonText(daemon.data);
+  const regimeChip = regimeText(regime.data);
   const cap = settings.data?.llm?.daily_session_cap;
   const loading = (pfKR.loading || pfUS.loading || decisions.loading) && !tape.length;
   const anyError = pfKR.error || pfUS.error || decisions.error || checks.error || orders.error || approvals.error;
@@ -256,6 +259,10 @@ export function Dashboard() {
         </span>
         <span className={events?.paused ? "err" : ""}>
           <Term k="paused" /> <b>{events?.paused ? "예" : "아니오"}</b>
+        </span>
+        <span className={regimeChip.level === "none" ? "" : regimeChip.level === "warn" ? "pend" : regimeChip.level} title={regimeChip.title || "지수 proxy 200일선·20일 수익률·변동성 3지표 (매일 scan 앞 판정)"}>
+          <Term k="regime" /> <b>{regimeChip.text}</b>
+          {regime.data?.enabled && regime.data.markets.some((m) => m.state === "bear") ? <span className="muted"> · 헤지 {Math.round(regime.data.max_weight_pct * 100)}%</span> : null}
         </span>
       </div>
 

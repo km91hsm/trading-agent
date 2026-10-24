@@ -7,6 +7,7 @@ import { Delta, Mark, Num, Table, Td, Th } from "./components/Table";
 import { Term } from "./components/Term";
 import { Ticker } from "./components/Ticker";
 import { JobRequestsTable } from "./components/JobRequests";
+import { SectorTable } from "./components/Sectors";
 import { requestRows } from "./jobs";
 
 const html = (el: React.ReactElement) => renderToStaticMarkup(el);
@@ -220,5 +221,28 @@ describe("작업 대기열 표", () => {
   });
   it("비어 있으면 빈 상태", () => {
     expect(html(<JobRequestsTable rows={[]} now={now} />)).toContain("대기·실행 중인 작업이 없어요");
+  });
+});
+
+describe("섹터 비중 표", () => {
+  it("막대 SVG·상한선·초과 표시", () => {
+    const out = html(
+      <SectorTable
+        market="KR"
+        maxSectorPct={0.4}
+        rows={[
+          { sector: "반도체", eval_amount: "4500000", weight: 0.45, tickers: ["005930"], count: 1 },
+          { sector: "현금", eval_amount: "5500000", weight: 0.55, tickers: [], count: 0 },
+        ]}
+      />,
+    );
+    expect(out).toContain("45.0%");
+    expect(out).toContain("상한 초과");
+    expect(out).toContain('aria-label="반도체 비중 45.0%, 상한 40%"');
+    expect(out).toContain("var(--pending)");
+    expect(out).toContain("var(--ink-3)"); // 현금은 상한 대상 아님
+  });
+  it("비어 있으면 빈 상태", () => {
+    expect(html(<SectorTable market="KR" maxSectorPct={0.4} rows={[]} />)).toContain("섹터 비중이 없어요");
   });
 });

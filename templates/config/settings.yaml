@@ -8,6 +8,22 @@ risk:
   daily_loss_stop_pct: -0.05
   stop_loss_pct: -0.15
   min_cash_pct: 0.0
+  max_sector_pct: 0.40     # 같은 섹터(config/sectors.yaml) 합계 상한. BUY/ADD 뒤 초과면 거부. 헤지 ETF 는 제외
+
+# 하락장 대응 (Phase 17). 국면 판정·인버스 ETF 헤지는 전부 파이썬 규칙이고 LLM 은 regime 값만 입력으로 받는다.
+# 공매도는 KIS 개인 API 가 지원하지 않아 제외. 레버리지 인버스는 변동성 끌림이 있어 3지표 모두일 때만.
+hedge:
+  enabled: true
+  max_weight_pct: 0.20     # 계좌 NAV 대비 헤지 포지션 상한(시장별)
+  leverage: true           # 3지표 모두 켜지면 −2x, 아니면 −1x
+  bear_min_signals: 2      # 3지표(200일선 아래·20일 수익률 ≤ −5%·변동성 높음) 중 n개 이상이면 bear
+  exit_streak_days: 5      # bear 해제: 지표 ≤ 1개가 이 일수 연속
+  instruments:
+    KR: {inverse: "114800", inverse2x: "252670"}                       # KODEX 인버스 / KODEX 200선물인버스2X
+    US: {inverse: {symbol: SH, exchange: AMS}, inverse2x: {symbol: SDS, exchange: AMS}}  # ProShares (Arca → KIS AMS, 실기 확인)
+  index_proxy:
+    KR: "069500"                                                        # KODEX 200 일봉 = 국면 판정용 지수 proxy
+    US: {symbol: SPY, exchange: AMS}
 
 # 역할별 모델 (스펙 §4.1). researcher_bear 는 백본 편향 상쇄용 이종 모델.
 models:

@@ -113,8 +113,12 @@ def poll_once(ectx: Any, receiver: Any, *, echo: Callable[[str], None] = lambda 
             modes = ", ".join(_mode_label(conn, a) for a in ectx.accounts)
             body = "\n".join(approval_line(a) for a in pending) or "없음"
             paused = "일시정지" if control.is_paused(conn) else "실행 중"
+            from trader.risk import regime as regime_mod
+
+            regime_line = regime_mod.line(conn, list(ectx.settings.markets))
             ectx.notifier.send(
-                f"[상태] {paused} · 계좌 모드: {modes}\n{daemon_line(ectx)}\n미승인 주문:\n{body}"
+                f"[상태] {paused} · 계좌 모드: {modes}\n{daemon_line(ectx)}\n"
+                f"국면: {regime_line}\n미승인 주문:\n{body}"
             )
             echo(f"status → 미승인 {len(pending)}건")
             continue

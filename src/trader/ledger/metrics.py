@@ -28,7 +28,7 @@ def decision_distribution(
     market: str | None = None,
 ) -> dict[str, int]:
     """최근 `days` 일 결정의 action 별 건수 (0건인 action 은 생략)."""
-    sql = "SELECT action, COUNT(*) AS n FROM decisions WHERE date >= ?"
+    sql = "SELECT action, COUNT(*) AS n FROM decisions WHERE date >= ? AND source='llm'"
     args: list = [_since(days, now)]
     if market:
         sql += " AND market = ?"

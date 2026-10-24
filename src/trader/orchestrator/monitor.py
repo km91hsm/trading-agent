@@ -193,7 +193,10 @@ def monitor_once(ctx: MonitorContext, *, market: str, today: date) -> dict:
         except (KisApiError, ValueError) as e:
             logger.warning("보유 조회 실패 %s: %s", account.id, e)
             continue
+        hedge_tickers = ctx.settings.hedge.tickers(market) if ctx.settings.hedge.enabled else set()
         for pos in positions:
+            if pos.ticker in hedge_tickers:
+                continue  # 헤지 ETF 는 국면 해제로만 판다 (손절·트리거 대상 아님, Phase 17 H)
             quote = _cached_quote(ctx, market, pos, quotes)
             if quote is None:
                 continue
