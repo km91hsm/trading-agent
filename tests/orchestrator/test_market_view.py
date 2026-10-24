@@ -150,3 +150,85 @@ def test_build_inputs_without_regime_or_client_is_empty_but_ok(project, conn):
     )
     assert inp["regime"]["state"] is None and inp["index"]["closes"] == []
     assert inp["proxy"] == "SPX"
+
+
+# --- 보완: 제안 적중률 복기·시장 세션 상한 ------------------------------------------
+
+
+def _record(conn, d, stance, horizon=3, market="KR"):
+    market_view.record_view(
+        conn,
+        today=d,
+        market=market,
+        view={"stance": stance, "hedge_weight": 0.1, "horizon_days": horizon, "confidence": 0.6},
+    )
+
+
+def test_record_and_mature_views_scores_direction(conn):
+    from datetime import timedelta
+
+    d0 = D
+    _record(conn, d0, "RISK_OFF")
+    _record(conn, d0 + timedelta(days=1), "RISK_ON")
+    _record(conn, d0 + timedelta(days=2), "NEUTRAL")
+    _record(conn, d0 + timedelta(days=3), "RISK_OFF")  # 만기 전
+    _record(conn, d0, "RISK_OFF")  # 같은 날 재제출 → 덮어쓰기(행 1개)
+    assert conn.execute("SELECT COUNT(*) FROM market_views").fetchone()[0] == 4
+    # 종가: 100, 99, 98, 97, 96.5, 96.3 (하락 지속)
+    closes = [100, 99, 98, 97, 96.5, 96.3]
+    candles = [(d0 + timedelta(days=i), Decimal(str(c))) for i, c in enumerate(closes)]
+    n = market_view.mature_views(conn, "KR", today=d0 + timedelta(days=5), candles=candles)
+    assert n == 3  # 마지막 제안은 만기 봉(d0+6)이 없어 미채점
+    rows = {
+        r["date"]: dict(r)
+        for r in conn.execute("SELECT date, hit, index_return FROM market_views ORDER BY date")
+    }
+    assert rows[d0.isoformat()]["hit"] == 1  # RISK_OFF ∧ 하락
+    assert rows[(d0 + timedelta(days=1)).isoformat()]["hit"] == 0  # RISK_ON ∧ 하락
+    assert rows[(d0 + timedelta(days=2)).isoformat()]["hit"] == 1  # NEUTRAL ∧ |−1.7%| ≤ 2%
+    assert rows[(d0 + timedelta(days=3)).isoformat()]["hit"] is None
+    sc = market_view.scorecard(conn, "KR")
+    assert sc["n"] == 4 and sc["matured"] == 3 and sc["hits"] == 2
+    assert abs(sc["hit_rate"] - 2 / 3) < 1e-9
+    assert sc["by_stance"]["RISK_OFF"]["matured"] == 1 and sc["by_stance"]["RISK_OFF"]["hits"] == 1
+    assert sc["by_stance"]["RISK_ON"]["avg_return"] < 0
+    # 다시 돌려도 채점된 행은 건드리지 않는다
+    assert market_view.mature_views(conn, "KR", today=d0 + timedelta(days=5), candles=candles) == 0
+    assert market_view.scorecard(conn, "US")["n"] == 0
+
+
+def test_mature_views_does_not_look_into_future(conn):
+    from datetime import timedelta
+
+    _record(conn, D, "RISK_OFF", horizon=2)
+    candles = [(D + timedelta(days=i), 100 - i) for i in range(5)]
+    # 만기 봉(D+2)이 today(D+1) 뒤 → 미채점, today 가 지나면 채점
+    assert market_view.mature_views(conn, "KR", today=D + timedelta(days=1), candles=candles) == 0
+    assert market_view.mature_views(conn, "KR", today=D + timedelta(days=2), candles=candles) == 1
+
+
+def test_submit_market_view_records_ledger_row(project, conn, accounts, monkeypatch):
+    monkeypatch.setenv("FAKE_CLAUDE", "1")
+    control.set_flag(conn, "regime:KR", {"state": "bear", "count": 2, "signals": {}})
+    inp = market_view.build_inputs(conn, "KR", D, settings=Settings(), asof=T0, now=lambda: T0)
+    market_view.run_market_view(
+        Settings(), conn, accounts, market="KR", date=D, inputs=inp, cap_hit=False, now=lambda: T0
+    )
+    row = conn.execute("SELECT stance, hedge_weight, date FROM market_views").fetchone()
+    assert (row["stance"], row["hedge_weight"], row["date"]) == ("RISK_OFF", 0.1, D.isoformat())
+    assert market_view.market_sessions_today(conn, T0) == 1
+    assert market_view.market_sessions_today(None, T0) == 0
+
+
+def test_regime_summary_and_status_include_scorecard(project, conn):
+    from datetime import timedelta
+
+    from trader.risk import regime
+
+    assert regime.summary(conn, ["KR"])[0]["scorecard"] is None
+    _record(conn, D, "RISK_OFF", horizon=1)
+    market_view.mature_views(
+        conn, "KR", today=D + timedelta(days=2), candles=[(D, 100), (D + timedelta(days=1), 95)]
+    )
+    sc = regime.summary(conn, ["KR"])[0]["scorecard"]
+    assert sc["hits"] == 1 and sc["matured"] == 1

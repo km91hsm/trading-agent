@@ -45,7 +45,8 @@ claude_bin: null      # null 이면 PATH 에서 claude 탐색
 llm:
   budget_usd: 5.0        # 세션당 --max-budget-usd (전문 전달 세션은 $2~3, 실기 확인)
   timeout_s: 600         # 세션 타임아웃
-  daily_session_cap: 12  # 하루 세션 수 상한 (초과 시 데몬이 띄우지 않고 알림)
+  daily_session_cap: 14  # 하루 세션 수 상한 (종목 analyze + 시장 세션 KR·US 2회 포함, 초과 시 데몬이 띄우지 않고 알림)
+  market_session_cap: 2  # 시장 세션(거시·토론·전략가) 하루 상한. 큐로 다시 눌러도 이 수를 넘지 않는다
   usage_file: ~/.claude/rate_limits.json  # 대화형 claude 상태줄이 남기는 구독 사용률 관측 파일 (웹 대시보드)
 
 web:

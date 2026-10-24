@@ -98,7 +98,7 @@ def test_usage_endpoint_reports_windows_and_observed_limits(client, deps, conn, 
 
     deps.settings.llm.usage_file = None  # 개발 머신의 ~/.claude/rate_limits.json 에 기대지 않는다
     r = client.get("/api/system/usage").json()
-    assert r["rate_limits"] is None and r["windows"]["today"] == {"sessions": 0, "cap": 12}
+    assert r["rate_limits"] is None and r["windows"]["today"] == {"sessions": 0, "cap": 14}
     p = tmp_path / "rl.json"
     p.write_text(
         json.dumps({"at": 0, "rate_limits": {"five_hour": {"used_percentage": 3}}}),

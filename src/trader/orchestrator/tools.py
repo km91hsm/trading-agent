@@ -1177,11 +1177,14 @@ def submit_market_view(
     call = _call(agent, call_meta)
     path = write_checkpoint(d, "_market_view", _wrap(view.model_dump(), call))
     if ctx.conn is not None:
+        from trader.orchestrator import market_view as mv
+
         control.set_flag(
             ctx.conn,
             f"{MARKET_VIEW_FLAG}{market}",
             {"date": date.isoformat(), **view.model_dump(), "call": call},
         )
+        mv.record_view(ctx.conn, today=date, market=market, view=view.model_dump())
     logger.info("시장 뷰 저장 %s: %s %.0f%%", market, view.stance, view.hedge_weight * 100)
     return {"ok": True, "path": str(path), "stance": view.stance, "hedge_weight": view.hedge_weight}
 

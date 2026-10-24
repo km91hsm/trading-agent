@@ -125,6 +125,19 @@ def _regime_lines(conn: sqlite3.Connection, settings: Settings) -> list[str]:
             f"- 시장 세션: 매일 scan 앞 1회(거시 애널리스트·강세/약세 토론·전략가), "
             f"제안 비중 {h.min_weight_pct:.0%}~{h.max_weight_pct:.0%} — 진입은 bear 규칙만"
         )
+        parts = []
+        for r in regime_mod.summary(conn, list(settings.markets)):
+            sc = r.get("scorecard")
+            if not sc:
+                parts.append(f"{r['market']} -")
+            elif sc["matured"]:
+                parts.append(
+                    f"{r['market']} {sc['hits']}/{sc['matured']}({sc['hit_rate']:.0%}, "
+                    f"제안 {sc['n']}건)"
+                )
+            else:
+                parts.append(f"{r['market']} 만기 전 {sc['n']}건")
+        out.append(f"- 제안 적중률(지수 proxy, 만기 기준): {' · '.join(parts)}")
     return out
 
 

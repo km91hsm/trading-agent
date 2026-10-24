@@ -52,6 +52,8 @@ export type RegimeMarket = {
   signals: { ma_below: boolean | null; momentum_weak: boolean | null; vol_high: boolean | null };
   /** 오늘 시장 세션(거시 애널리스트·토론·전략가)의 헤지 제안. 없으면 null (Phase 18). */
   view?: { stance: "RISK_ON" | "NEUTRAL" | "RISK_OFF"; hedge_weight: number; leveraged: boolean; confidence: number } | null;
+  /** 제안 적중률(만기 지난 제안의 지수 proxy 방향 일치). 제안 기록이 없으면 null. */
+  scorecard?: { n: number; matured: number; hits: number; hit_rate: number | null } | null;
 };
 export type RegimeResp = {
   enabled: boolean;
@@ -90,7 +92,8 @@ export function regimeText(r: RegimeResp | null): { text: string; level: "ok" | 
         .filter(([, v]) => v)
         .map(([k]) => SIGNAL_LABEL[k] ?? k);
       const v = m.view ? ` · 시장 세션 ${STANCE_LABEL[m.view.stance] ?? m.view.stance} ${Math.round(m.view.hedge_weight * 100)}%` : "";
-      return `${m.market}: ${on.length ? on.join(", ") : "지표 없음"}${m.since ? ` (${m.since}~)` : ""}${v}`;
+      const sc = m.scorecard && m.scorecard.matured ? ` · 제안 적중 ${m.scorecard.hits}/${m.scorecard.matured}` : "";
+      return `${m.market}: ${on.length ? on.join(", ") : "지표 없음"}${m.since ? ` (${m.since}~)` : ""}${v}${sc}`;
     })
     .join(" / ");
   return { text, level, title };

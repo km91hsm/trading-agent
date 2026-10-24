@@ -22,6 +22,17 @@ from trader.ledger import repo
 logger = logging.getLogger("trader.fills")
 
 MARKET_CLOSE: dict[str, time] = {"KR": time(15, 30), "US": time(16, 0)}  # 현지 정규장 마감
+US_EARLY_CLOSE = time(13, 0)  # NYSE 조기 마감일 (daemon.us_early_closes)
+
+
+def market_close(market: str, day: date) -> time:
+    """그날의 정규장 마감 시각(현지). US 조기 마감일은 13:00."""
+    if market == "US":
+        from trader.daemon import us_early_closes
+
+        if day in us_early_closes(day.year):
+            return US_EARLY_CLOSE
+    return MARKET_CLOSE.get(market, time(23, 59))
 
 
 def _order_id_for(conn: sqlite3.Connection, account_id: str, f: Fill) -> int:
@@ -93,7 +104,7 @@ def _session_closed(market: str, day: date, now: datetime) -> bool:
     local = now.astimezone(MARKET_TZ[market])
     if local.date() > day:
         return True
-    return local.date() == day and local.time() >= MARKET_CLOSE.get(market, time(23, 59))
+    return local.date() == day and local.time() >= market_close(market, day)
 
 
 def expire_unfilled(

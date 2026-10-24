@@ -241,6 +241,133 @@ def load_view(conn: sqlite3.Connection | None, market: str, today: date) -> dict
     return tools.market_view_today(conn, market, today)
 
 
+def market_sessions_today(conn: sqlite3.Connection | None, now: datetime) -> int:
+    """오늘(KST) 시작한 시장 세션 수 (`runs.kind='market'`, 실패 포함).
+    `llm.market_session_cap` 용."""
+    if conn is None:
+        return 0
+    from trader.config import KST
+    from trader.ledger import repo
+
+    start, _ = repo.day_bounds(now.astimezone(KST).date(), None)
+    row = conn.execute(
+        "SELECT COUNT(*) AS n FROM runs WHERE kind='market' AND started_at >= ?", (start,)
+    ).fetchone()
+    return int(row["n"])
+
+
+# --- 제안 적중률 복기 (원장 market_views, v13) ---------------------------------------
+
+NEUTRAL_BAND = 0.02  # NEUTRAL 제안은 지수 수익이 ±2% 안이면 적중
+
+
+def record_view(conn: sqlite3.Connection, *, today: date, market: str, view: dict) -> None:
+    """제안을 원장에 남긴다(같은 날·시장은 덮어쓰되 채점 결과는 초기화). 적중률 복기의 원본."""
+    conn.execute(
+        "INSERT INTO market_views(date, market, stance, hedge_weight, leveraged, confidence, "
+        "horizon_days, rationale, created_at) VALUES (?,?,?,?,?,?,?,?,?) "
+        "ON CONFLICT(date, market) DO UPDATE SET stance=excluded.stance, "
+        "hedge_weight=excluded.hedge_weight, leveraged=excluded.leveraged, "
+        "confidence=excluded.confidence, horizon_days=excluded.horizon_days, "
+        "rationale=excluded.rationale, created_at=excluded.created_at, "
+        "matured_at=NULL, index_return=NULL, hit=NULL",
+        (
+            today.isoformat(),
+            market,
+            view.get("stance"),
+            float(view.get("hedge_weight") or 0),
+            1 if view.get("leveraged") else 0,
+            float(view.get("confidence") or 0),
+            int(view.get("horizon_days") or 20),
+            str(view.get("rationale") or "")[:500],
+            datetime.now(UTC).isoformat(),
+        ),
+    )
+    conn.commit()
+
+
+def is_hit(stance: str | None, ret: float) -> bool | None:
+    if stance == "RISK_OFF":
+        return ret < 0
+    if stance == "RISK_ON":
+        return ret > 0
+    if stance == "NEUTRAL":
+        return abs(ret) <= NEUTRAL_BAND
+    return None
+
+
+def mature_views(
+    conn: sqlite3.Connection,
+    market: str,
+    *,
+    today: date,
+    candles: list[tuple[date, Decimal | float]],
+) -> int:
+    """만기(제안일 뒤 `horizon_days` 거래일) 가 지난 제안에 지수 proxy 수익과 적중 여부를 채운다.
+    candles 는 (날짜, 종가) 오름차순. 만기 봉이 today 이하일 때만(미래를 보지 않음)."""
+    rows = conn.execute(
+        "SELECT id, date, stance, horizon_days FROM market_views "
+        "WHERE market=? AND matured_at IS NULL ORDER BY date",
+        (market,),
+    ).fetchall()
+    if not rows or not candles:
+        return 0
+    dates = [c[0] for c in candles]
+    n = 0
+    for r in rows:
+        d0 = date.fromisoformat(r["date"])
+        i0 = next((i for i, d in enumerate(dates) if d >= d0), None)
+        if i0 is None:
+            continue
+        i1 = i0 + int(r["horizon_days"])
+        if i1 >= len(candles) or dates[i1] > today:
+            continue
+        c0, c1 = float(candles[i0][1]), float(candles[i1][1])
+        if c0 <= 0:
+            continue
+        ret = c1 / c0 - 1
+        hit = is_hit(r["stance"], ret)
+        conn.execute(
+            "UPDATE market_views SET matured_at=?, index_return=?, hit=? WHERE id=?",
+            (dates[i1].isoformat(), ret, None if hit is None else int(hit), r["id"]),
+        )
+        n += 1
+    conn.commit()
+    if n:
+        logger.info("시장 제안 %d건 채점 %s", n, market)
+    return n
+
+
+def scorecard(conn: sqlite3.Connection, market: str) -> dict:
+    """{n, matured, hits, hit_rate, by_stance{stance: {n, hits, avg_return}}}. 비어 있으면 n=0."""
+    rows = conn.execute(
+        "SELECT stance, index_return, hit, matured_at FROM market_views WHERE market=?",
+        (market,),
+    ).fetchall()
+    by: dict[str, dict] = {}
+    hits = matured = 0
+    for r in rows:
+        b = by.setdefault(r["stance"], {"n": 0, "matured": 0, "hits": 0, "sum_return": 0.0})
+        b["n"] += 1
+        if r["matured_at"] is not None:
+            matured += 1
+            b["matured"] += 1
+            b["sum_return"] += float(r["index_return"] or 0)
+            if r["hit"]:
+                hits += 1
+                b["hits"] += 1
+    for b in by.values():
+        b["avg_return"] = (b["sum_return"] / b["matured"]) if b["matured"] else None
+        del b["sum_return"]
+    return {
+        "n": len(rows),
+        "matured": matured,
+        "hits": hits,
+        "hit_rate": (hits / matured) if matured else None,
+        "by_stance": by,
+    }
+
+
 def clamp_weight(view: dict | None, cfg) -> float:
     """제안 비중을 [min, max] 로 자른다. 제안이 없으면 max."""
     if not view or view.get("hedge_weight") is None:

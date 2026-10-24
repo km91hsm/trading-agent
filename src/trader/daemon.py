@@ -196,6 +196,16 @@ def us_holidays(year: int) -> frozenset[date]:
     return frozenset(d for d in fixed if d is not None and d.year == year)
 
 
+def us_early_closes(year: int) -> frozenset[date]:
+    """NYSE 조기 마감(13:00 ET) 규칙: 추수감사절 다음 날, 7/3·12/24 가 월~목일 때
+    (금요일이면 다음 날 토요일 휴일의 대체 휴장이라 전일 휴장, 주말이면 장이 없다)."""
+    out = {_nth_weekday(year, 11, 3, 4) + timedelta(days=1)}
+    for d in (date(year, 7, 3), date(year, 12, 24)):
+        if d.weekday() <= 3:
+            out.add(d)
+    return frozenset(out)
+
+
 def is_us_holiday(d: date) -> bool:
     return d in us_holidays(d.year)
 
@@ -563,15 +573,37 @@ def _analyze_targets(
     }
 
 
-def _proxy_closes(deps: DaemonDeps, market: str, days: int = 260) -> list:
+def _proxy_candles(deps: DaemonDeps, market: str, days: int = 260) -> list:
     inst = deps.settings.hedge.index_proxy.get(market)  # type: ignore[arg-type]
     if inst is None or deps.market_client is None:
         return []
     if market == "US":
-        candles = deps.market_client.get_daily_us(inst.symbol, inst.exchange or "AMS", days=days)
-    else:
-        candles = deps.market_client.get_daily_kr(inst.symbol, days=days)
-    return [c.close for c in candles]
+        return deps.market_client.get_daily_us(inst.symbol, inst.exchange or "AMS", days=days)
+    return deps.market_client.get_daily_kr(inst.symbol, days=days)
+
+
+def _proxy_closes(deps: DaemonDeps, market: str, days: int = 260) -> list:
+    return [c.close for c in _proxy_candles(deps, market, days)]
+
+
+def _mature_market_views(deps: DaemonDeps, conn: sqlite3.Connection) -> int:
+    """reflect 잡: 만기 지난 시장 제안에 지수 proxy 수익·적중을 채운다 (실패는 경고만)."""
+    from trader.orchestrator import market_view as mv
+    from trader.orchestrator.run_store import run_date_for
+
+    n = 0
+    for market in deps.settings.markets:
+        try:
+            candles = _proxy_candles(deps, market, days=120)
+            n += mv.mature_views(
+                conn,
+                market,
+                today=run_date_for(market, deps.now()),
+                candles=[(c.date, c.close) for c in candles],
+            )
+        except Exception as e:  # noqa: BLE001 - 채점 실패가 복기를 막지 않는다
+            logger.warning("시장 제안 채점 실패 %s: %s", market, e)
+    return n
 
 
 def _vix(deps: DaemonDeps, market: str) -> float | None:
@@ -641,7 +673,10 @@ def _market_view_body(deps: DaemonDeps, market: str) -> dict:
     try:
         if mv.load_view(conn, market, today) is not None:
             return {"skipped": "오늘 이미 제안 있음"}
-        cap_hit = tools.sessions_today(conn, deps.now()) >= deps.settings.llm.daily_session_cap
+        cap_hit = (
+            tools.sessions_today(conn, deps.now()) >= deps.settings.llm.daily_session_cap
+            or mv.market_sessions_today(conn, deps.now()) >= deps.settings.llm.market_session_cap
+        )
         inputs = mv.build_inputs(
             conn,
             market,
@@ -758,9 +793,7 @@ def _monitor_body(deps: DaemonDeps, market: str) -> dict:
             state=deps.state,
             exchanges={u.symbol: u.exchange for u in (deps.universe.us if deps.universe else [])},
         )
-        out = monitor_mod.monitor_once(
-            ctx, market=market, today=run_date_for(market, deps.now())
-        )
+        out = monitor_mod.monitor_once(ctx, market=market, today=run_date_for(market, deps.now()))
         if hedge and "skipped" not in hedge:
             out["hedge"] = hedge
         return out
@@ -821,6 +854,7 @@ def _reflect_body(deps: DaemonDeps) -> dict:
     conn = deps.conn_factory()
     try:
         matured = outcomes.mature(conn, state=deps.state, today=_today(deps))
+        views_matured = _mature_market_views(deps, conn)
         sessions = 0
         errors: list[str] = []
         for market in deps.settings.markets:
@@ -855,6 +889,7 @@ def _reflect_body(deps: DaemonDeps) -> dict:
     return {
         "features": features_n,
         "matured": len(matured),
+        "views_matured": views_matured,
         "sessions": sessions,
         "errors": errors,
         "pruned": pr["deleted"],

@@ -273,5 +273,7 @@
 - [x] M5 데몬 `_market_view_body`(regime 뒤, 운영일 1회, 알림 `[시장 뷰]`) + 대기열 kind `market_view` + 트레이더 `context.market_view` + `regime.summary.view`/`line` '제안 n%' + 대시보드 칩·STATUS 줄·텔레그램
 - [x] 완료 기준(코드): `uv run pytest`·`ruff`·`npm run typecheck && npm test && npm run build` 통과 (2026-10-24)
 - [ ] 실기(사용자 확인 대기): `FAKE_CLAUDE=1 uv run trader daemon --dry-run` 뒤 scan 시각(또는 대시보드 `KR 스캔 → 분석` '지금 실행')에 `state/runs/<date>/KR/_market_inputs.json`·`_market_analyst`·`_market_debate_r0_*`·`_market_summary`·`_market_view.json` 5종과 `[시장 뷰]` 알림, 대시보드 국면 칩 꼬리 "(KR 제안 n%)"(bear 일 때만)
-- [ ] 실기(사용자 확인 대기, 약 $1~2): `FAKE_CLAUDE` 없이 시장 세션 1회 — 아침 scan_analyze 로그의 `[시장 뷰]` 와 `_market_view.json` 의 rationale 이 거시 입력을 실제로 인용하는지. 하루 세션 상한(12)에 시장 세션 KR·US 2회가 포함되므로 analyze 종목이 많은 날은 `llm.daily_session_cap` 조정
-- [ ] 이연(다음 Phase): 오늘의 실행 페이지에 시장 단계 파일 표시, 시장 세션 결과를 종목 세션 스크리너 입력에도 전달, 제안 적중률 복기(reflect 에 `_market_view` 포함)
+- [ ] 실기(사용자 확인 대기, 약 $1~2): `FAKE_CLAUDE` 없이 시장 세션 1회 — 아침 scan_analyze 로그의 `[시장 뷰]` 와 `_market_view.json` 의 rationale 이 거시 입력을 실제로 인용하는지. 하루 세션 상한(14 = 종목 12 + 시장 세션 KR·US 2, `llm.market_session_cap` 2)에 시장 세션이 포함되므로 analyze 종목이 많은 날은 `llm.daily_session_cap` 조정
+- [x] 보완(2026-10-24): 세션 상한 14(= 종목 12 + 시장 세션 2) + `llm.market_session_cap` · 제안 적중률 복기(원장 v13 `market_views`, reflect 잡이 지수 proxy 수익으로 채점, `regime.summary.scorecard`·STATUS 줄·칩 툴팁) · US 조기 마감(`daemon.us_early_closes`, fills 만기 13:00 ET) · CLAUDE.md 모듈 상세를 `docs/architecture.md` 로 이동(74KB → 43KB)
+- [ ] 결정 대기(사용자): 제안 적중률이 쌓인 뒤(만기 20건 이상) `hedge.min_weight_pct` 를 0 으로 내려 전략가의 "헤지 불필요" 를 허용할지. 적중률 50% 미만이면 `hedge.market_session: false` 로 끄고 Phase 17 규칙만 쓰는 것도 선택지
+- [ ] 이연(다음 Phase): 오늘의 실행 페이지에 시장 단계 파일 표시, 시장 세션 결과를 종목 세션 스크리너 입력에도 전달, PR 분리(Phase 18 을 Phase 17 브랜치 대상 별도 PR 로 — 사용자 요청 시)

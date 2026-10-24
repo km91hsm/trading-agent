@@ -176,11 +176,21 @@ def _view_today(conn: sqlite3.Connection, market: str, today: date | None) -> di
     return {k: v.get(k) for k in ("stance", "hedge_weight", "leveraged", "confidence")}
 
 
+def _scorecard(conn: sqlite3.Connection, market: str) -> dict | None:
+    from trader.orchestrator.market_view import scorecard
+
+    try:
+        sc = scorecard(conn, market)
+    except sqlite3.Error:
+        return None
+    return sc if sc["n"] else None
+
+
 def summary(
     conn: sqlite3.Connection, markets: list[str], *, today: date | None = None
 ) -> list[dict]:
     """시장별 국면 요약 (웹 /api/regime·STATUS·텔레그램). 기록이 없으면 state None.
-    `view` 는 오늘 시장 세션의 제안(없으면 None)."""
+    `view` 는 오늘 시장 세션의 제안(없으면 None), `scorecard` 는 제안 적중률(기록 없으면 None)."""
     out = []
     for m in markets:
         r = load(conn, m) or {}
@@ -188,6 +198,7 @@ def summary(
         out.append(
             {
                 "view": _view_today(conn, m, today),
+                "scorecard": _scorecard(conn, m),
                 "market": m,
                 "state": r.get("state"),
                 "count": r.get("count"),

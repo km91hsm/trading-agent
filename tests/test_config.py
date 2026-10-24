@@ -29,7 +29,7 @@ def test_defaults_load(project):
     s = config.load_settings()
     assert s.risk.max_position_pct == 0.25 and s.risk.max_positions == 5
     assert s.debate_rounds == 1 and s.anonymize is False
-    assert s.llm.daily_session_cap == 12
+    assert s.llm.daily_session_cap == 14 and s.llm.market_session_cap == 2
     assert s.llm.budget_usd == 5.0  # 실기: 전문 전달 세션이 $2 를 넘겨 중단됐다
     assert s.web.port == 8787 and s.markets == ["KR", "US"]
 

@@ -231,6 +231,27 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
         12,  # Phase 17 H: 결정 출처 'llm'|'hedge'(국면 헤지, 파이썬). 분포·메모리는 llm 만
         ["ALTER TABLE decisions ADD COLUMN source TEXT NOT NULL DEFAULT 'llm'"],
     ),
+    (
+        13,  # Phase 18 보완: 시장 세션 제안 기록 + 만기 채점(지수 proxy 수익·적중)
+        [
+            """CREATE TABLE IF NOT EXISTS market_views (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date TEXT NOT NULL,
+                market TEXT NOT NULL,
+                stance TEXT NOT NULL,
+                hedge_weight REAL NOT NULL,
+                leveraged INTEGER NOT NULL DEFAULT 0,
+                confidence REAL,
+                horizon_days INTEGER NOT NULL,
+                rationale TEXT,
+                created_at TEXT NOT NULL,
+                matured_at TEXT,
+                index_return REAL,
+                hit INTEGER,
+                UNIQUE(date, market)
+            )""",
+        ],
+    ),
 ]
 
 

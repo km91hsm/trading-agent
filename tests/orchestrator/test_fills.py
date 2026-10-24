@@ -145,9 +145,10 @@ def test_fill_does_not_attach_to_old_order_with_reused_order_no(conn):
     acct = make_account("paper-main", "paper", "auto")
     old = _order(conn, "0000000012", qty=3)
     fills_mod.sync_fills(conn, FakeBroker(acct, fills={("KR", D): [_fill("0000000012")]}), acct, D)
-    assert conn.execute("SELECT COUNT(*) AS n FROM fills WHERE order_id=?", (old,)).fetchone()[
-        "n"
-    ] == 1
+    assert (
+        conn.execute("SELECT COUNT(*) AS n FROM fills WHERE order_id=?", (old,)).fetchone()["n"]
+        == 1
+    )
     later = date(2026, 10, 17)
     f2 = Fill(
         order_no="0000000012",
@@ -251,7 +252,11 @@ def test_sync_during_session_does_not_expire(conn):
     oid = _order_with(conn, status="accepted", order_no="A", created_at="2026-10-09T00:10:00+00:00")
     broker = FakeBroker(acct, fills={("KR", D): []})
     r = fills_mod.sync_fills(
-        conn, broker, acct, D, now=lambda: datetime(2026, 10, 9, 3, 0, tzinfo=UTC)  # 12:00 KST
+        conn,
+        broker,
+        acct,
+        D,
+        now=lambda: datetime(2026, 10, 9, 3, 0, tzinfo=UTC),  # 12:00 KST
     )
     status = conn.execute("SELECT status FROM orders WHERE id=?", (oid,)).fetchone()["status"]
     assert status == "accepted" and r["expired"] == 0
@@ -265,3 +270,19 @@ def test_sync_fetch_failure_does_not_expire(conn):
     fills_mod.sync_fills(conn, broker, acct, D, now=lambda: after_close)
     status = conn.execute("SELECT status FROM orders WHERE id=?", (oid,)).fetchone()["status"]
     assert status == "accepted"
+
+
+def test_us_early_close_day_closes_at_13_et():
+    from datetime import date as _date
+
+    from trader.orchestrator import fills as fm
+
+    early = _date(2026, 11, 27)
+    assert fm.market_close("US", early) == fm.US_EARLY_CLOSE
+    assert fm.market_close("US", _date(2026, 11, 30)) == fm.MARKET_CLOSE["US"]
+    assert fm.market_close("KR", early) == fm.MARKET_CLOSE["KR"]
+    at_1330_et = datetime(2026, 11, 27, 18, 30, tzinfo=UTC)
+    assert fm._session_closed("US", early, at_1330_et)
+    assert not fm._session_closed(
+        "US", _date(2026, 11, 30), datetime(2026, 11, 30, 18, 30, tzinfo=UTC)
+    )

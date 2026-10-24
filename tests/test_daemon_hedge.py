@@ -162,3 +162,43 @@ def test_market_view_queue_kind(conn):
     assert jobq.is_heavy("market_view") and jobq.label("market_view", {"market": "US"}) == (
         "US 시장 세션"
     )
+
+
+def test_market_view_body_respects_market_session_cap(conn, monkeypatch):
+    monkeypatch.setenv("FAKE_CLAUDE", "1")
+    deps = _hedge_deps(conn, closes=[100] * 36)
+    deps.settings = Settings(hedge=CFG, llm={"market_session_cap": 0})
+    out = daemon._market_view_body(deps, "KR")
+    assert out["skipped"] == "세션 상한"
+
+
+def test_reflect_body_matures_market_views(conn, monkeypatch):
+    from trader.orchestrator import market_view as mv
+
+    deps = _hedge_deps(conn, closes=[100 - i for i in range(10)])
+    monkeypatch.setattr(deps, "snapshot_fn", None)
+    monkeypatch.setattr("trader.memory.outcomes.mature", lambda conn, **kw: [])
+    monkeypatch.setattr("trader.orchestrator.reflect.pending", lambda conn, **kw: False)
+    monkeypatch.setattr(
+        "trader.memory.store.promote_and_prune", lambda conn, **kw: {"deleted": 0}
+    )
+    first_date = deps.market_client.candles["069500"][0].date
+    mv.record_view(
+        conn,
+        today=first_date,
+        market="KR",
+        view={"stance": "RISK_OFF", "hedge_weight": 0.1, "horizon_days": 2},
+    )
+    out = daemon._reflect_body(deps)
+    assert out["views_matured"] == 1
+    assert conn.execute("SELECT hit FROM market_views").fetchone()["hit"] == 1
+
+
+def test_us_early_closes_rules():
+    ec = daemon.us_early_closes(2026)
+    assert date(2026, 11, 27) in ec  # 추수감사절(11/26) 다음 날
+    assert date(2026, 12, 24) in ec  # 목요일
+    assert date(2026, 7, 3) not in ec  # 금요일: 7/4 토요일 대체 휴장
+    ec27 = daemon.us_early_closes(2027)
+    assert date(2027, 11, 26) in ec27 and date(2027, 12, 24) not in ec27  # 금요일
+    assert len(daemon.us_early_closes(2025)) == 3  # 7/3 목, 11/28, 12/24 수
