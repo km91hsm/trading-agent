@@ -45,6 +45,7 @@ export function RunJobButton({
   extra,
   small,
   primary,
+  showReason,
   onDone,
 }: {
   spec: JobSpec | (() => JobSpec | JobSpec[]);
@@ -55,6 +56,7 @@ export function RunJobButton({
   extra?: () => JobSpec[]; // 확인 뒤 이어서 넣을 요청(예: 백필 뒤 학습)
   small?: boolean;
   primary?: boolean;
+  showReason?: boolean; // 비활성 사유를 버튼 옆 글자로도 (title 만으로는 스크린리더·터치에서 안 보인다)
   onDone?: () => void;
 }) {
   const { run, busy } = useRunJob();
@@ -84,6 +86,7 @@ export function RunJobButton({
       >
         {busy ? "요청 중…" : label}
       </button>
+      {showReason && disabledReason ? <small className="muted"> {disabledReason}</small> : null}
       {confirm && (
         <ConfirmDialog
           open={ask}

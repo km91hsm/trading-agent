@@ -29,6 +29,8 @@ Claude Code 오케스트레이터 세션이 서브에이전트(스크리너·애
    └──────────────────────────────────────────────────────┘
 ```
 
+위 유지보수 명령(scan→analyze·종목 분석·백필·학습·복기·체결 동기화)은 **웹 대시보드 잡 표의 '지금 실행' 버튼**(데이터·ML 페이지의 버튼 포함)으로도 돌릴 수 있습니다 — `WEB_TOKEN` 과 켜져 있는 데몬이 필요하고, 데몬이 요청을 하나씩 순서대로 실행합니다.
+
 - **LLM 은 도구만 씁니다.** 세션은 `--allowedTools "Bash(python -m trader tool *)"` 로 띄우고 외부 세계와는 `trader tool` 로만 접촉합니다.
 - **순서는 도구 전제조건이 강제합니다.** 결정 제출은 애널리스트 체크포인트 2개 이상과 리서치 요약이 파일로 있을 때만 받습니다.
 - **체크포인트가 상태의 원본입니다.** `state/runs/<날짜>/<시장>/<종목>/<단계>.json` 에 저장하고 있는 단계는 건너뜁니다.
@@ -111,6 +113,7 @@ uv run trader rl train [--market] [--seeds N] / models / promote|demote <버전>
 uv run trader calibration build
 uv run trader backtest --since YYYY-MM-DD
 uv run trader readiness                  # 실전 전환 준비도 (읽기 전용)
+uv run trader regime show | backtest --market KR   # 시장 국면(bull|neutral|bear)·헤지 설정 / 과거 bear 구간 재현
 uv run trader universe check|sectors --market KR|US [--write]
 ```
 

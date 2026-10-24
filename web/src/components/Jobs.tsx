@@ -30,7 +30,7 @@ export function JobsBlock({ data, now }: { data: DaemonStatus | null; now: Date 
             <Th>마지막 실행</Th>
             <Th>결과</Th>
             <Th>다음 예정</Th>
-            <Th>실행</Th>
+            <Th>지금 실행</Th>
           </tr>
         </thead>
         <tbody>

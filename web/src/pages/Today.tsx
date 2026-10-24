@@ -196,6 +196,7 @@ export function TodayPage({ title = "오늘의 실행", inputsOnly = false }: { 
                     spec={{ kind: "scan_analyze", params: { market } }}
                     label={`지금 ${market} 스캔 → 분석`}
                     disabledReason={run.reason}
+                    showReason
                     confirm={{
                       title: `${market} 스캔 → 분석을 지금 실행할까요?`,
                       danger: true,

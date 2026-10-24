@@ -23,6 +23,7 @@ function FeatureActions({ run, trainAfter, setTrainAfter }: { run: { ok: boolean
         label="3년 백필 실행"
         primary
         disabledReason={run.reason}
+        showReason
         confirm={{
           title: "피처 스토어 3년 백필을 실행할까요?",
           body: (

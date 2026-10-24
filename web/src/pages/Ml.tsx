@@ -124,7 +124,7 @@ function RlSection() {
           <EmptyState
             title="RL 실험이 없어요"
             hint="RL 사이저는 토요일 퀀트 학습과 함께 자동으로 학습돼요. 지금 돌리려면 아래 버튼."
-            action={<RunJobButton spec={{ kind: "rl_train", params: {} }} label="RL 학습 실행" disabledReason={run.reason} />}
+            action={<RunJobButton spec={{ kind: "rl_train", params: {} }} label="RL 학습 실행" disabledReason={run.reason} showReason />}
           />
         )}
       </Section>
@@ -237,7 +237,7 @@ export function MlPage() {
             <EmptyState
               title="학습된 모델이 없어요"
               hint="피처 스토어로 워크포워드 학습을 돌려요(수 분). 토요일 10시에 자동으로 돌고, 지금 돌리려면 아래 버튼."
-              action={<RunJobButton spec={{ kind: "ml_train", params: {} }} label="퀀트 학습 실행" primary disabledReason={run.reason} />}
+              action={<RunJobButton spec={{ kind: "ml_train", params: {} }} label="퀀트 학습 실행" primary disabledReason={run.reason} showReason />}
             />
           )}
         </Section>

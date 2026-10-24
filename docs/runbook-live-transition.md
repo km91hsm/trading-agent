@@ -55,3 +55,10 @@ uv run trader control resume           # 모의만 계속 돌릴 때
 ## 5. 금지
 - 코드·데몬·텔레그램 명령으로 실전 모드를 올리는 경로를 추가하지 않는다 (CLAUDE.md 금지사항).
 - `readiness` 가 false 인 상태에서 2·3단계를 진행하지 않는다.
+
+## 6. 하락장 헤지와 실전 계좌 (Phase 17)
+
+- 국면이 `bear` 면 파이썬이 인버스 ETF(KR `114800`/`252670`, US `SH`/`SDS`)를 계좌 NAV 의 최대 `hedge.max_weight_pct`(기본 20%)만큼 **실전 계좌에도** 사려고 한다. 단 계좌 모드를 그대로 지킨다: `off` 면 판정만 기록, `approve` 면 승인 요청(30분), `auto` 는 LIVE 확인 기록이 있을 때만 주문.
+- 레버리지(−2x)는 3지표가 모두 켜졌을 때만 쓰며 변동성 끌림이 있다. 실전에서 끄려면 `config/settings.yaml` 의 `hedge.leverage: false`, 헤지 자체를 끄려면 `hedge.enabled: false`(국면 판정·게이트도 함께 꺼진다).
+- 헤지 ETF 는 monitor 손절·트리거 대상이 아니라 국면 해제(지표 ≤ 1 이 `exit_streak_days` 연속)로만 팔린다. 급히 정리하려면 `trader control pause` 뒤 HTS 로 매도한다(일시정지면 헤지 진입도 보류).
+- 현재 국면은 `uv run trader regime show`, 대시보드 상태줄 '국면' 칩, 텔레그램 `/status` 에서 본다.

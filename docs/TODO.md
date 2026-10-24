@@ -242,3 +242,25 @@
 - [x] 완료 기준(코드): `uv run pytest`·`ruff`·`npm run typecheck && npm test && npm run build` 통과, Chrome 으로 대시보드·오늘·주문·/how 확인 (2026-10-23 확인)
 - [ ] 사용자 확인 대기: 데몬을 켠 상태(`trader daemon` 또는 Trader.app)에서 대시보드 상태줄이 '데몬 실행 중 · n시간째' 로 바뀌고 잡 표의 마지막 실행·다음 예정이 채워지는지, 텔레그램 `/status` 에 "데몬 pid … 최근 잡:" 줄이 오는지
 - [ ] 사용자 확인 대기: 터미널에서 대화형 `claude` 를 한 번 연 뒤 대시보드 'Claude 사용량' 블록에 5시간·7일 사용률이 뜨는지(`~/.claude/rate_limits.json` 생성). 값은 대화형 세션이 상태줄을 그릴 때만 갱신된다
+
+## Phase 17 작업 대기열·하락장 대응 (`docs/superpowers/plans/2026-10-24-phase17-job-queue.md`)
+- [x] Task 1 작업 대기열 모듈 `jobs.py` + 원장 v11 `job_requests`(kind·params pydantic 검증, 중복 거부, 조건부 claim, stale·만료 정리) (2026-10-24)
+- [x] Task 2 데몬 `job_queue` interval 잡(10초, 1건)·`heavy_lock`(cron 은 대기, 큐는 다음 틱)·`_analyze_targets` 분리·RL 주간 학습 enabled 무관·기동 부트스트랩(피처 스토어 비면 백필+학습)·MAX_INSTANCES 예외
+- [x] Task 3 CLI `_daemon_features_fn`(backfill|snapshot|derive) → `DaemonDeps.features_fn`
+- [x] Task 4 `GET /api/jobs`·`POST /api/control/jobs`(데몬 꺼짐 409·중복 409)·`/cancel`, SSE 스냅샷 `job_requests|jobs_active|jobs_done`(progress 제외)
+- [x] Task 5 프런트 `RunJobButton`·`JobRequests` 블록·잡 표 '실행' 열·오늘/데이터/ML 빈 화면 액션(design:design-system 확장 문서 `docs/design/2026-10-24-phase17-ui-patterns.md`)
+- [x] A 거시 FRED `dxy`(DTWEXBGS)·`wti`·`nasdaq` (investing.com 미사용)
+- [x] C 네이버 블로그 공개 RSS 소스(`channels.naver_blog: [ranto28]`, 키워드 무관 최근 5건 → `sentiment.community.sources.naver_blog/<id>`)
+- [x] M 세이브티커 재조사(Cloudflare 403 + robots AI 크롤러 금지 → 수집 코드 없음) → 시장 공통 수동 입력 `_market_<시장>.md` + 데이터 페이지 '읽은 기사 붙여 넣기' 폼(`POST /api/control/manual-inputs`)
+- [x] H1 `HedgeCfg`(`settings.yaml hedge:`)·`risk.max_sector_pct 0.40`·`risk/regime.py`(3지표·히스테리시스·`control.regime:<market>`)
+- [x] H2 게이트: neutral 한도 축소(15%·3종목)·bear 신규 매수 거부·섹터 상한·`is_hedge` 면제
+- [x] H3 원장 v12 `decisions.source`·`executor.execute(is_hedge=True)`(46_/56_)·`build_portfolio(sector_of, hedge_tickers)`·트레이더 `context.regime`
+- [x] H4 `orchestrator/hedge.rebalance`(bear 진입 −1x/−2x·해제 전량 매도·운영일 1회)·데몬 scan_analyze 앞 `_regime_body`·monitor 첫 틱 `_hedge_body`(paused 보류 1회)·monitor 헤지 ETF 제외
+- [x] H5 `trader regime show|backtest`·`/api/system/regime`·대시보드 국면 칩·STATUS '## 국면·헤지'·텔레그램 `/status` 줄
+- [x] S `views.sector_weights` → `/api/portfolio.sectors`(+`max_sector_pct`)·계좌 페이지 섹터 비중 표(SVG 막대·상한선·초과 황색)
+- [x] 완료 기준(코드): `uv run pytest`(Linux 컨테이너 전용 실패 `test_cli_install_dry_run` 1건은 베이스에서도 동일) · `ruff` 0건 · `npm run typecheck && npm test(135) && npm run build` 통과 (2026-10-24)
+- [ ] 실기(사용자 확인 대기): `uv run trader universe check --market US` 와 같은 방식으로 헤지 ETF `SH`·`SDS`·`SPY` 가 KIS 거래소 코드 `AMS` 로 시세가 오는지 확인(아니면 `settings.yaml hedge.instruments/index_proxy` 의 exchange 수정); KR `114800`·`252670`·`069500` 시세 확인
+- [ ] 실기(사용자 확인 대기): `uv run trader regime backtest --market KR` / `--market US` 로 2024-08·2025-04 급락 구간이 bear 로 잡히는지, 전환 횟수(채찍질)가 과하지 않은지 보고 `hedge.bear_min_signals`·`exit_streak_days`·`momentum_min` 확정. 결과를 여기에 기록
+- [ ] 실기(사용자 확인 대기): `FAKE_CLAUDE=1 uv run trader daemon --dry-run` → 대시보드 상태줄 '국면' 칩·잡 표 '실행' 열 → `KR 스캔 → 분석` 클릭 → 작업 대기열 "대기 → 실행 중 → 완료" → 데이터 페이지 '3년 백필 실행'(진행 문구) → ML 페이지 모델 생성; 계좌 페이지 섹터 비중 표(보유 없으면 '현금' 행); 데몬 끈 `trader web` 에서 버튼 비활성·409
+- [ ] 실기(사용자 확인 대기, 모의): 국면이 bear 로 바뀐 첫 영업일 09:00 monitor 틱에 `[헤지 진입]` 알림·`46_hedge_paper-main`·`56_order_hedge_paper-main`·`decisions.source='hedge'` 확인, 해제 때 `[헤지 해제]`
+- [ ] 이연(다음 Phase): 텔레그램 `/run <kind>`(`jobs.enqueue` 호출 10줄), CLI `trader jobs list|run`, 헤지 상품 교체(−1x↔−2x) 규칙, 국면 지표에 신용잔고·외인 수급 추가 검토
