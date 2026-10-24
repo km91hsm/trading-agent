@@ -11,6 +11,7 @@ import { Term } from "../components/Term";
 import { fmtPct } from "../format";
 import { useApp, useLoad } from "../hooks";
 import { Ticker } from "../components/Ticker";
+import { RunJobButton, useCanRun } from "../components/RunJob";
 
 type Metrics = { accuracy: number | null; baseline: number | null; alpha: number | null; n_test: number | null };
 type Model = {
@@ -65,6 +66,7 @@ const promoted = (p: boolean) => (p ? <Badge kind="ok" value="승격" /> : <Badg
 
 function RlSection() {
   const { accountId, tick } = useApp();
+  const run = useCanRun();
   const exps = useLoad(() => getJson<ExperimentsResp>("/api/rl/experiments"), [tick]);
   const shadow = useLoad(() => (accountId ? getJson<ShadowResp>(withAccount("/api/rl/shadow?days=60", accountId)) : null), [accountId, tick]);
   const cell = (s: PolicySummary | undefined) =>
@@ -119,7 +121,11 @@ function RlSection() {
             </tbody>
           </Table>
         ) : (
-          <EmptyState title="RL 실험이 없어요" hint="`uv run trader rl train` 으로 학습하면 여기에 비교표가 쌓여요." />
+          <EmptyState
+            title="RL 실험이 없어요"
+            hint="RL 사이저는 토요일 퀀트 학습과 함께 자동으로 학습돼요. 지금 돌리려면 아래 버튼."
+            action={<RunJobButton spec={{ kind: "rl_train", params: {} }} label="RL 학습 실행" disabledReason={run.reason} />}
+          />
         )}
       </Section>
       <Section title="섀도 기록" aside={`최근 60일 · ${accountId || "계좌 선택"}`}>
@@ -171,6 +177,7 @@ function RlSection() {
 
 export function MlPage() {
   const { tick } = useApp();
+  const run = useCanRun();
   const [sel, setSel] = useState<string | null>(null);
   const list = useLoad(() => getJson<ListResp>("/api/ml/models"), [tick]);
   const detail = useLoad(() => (sel ? getJson<Detail>(`/api/ml/models/${sel}`) : null), [sel, tick]);
@@ -189,7 +196,7 @@ export function MlPage() {
               활성 퀀트 모델 <b>{active.version}</b> · 정확도 {num4(active.metrics.accuracy)} · 알파 {num4(active.metrics.alpha)}
             </>
           ) : (
-            "승격된 퀀트 모델이 없어요 — ML 랭킹 없이 파이프라인이 돕니다. `uv run trader ml train` 뒤 기준을 넘으면 자동 승격."
+            "승격된 퀀트 모델이 없어요 — ML 랭킹 없이 파이프라인이 돕니다. 토요일 자동 학습(또는 아래 버튼) 뒤 기준을 넘으면 자동 승격."
           )}
           {list.data?.note ? <span className="muted"> · {list.data.note}</span> : null}
         </p>
@@ -227,7 +234,11 @@ export function MlPage() {
               </tbody>
             </Table>
           ) : (
-            <EmptyState title="학습된 모델이 없어요" hint="`uv run trader ml train` 이 피처 스토어로 워크포워드 학습을 돌려요." />
+            <EmptyState
+              title="학습된 모델이 없어요"
+              hint="피처 스토어로 워크포워드 학습을 돌려요(수 분). 토요일 10시에 자동으로 돌고, 지금 돌리려면 아래 버튼."
+              action={<RunJobButton spec={{ kind: "ml_train", params: {} }} label="퀀트 학습 실행" primary disabledReason={run.reason} />}
+            />
           )}
         </Section>
         <Section title={detail.data ? `quant ${detail.data.version}` : "모델 상세"} aside={detail.data?.backend ?? undefined}>

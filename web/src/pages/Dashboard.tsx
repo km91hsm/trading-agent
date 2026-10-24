@@ -9,6 +9,7 @@ import { ErrorBox } from "../components/Tables";
 import { Term } from "../components/Term";
 import { UsageBlock } from "../components/Usage";
 import { JobsBlock } from "../components/Jobs";
+import { JobRequestsBlock } from "../components/JobRequests";
 import { fmtDate, fmtMoney, fmtPct, fmtTime, minutesLeft } from "../format";
 import { useApp, useLoad } from "../hooks";
 import { labelOf } from "../names";
@@ -426,6 +427,9 @@ export function Dashboard() {
           </Section>
           <Section title="데몬 잡" aside={daemon.data ? `${daemon.data.jobs.length}개 · 1분마다 갱신` : undefined}>
             <JobsBlock data={daemon.data} now={now} />
+          </Section>
+          <Section title="작업 대기열" aside="지금 실행 요청 · 데몬이 순서대로">
+            <JobRequestsBlock now={now} />
           </Section>
           <Section title="Claude 사용량" aside="구독 창 · 세션">
             <UsageBlock data={usage.data} now={now} />

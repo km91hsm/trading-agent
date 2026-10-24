@@ -208,6 +208,25 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
             )""",
         ],
     ),
+    (
+        11,  # Phase 17: 작업 대기열. 웹·데몬의 요청을 데몬 job_queue 잡이 하나씩 실행 (jobs.py)
+        [
+            """CREATE TABLE IF NOT EXISTS job_requests (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                kind TEXT NOT NULL,
+                params TEXT NOT NULL,
+                status TEXT NOT NULL,
+                source TEXT NOT NULL,
+                requested_at TEXT NOT NULL,
+                started_at TEXT,
+                finished_at TEXT,
+                progress TEXT,
+                error TEXT,
+                result TEXT
+            )""",
+            "CREATE INDEX IF NOT EXISTS ix_job_requests_status ON job_requests(status, id)",
+        ],
+    ),
 ]
 
 

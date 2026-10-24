@@ -387,15 +387,21 @@ def test_monitor_body_without_market_client_skips(conn):
 def test_daemon_ml_train_job_calls_train(conn, monkeypatch):
     from trader import daemon as d
     from trader.ml import train as train_mod
+    from trader.ml.rl import train as rl_train_mod
 
     calls = []
     monkeypatch.setattr(
         train_mod, "train_quant", lambda cfg, **kw: calls.append(kw) or {"status": "trained"}
     )
+    # RL 학습은 enabled 와 무관하게 늘 시도하고, 데이터 부족이면 알림 없이 결과만 붙인다
+    monkeypatch.setattr(
+        rl_train_mod, "train_sizer", lambda *a, **k: {"status": "insufficient_data"}
+    )
     deps = _deps(conn, FakeMarket(), now=lambda: datetime(2026, 10, 10, 1, 0, tzinfo=UTC))
     job = next(j for j in d.build_jobs(SCHED, Settings(), markets=["KR"]) if j.id == "ml_train")
     r = d.job_body(deps, job)()
-    assert r == {"status": "trained"} and calls and calls[0]["state"] is None
+    assert r["status"] == "trained" and calls and calls[0]["state"] is None
+    assert r["rl_sizer"] == {"status": "insufficient_data"}
 
 
 def test_ml_train_body_wraps_exceptions(conn, monkeypatch):
@@ -457,7 +463,7 @@ def test_reflect_job_snapshots_features_first(conn):
     assert r["features"] is None and any("피처 스냅샷 실패" in m for m in Sent.msgs)
 
 
-def test_ml_train_job_also_trains_sizer_when_enabled(conn, monkeypatch):
+def test_ml_train_job_trains_sizer_even_when_not_enabled(conn, monkeypatch):
     from trader import daemon as d
     from trader.config import MlConfig
     from trader.ml import train as train_mod
@@ -476,7 +482,7 @@ def test_ml_train_job_also_trains_sizer_when_enabled(conn, monkeypatch):
     )
     monkeypatch.setattr(
         "trader.config.load_ml",
-        lambda: MlConfig.model_validate({"models": {"rl_sizer": {"enabled": True}}}),
+        lambda: MlConfig.model_validate({"models": {"rl_sizer": {"enabled": False}}}),
     )
     deps = _deps(conn, FakeMarket(), now=lambda: datetime(2026, 10, 10, 1, 0, tzinfo=UTC))
     r = d._ml_train_body(deps)

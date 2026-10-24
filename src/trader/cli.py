@@ -916,23 +916,38 @@ def _telegram_run(*, interval: int, max_iterations: int | None) -> None:
         ectx.conn.close()
 
 
-def _daemon_snapshot_fn(secrets: config.Secrets, universe, market_client):
-    """데몬 reflect 잡 앞에서 매일 피처 스냅샷을 찍는 함수 (시세 클라이언트 없으면 None)."""
-    if market_client is None:
-        return None
+def _daemon_features_fn(secrets: config.Secrets, universe, market_client):
+    """데몬의 피처 스토어 작업 함수 `(action, markets, *, progress, **kw) -> 행 수`.
+
+    대기열 요청(features_backfill·snapshot·derive)과 reflect 앞 스냅샷이 같은 재료(DART·EDGAR 는
+    호출마다 새로 조립)를 쓴다. derive 는 KIS 호출이 없어 시세 클라이언트가 없어도 돈다."""
     from trader.ml import features
 
-    def run(markets: list[str]) -> int:
-        return features.snapshot(
+    def run(action: str, markets: list[str], *, progress=lambda s: None, **kw) -> int:
+        if action == "derive":
+            return features.rederive(progress=progress)
+        if market_client is None:
+            raise config.ConfigError("시세 클라이언트 없음(피처 백필·스냅샷 불가)")
+        fn = features.backfill if action == "backfill" else features.snapshot
+        return fn(
             market_client=market_client,
             dart=_build_dart(secrets),
             edgar=_build_edgar(),
             universe=universe,
             markets=markets,  # type: ignore[arg-type]
-            progress=lambda s: None,
+            progress=progress,
+            **kw,
         )
 
     return run
+
+
+def _daemon_snapshot_fn(secrets: config.Secrets, universe, market_client):
+    """데몬 reflect 잡 앞에서 매일 피처 스냅샷을 찍는 함수 (시세 클라이언트 없으면 None)."""
+    if market_client is None:
+        return None
+    features_fn = _daemon_features_fn(secrets, universe, market_client)
+    return lambda markets: features_fn("snapshot", markets)
 
 
 @app.command("daemon")
@@ -992,6 +1007,7 @@ def _daemon_deps(*, dry_run: bool = False):
         web_app_factory=web_app,
         dry_run=dry_run,
         snapshot_fn=_daemon_snapshot_fn(secrets, universe, market_client),
+        features_fn=_daemon_features_fn(secrets, universe, market_client),
     )
 
 

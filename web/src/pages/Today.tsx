@@ -15,6 +15,7 @@ import { sectionForStage } from "../how";
 import { pipelineStages, stageSummary, type Stage } from "../pipeline";
 import type { Checkpoint, Market } from "../types";
 import { Ticker } from "../components/Ticker";
+import { RunJobButton, useCanRun } from "../components/RunJob";
 
 type TodayResp = { date: string; market: string; tickers: Record<string, string[]> };
 
@@ -92,6 +93,10 @@ function StagePlates({
 
 export function TodayPage({ title = "오늘의 실행", inputsOnly = false }: { title?: string; inputsOnly?: boolean }) {
   const { tick, names } = useApp();
+  const run = useCanRun();
+  const [analyzeTicker, setAnalyzeTicker] = useState("");
+  const [analyzeExchange, setAnalyzeExchange] = useState("NAS");
+  const [analyzeDry, setAnalyzeDry] = useState(true);
   const [market, setMarket] = useState<Market>("KR");
   const [date, setDate] = useState("");
   const [ticker, setTicker] = useState("");
@@ -181,7 +186,69 @@ export function TodayPage({ title = "오늘의 실행", inputsOnly = false }: { 
             ))}
           </div>
         ) : (
-          <EmptyState title="이 날짜에 실행된 종목이 없어요" hint="scan → analyze 가 돌거나 `trader analyze --ticker` 를 실행하면 생겨요." />
+          <EmptyState
+            title="이 날짜에 실행된 종목이 없어요"
+            hint="스캔 → 분석을 지금 돌리거나 종목 하나를 바로 분석할 수 있어요. 요청은 데몬이 순서대로 실행하고 결과는 여기에 쌓여요."
+            action={
+              inputsOnly ? undefined : (
+                <div className="row">
+                  <RunJobButton
+                    spec={{ kind: "scan_analyze", params: { market } }}
+                    label={`지금 ${market} 스캔 → 분석`}
+                    disabledReason={run.reason}
+                    confirm={{
+                      title: `${market} 스캔 → 분석을 지금 실행할까요?`,
+                      danger: true,
+                      body: (
+                        <>
+                          <p>Claude 세션이 분석 대상 종목 수만큼 뜨고, 데몬이 dry-run 이 아니면 auto 계좌에 주문이 나갈 수 있어요.</p>
+                          <p>다른 예약 잡은 끝날 때까지 기다려요.</p>
+                        </>
+                      ),
+                    }}
+                  />
+                  <form
+                    className="row tight"
+                    onSubmit={(e) => e.preventDefault()}
+                    aria-label="종목 분석 요청"
+                  >
+                    <label className="field">
+                      <span>종목 분석</span>
+                      <input value={analyzeTicker} onChange={(e) => setAnalyzeTicker(e.target.value.trim().toUpperCase())} placeholder={market === "KR" ? "005930" : "AAPL"} size={8} />
+                    </label>
+                    {market === "US" && (
+                      <label className="field">
+                        <span>거래소</span>
+                        <select value={analyzeExchange} onChange={(e) => setAnalyzeExchange(e.target.value)}>
+                          <option>NAS</option>
+                          <option>NYS</option>
+                          <option>AMS</option>
+                        </select>
+                      </label>
+                    )}
+                    <label className="check">
+                      <input type="checkbox" checked={analyzeDry} onChange={(e) => setAnalyzeDry(e.target.checked)} /> 모의 실행(주문 없음)
+                    </label>
+                    <RunJobButton
+                      spec={() => ({
+                        kind: "analyze_ticker",
+                        params: { market, ticker: analyzeTicker, dry_run: analyzeDry, ...(market === "US" ? { exchange: analyzeExchange } : {}) },
+                      })}
+                      label="분석 요청"
+                      primary
+                      disabledReason={run.reason ?? (analyzeTicker ? undefined : "종목 코드를 입력하세요")}
+                      confirm={
+                        analyzeDry
+                          ? undefined
+                          : { title: `${analyzeTicker} 를 실제 모드로 분석할까요?`, danger: true, body: <p>Claude 세션 1회가 뜨고, 결정이 매수·매도면 auto 계좌에 주문이 나갈 수 있어요.</p> }
+                      }
+                      onDone={() => setAnalyzeTicker("")}
+                    />
+                  </form>
+                </div>
+              )
+            }
+          />
         )}
       </Section>
       {ticker && (

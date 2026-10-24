@@ -86,6 +86,9 @@ export type EventSnapshot = {
   triggers: number;
   watchlist: string;
   paused: boolean;
+  job_requests?: number;
+  jobs_active?: number;
+  jobs_done?: number;
 };
 
 export function subscribeEvents(onChange: (snap: EventSnapshot) => void): () => void {

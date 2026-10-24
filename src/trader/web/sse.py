@@ -41,6 +41,16 @@ def snapshot(conn: sqlite3.Connection) -> dict:
         "triggers": _max("triggers"),
         "watchlist": ",".join(control.get_watchlist(conn)),
         "paused": control.is_paused(conn),
+        # 작업 대기열: 새 요청·대기 수·종료분. progress 는 넣지 않는다(1초마다 change 가 나와
+        # 모든 페이지가 재조회한다; 진행 문구는 활성 요청이 있을 때만 프런트가 폴링)
+        "job_requests": _max("job_requests"),
+        "jobs_active": conn.execute(
+            "SELECT COUNT(*) AS n FROM job_requests WHERE status IN ('queued','running')"
+        ).fetchone()["n"],
+        "jobs_done": conn.execute(
+            "SELECT COALESCE(MAX(id), 0) AS m FROM job_requests "
+            "WHERE status NOT IN ('queued','running')"
+        ).fetchone()["m"],
     }
 
 

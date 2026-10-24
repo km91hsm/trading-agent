@@ -20,7 +20,8 @@ def test_connect_uses_wal_and_row_factory(project):
 
 def test_init_schema_idempotent(conn):
     db.init_schema(conn)
-    assert {"accounts", "control", "runs", "agent_calls", "schema_version"} <= _tables(conn)
+    expected = {"accounts", "control", "runs", "agent_calls", "schema_version", "job_requests"}
+    assert expected <= _tables(conn)
     assert conn.execute("SELECT COUNT(*) FROM schema_version").fetchone()[0] == 1
     assert db.current_version(conn) == db.SCHEMA_VERSION
 

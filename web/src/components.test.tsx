@@ -6,6 +6,8 @@ import { Glyph } from "./components/Glyph";
 import { Delta, Mark, Num, Table, Td, Th } from "./components/Table";
 import { Term } from "./components/Term";
 import { Ticker } from "./components/Ticker";
+import { JobRequestsTable } from "./components/JobRequests";
+import { requestRows } from "./jobs";
 
 const html = (el: React.ReactElement) => renderToStaticMarkup(el);
 
@@ -198,5 +200,25 @@ describe("Ticker", () => {
     expect(unknown).toContain(">AAPL<small>US</small>");
     const noMarket = html(<Ticker market="KR" ticker="000660" name="SK하이닉스" showMarket={false} />);
     expect(noMarket).toContain("SK하이닉스<small>000660</small>");
+  });
+});
+
+describe("작업 대기열 표", () => {
+  const now = new Date("2026-10-24T01:00:00Z");
+  const reqs = requestRows([
+    { id: 1, kind: "features_backfill", params: { years: 3 }, status: "running", source: "web", requested_at: "2026-10-24T00:59:00+00:00", started_at: "2026-10-24T01:00:00+00:00", finished_at: null, progress: "[12] KR 005930: 760행", error: null },
+    { id: 2, kind: "ml_train", params: {}, status: "queued", source: "web", requested_at: "2026-10-24T00:59:30+00:00", started_at: null, finished_at: null, progress: null, error: null },
+  ]);
+  it("진행 문구·대기 배지·취소 버튼(토큰 없으면 비활성)", () => {
+    const out = html(<JobRequestsTable rows={reqs} now={now} />);
+    expect(out).toContain("피처 백필 3년");
+    expect(out).toContain("[12] KR 005930: 760행");
+    expect(out).toContain("실행 중");
+    expect(out).toContain("취소");
+    expect(out).toContain("disabled");
+    expect(out).toContain('title="토큰이 필요해요"');
+  });
+  it("비어 있으면 빈 상태", () => {
+    expect(html(<JobRequestsTable rows={[]} now={now} />)).toContain("대기·실행 중인 작업이 없어요");
   });
 });

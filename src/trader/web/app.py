@@ -52,6 +52,7 @@ def create_app(deps: WebDeps) -> FastAPI:
         charts,
         control,
         features,
+        jobs,
         ml,
         names,
         orders,
@@ -83,6 +84,8 @@ def create_app(deps: WebDeps) -> FastAPI:
         rl.router,
         control.public_router,
         control.router,
+        jobs.public_router,
+        jobs.router,
         sse.router,
     )
     for router in routers:

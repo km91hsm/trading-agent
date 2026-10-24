@@ -771,3 +771,25 @@ pre.status {
     gap: var(--s-1);
   }
 }
+
+/* 작업 대기열 (Phase 17): 진행 문구 한 줄 말줄임, 확인창 체크박스 */
+.progress-text {
+  display: inline-block;
+  max-width: 28ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+  color: var(--ink-2);
+  font-size: var(--t-xs);
+}
+label.check {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  font-size: var(--t-sm);
+  margin-top: var(--s-2);
+}
+.dialog-body p {
+  margin: 0 0 var(--s-2);
+}

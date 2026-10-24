@@ -1,8 +1,9 @@
+import pytest
 import yaml
 from helpers_sources import FakeDart, FakeMarket
 from typer.testing import CliRunner
 
-from trader import cli
+from trader import cli, config
 from trader.cli import app
 
 
@@ -55,3 +56,26 @@ def test_daemon_snapshot_fn_passes_edgar(project, monkeypatch):
     monkeypatch.setattr(features, "snapshot", lambda **kw: seen.update(kw) or 1)
     run = cli._daemon_snapshot_fn(object(), object(), market_client=object())
     assert run(["US"]) == 1 and seen["edgar"] == "EDGAR"
+
+
+def test_daemon_features_fn_dispatches_actions(project, monkeypatch):
+    from trader.ml import features
+
+    seen: list = []
+    monkeypatch.setattr(cli, "_build_dart", lambda s: "DART")
+    monkeypatch.setattr(cli, "_build_edgar", lambda: "EDGAR")
+    monkeypatch.setattr(features, "backfill", lambda **kw: seen.append(("backfill", kw)) or 3)
+    monkeypatch.setattr(features, "snapshot", lambda **kw: seen.append(("snapshot", kw)) or 2)
+    monkeypatch.setattr(features, "rederive", lambda **kw: seen.append(("derive", kw)) or 1)
+    run = cli._daemon_features_fn(object(), "UNI", market_client="MKT")
+    assert run("backfill", ["KR"], years=2) == 3
+    assert (
+        seen[0][1]["years"] == 2 and seen[0][1]["dart"] == "DART" and seen[0][1]["edgar"] == "EDGAR"
+    )
+    assert run("snapshot", ["US"]) == 2 and seen[1][1]["markets"] == ["US"]
+    assert run("derive", []) == 1
+    # 시세 클라이언트가 없으면 derive 만 가능
+    none = cli._daemon_features_fn(object(), "UNI", market_client=None)
+    assert none("derive", []) == 1
+    with pytest.raises(config.ConfigError):
+        none("backfill", ["KR"], years=1)

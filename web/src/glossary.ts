@@ -22,6 +22,7 @@ export const GLOSSARY: Record<string, TermEntry> = {
   trigger: { label: "트리거", help: "익절선·±7%·무효화 조건에 닿아 재평가 세션을 띄운 신호." },
   sycophantic: { label: "토론 붕괴", help: "강세·약세가 한쪽으로 쏠려 라운드 0 의견을 우선한 경우." },
   paused: { label: "일시정지", help: "거래 중단. 판정만 기록하고 주문·승인을 내지 않는다." },
+  job_queue: { label: "작업 대기열", help: "웹·데몬이 넣은 요청(스캔·분석·백필·학습)을 데몬이 한 번에 하나씩 순서대로 실행한다. 데몬이 꺼져 있으면 쌓이지 않는다." },
   nav: { label: "순자산(NAV)", help: "현금 + 보유 평가금액." },
   mdd: { label: "최대 낙폭(MDD)", help: "기간 중 고점 대비 가장 크게 내려간 비율." },
   benchmark_1n: { label: "1/N 벤치마크", help: "유니버스 전 종목에 같은 비중으로 매일 재배분했을 때의 수익." },

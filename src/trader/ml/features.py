@@ -81,6 +81,8 @@ def zscore(s: pd.Series, *, fill: float | None = None) -> pd.Series:
         return pd.Series(0.0, index=s.index)
     z = (s - s.mean()) / sd
     return z.fillna(fill) if fill is not None else z
+
+
 BACKFILL_CHUNK = 10  # 백필 때 날짜 파일을 다시 쓰는 단위(종목 수)
 
 
@@ -89,6 +91,13 @@ def _features_dir(state: Path | None) -> Path:
     d = base / "features"
     d.mkdir(parents=True, exist_ok=True)
     return d
+
+
+def has_files(state: Path | None) -> bool:
+    """날짜 파일이 하나라도 있는가 (데몬 부트스트랩의 백필 필요 판단; 디렉터리는 만들지 않음)."""
+    base = state if state is not None else paths.state_dir()
+    d = base / "features"
+    return d.exists() and any(d.glob("*.parquet"))
 
 
 def _flow_sums(flows: list[InvestorFlow] | None, days: int = 20) -> dict[str, int | None]:
@@ -185,10 +194,7 @@ def add_sector_relative(df: pd.DataFrame, sectors: SectorMap) -> pd.DataFrame:
     MIN_SECTOR_PEERS 미만이거나 섹터를 모르는 종목은 NaN (0 으로 두면 '평균 수준' 으로 읽힌다)."""
     out = df.copy()
     sector = pd.Series(
-        [
-            sectors.sector_of(str(t), m)
-            for t, m in zip(out["ticker"], out["market"], strict=True)
-        ],
+        [sectors.sector_of(str(t), m) for t, m in zip(out["ticker"], out["market"], strict=True)],
         index=out.index,
         dtype="object",
     )

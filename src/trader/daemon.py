@@ -23,6 +23,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from trader import heartbeat as heartbeat_mod
+from trader import jobs as jobq
 from trader import names
 from trader.config import KST, MARKET_TZ, AccountConfig, ScheduleConfig, Settings
 from trader.control import control
@@ -35,6 +36,10 @@ from trader.platform.procs import pid_alive
 
 logger = logging.getLogger("trader.daemon")
 TELEGRAM_POLL_S = 30
+QUEUE_JOB_ID = "job_queue"  # 작업 대기열 소비 잡 (jobs.py)
+QUEUE_INTERVAL_S = 10
+QUEUED_MAX_AGE = timedelta(hours=6)  # 데몬이 꺼진 동안 쌓인 요청은 만료
+BOOTSTRAP_RETRY_AGE = timedelta(hours=24)  # 피처 스토어 부트스트랩 백필 실패 뒤 재시도 간격
 FILLS_SYNC_TIMES = ((16, 10), (7, 10))  # KR 마감 후, US 마감 후 (KST)
 
 
@@ -222,7 +227,7 @@ def should_skip(
 @dataclass
 class Job:
     id: str
-    kind: str  # scan_analyze | monitor | reflect | ml_train | telegram_poll | fills_sync
+    kind: str  # scan_analyze|monitor|reflect|ml_train|telegram_poll|fills_sync|job_queue
     market: str | None = None
     cron: dict | None = None
     interval_s: int | None = None
@@ -257,6 +262,7 @@ def build_jobs(schedule: ScheduleConfig, settings: Settings, *, markets: list[st
         )
     )
     jobs.append(Job("telegram_poll", "telegram_poll", interval_s=TELEGRAM_POLL_S))
+    jobs.append(Job(QUEUE_JOB_ID, "job_queue", interval_s=QUEUE_INTERVAL_S))
     for i, (h, mi) in enumerate(FILLS_SYNC_TIMES):
         jobs.append(
             Job(
@@ -352,6 +358,11 @@ class DaemonDeps:
         None  # reflect 전 피처 스냅샷(시장 목록 → 행 수)
     )
     stop_event: threading.Event = field(default_factory=threading.Event)  # SIGTERM 뒤 세션 중단
+    # 피처 스토어 작업: (action: backfill|snapshot|derive, markets, *, progress, **kw) -> 행 수
+    features_fn: Callable[..., int] | None = None
+    # 무거운 잡(scan_analyze·reflect·ml_train·대기열 요청)은 한 번에 하나. cron 은 기다리고
+    # 대기열 틱은 잠겨 있으면 claim 하지 않는다
+    heavy_lock: threading.Lock = field(default_factory=threading.Lock)
 
 
 def _today(deps: DaemonDeps) -> date:
@@ -453,9 +464,8 @@ def _ensure_quant(deps: DaemonDeps, ticker: str, market: str, today: date) -> No
 
 
 def _analyze_body(deps: DaemonDeps, market: str, *, scan_error: str | None = None) -> dict:
+    """`_scan.json` 의 분석 대상으로 `_analyze_targets` 를 돌린다."""
     from trader.orchestrator.run_store import read_checkpoint, run_date_for
-    from trader.orchestrator.session import SessionSpec, run_session
-    from trader.sources.inputs import collect_and_save
 
     today = run_date_for(market, deps.now())
     scan = read_checkpoint(run_store.market_dir(today, market, deps.state), "_scan")
@@ -471,6 +481,23 @@ def _analyze_body(deps: DaemonDeps, market: str, *, scan_error: str | None = Non
     if not targets:
         logger.info("%s 분석 대상 없음 (빈 picks·보유·관심종목)", market)
         return {"targets": 0}
+    return _analyze_targets(deps, market, targets, today=today)
+
+
+def _analyze_targets(
+    deps: DaemonDeps,
+    market: str,
+    targets: list[dict],
+    *,
+    today: date,
+    dry_run: bool | None = None,
+) -> dict:
+    """대상 종목마다 수집 → 05_quant → 세션 1회. dry_run 이 None 이면 데몬 설정을 따른다
+    (대기열의 단일 종목 분석은 `deps.dry_run or 요청값` 으로 데몬 --dry-run 을 뒤집지 못한다)."""
+    from trader.orchestrator.session import SessionSpec, run_session
+    from trader.sources.inputs import collect_and_save
+
+    dry = deps.dry_run if dry_run is None else (deps.dry_run or dry_run)
     if deps.input_deps is not None and deps.sources_cfg is not None:
         for t in targets:
             try:
@@ -503,9 +530,7 @@ def _analyze_body(deps: DaemonDeps, market: str, *, scan_error: str | None = Non
         shown = names.display(conn, _cache_dir(deps), market, t["ticker"])
         try:
             res = runner(
-                SessionSpec(
-                    market=market, date=today, tickers=[t], dry_run=deps.dry_run, asof=deps.now()
-                ),
+                SessionSpec(market=market, date=today, tickers=[t], dry_run=dry, asof=deps.now()),
                 deps.settings,
                 conn,
                 deps.accounts,
@@ -658,12 +683,12 @@ def _reflect_body(deps: DaemonDeps) -> dict:
     }
 
 
-def _ml_train_body(deps: DaemonDeps) -> dict:
+def _ml_train_body(deps: DaemonDeps, *, market: str | None = None) -> dict:
     from trader.config import load_ml
     from trader.ml import train as train_mod
 
     try:
-        r = train_mod.train_quant(load_ml(), state=deps.state, now=deps.now)
+        r = train_mod.train_quant(load_ml(), state=deps.state, now=deps.now, market=market)
     except Exception as e:  # noqa: BLE001 - 학습 실패는 통보하고 데몬은 계속
         logger.exception("ML 학습 실패")
         deps.notifier.send(f"[ML 학습 실패] {type(e).__name__}: {e}")
@@ -678,30 +703,39 @@ def _ml_train_body(deps: DaemonDeps) -> dict:
         f"[ML 학습] quant {r.get('version') or '-'}: {r.get('status')} {acc} "
         f"승격={r.get('promoted')}"
     )
-    rl = _rl_train(deps)
+    rl = _rl_train(deps, market=market)
     if rl is not None:
         r["rl_sizer"] = rl
     return r
 
 
-def _rl_train(deps: DaemonDeps) -> dict | None:
-    """ml.yaml rl_sizer.enabled 일 때만 사이저도 학습한다 (승격은 수동). 실패는 통보만."""
+def _rl_train(
+    deps: DaemonDeps, *, market: str | None = None, seeds: int | None = None
+) -> dict | None:
+    """사이저 학습(승격은 `rl promote` 수동). `rl_sizer.enabled` 는 적용 스위치이지 학습 스위치가
+    아니라 주간 학습은 늘 돈다. 데이터 부족은 로그만, 실패는 통보."""
     from trader.config import load_ml
     from trader.ml.rl import train as rl_train_mod
 
     try:
         cfg = load_ml()
-        if not cfg.models.rl_sizer.enabled:
-            return None
+        if seeds is not None:
+            rl_cfg = cfg.models.rl_sizer.model_copy(update={"seeds": seeds})
+            cfg = cfg.model_copy(
+                update={"models": cfg.models.model_copy(update={"rl_sizer": rl_cfg})}
+            )
         conn = deps.conn_factory()
         try:
-            r = rl_train_mod.train_sizer(cfg, conn, state=deps.state, now=deps.now)
+            r = rl_train_mod.train_sizer(cfg, conn, state=deps.state, now=deps.now, market=market)
         finally:
             conn.close()
     except Exception as e:  # noqa: BLE001 - 실험 학습 실패가 데몬을 막지 않는다
         logger.exception("RL 사이저 학습 실패")
         deps.notifier.send(f"[RL 학습 실패] {type(e).__name__}: {e}")
         return {"status": "error", "error": f"{type(e).__name__}: {e}"}
+    if r.get("status") == "insufficient_data":
+        logger.info("RL 사이저 학습 생략: %s", r.get("promote_reason") or "데이터 부족")
+        return r
     s = (r.get("summary") or {}).get("rl") or {}
     deps.notifier.send(
         f"[RL 학습] rl_sizer {r.get('version') or '-'}: {r.get('status')} "
@@ -727,13 +761,21 @@ def _cache_dir(deps: DaemonDeps) -> Path:
     return (deps.state or paths.state_dir()) / "cache"
 
 
-def job_body(deps: DaemonDeps, job: Job) -> Callable[[], Any]:
+def _heavy(deps: DaemonDeps, fn: Callable[[], Any]) -> Any:
+    """무거운 잡은 한 번에 하나 (cron 은 기다린다)."""
+    with deps.heavy_lock:
+        return fn()
+
+
+def job_body(
+    deps: DaemonDeps, job: Job, *, heartbeat: Heartbeat | None = None
+) -> Callable[[], Any]:
     if job.kind == "scan_analyze":
         return lambda: market_job(
             deps,
             job.market or "KR",
             "scan_analyze",
-            lambda: _scan_analyze_body(deps, job.market or "KR"),
+            lambda: _heavy(deps, lambda: _scan_analyze_body(deps, job.market or "KR")),
         )
     if job.kind == "monitor":
         return lambda: monitor_job(
@@ -744,10 +786,187 @@ def job_body(deps: DaemonDeps, job: Job) -> Callable[[], Any]:
     if job.kind == "fills_sync":
         return lambda: _fills_body(deps)
     if job.kind == "reflect":
-        return lambda: _reflect_body(deps)
+        return lambda: _heavy(deps, lambda: _reflect_body(deps))
     if job.kind == "ml_train":
-        return lambda: _ml_train_body(deps)
+        return lambda: _heavy(deps, lambda: _ml_train_body(deps))
+    if job.kind == "job_queue":
+        return lambda: _queue_tick(deps, heartbeat)
     raise ValueError(f"알 수 없는 잡: {job.kind}")
+
+
+# --- 작업 대기열 (jobs.py) ------------------------------------------------------------
+
+
+def _progress_writer(deps: DaemonDeps, req_id: int) -> Callable[[str], None]:
+    """진행 문구를 1초에 한 번만 DB 에 적는다(종목마다 UPDATE 하지 않도록). 종료 신호가 오면
+    `JobCancelled` 로 백필이 종목 경계에서 끊긴다."""
+    state = {"n": 0, "last": 0.0}
+
+    def write(text: str) -> None:
+        state["n"] += 1
+        if deps.stop_event.is_set():
+            raise jobq.JobCancelled("종료 중")
+        now = datetime.now(UTC).timestamp()
+        if now - state["last"] < 1.0:
+            return
+        state["last"] = now
+        conn = deps.conn_factory()
+        try:
+            jobq.set_progress(conn, req_id, f"[{state['n']}] {text}")
+        finally:
+            conn.close()
+
+    return write
+
+
+def _features_action(deps: DaemonDeps, action: str, p: dict, progress: Callable) -> dict:
+    if deps.features_fn is None:
+        return {"error": "시세 클라이언트 없음(피처 작업 불가)"}
+    markets = [p["market"]] if p.get("market") else list(deps.settings.markets)
+    kw = {"years": p["years"]} if action == "backfill" else {}
+    n = deps.features_fn(action, markets, progress=progress, **kw)
+    return {"rows": int(n)}
+
+
+def _analyze_ticker_request(deps: DaemonDeps, p: dict) -> dict:
+    from trader.orchestrator.run_store import run_date_for
+
+    market, ticker, exchange = p["market"], p["ticker"], p.get("exchange")
+    if market == "US" and not exchange:
+        for u in deps.universe.us if deps.universe else []:
+            if u.symbol == ticker:
+                exchange = u.exchange
+                break
+        if not exchange:
+            return {"error": f"미국 종목은 거래소 코드가 필요해요: {ticker}"}
+    _close_stale_sessions(deps)
+    today = run_date_for(market, deps.now())
+    return _analyze_targets(
+        deps,
+        market,
+        [{"ticker": ticker, "exchange": exchange}],
+        today=today,
+        dry_run=bool(p.get("dry_run", True)),
+    )
+
+
+def queued_job_body(
+    deps: DaemonDeps, req: dict, progress: Callable[[str], None]
+) -> Callable[[], Any]:
+    """대기열 요청 → 기존 잡 본체. 사용자가 명시적으로 눌렀으므로 주말·휴장 게이트는 없다."""
+    kind, p = req["kind"], req["params"]
+    if kind == "scan_analyze":
+        return lambda: _scan_analyze_body(deps, p["market"])
+    if kind == "analyze_ticker":
+        return lambda: _analyze_ticker_request(deps, p)
+    if kind in ("features_backfill", "features_snapshot", "features_derive"):
+        action = kind.split("_", 1)[1]
+        return lambda: _features_action(deps, action, p, progress)
+    if kind == "ml_train":
+        return lambda: _ml_train_body(deps, market=p.get("market"))
+    if kind == "rl_train":
+        return lambda: _rl_train(deps, market=p.get("market"), seeds=p.get("seeds")) or {}
+    if kind == "reflect":
+        return lambda: _reflect_body(deps)
+    if kind == "fills_sync":
+        return lambda: _fills_body(deps)
+    raise ValueError(f"알 수 없는 작업: {kind}")
+
+
+def _queue_tick(deps: DaemonDeps, heartbeat: Heartbeat | None) -> dict:
+    """대기열에서 요청 1건을 꺼내 실행한다. 결과는 `job_requests` 에, runs·하트비트는 run_job 이
+    스케줄 잡과 같은 이름(`jobs.job_id_for`)으로 남긴다."""
+    if deps.stop_event.is_set():
+        return {"skipped": "종료 중"}
+    if deps.heavy_lock.locked():
+        return {"skipped": "다른 무거운 잡 실행 중"}
+    conn = deps.conn_factory()
+    try:
+        row = jobq.claim_next(conn, now=deps.now())
+    finally:
+        conn.close()
+    if row is None:
+        return {"skipped": "대기 없음"}
+    req = {**dict(row), "params": json.loads(row["params"])}
+    req_id, kind = int(req["id"]), req["kind"]
+    name = jobq.job_id_for(kind, req["params"])
+    logger.info("대기열 요청 #%d %s 시작 (%s)", req_id, kind, req["source"])
+
+    def _finish(status: str, result: dict | None = None, error: str | None = None) -> None:
+        conn = deps.conn_factory()
+        try:
+            jobq.finish(conn, req_id, status, result=result, error=error, now=deps.now())  # type: ignore[arg-type]
+        finally:
+            conn.close()
+
+    def wrapped() -> Any:
+        try:
+            body = queued_job_body(deps, req, _progress_writer(deps, req_id))
+            result = body()
+        except jobq.JobCancelled as e:
+            _finish("skipped", error=str(e))
+            return {"skipped": str(e)}
+        except Exception as e:
+            _finish("error", error=f"{type(e).__name__}: {e}")
+            raise
+        err = result.get("error") if isinstance(result, dict) else None
+        skipped = isinstance(result, dict) and "skipped" in result
+        _finish(
+            "error" if err else ("skipped" if skipped else "ok"),
+            result=result if isinstance(result, dict) else None,
+            error=str(err) if err else None,
+        )
+        return result
+
+    def run_it() -> Any:
+        return run_job(
+            name, wrapped, conn_factory=deps.conn_factory, interval=False, heartbeat=heartbeat
+        )
+
+    if jobq.is_heavy(kind):
+        _heavy(deps, run_it)
+    else:
+        run_it()
+    return {"request": req_id, "kind": kind}
+
+
+def _bootstrap_queue(deps: DaemonDeps) -> dict:
+    """기동 때: 이전 running → error, 오래된 queued → 만료, 피처 스토어가 비면 백필+학습을 넣는다.
+    백필이 24시간 안에 실패했으면 다시 넣지 않는다(재기동 루프 방지)."""
+    from trader.ml import features
+
+    now = deps.now()
+    conn = deps.conn_factory()
+    try:
+        stale = jobq.mark_stale_running(conn, now=now)
+        expired = jobq.expire_queued(conn, older_than=now - QUEUED_MAX_AGE)
+        queued: list[str] = []
+        if (
+            deps.market_client is not None
+            and deps.features_fn is not None
+            and not features.has_files(deps.state)
+        ):
+            last = jobq.latest_by(conn, "features_backfill", source="daemon")
+            recent_fail = bool(
+                last
+                and last["status"] == "error"
+                and last.get("finished_at")
+                and datetime.fromisoformat(last["finished_at"]) > now - BOOTSTRAP_RETRY_AGE
+            )
+            if not recent_fail:
+                for kind, params in (("features_backfill", {"years": 3}), ("ml_train", {})):
+                    try:
+                        jobq.enqueue(conn, kind, params, source="daemon", now=now)
+                        queued.append(kind)
+                    except jobq.DuplicateRequest:
+                        pass
+    finally:
+        conn.close()
+    if stale or expired or queued:
+        logger.info(
+            "대기열 정리: running→error %d, 만료 %d, 부트스트랩 %s", stale, expired, queued or "-"
+        )
+    return {"stale": stale, "expired": expired, "queued": queued}
 
 
 # --- 실행 ---------------------------------------------------------------------------
@@ -800,6 +1019,7 @@ def run(
         return {"ok": False, "error": "잠금 실패: 데몬이 이미 실행 중"}
     try:
         _close_stale_sessions(deps)
+        _bootstrap_queue(deps)
         if scheduler_factory is None:
             from apscheduler.schedulers.blocking import BlockingScheduler
 
@@ -817,7 +1037,7 @@ def run(
                 partial(
                     run_job,
                     job.id,
-                    job_body(deps, job),
+                    job_body(deps, job, heartbeat=hb),
                     conn_factory=deps.conn_factory,
                     interval=job.interval_s is not None,
                     heartbeat=hb,
@@ -868,7 +1088,9 @@ def _install_heartbeat_listener(scheduler: Any, hb: Heartbeat) -> None:
 
     def on_job(event: Any) -> None:
         if event.code in (ev.EVENT_JOB_MISSED, ev.EVENT_JOB_MAX_INSTANCES):
-            hb.job_missed(event.job_id, datetime.now(UTC))
+            # 대기열 틱은 긴 요청을 도는 동안 10초마다 MAX_INSTANCES 가 나므로 놓침이 아니다
+            if not (event.code == ev.EVENT_JOB_MAX_INSTANCES and event.job_id == QUEUE_JOB_ID):
+                hb.job_missed(event.job_id, datetime.now(UTC))
         _next(event.job_id)
 
     add(on_started, ev.EVENT_SCHEDULER_STARTED)

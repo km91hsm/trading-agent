@@ -43,6 +43,8 @@ def test_all_control_endpoints_401_without_token(client):
         ("/api/control/mode", {"account_id": "paper-main", "mode": "off"}),
         ("/api/control/pause", None),
         ("/api/control/resume", None),
+        ("/api/control/jobs", {"kind": "ml_train", "params": {}}),
+        ("/api/control/jobs/cancel", {"id": 1}),
     ):
         assert client.post(path, json=body).status_code == 401, path
 

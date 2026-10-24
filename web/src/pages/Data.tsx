@@ -10,11 +10,41 @@ import { labelOf } from "../names";
 import { type FeatureRow, type HistoryResp, KEY_COLUMNS, type LatestResp, type SortDir, fmt, sortRows } from "./features";
 import { TodayPage } from "./Today";
 import { Ticker } from "../components/Ticker";
+import { RunJobButton, useCanRun } from "../components/RunJob";
 
 const NUMERIC = new Set(KEY_COLUMNS.filter((c) => c !== "ticker" && c !== "sector"));
 
+function FeatureActions({ run, trainAfter, setTrainAfter }: { run: { ok: boolean; reason?: string }; trainAfter: boolean; setTrainAfter: (v: boolean) => void }) {
+  return (
+    <div className="row">
+      <RunJobButton
+        spec={{ kind: "features_backfill", params: { years: 3 } }}
+        label="3년 백필 실행"
+        primary
+        disabledReason={run.reason}
+        confirm={{
+          title: "피처 스토어 3년 백필을 실행할까요?",
+          body: (
+            <>
+              <p>유니버스 전체(KR 200 · US 51)의 일봉·재무 피처를 다시 채워요. 수 분에서 수십 분 걸리고 KIS 호출이 많아요. 진행 상황은 대시보드 작업 대기열에 보여요.</p>
+              <label className="check">
+                <input type="checkbox" checked={trainAfter} onChange={(e) => setTrainAfter(e.target.checked)} /> 끝나면 퀀트 학습도 이어서
+              </label>
+            </>
+          ),
+        }}
+        extra={() => (trainAfter ? [{ kind: "ml_train", params: {} }] : [])}
+      />
+      <RunJobButton spec={{ kind: "features_snapshot", params: {} }} label="오늘 스냅샷" disabledReason={run.reason} />
+      <RunJobButton spec={{ kind: "features_derive", params: {} }} label="파생 열 재계산" disabledReason={run.reason} />
+    </div>
+  );
+}
+
 function FeatureStore() {
   const { tick, names } = useApp();
+  const run = useCanRun();
+  const [trainAfter, setTrainAfter] = useState(true);
   const [market, setMarket] = useState<"KR" | "US">("KR");
   const [sortKey, setSortKey] = useState("ticker");
   const [dir, setDir] = useState<SortDir>("asc");
@@ -97,7 +127,13 @@ function FeatureStore() {
             </tbody>
           </Table>
         ) : (
-          latest.data && <EmptyState title="피처 행이 없어요" hint="`trader features backfill` 뒤 다시 보세요." />
+          latest.data && (
+            <EmptyState
+              title="피처 행이 없어요"
+              hint="3년 백필이 유니버스 전체의 일봉·재무 피처를 채워요(수 분~수십 분, KIS 호출 다수). 데몬이 처음 켜질 때는 자동으로 넣어요."
+              action={<FeatureActions run={run} trainAfter={trainAfter} setTrainAfter={setTrainAfter} />}
+            />
+          )
         )}
       </Section>
       {ticker && (
