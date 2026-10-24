@@ -39,6 +39,6 @@ channels:
   youtube: []
   telegram: []
 
-# 자동 수집 불가로 확인된 사이트 (기록용). 세이브티커는 Cloudflare 봇 검증으로 403.
+# 직접 HTTP 수집 비활성 사이트. 사용자 승인 브라우저 CLI는 docs/saveticker-collection.md 참조.
 disabled_sites:
   - "https://www.saveticker.com/news"   # Cloudflare 봇 검증으로 403, 2026-10-09 확인

@@ -36,6 +36,10 @@ app = typer.Typer(help="LLM 멀티 에이전트 주식 자동매매", no_args_is
 kis_app = typer.Typer(help="KIS 브로커 도구", no_args_is_help=True)
 app.add_typer(kis_app, name="kis")
 
+from trader.sources.saveticker.cli import app as saveticker_app  # noqa: E402
+
+app.add_typer(saveticker_app, name="saveticker")
+
 
 
 def _force_utf8() -> None:
