@@ -408,6 +408,8 @@ def _scan_body(deps: DaemonDeps, market: str) -> dict:
     from trader.orchestrator.run_store import run_date_for, write_checkpoint
     from trader.scan import quant, screener
 
+    if deps.stop_event.is_set():
+        return {"skipped": "종료 중"}
     universe = deps.universe or load_universe()
     today = run_date_for(market, deps.now())
     from trader.ml import ranker
@@ -438,6 +440,7 @@ def _scan_body(deps: DaemonDeps, market: str) -> dict:
             brokers=deps.brokers,
             watch=[*universe.watch, *runtime_watch],
             asof=deps.now(),
+            cancel=deps.stop_event,
         )
     finally:
         conn.close()
@@ -510,6 +513,9 @@ def _analyze_targets(
     dry = deps.dry_run if dry_run is None else (deps.dry_run or dry_run)
     if deps.input_deps is not None and deps.sources_cfg is not None:
         for t in targets:
+            if deps.stop_event.is_set():
+                logger.warning("종료 중: 남은 수집 생략 %s", market)
+                break
             try:
                 collect_and_save(
                     ticker=t["ticker"],
@@ -548,6 +554,7 @@ def _analyze_targets(
                 now=deps.now,
                 brokers=deps.brokers,
                 notifier=deps.notifier,
+                cancel=deps.stop_event,
             )
         except Exception as e:  # noqa: BLE001 - 한 종목 세션 실패가 나머지를 막지 않는다
             logger.exception("analyze 세션 기동 실패 %s %s", market, t["ticker"])
@@ -668,6 +675,8 @@ def _market_view_body(deps: DaemonDeps, market: str) -> dict:
     cfg = deps.settings.hedge
     if not cfg.enabled or not cfg.market_session:
         return {"skipped": "hedge.market_session=false"}
+    if deps.stop_event.is_set():
+        return {"skipped": "종료 중"}
     today = run_date_for(market, deps.now())
     conn = deps.conn_factory()
     try:
@@ -702,6 +711,7 @@ def _market_view_body(deps: DaemonDeps, market: str) -> dict:
             now=deps.now,
             brokers=deps.brokers,
             session_runner=deps.session_runner,
+            cancel=deps.stop_event,
         )
     finally:
         conn.close()
@@ -860,6 +870,9 @@ def _reflect_body(deps: DaemonDeps) -> dict:
         for market in deps.settings.markets:
             if not pending(conn, market=market):
                 continue
+            if deps.stop_event.is_set():
+                logger.warning("종료 중: reflect 세션 생략 %s", market)
+                break
             try:
                 res = run_reflect(
                     deps.settings,
@@ -1193,11 +1206,46 @@ def _bootstrap_queue(deps: DaemonDeps) -> dict:
 # --- 실행 ---------------------------------------------------------------------------
 
 
-def _start_web(app: Any, host: str, port: int) -> threading.Thread:
+SCHEDULER_POOL_SIZE = 16  # 잡 10개 + heavy 락 대기 몫. 기본 10 이면 잡 수와 같아 여유가 없다
+
+
+def make_scheduler() -> Any:
+    """데몬·트레이 모드가 같은 설정의 BlockingScheduler 를 만든다(풀 크기 명시)."""
+    from apscheduler.executors.pool import ThreadPoolExecutor
+    from apscheduler.schedulers.blocking import BlockingScheduler
+
+    return BlockingScheduler(
+        timezone=KST, executors={"default": ThreadPoolExecutor(SCHEDULER_POOL_SIZE)}
+    )
+
+
+def _start_web(app: Any, host: str, port: int, *, notifier: Any = None) -> threading.Thread:
+    """uvicorn 을 데몬 스레드에 띄운다. 포트 점유 등으로 서버가 못 뜨면 스레드만 조용히 끝나므로
+    로그와 알림으로 드러낸다(트레이 모드는 stderr 가 보이지 않는다)."""
     import uvicorn
 
     server = uvicorn.Server(uvicorn.Config(app, host=host, port=port, log_level="info"))
-    t = threading.Thread(target=server.run, name="trader-web", daemon=True)
+
+    def run() -> None:
+        try:
+            server.run()
+        except BaseException as e:  # noqa: BLE001 - SystemExit(포트 점유)·소켓 오류 포함
+            logger.error("웹 UI 서버 종료 %s:%s: %s", host, port, e)
+            if notifier is not None:
+                try:
+                    notifier.send(f"[웹 UI 시작 실패] {host}:{port} — {type(e).__name__}: {e}")
+                except Exception:  # noqa: BLE001
+                    pass
+            return
+        if not server.started:
+            logger.error("웹 UI 서버가 시작되지 못함 %s:%s (포트 점유?)", host, port)
+            if notifier is not None:
+                try:
+                    notifier.send(f"[웹 UI 시작 실패] {host}:{port} 포트가 사용 중인지 확인하세요")
+                except Exception:  # noqa: BLE001
+                    pass
+
+    t = threading.Thread(target=run, name="trader-web", daemon=True)
     t.start()
     return t
 
@@ -1241,14 +1289,14 @@ def run(
     try:
         _close_stale_sessions(deps)
         _bootstrap_queue(deps)
-        if scheduler_factory is None:
-            from apscheduler.schedulers.blocking import BlockingScheduler
-
-            scheduler = BlockingScheduler(timezone=KST)
-        else:
-            scheduler = scheduler_factory()
+        scheduler = make_scheduler() if scheduler_factory is None else scheduler_factory()
         if web and deps.web_app_factory is not None:
-            _start_web(deps.web_app_factory(), deps.settings.web.bind, deps.settings.web.port)
+            _start_web(
+                deps.web_app_factory(),
+                deps.settings.web.bind,
+                deps.settings.web.port,
+                notifier=deps.notifier,
+            )
         jobs = build_jobs(deps.schedule, deps.settings, markets=list(deps.settings.markets))
         hb = Heartbeat(base / heartbeat_mod.FILE_NAME)
         hb.start(pid=os.getpid(), started_at=datetime.now(UTC), jobs=jobs)

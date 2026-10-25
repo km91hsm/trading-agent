@@ -207,6 +207,7 @@ def run_market_view(
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
     brokers: dict[str, Any] | None = None,
     session_runner: Callable[..., Any] | None = None,
+    cancel: Any | None = None,
 ) -> dict:
     """입력 저장 → 세션 1회 → `_market_view` 읽기. {view, session} 또는 {skipped}/{error}."""
     save_inputs(inputs, market=market, today=date, state=state)
@@ -219,7 +220,10 @@ def run_market_view(
         market=market, date=date, tickers=[], dry_run=True, asof=now(), kind="market"
     )
     try:
-        res = runner(spec, settings, conn, accounts, state=state, now=now, brokers=brokers or {})
+        extra = {"cancel": cancel} if cancel is not None else {}
+        res = runner(
+            spec, settings, conn, accounts, state=state, now=now, brokers=brokers or {}, **extra
+        )
     except session_mod.PipelineError as e:
         logger.warning("시장 세션 생략 %s: %s", market, e)
         return {"skipped": str(e), "view": None}

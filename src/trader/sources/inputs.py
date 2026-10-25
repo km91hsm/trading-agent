@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeout
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
@@ -42,6 +43,8 @@ from trader.sources.dart import ratios_kr
 from trader.sources.edgar import financial_history_us, ratios_from_facts
 from trader.sources.macro import collect_macro
 from trader.sources.news import collect_news
+
+SECTION_TIMEOUT_S = 180.0  # 절(fundamental·news_macro·sentiment) 하나의 최대 대기
 
 logger = logging.getLogger("trader.sources")
 
@@ -460,7 +463,17 @@ def build_inputs(
             "sentiment": pool.submit(_sentiment, ticker, market, name, asof, cfg, deps, secrets),
         }
         for key, fut in futures.items():
-            result[key] = fut.result()
+            try:
+                result[key] = fut.result(timeout=SECTION_TIMEOUT_S)
+            except FuturesTimeout:
+                # 한 절이 멈춰도(네트워크 TLS 교착 등) 수집 전체·세션을 막지 않는다. 스레드는 풀이
+                # 닫힐 때까지 남지만 결과는 오류 절로 기록한다
+                logger.warning("수집 절 %s 시간 초과(%ss) %s", key, SECTION_TIMEOUT_S, ticker)
+                result[key] = Section(
+                    data=None,
+                    received_at=deps.now().isoformat(),
+                    error=f"timeout after {SECTION_TIMEOUT_S}s",
+                )
     result["news_macro"]["events"] = _events(result["fundamental"], asof, deps.now)
     result = _jsonable(result)
     result["errors"] = _collect_errors(result)

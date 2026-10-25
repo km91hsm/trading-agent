@@ -49,6 +49,10 @@ class KisMarket:
         self._state = state
         self._now = now
 
+    @property
+    def client(self):
+        return self._client
+
     # --- 현재가 -------------------------------------------------------------
 
     def get_price_kr(self, ticker: str) -> Quote:

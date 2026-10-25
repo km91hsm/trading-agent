@@ -11,10 +11,12 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+import sys
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from trader.control import control
 
@@ -65,9 +67,9 @@ def read_state(
     conn = conn_factory()
     try:
         paused = control.is_paused(conn)
-        pending = conn.execute(
-            "SELECT COUNT(*) FROM approvals WHERE status='pending'"
-        ).fetchone()[0]
+        pending = conn.execute("SELECT COUNT(*) FROM approvals WHERE status='pending'").fetchone()[
+            0
+        ]
         row = conn.execute(
             "SELECT error FROM runs WHERE status='error' ORDER BY id DESC LIMIT 1"
         ).fetchone()
@@ -151,6 +153,112 @@ def watch_signals(on_signal: Callable[[int], None], signals) -> Callable[[], Non
     return release
 
 
+def on_main(fn: Callable[[], None]) -> None:
+    """AppKit 객체(아이콘 제목·메뉴·stop)는 메인 스레드에서만 만진다. macOS 에서 PyObjC 의
+    callAfter 가 있으면 런루프에 넘기고, 없거나 다른 OS 면 그대로 부른다."""
+    if sys.platform == "darwin":
+        try:
+            from PyObjCTools import AppHelper
+
+            AppHelper.callAfter(fn)
+            return
+        except Exception:  # noqa: BLE001 - pyobjc 없음 → 직접 호출
+            pass
+    fn()
+
+
+class TrayController:
+    """pystray 콜백 뒤의 상태 기계. 메뉴 라벨·checked 는 **캐시된 상태**만 읽고(메인 스레드에서
+    SQLite 를 열지 않는다), 토글·종료는 워커 스레드에서 돌려 AppKit 런루프를 막지 않는다.
+    `icon` 은 `.title`·`.stop()`·`.update_menu()` 만 쓰므로 테스트는 가짜 객체를 넣는다."""
+
+    def __init__(
+        self,
+        *,
+        state_fn: Callable[[], TrayState],
+        on_toggle_pause: Callable[[], None],
+        on_quit: Callable[[], None],
+        initial: TrayState,
+        run_on_main: Callable[[Callable[[], None]], None] = on_main,
+    ) -> None:
+        self._state_fn = state_fn
+        self._on_toggle_pause = on_toggle_pause
+        self._on_quit = on_quit
+        self._run_on_main = run_on_main
+        self.state = initial
+        self.quitting = threading.Event()
+        self.icon: Any = None
+
+    # --- 읽기(메인 스레드, 캐시만) ---
+    def label(self, key: str) -> str:
+        return next(i.label for i in menu_model(self.state) if i.key == key)
+
+    def checked(self, key: str) -> bool:
+        return next(i.checked for i in menu_model(self.state) if i.key == key)
+
+    def title(self) -> str:
+        return QUITTING_TITLE if self.quitting.is_set() else title_text(self.state)
+
+    # --- 갱신(워커 스레드) ---
+    def refresh_state(self) -> None:
+        self.state = self._state_fn()
+        self._push_title()
+
+    def _push_title(self) -> None:
+        icon = self.icon
+        if icon is None:
+            return
+        text = self.title()
+
+        def apply() -> None:
+            try:
+                icon.title = text
+                update = getattr(icon, "update_menu", None)
+                if update is not None:
+                    update()
+            except Exception:  # noqa: BLE001
+                logger.debug("트레이 제목 갱신 실패", exc_info=True)
+
+        self._run_on_main(apply)
+
+    def stop_icon(self) -> None:
+        icon = self.icon
+        if icon is None:
+            return
+        self._run_on_main(icon.stop)
+
+    # --- 메뉴 액션(메인 스레드에서 호출되지만 즉시 돌아온다) ---
+    def quit_action(self, icon: Any = None, _item: Any = None) -> None:
+        if self.quitting.is_set():
+            return
+        self.quitting.set()
+        self._push_title()
+
+        def work() -> None:
+            try:
+                self._on_quit()
+            except Exception:  # noqa: BLE001
+                logger.exception("트레이 종료 처리 실패")
+            finally:
+                self.stop_icon()
+
+        threading.Thread(target=work, name="trader-tray-quit", daemon=True).start()
+
+    def pause_action(self, icon: Any = None, _item: Any = None) -> None:
+        def work() -> None:
+            try:
+                self._on_toggle_pause()
+                self.refresh_state()
+            except Exception:  # noqa: BLE001 - 원장 잠금 등
+                logger.exception("일시정지 토글 실패")
+
+        threading.Thread(target=work, name="trader-tray-pause", daemon=True).start()
+
+
+QUITTING_TITLE = "trader · 종료 중"
+STOPPED_TITLE = "trader · 데몬 중단"
+
+
 def run_tray(
     *,
     state_fn: Callable[[], TrayState],
@@ -161,55 +269,57 @@ def run_tray(
     icon_dir: Path,
     poll_s: float = 30.0,
     stop_event: threading.Event | None = None,
+    finished: threading.Event | None = None,
 ) -> None:
-    """메인 스레드에서 아이콘을 띄우고 종료 메뉴·on_quit 까지 블로킹한다.
-    돌아오면 아이콘은 내려간 뒤다."""
+    """메인 스레드에서 아이콘을 띄우고 종료 메뉴·on_quit 까지 블로킹한다. 돌아오면 아이콘은
+    내려간 뒤다. `on_quit` 은 워커 스레드에서 돌고 그동안 제목이 '종료 중' 이다(런루프 유지).
+    `finished` 가 서면(데몬 스레드 종료) 제목을 바꾸고 아이콘을 내린다."""
     try:
         import pystray
     except Exception as e:  # ImportError 외에 macOS 에서 AppKit 바인딩 오류도 온다
         raise TrayUnavailable(f"트레이를 띄울 수 없습니다: {e}") from e
 
-    def item(key: str, label_fn, action, checked_fn=None):
-        return pystray.MenuItem(label_fn, action, checked=checked_fn)
+    ctl = TrayController(
+        state_fn=state_fn, on_toggle_pause=on_toggle_pause, on_quit=on_quit, initial=state_fn()
+    )
 
     def label(key: str):
-        return lambda _item: next(i.label for i in menu_model(state_fn()) if i.key == key)
-
-    def quit_action(icon, _item):
-        try:
-            on_quit()
-        finally:
-            icon.stop()
-
-    def pause_action(icon, _item):
-        on_toggle_pause()
-        icon.title = title_text(state_fn())
+        return lambda _item: ctl.label(key)
 
     menu = pystray.Menu(
-        item("open_web", label("open_web"), lambda icon, it: on_open_web()),
-        item("toggle_pause", label("toggle_pause"), pause_action, lambda _it: state_fn().paused),
-        item("open_logs", label("open_logs"), lambda icon, it: on_open_logs()),
+        pystray.MenuItem(label("open_web"), lambda icon, it: on_open_web()),
+        pystray.MenuItem(
+            label("toggle_pause"), ctl.pause_action, checked=lambda _it: ctl.checked("toggle_pause")
+        ),
+        pystray.MenuItem(label("open_logs"), lambda icon, it: on_open_logs()),
         pystray.Menu.SEPARATOR,
-        item("quit", label("quit"), quit_action),
+        pystray.MenuItem(label("quit"), ctl.quit_action),
     )
     icon = pystray.Icon(
-        "trader", icon_image(icon_dir, dark_menubar=False), title=title_text(state_fn()), menu=menu
+        "trader", icon_image(icon_dir, dark_menubar=False), title=ctl.title(), menu=menu
     )
+    ctl.icon = icon
     stop = threading.Event()
 
     def refresh():
         tick = min(poll_s, 1.0)
         waited = 0.0
         while not stop.wait(tick):
+            if finished is not None and finished.is_set():  # 데몬 스레드가 끝났다(정상·오류)
+                if not ctl.quitting.is_set():
+                    ctl.quitting.set()
+                    on_main(lambda t=STOPPED_TITLE: setattr(icon, "title", t))
+                ctl.stop_icon()
+                return
             if stop_event is not None and stop_event.is_set():  # 시그널 등 바깥에서 종료 요청
-                icon.stop()
+                ctl.quit_action()
                 return
             waited += tick
             if waited < poll_s:
                 continue
             waited = 0.0
             try:
-                icon.title = title_text(state_fn())
+                ctl.refresh_state()
             except Exception:  # 원장 잠금 등 일시 오류는 다음 틱에
                 logger.debug("트레이 상태 갱신 실패", exc_info=True)
 

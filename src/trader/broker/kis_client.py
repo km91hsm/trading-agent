@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import threading
 import time
@@ -17,6 +18,14 @@ from trader.broker.tr_ids import BASE_URL, tr_id
 from trader.config import Env
 
 logger = logging.getLogger("trader.kis")
+
+
+class RateLimitBusy(KisApiError):
+    """레이트리미터 대기 상한(max_wait) 안에 차례가 오지 않았다 — 웹 호출이 503 으로 바꾼다."""
+
+    def __init__(self, limit: float) -> None:
+        super().__init__("BUSY", f"KIS 호출 대기 {limit:.0f}s 초과 (데몬 작업 중)", None)
+
 
 RATE_PER_SEC: dict[Env, int] = {"real": 20, "paper": 2}
 RETRY_CODE = "EGW00201"  # 초당 거래건수 초과 (HTTP 200·500 양쪽으로 온다, 실기 확인)
@@ -48,9 +57,27 @@ class RateLimiter:
         self._sleep = sleep
         self._calls: deque[float] = deque()
         self._lock = threading.Lock()
+        self._local = threading.local()
+
+    @contextlib.contextmanager
+    def max_wait(self, seconds: float | None):
+        """이 스레드의 호출이 레이트리미터에서 기다릴 최대 시간. 웹 요청(차트·잔고 새로고침)이
+        데몬의 백필·모니터와 같은 리미터를 쓸 때 수초 넘게 매달리지 않도록 503 으로 빠르게
+        실패하게 한다. None 이면 무제한(기본)."""
+        prev = getattr(self._local, "max_wait", None)
+        self._local.max_wait = seconds
+        try:
+            yield
+        finally:
+            self._local.max_wait = prev
 
     def acquire(self) -> None:
-        with self._lock:
+        limit = getattr(self._local, "max_wait", None)
+        waited = 0.0
+        acquired = self._lock.acquire(timeout=limit if limit is not None else -1)
+        if not acquired:
+            raise RateLimitBusy(limit or 0)
+        try:
             while True:
                 now = self._clock()
                 while self._calls and now - self._calls[0] >= 1.0:
@@ -58,7 +85,13 @@ class RateLimiter:
                 if len(self._calls) < self._rate:
                     self._calls.append(now)
                     return
-                self._sleep(max(1.0 - (now - self._calls[0]), 0.001))
+                wait = max(1.0 - (now - self._calls[0]), 0.001)
+                if limit is not None and waited + wait > limit:
+                    raise RateLimitBusy(limit)
+                waited += wait
+                self._sleep(wait)
+        finally:
+            self._lock.release()
 
 
 class KisClient:
@@ -77,6 +110,10 @@ class KisClient:
         self._http = http or httpx.Client(timeout=10)
         self._limiter = limiter or RateLimiter(RATE_PER_SEC[env])
         self._sleep: Callable[[float], None] = time.sleep
+
+    @property
+    def limiter(self) -> RateLimiter:
+        return self._limiter
 
     @property
     def base_url(self) -> str:

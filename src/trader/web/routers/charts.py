@@ -17,7 +17,7 @@ from trader.broker.errors import KisApiError
 from trader.config import MARKET_TZ
 from trader.ledger import repo
 from trader.orchestrator import tools
-from trader.web.routers._common import KST, deps_of, require_market
+from trader.web.routers._common import KST, deps_of, kis_wait, require_market
 
 router = APIRouter(prefix="/charts", tags=["charts"])
 
@@ -88,11 +88,12 @@ def charts(
         out_candles = hit[1]
     else:
         try:
-            candles = (
-                deps.market.get_daily_kr(ticker, days=days)
-                if m == "KR"
-                else deps.market.get_daily_us(ticker, exchange, days=days)
-            )
+            with kis_wait(deps.market):
+                candles = (
+                    deps.market.get_daily_kr(ticker, days=days)
+                    if m == "KR"
+                    else deps.market.get_daily_us(ticker, exchange, days=days)
+                )
         except KisApiError as e:
             raise HTTPException(status_code=502, detail=f"시세 조회 실패: {e}") from None
         out_candles = [
@@ -161,11 +162,12 @@ def minute_chart(
         out_candles = hit[1]
     else:
         try:
-            candles = (
-                deps.market.get_minute_kr(ticker, count=count)
-                if m == "KR"
-                else deps.market.get_minute_us(ticker, exchange, count=min(count, 120))
-            )
+            with kis_wait(deps.market):
+                candles = (
+                    deps.market.get_minute_kr(ticker, count=count)
+                    if m == "KR"
+                    else deps.market.get_minute_us(ticker, exchange, count=min(count, 120))
+                )
         except KisApiError as e:
             raise HTTPException(status_code=502, detail=f"시세 조회 실패: {e}") from None
         out_candles = [

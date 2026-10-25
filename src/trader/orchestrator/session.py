@@ -20,6 +20,8 @@ import signal
 import sqlite3
 import subprocess
 import tempfile
+import threading
+import time
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -187,12 +189,64 @@ def _finish_call(
     db.finish_run(conn, run_id, status, error)
 
 
+TERM_GRACE_S = 10.0  # SIGTERM 뒤 `trader tool` 이 주문 기록을 마칠 유예
+KILL_WAIT_S = 5.0
+CANCEL_POLL_S = 1.0
+
+
+class SessionCancelled(subprocess.TimeoutExpired):
+    """종료 요청(stop_event)으로 세션을 중단했다. TimeoutExpired 의 하위라 기존 처리 경로를 탄다."""
+
+
+def _signal_group(proc: subprocess.Popen, sig: int) -> None:
+    if os.name == "posix":
+        try:
+            os.killpg(proc.pid, sig)
+            return
+        except ProcessLookupError:
+            return
+        except PermissionError:
+            pass
+    try:
+        proc.terminate() if sig == signal.SIGTERM else proc.kill()
+    except ProcessLookupError:
+        pass
+
+
+def _drain(proc: subprocess.Popen, timeout: float) -> bool:
+    try:
+        proc.communicate(timeout=timeout)
+        return True
+    except subprocess.TimeoutExpired:
+        return False
+
+
+def terminate_group(proc: subprocess.Popen) -> None:
+    """SIGTERM → 유예(TERM_GRACE_S) → SIGKILL → 짧은 대기 → 파이프 닫기. 어느 단계도 무한히
+    기다리지 않는다(그룹을 벗어난 손자가 파이프를 쥐고 있어도 돌아온다)."""
+    _signal_group(proc, signal.SIGTERM)
+    if _drain(proc, TERM_GRACE_S):
+        return
+    _signal_group(proc, signal.SIGKILL)
+    if not _drain(proc, KILL_WAIT_S):
+        for stream in (proc.stdin, proc.stdout, proc.stderr):
+            try:
+                if stream is not None:
+                    stream.close()
+            except OSError:
+                pass
+
+
 def run_claude(cmd: list[str], **kw: Any) -> subprocess.CompletedProcess:
-    """subprocess.run 과 같은 인터페이스. 새 프로세스 그룹으로 띄우고 타임아웃이면 그룹을 통째로
-    죽인다 — subprocess.run 의 kill 은 claude 만 죽여 그 자식(`trader tool` 서브프로세스)이 고아로
-    남아 결정·주문을 계속 낼 수 있다. Windows 는 프로세스 그룹 신호가 없어 자식만 죽인다."""
+    """subprocess.run 과 같은 인터페이스. 새 프로세스 그룹으로 띄우고 타임아웃·취소(`cancel`
+    이벤트)면 그룹을 SIGTERM → 유예 → SIGKILL 로 정리한다 — subprocess.run 의 kill 은 claude 만
+    죽여 그 자식(`trader tool` 서브프로세스)이 고아로 남아 결정·주문을 계속 낼 수 있고, SIGKILL 을
+    바로 보내면 주문 접수 뒤 원장 기록 전에 죽을 수 있다. Windows 는 프로세스 그룹 신호가 없어
+    자식만 죽인다. 정리 대기는 유한하다(이전엔 communicate() 무한 대기로 데몬 종료가 멈출 수
+    있었다)."""
     timeout = kw.pop("timeout", None)
     stdin = kw.pop("input", None)
+    cancel: threading.Event | None = kw.pop("cancel", None)
     kw.pop("capture_output", None)
     posix = os.name == "posix"
     proc = subprocess.Popen(
@@ -203,18 +257,27 @@ def run_claude(cmd: list[str], **kw: Any) -> subprocess.CompletedProcess:
         start_new_session=posix,
         **kw,
     )
-    try:
-        out, err = proc.communicate(stdin, timeout=timeout)
-    except subprocess.TimeoutExpired:
-        if posix:
-            try:
-                os.killpg(proc.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-        else:
-            proc.kill()
-        proc.communicate()
-        raise
+    deadline = None if timeout is None else time.monotonic() + float(timeout)
+    pending_input = stdin
+    while True:
+        step = CANCEL_POLL_S if cancel is not None else None
+        if deadline is not None:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                terminate_group(proc)
+                raise subprocess.TimeoutExpired(cmd, timeout or 0)
+            step = left if step is None else min(step, left)
+        try:
+            out, err = proc.communicate(pending_input, timeout=step)
+            break
+        except subprocess.TimeoutExpired:
+            pending_input = None  # 첫 호출에서 stdin 은 이미 보냈다
+            if cancel is not None and cancel.is_set():
+                terminate_group(proc)
+                raise SessionCancelled(cmd, timeout or 0) from None
+            if deadline is not None and time.monotonic() >= deadline:
+                terminate_group(proc)
+                raise
     return subprocess.CompletedProcess(cmd, proc.returncode, out, err)
 
 
@@ -228,6 +291,7 @@ def run_session(
     claude_bin: Path | None = None,
     agents_dir: Path | None = None,
     state: Path | None = None,
+    cancel: threading.Event | None = None,
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
     brokers: dict[str, Any] | None = None,
     notifier: Any = None,
@@ -321,9 +385,7 @@ def run_session(
     cwd: Path | None = None
     try:
         # 호출자가 경로를 넘기면(테스트·dry-run) 그대로 쓰고, 아니면 settings/PATH 에서 찾는다
-        bin_path = (
-            bin_override if bin_override else claude_bin_mod.find_claude(settings.claude_bin)
-        )
+        bin_path = bin_override if bin_override else claude_bin_mod.find_claude(settings.claude_bin)
         # cwd 는 저장소 밖 임시 디렉터리 (claude 가 상위 CLAUDE.md·settings 를 탐색하지 못하게)
         cwd = Path(tempfile.mkdtemp(prefix="trader-claude-"))
         agents_file = cwd / "agents.json"
@@ -387,7 +449,10 @@ def run_session(
             cwd=str(cwd),
             shell=False,
             timeout=settings.llm.timeout_s,
+            **({"cancel": cancel} if cancel is not None else {}),
         )
+    except SessionCancelled:
+        return fail("세션 중단 (종료 요청)")
     except subprocess.TimeoutExpired:
         return fail(f"세션 타임아웃 ({settings.llm.timeout_s}s)")
     except OSError as e:  # 실행파일 없음·권한 등: running 행을 남기지 않고 오류로 닫는다

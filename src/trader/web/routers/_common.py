@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+
 from fastapi import HTTPException, Request
 
 from trader.config import KST, AccountConfig
@@ -32,3 +34,24 @@ def require_market(market: str | None, account: AccountConfig | None = None) -> 
 
 def today_kst(request: Request):
     return deps_of(request).now().astimezone(KST).date()
+
+
+WEB_KIS_WAIT_S = 2.0  # 웹 요청이 KIS 레이트리미터에서 기다릴 최대 시간 (넘으면 503)
+
+
+@contextlib.contextmanager
+def kis_wait(market_or_broker):
+    """웹 라우터의 KIS 호출을 짧은 대기 상한으로 감싼다. 데몬이 백필·모니터로 리미터를 점유 중이면
+    차트·새로고침이 수십 초 매달리는 대신 503 '잠시 뒤 다시' 로 바로 돌아온다."""
+    from trader.broker.kis_client import RateLimitBusy
+
+    client = getattr(market_or_broker, "client", None)
+    limiter = getattr(client, "limiter", None)
+    if limiter is None:
+        yield
+        return
+    try:
+        with limiter.max_wait(WEB_KIS_WAIT_S):
+            yield
+    except RateLimitBusy as e:
+        raise HTTPException(status_code=503, detail=f"{e} — 잠시 뒤 다시 시도") from None

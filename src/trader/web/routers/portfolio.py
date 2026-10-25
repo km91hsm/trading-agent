@@ -10,7 +10,7 @@ from trader.broker.errors import KisApiError
 from trader.ledger import views
 from trader.orchestrator import run_store
 from trader.web.auth import require_token
-from trader.web.routers._common import deps_of, require_account, require_market
+from trader.web.routers._common import deps_of, kis_wait, require_account, require_market
 
 router = APIRouter(prefix="/portfolio", tags=["portfolio"])
 
@@ -62,14 +62,15 @@ def refresh(request: Request, account_id: str | None = None, market: str | None 
         raise HTTPException(status_code=400, detail=f"계좌 {acct.id} 브로커 없음(앱키 미설정)")
     with closing(deps.conn_factory()) as conn:
         try:
-            build_portfolio(
-                conn,
-                broker,
-                acct,
-                m,
-                run_store.run_date_for(m, deps.now()),  # executor·monitor 와 같은 운영일
-                memory_settings=deps.settings.memory,
-            )
+            with kis_wait(broker):
+                build_portfolio(
+                    conn,
+                    broker,
+                    acct,
+                    m,
+                    run_store.run_date_for(m, deps.now()),  # executor·monitor 와 같은 운영일
+                    memory_settings=deps.settings.memory,
+                )
         except (KisApiError, ValueError) as e:
             raise HTTPException(status_code=502, detail=f"잔고 조회 실패: {e}") from None
         snap = views.latest_positions(conn, acct.id, m)

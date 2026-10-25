@@ -27,11 +27,24 @@ _CHANNEL_RE = re.compile(r"^[A-Za-z0-9_\-]{1,64}$")
 _MEDIA = "{http://search.yahoo.com/mrss/}"
 
 
+TRANSCRIPT_TIMEOUT_S = 15.0
+
+
 def default_transcript(video_id: str) -> str:
-    """youtube-transcript-api 로 한국어·영어 자막을 받아 이어 붙인다."""
+    """youtube-transcript-api 로 한국어·영어 자막을 받아 이어 붙인다. 라이브러리의 requests
+    세션은 타임아웃이 없어(TLS 읽기가 멈추면 analyze 잡이 heavy 락을 쥔 채 영원히 기다린다)
+    기본 타임아웃을 주는 세션을 넣는다."""
+    import requests
     from youtube_transcript_api import YouTubeTranscriptApi
 
-    fetched = YouTubeTranscriptApi().fetch(video_id, languages=["ko", "en"])
+    class _TimeoutSession(requests.Session):
+        def request(self, *a, **kw):  # type: ignore[override]
+            kw.setdefault("timeout", TRANSCRIPT_TIMEOUT_S)
+            return super().request(*a, **kw)
+
+    fetched = YouTubeTranscriptApi(http_client=_TimeoutSession()).fetch(
+        video_id, languages=["ko", "en"]
+    )
     return " ".join(s.text for s in fetched)
 
 

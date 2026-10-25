@@ -38,6 +38,10 @@ class KisBroker:
         self.account = account
         self._client = client
 
+    @property
+    def client(self):
+        return self._client
+
     def _check_market(self, market: Market) -> None:
         if market not in self.account.markets:
             raise ValueError(f"계좌 '{self.account.id}' 는 {market} 시장을 쓰지 않습니다")

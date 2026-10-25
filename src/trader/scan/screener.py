@@ -36,6 +36,7 @@ def run_screen(
     brokers: dict[str, Any] | None = None,
     watch: list[str] | None = None,
     asof: datetime | None = None,
+    cancel: Any | None = None,
 ) -> dict:
     """{picks, analyze_targets, session}. analyze_targets = picks + 보유종목 + watch (중복 제거)."""
     session_result = None
@@ -54,7 +55,14 @@ def run_screen(
             candidates=candidates[:30],
         )
         session_result = session_mod.run_session(
-            spec, settings, conn, accounts, state=state, now=now, brokers=brokers or {}
+            spec,
+            settings,
+            conn,
+            accounts,
+            state=state,
+            now=now,
+            brokers=brokers or {},
+            cancel=cancel,
         )
         screened = read_checkpoint(run_store.market_dir(date, market, state), "_screen") or {}
         picks = list((screened.get("data") or {}).get("picks") or [])

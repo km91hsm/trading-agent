@@ -196,3 +196,26 @@ def test_egw00201_backs_off_up_to_three_times(real_client, respx_mock, monkeypat
     with pytest.raises(KisApiError) as e:
         real_client.get(PRICE, "DOM_PRICE", {})
     assert e.value.msg_cd == "EGW00201"
+
+
+def test_rate_limiter_max_wait_raises_busy_instead_of_sleeping():
+    """웹 요청은 리미터에서 오래 기다리지 않고 RateLimitBusy(→503) 로 바로 실패한다."""
+    from trader.broker.kis_client import RateLimitBusy, RateLimiter
+
+    clock = {"t": 0.0}
+    slept: list[float] = []
+
+    def sleep(s: float) -> None:
+        slept.append(s)
+        clock["t"] += s
+
+    lim = RateLimiter(1, clock=lambda: clock["t"], sleep=sleep)
+    lim.acquire()  # 1/s 를 다 썼다
+    with lim.max_wait(0.5), pytest.raises(RateLimitBusy):
+        lim.acquire()
+    assert slept == []  # 상한을 넘기는 대기는 시작도 하지 않는다
+    with lim.max_wait(2.0):
+        lim.acquire()  # 1초 대기는 상한 안
+    assert len(slept) == 1 and slept[0] <= 1.0
+    lim.acquire()  # 상한 밖(기본)에서는 평소처럼 기다린다
+    assert len(slept) == 2

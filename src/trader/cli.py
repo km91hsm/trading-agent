@@ -1087,9 +1087,7 @@ def _run_with_tray(deps, daemon_mod, *, url: str, finished: threading.Event) -> 
     result: dict[str, Any] = {}
 
     def scheduler_factory():
-        from apscheduler.schedulers.blocking import BlockingScheduler
-
-        holder["scheduler"] = BlockingScheduler(timezone=KST)
+        holder["scheduler"] = daemon_mod.make_scheduler()
         return holder["scheduler"]
 
     def run_daemon() -> None:
@@ -1149,6 +1147,7 @@ def _run_with_tray(deps, daemon_mod, *, url: str, finished: threading.Event) -> 
             on_quit=shutdown,
             icon_dir=bundle.icons_dir(),
             stop_event=deps.stop_event,
+            finished=finished,
         )
     except tray.TrayUnavailable as e:
         typer.echo(f"트레이 없이 실행합니다 ({e}). 종료는 Ctrl+C.")
