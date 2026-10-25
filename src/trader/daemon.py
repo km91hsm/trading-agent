@@ -32,7 +32,7 @@ from trader.ledger import db
 from trader.notify.telegram import Notifier, NullNotifier
 from trader.orchestrator import run_store
 from trader.platform import paths
-from trader.platform.procs import pid_alive
+from trader.platform.procs import process_start, same_process
 
 logger = logging.getLogger("trader.daemon")
 TELEGRAM_POLL_S = 30
@@ -50,12 +50,15 @@ class Lock:
     def __init__(self, path: Path) -> None:
         self.path = path
 
-    def _holder_pid(self) -> int:
+    def _holder(self) -> tuple[int, str | None]:
         try:
             data = json.loads(self.path.read_text(encoding="utf-8"))
-            return int(data.get("pid", 0))
+            return int(data.get("pid", 0)), data.get("proc_start") or None
         except (ValueError, OSError):
-            return 0
+            return 0, None
+
+    def _holder_pid(self) -> int:
+        return self._holder()[0]
 
     FRESH_S = 10  # 내용 없는 잠금이 이 시간 안에 생겼으면 다른 데몬이 쓰는 중
 
@@ -84,7 +87,15 @@ class Lock:
         pid 를 읽을 수 없는 잠금은 방금 생긴 것이면 살아 있는 것으로(다른 데몬이 쓰는 중),
         오래됐으면 죽은 것으로 본다."""
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        payload = json.dumps({"pid": os.getpid(), "started_at": datetime.now(UTC).isoformat()})
+        payload = json.dumps(
+            {
+                "pid": os.getpid(),
+                "started_at": datetime.now(UTC).isoformat(),
+                # pid 재사용 대비(재부팅 뒤 다른 프로세스가 같은 pid 를 받으면 '실행 중' 으로 오판해
+                # 데몬이 영영 뜨지 않았다): 프로세스 시작 시각 식별자를 함께 적고 비교한다
+                "proc_start": process_start(os.getpid()),
+            }
+        )
         tmp = self.path.with_name(f"{self.path.name}.{os.getpid()}.tmp")
         tmp.write_text(payload, encoding="utf-8")
         try:
@@ -92,8 +103,8 @@ class Lock:
                 try:
                     self._create(tmp, payload)
                 except FileExistsError:
-                    pid = self._holder_pid()
-                    if pid and pid_alive(pid):  # 같은 프로세스가 두 번 잡는 것도 거부한다
+                    pid, start = self._holder()
+                    if pid and same_process(pid, start):  # 같은 프로세스가 두 번 잡는 것도 거부
                         logger.error("데몬이 이미 실행 중입니다 (pid %s): %s", pid, self.path)
                         return False
                     if not pid and self._fresh():
@@ -774,6 +785,67 @@ def _hedge_body(deps: DaemonDeps, market: str) -> dict:
         conn.close()
 
 
+def _enqueue_reevaluate(deps: DaemonDeps, params: dict) -> int | None:
+    """monitor → 큐. 같은 종목 요청이 대기·실행 중이면 None(중복)."""
+    conn = deps.conn_factory()
+    try:
+        return jobq.enqueue(conn, "reevaluate", params, source="daemon", now=deps.now())
+    except jobq.DuplicateRequest:
+        return None
+    finally:
+        conn.close()
+
+
+def _reevaluate_request(deps: DaemonDeps, p: dict) -> dict:
+    """큐에서 꺼낸 재평가 1건: 트리거 행을 읽어 `resume.reevaluate` 세션을 돈다(heavy)."""
+    from trader.ledger import repo
+    from trader.orchestrator import resume
+    from trader.orchestrator.run_store import run_date_for
+    from trader.orchestrator.session import run_session
+
+    _close_stale_sessions(deps)
+    market = p["market"]
+    conn = deps.conn_factory()
+    try:
+        trig = repo.get_trigger(conn, int(p["trigger_id"]))
+        if trig is None:
+            return {"error": f"트리거 없음 #{p['trigger_id']}"}
+        if trig.get("handled_at"):
+            return {"skipped": "이미 처리된 트리거"}
+        today = run_date_for(market, deps.now())
+        res = resume.reevaluate(
+            deps.settings,
+            conn,
+            deps.accounts,
+            market=market,
+            date=today,
+            ticker=p["ticker"],
+            exchange=p.get("exchange"),
+            trigger_id=int(p["trigger_id"]),
+            trigger={
+                "kind": trig["kind"],
+                "price": str(trig["price"]) if trig.get("price") is not None else None,
+                "detail": trig.get("detail") or {},
+            },
+            brokers=deps.brokers,
+            now=deps.now,
+            dry_run=deps.dry_run,
+            state=deps.state,
+            session_runner=deps.session_runner or run_session,
+            notifier=deps.notifier,
+        )
+        for tid in p.get("trigger_ids") or []:
+            repo.mark_trigger_handled(
+                conn, int(tid), resume.handled_marker(res), handled_at=deps.now().isoformat()
+            )
+    finally:
+        conn.close()
+    out = {"ticker": p["ticker"], "ok": res.ok, "session_id": res.session_id}
+    if not res.ok:
+        out["error"] = res.error or "재평가 세션 실패"
+    return out
+
+
 def _monitor_body(deps: DaemonDeps, market: str) -> dict:
     from trader.orchestrator import monitor as monitor_mod
     from trader.orchestrator.run_store import run_date_for
@@ -799,6 +871,7 @@ def _monitor_body(deps: DaemonDeps, market: str) -> dict:
             notifier=deps.notifier,
             now=deps.now,
             session_runner=deps.session_runner or run_session,
+            enqueue_reevaluate=lambda params: _enqueue_reevaluate(deps, params),
             dry_run=deps.dry_run,
             state=deps.state,
             exchanges={u.symbol: u.exchange for u in (deps.universe.us if deps.universe else [])},
@@ -1091,6 +1164,8 @@ def queued_job_body(
         return lambda: _scan_analyze_body(deps, p["market"])
     if kind == "market_view":
         return lambda: _market_view_body(deps, p["market"])
+    if kind == "reevaluate":
+        return lambda: _reevaluate_request(deps, p)
     if kind == "analyze_ticker":
         return lambda: _analyze_ticker_request(deps, p)
     if kind in ("features_backfill", "features_snapshot", "features_derive"):
@@ -1300,7 +1375,7 @@ def run(
         jobs = build_jobs(deps.schedule, deps.settings, markets=list(deps.settings.markets))
         hb = Heartbeat(base / heartbeat_mod.FILE_NAME)
         hb.start(pid=os.getpid(), started_at=datetime.now(UTC), jobs=jobs)
-        _install_heartbeat_listener(scheduler, hb)
+        _install_heartbeat_listener(scheduler, hb, deps=deps, jobs=jobs)
         for job in jobs:
             scheduler.add_job(
                 partial(
@@ -1316,7 +1391,7 @@ def run(
                 name=job.id,
                 max_instances=1,
                 coalesce=True,
-                misfire_grace_time=120,
+                misfire_grace_time=misfire_grace_for(job),
             )
         logger.info("데몬 시작: 잡 %d개, web=%s", len(jobs), web)
         if install_signals:
@@ -1331,11 +1406,50 @@ def run(
         lock.release()
 
 
-def _install_heartbeat_listener(scheduler: Any, hb: Heartbeat) -> None:
+SCAN_MISFIRE_GRACE_S = 3600  # 절전 등으로 늦어도 1시간 안이면 그냥 돈다(하루를 잃는 것보다 낫다)
+DEFAULT_MISFIRE_GRACE_S = 120
+
+
+def misfire_grace_for(job: Job) -> int:
+    return SCAN_MISFIRE_GRACE_S if job.kind == "scan_analyze" else DEFAULT_MISFIRE_GRACE_S
+
+
+def on_cron_missed(deps: DaemonDeps, job: Job) -> dict:
+    """cron 잡을 놓쳤다(grace 초과): 알림 1건 + scan_analyze 는 큐에 따라잡기 1회(중복이면 무시).
+    이전엔 하트비트에 missed 만 적혀 Mac 이 07:30 에 잠들어 있으면 그날 분석이 조용히 사라졌다."""
+    out: dict[str, Any] = {"job": job.id, "queued": False}
+    try:
+        deps.notifier.send(f"[잡 놓침] {job.id} — 예정 시각을 지나 실행되지 않음")
+    except Exception:  # noqa: BLE001
+        pass
+    if job.kind == "scan_analyze" and job.market:
+        conn = deps.conn_factory()
+        try:
+            jobq.enqueue(
+                conn, "scan_analyze", {"market": job.market}, source="daemon", now=deps.now()
+            )
+            out["queued"] = True
+        except jobq.DuplicateRequest:
+            pass
+        except Exception as e:  # noqa: BLE001
+            logger.warning("놓친 scan_analyze 따라잡기 등록 실패 %s: %s", job.id, e)
+        finally:
+            conn.close()
+    return out
+
+
+def _install_heartbeat_listener(
+    scheduler: Any,
+    hb: Heartbeat,
+    *,
+    deps: DaemonDeps | None = None,
+    jobs: list[Job] | None = None,
+) -> None:
     """APScheduler 이벤트로 잡별 '다음 예정'·놓침을 하트비트에 적는다 (리스너가 없는 가짜는 통과).
 
     run_job 이 예외를 삼키므로 JOB_ERROR 는 사실상 오지 않고 결과는 run_job 이 적는다. 여기서는
-    EXECUTED 뒤 next_run_time 갱신, MISSED·MAX_INSTANCES(앞 실행이 길어 건너뜀) 를 missed 로."""
+    EXECUTED 뒤 next_run_time 갱신, MISSED·MAX_INSTANCES(앞 실행이 길어 건너뜀) 를 missed 로,
+    cron 잡 MISSED 는 `on_cron_missed`(알림·따라잡기)."""
     add = getattr(scheduler, "add_listener", None)
     if add is None:
         return
@@ -1343,6 +1457,7 @@ def _install_heartbeat_listener(scheduler: Any, hb: Heartbeat) -> None:
         from apscheduler import events as ev
     except ImportError:  # pragma: no cover - 의존성 누락
         return
+    by_id = {j.id: j for j in (jobs or [])}
 
     def _next(job_id: str) -> None:
         try:
@@ -1360,6 +1475,12 @@ def _install_heartbeat_listener(scheduler: Any, hb: Heartbeat) -> None:
             # 대기열 틱은 긴 요청을 도는 동안 10초마다 MAX_INSTANCES 가 나므로 놓침이 아니다
             if not (event.code == ev.EVENT_JOB_MAX_INSTANCES and event.job_id == QUEUE_JOB_ID):
                 hb.job_missed(event.job_id, datetime.now(UTC))
+            job = by_id.get(event.job_id)
+            if event.code == ev.EVENT_JOB_MISSED and deps is not None and job and job.cron:
+                try:
+                    on_cron_missed(deps, job)
+                except Exception:  # noqa: BLE001 - 리스너는 죽지 않는다
+                    logger.exception("놓친 잡 처리 실패 %s", event.job_id)
         _next(event.job_id)
 
     add(on_started, ev.EVENT_SCHEDULER_STARTED)

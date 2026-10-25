@@ -118,6 +118,9 @@ class MonitorContext:
     dry_run: bool = False
     state: Path | None = None
     exchanges: dict[str, str] = field(default_factory=dict)  # US ticker → NAS|NYS|AMS
+    # 데몬: 재평가 세션(≤ llm.timeout_s)을 틱 안에서 돌리지 않고 작업 대기열로 넘긴다 — 세션이
+    # 도는 동안 손절 점검(60초 틱)이 멈추면 안 된다. None 이면 CLI 처럼 인라인 실행
+    enqueue_reevaluate: Callable[[dict], int | None] | None = None
 
 
 def _exchange(ctx: MonitorContext, pos: Position) -> str | None:
@@ -249,6 +252,23 @@ def monitor_once(ctx: MonitorContext, *, market: str, today: date) -> dict:
             logger.info("재평가 생략 %s %s: %s", market, pos.ticker, why)
             continue
         s0 = signals[0]
+        if ctx.enqueue_reevaluate is not None:
+            params = {
+                "market": market,
+                "ticker": pos.ticker,
+                "exchange": _exchange(ctx, pos),
+                "trigger_id": first_id,
+                "trigger_ids": tids[1:],
+            }
+            try:
+                rid = ctx.enqueue_reevaluate(params)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("재평가 큐 등록 실패 %s %s: %s", market, pos.ticker, e)
+                continue
+            if rid is not None:
+                logger.info("재평가 큐 등록 #%s %s %s", rid, market, pos.ticker)
+                result["queued"] = result.get("queued", 0) + 1
+            continue
         try:
             res = resume.reevaluate(
                 ctx.settings,
@@ -326,6 +346,69 @@ def _blocked_by_open_sell(
     return repo.has_open_order_today(ctx.conn, account.id, ticker, "SELL", local_day, **kw)
 
 
+def _cancellable_resting_sell(row, quote: Decimal) -> bool:
+    """현재가보다 위에 걸린 지정가 SELL(아침 TRIM 등)만 손절 전 취소 대상이다. 시장가·현재가
+    이하 지정가는 곧 체결될(또는 이미 낸 손절) 주문이라 취소하지 않고 그대로 둔다."""
+    if row["order_type"] != "LIMIT" or row["price"] is None:
+        return False
+    return Decimal(str(row["price"])) > quote
+
+
+def _cancel_open_sells(
+    ctx: MonitorContext,
+    account: AccountConfig,
+    market: str,
+    pos: Position,
+    local_day: date,
+    quote: Decimal,
+) -> bool:
+    """손절 전 같은 종목의 당일 미체결 SELL 중 현재가 위 지정가를 전부 취소한다. 살아 있는
+    SELL 이 하나도 남지 않으면 True(손절 진행), 하나라도 남으면 False(막힌 채 둔다)."""
+    broker = ctx.brokers.get(account.id)
+    rows = repo.open_orders_today(
+        ctx.conn, account.id, pos.ticker, "SELL", local_day, market=market
+    )
+    if broker is None or ctx.dry_run:
+        return False
+    if not all(_cancellable_resting_sell(r, quote) for r in rows):
+        return False  # 시장가·현재가 이하 지정가(이미 낸 손절 포함)가 살아 있다 → 중복 방지
+    ok = True
+    for r in rows:
+        if not r["order_no"]:  # 응답 없는(unknown) 주문은 번호가 없어 취소할 수 없다
+            ok = False
+            continue
+        try:
+            res = broker.cancel_order(
+                str(r["order_no"]),
+                market=market,
+                org_no=r["org_no"],
+                ticker=pos.ticker,
+                exchange=_exchange(ctx, pos),
+                qty=int(r["qty"]),
+            )
+        except (KisApiError, ValueError) as e:
+            logger.warning(
+                "손절 전 미체결 SELL 취소 실패 %s %s #%s: %s",
+                account.id,
+                pos.ticker,
+                r["order_no"],
+                e,
+            )
+            ok = False
+            continue
+        if res.accepted:
+            repo.set_order_status(ctx.conn, int(r["id"]), "cancelled")
+            logger.info("손절 전 미체결 SELL 취소 %s %s #%s", account.id, pos.ticker, r["order_no"])
+        else:
+            ok = False
+    if not ok:
+        ctx.notifier.send(
+            f"[손절 보류] {account.id} {market} {_label(ctx, market, pos.ticker)} — "
+            f"당일 미체결 SELL 을 취소하지 못해 손절을 내지 않음 (다음 점검에서 재시도)"
+        )
+    return ok
+
+
 def _sell_now(
     ctx: MonitorContext,
     account: AccountConfig,
@@ -342,7 +425,10 @@ def _sell_now(
     23:30 KST 에 낸 손절 매도를 00:30 KST 점검이 놓치고 다시 낸다)."""
     local_day = ctx.now().astimezone(MARKET_TZ.get(market, KST)).date()
     if _blocked_by_open_sell(ctx, account, market, pos.ticker, local_day):
-        return 0
+        # 아침 TRIM 지정가 같은 미체결 SELL 이 하루 종일 손절을 막으면 안 된다 → 취소하고 진행.
+        # 취소가 안 되면(응답 실패·이미 체결 중) 보수적으로 막힌 채 둔다
+        if not _cancel_open_sells(ctx, account, market, pos, local_day, quote):
+            return 0
     unrecorded = f"sl_unrecorded:{account.id}:{market}:{pos.ticker}:{local_day.isoformat()}"
     if control.get_flag(ctx.conn, unrecorded):
         return 0  # 접수됐지만 원장에 못 적은 손절이 있다 (아래) — 오늘은 다시 내지 않는다

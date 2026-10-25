@@ -130,3 +130,30 @@ def test_positions_us_carry_exchange_code(paper_client, respx_mock):
     kr = KisBroker(make_account("paper-main", "paper", "auto"), paper_client)
     _route(respx_mock, "/uapi/domestic-stock/v1/trading/inquire-balance", "balance_kr.json", load)
     assert kr.get_positions("KR")[0].exchange is None
+
+
+def test_cash_kr_carries_total_evaluation_as_nav(paper_client, respx_mock):
+    """NAV 는 예수금(dnca_tot_amt, 미결제) + 평가 합이 아니라 잔고 응답의 총평가(tot_evlu_amt)다 —
+    체결 뒤 2영업일 동안 매수분이 이중 계산돼 일일손실 −5% 오탐이 났다."""
+    from conftest_broker import load
+
+    _route(respx_mock, "/uapi/domestic-stock/v1/trading/inquire-balance", "balance_kr.json", load)
+    positions, cash = KisBroker(
+        make_account("paper-main", "paper", "auto"), paper_client
+    ).get_balance("KR")
+    assert cash.nav == Decimal("10015000")
+    assert positions[0].sellable_qty == 10 and positions[0].sell_qty == 10
+
+
+def test_us_balance_and_fills_query_all_three_exchanges(paper_client, respx_mock):
+    """US 잔고·체결은 NASD 고정이 아니라 NASD·NYSE·AMEX 를 모두 조회해 합친다(중복 제거)."""
+    from conftest_broker import load
+
+    bal = _route(
+        respx_mock, "/uapi/overseas-stock/v1/trading/inquire-balance", "balance_us.json", load
+    )
+    broker = KisBroker(make_account("paper-main", "paper", "auto", ["KR", "US"]), paper_client)
+    positions = broker.get_positions("US")
+    assert bal.call_count == 3
+    tickers = [p.ticker for p in positions]
+    assert len(tickers) == len(set(tickers))  # 같은 응답을 세 번 받아도 종목은 한 번

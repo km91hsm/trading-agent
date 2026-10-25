@@ -349,3 +349,60 @@ def test_hedge_order_exempts_rules_and_uses_hedge_cap():
     )
     v4 = _eval({**dec, "action": "SELL", "target_weight": 0.0}, p2, price="5000", is_hedge=True)
     assert v4.approved and v4.adjusted_qty == 100
+
+
+def test_sell_uses_sellable_qty_not_holding_qty():
+    """매도가능수량(ord_psbl_qty)이 보유량보다 적으면(미체결 매도 등) 그만큼만 판다."""
+    from decimal import Decimal
+
+    from trader.agents.schemas import Decision
+    from trader.broker.models import Position
+    from trader.config import RiskLimits
+    from trader.risk import rules
+
+    held = Position(
+        ticker="005930",
+        market="KR",
+        qty=10,
+        avg_price=Decimal("70000"),
+        current_price=Decimal("63000"),
+        eval_amount=Decimal("630000"),
+        pnl_pct=-0.1,
+        sellable_qty=6,
+    )
+    pf = rules.Portfolio(
+        account_id="a",
+        market="KR",
+        nav=Decimal("10000000"),
+        cash_available=Decimal("5000000"),
+        positions={"005930": held},
+        today_pnl_pct=0.0,
+        today_buy_tickers=set(),
+        today_order_amount=Decimal(0),
+        held_since={},
+        trades_this_week=0,
+    )
+    dec = Decision(
+        ticker="005930",
+        action="SELL",
+        target_weight=0.0,
+        order_type="MARKET",
+        limit_price=None,
+        stop_loss=None,
+        take_profit=None,
+        horizon_days=1,
+        confidence=1.0,
+        rationale="x",
+        invalidation_conditions=[],
+    )
+    v = rules.evaluate(
+        dec,
+        pf,
+        limits=RiskLimits(),
+        stance="normal",
+        market="KR",
+        price=Decimal("63000"),
+        today=__import__("datetime").date(2026, 10, 9),
+        is_stop_loss=True,
+    )
+    assert v.adjusted_qty == 6 and any("매도가능수량 6" in r for r in v.reasons)

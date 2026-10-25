@@ -179,11 +179,17 @@ def evaluate(
         if held is None or held.qty <= 0:
             qty = 0
             rejected.append("보유하지 않은 종목은 매도할 수 없음")
-        elif decision.action == "SELL":
-            qty = held.qty
-        else:  # TRIM: 목표 비중까지만 줄인다
-            keep_value = Decimal(str(decision.target_weight)) * nav
-            qty = min(held.qty, _floor_qty(max(held.eval_amount - keep_value, Decimal(0)), price))
+        else:
+            sellable = getattr(held, "sell_qty", held.qty)  # 매도가능수량(미체결 매도분 제외)
+            if sellable < held.qty:
+                reasons.append(f"매도가능수량 {sellable} (보유 {held.qty})")
+            if decision.action == "SELL":
+                qty = sellable
+            else:  # TRIM: 목표 비중까지만 줄인다
+                keep_value = Decimal(str(decision.target_weight)) * nav
+                qty = min(
+                    sellable, _floor_qty(max(held.eval_amount - keep_value, Decimal(0)), price)
+                )
 
     # --- 거부 규칙 (전부 수집) ---------------------------------------------------------
     if side == "BUY" and is_hedge:

@@ -1093,3 +1093,49 @@ def test_section_read_for_fundamental_and_sentiment_includes_quote(ctx, project)
             ctx, ticker="005930", market="KR", date=D, stage="00_inputs", section=section
         )
         assert r["ok"] and r["data"]["quote"]["data"]["price"] == "71500", section
+
+
+def test_dry_run_risk_checks_do_not_block_live_resume(ctx, project, monkeypatch):
+    """아침 `--dry-run`(또는 FAKE) 이 남긴 40_ 판정은 실행이 아니다 — 실전 세션의 재제출은 실행을
+    재개해야 한다(이전엔 '이미 실행' 으로 보고 그날 주문을 내지 않았다)."""
+    from helpers_agents import ok_report, ok_turn
+
+    _inputs(project)
+    d = run_dir(D, "KR", "005930")
+    for role in ("technical", "fundamental"):
+        tools.checkpoint_write(
+            ctx,
+            ticker="005930",
+            market="KR",
+            date=D,
+            stage=f"10_analyst_{role}",
+            payload=ok_report(role=role),
+            agent=f"analyst-{role}",
+        )
+    for side in ("bull", "bear"):
+        tools.checkpoint_write(
+            ctx,
+            ticker="005930",
+            market="KR",
+            date=D,
+            stage=f"20_debate_r0_{side}",
+            payload=ok_turn(side, 0),
+            agent=f"researcher-{side}",
+        )
+    tools.checkpoint_summarize(ctx, ticker="005930", market="KR", date=D)
+    ctx.dry_run = True
+    first = tools.submit_decision(
+        ctx, ticker="005930", market="KR", date=D, payload=ok_decision(action="HOLD")
+    )
+    assert first["ok"] and not first.get("already")
+    assert read_checkpoint(d, "40_risk_check_paper-main")["data"]["dry_run"] is True
+    ctx.dry_run = False
+    second = tools.submit_decision(
+        ctx, ticker="005930", market="KR", date=D, payload=ok_decision(action="HOLD")
+    )
+    assert second["ok"] and second["already"] and second.get("resumed_execution") is True
+    assert read_checkpoint(d, "40_risk_check_paper-main")["data"]["dry_run"] is False
+    third = tools.submit_decision(
+        ctx, ticker="005930", market="KR", date=D, payload=ok_decision(action="HOLD")
+    )
+    assert third["already"] and not third.get("resumed_execution")

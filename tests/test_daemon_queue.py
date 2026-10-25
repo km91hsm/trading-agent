@@ -219,3 +219,82 @@ def test_listener_ignores_max_instances_for_job_queue(project):
     assert hb._data["jobs"]["job_queue"]["last_status"] is None
     on_job(SimpleNamespace(code=ev.EVENT_JOB_MAX_INSTANCES, job_id="kr_scan_analyze"))
     assert hb._data["jobs"]["kr_scan_analyze"]["last_status"] == "missed"
+
+
+def test_reevaluate_request_runs_session_and_marks_sibling_triggers(conn):
+    from decimal import Decimal
+
+    from trader.broker.fake import FakeBroker
+    from trader.ledger import repo
+
+    deps = _deps(conn, FakeMarket(), now=lambda: NOW)
+    seen = []
+
+    def runner(spec, *a, **kw):
+        from trader.orchestrator.session import SessionResult
+
+        seen.append(spec)
+        return SessionResult(ok=True, session_id="s-re", fake=True)
+
+    deps.session_runner = runner
+    deps.brokers = {"paper-main": FakeBroker(deps.accounts[0])}
+    t1 = repo.insert_trigger(
+        conn,
+        market="KR",
+        ticker="005930",
+        kind="move_up",
+        detail={"pct": 0.08},
+        price=Decimal("76000"),
+        decision_id=None,
+    )
+    t2 = repo.insert_trigger(
+        conn,
+        market="KR",
+        ticker="005930",
+        kind="take_profit",
+        detail={},
+        price=Decimal("76000"),
+        decision_id=None,
+    )
+    out = daemon._reevaluate_request(
+        deps,
+        {
+            "market": "KR",
+            "ticker": "005930",
+            "exchange": None,
+            "trigger_id": t1,
+            "trigger_ids": [t2],
+        },
+    )
+    assert out["ok"] and seen[0].kind == "resume" and seen[0].trigger["kind"] == "move_up"
+    rows = conn.execute("SELECT id, handled_at, session_id FROM triggers ORDER BY id").fetchall()
+    assert all(r["handled_at"] for r in rows) and rows[1]["session_id"] == "s-re"
+    # 이미 처리된 트리거는 다시 세션을 띄우지 않는다
+    assert daemon._reevaluate_request(deps, {"market": "KR", "ticker": "005930", "trigger_id": t1})[
+        "skipped"
+    ]
+
+
+def test_missed_cron_notifies_and_enqueues_catch_up(conn):
+    deps = _deps(conn, FakeMarket(), now=lambda: NOW)
+
+    class Sent:
+        msgs: list[str] = []
+
+        def send(self, text, *, escape=True):
+            self.msgs.append(text)
+            return True
+
+    deps.notifier = Sent()
+    job = next(
+        j for j in daemon.build_jobs(SCHED, Settings(), markets=["KR"]) if j.id == "kr_scan_analyze"
+    )
+    assert daemon.misfire_grace_for(job) == daemon.SCAN_MISFIRE_GRACE_S
+    out = daemon.on_cron_missed(deps, job)
+    assert out["queued"] is True and any("[잡 놓침] kr_scan_analyze" in m for m in Sent.msgs)
+    assert jobq.list_recent(conn)[0]["kind"] == "scan_analyze"
+    assert daemon.on_cron_missed(deps, job)["queued"] is False  # 중복은 등록하지 않음
+    monitor_job = next(
+        j for j in daemon.build_jobs(SCHED, Settings(), markets=["KR"]) if j.kind == "monitor"
+    )
+    assert daemon.misfire_grace_for(monitor_job) == daemon.DEFAULT_MISFIRE_GRACE_S

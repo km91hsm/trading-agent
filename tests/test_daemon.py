@@ -822,3 +822,30 @@ def test_daemon_run_skips_signals_when_asked(project, conn, monkeypatch):
     assert called == []
     daemon.run(deps, web=False, scheduler_factory=FakeScheduler)
     assert len(called) == 1
+
+
+def test_lock_with_reused_pid_is_taken_over(project):
+    """재부팅 뒤 다른 프로세스가 잠금의 pid 를 받아도 시작 시각 식별자가 다르면 죽은 잠금으로
+    본다."""
+    p = project / "state" / "daemon.lock"
+    p.write_text(
+        json.dumps({"pid": os.getpid(), "started_at": "x", "proc_start": "not-this-process"}),
+        encoding="utf-8",
+    )
+    assert daemon.Lock(p).acquire() is True
+    data = json.loads(p.read_text(encoding="utf-8"))
+    assert data["pid"] == os.getpid()
+    from trader.platform.procs import process_start
+
+    assert data["proc_start"] == process_start(os.getpid())
+
+
+def test_heartbeat_status_not_alive_when_lock_pid_is_another_process(project):
+    from trader import heartbeat
+
+    (project / "state").mkdir(exist_ok=True)
+    (project / "state" / "daemon.lock").write_text(
+        json.dumps({"pid": os.getpid(), "proc_start": "other"}), encoding="utf-8"
+    )
+    st = heartbeat.read_status(project / "state", datetime.now(UTC), [])
+    assert st["alive"] is False

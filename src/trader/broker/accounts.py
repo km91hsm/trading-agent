@@ -19,8 +19,10 @@ from trader.config import KST, AccountConfig
 
 logger = logging.getLogger("trader.kis")
 
-# 미확인: NASD 고정 조회에 NYS/AMS 보유분이 포함되는지는 실기에서 확인한다 (TODO).
-US_EXCHANGE_CODE = "NASD"
+# US 잔고·체결은 거래소 코드별로 조회된다(NASD 고정이면 NYSE·AMEX 보유분이 보이지 않아 손절·헤지
+# 해제·체결 동기화가 전부 빠진다) → 세 거래소를 모두 돌려 합친다. 모의 2/s 라 잔고 1회당 3호출.
+US_EXCHANGE_CODES = ("NASD", "NYSE", "AMEX")
+US_EXCHANGE_CODE = US_EXCHANGE_CODES[0]  # 호환용
 
 
 def _name(v: Any) -> str | None:
@@ -65,14 +67,27 @@ class KisBroker:
         return self._client.get(path("DOM_BALANCE"), "DOM_BALANCE", params)
 
     def _balance_us(self) -> dict:
-        params = {
-            **self._acct(),
-            "OVRS_EXCG_CD": US_EXCHANGE_CODE,
-            "TR_CRCY_CD": "USD",
-            "CTX_AREA_FK200": "",
-            "CTX_AREA_NK200": "",
-        }
-        return self._client.get(path("OVS_BALANCE"), "OVS_BALANCE", params)
+        """세 거래소 잔고를 합친다(output1 은 종목·거래소로 중복 제거, output2 는 첫 응답)."""
+        merged: dict = {"output1": [], "output2": None}
+        seen: set[tuple[str, str]] = set()
+        for code in US_EXCHANGE_CODES:
+            params = {
+                **self._acct(),
+                "OVRS_EXCG_CD": code,
+                "TR_CRCY_CD": "USD",
+                "CTX_AREA_FK200": "",
+                "CTX_AREA_NK200": "",
+            }
+            data = self._client.get(path("OVS_BALANCE"), "OVS_BALANCE", params)
+            for r in _rows(data.get("output1")):
+                key = (str(r.get("ovrs_pdno") or ""), str(r.get("ovrs_excg_cd") or code))
+                if key in seen:
+                    continue
+                seen.add(key)
+                merged["output1"].append(r)
+            if merged["output2"] is None and data.get("output2") is not None:
+                merged["output2"] = data.get("output2")
+        return merged
 
     def get_balance(self, market: Market) -> tuple[list[Position], Cash]:
         """(보유 종목, 예수금) 을 한 번에. KR 은 inquire-balance 응답 하나(output1·output2)에서 둘을
@@ -99,6 +114,7 @@ class KisBroker:
                     eval_amount=_dec(r.get("evlu_amt")),
                     pnl_pct=float(_dec(r.get("evlu_pfls_rt"))) / 100,
                     name=_name(r.get("prdt_name")),
+                    sellable_qty=_int(r["ord_psbl_qty"]) if r.get("ord_psbl_qty") else None,
                 )
             )
         return out
@@ -106,10 +122,12 @@ class KisBroker:
     def _cash_kr(self, data: dict) -> Cash:
         rows = _rows(data.get("output2"))
         summary = rows[0] if rows else {}
+        nav_raw = summary.get("tot_evlu_amt") or summary.get("nass_amt")
         return Cash(
             currency="KRW",
             available=_dec(summary.get("prvs_rcdl_excc_amt", summary.get("dnca_tot_amt"))),
             total=_dec(summary.get("dnca_tot_amt")),
+            nav=_dec(nav_raw) if nav_raw not in (None, "") else None,
         )
 
     def get_positions(self, market: Market) -> list[Position]:
@@ -133,6 +151,7 @@ class KisBroker:
                     pnl_pct=float(_dec(r.get("evlu_pfls_rt"))) / 100,
                     exchange=US_QUOTE_EXCHANGE.get(str(r.get("ovrs_excg_cd") or "").upper()),
                     name=_name(r.get("ovrs_item_name")),
+                    sellable_qty=_int(r["ord_psbl_qty"]) if r.get("ord_psbl_qty") else None,
                 )
             )
         return out
@@ -155,10 +174,14 @@ class KisBroker:
             (r for r in _rows(data.get("output2")) if str(r.get("crcy_cd", "")).upper() == "USD"),
             {},
         )
+        o3 = _rows(data.get("output3"))
+        tot = (o3[0] if o3 else {}).get("tot_asst_amt") if o3 else None
         return Cash(
             currency="USD",
             available=_dec(usd.get("frcr_drwg_psbl_amt_1")),
             total=_dec(usd.get("frcr_dncl_amt_2")),
+            # 총자산(output3.tot_asst_amt, 외화 평가 합) — 실기 확인 항목. 없으면 None → 합산 방식
+            nav=_dec(tot) if tot not in (None, "") else None,
         )
 
     # --- 체결 조회 (Phase 6 fills 동기화) ---------------------------------------------
@@ -201,24 +224,37 @@ class KisBroker:
                     )
                 )
             return out
-        params = {
-            **self._acct(),
-            "PDNO": "",
-            "ORD_STRT_DT": ymd,
-            "ORD_END_DT": ymd,
-            "SLL_BUY_DVSN": "00",
-            "CCLD_NCCS_DVSN": "00",
-            "OVRS_EXCG_CD": US_EXCHANGE_CODE,
-            "SORT_SQN": "DS",
-            "ORD_DT": "",
-            "ORD_GNO_BRNO": "",
-            "ODNO": "",
-            "CTX_AREA_NK200": "",
-            "CTX_AREA_FK200": "",
-        }
-        data = self._client.get(path("OVS_CCLD_US"), "OVS_CCLD_US", params)
         out = []
-        for r in _rows(data.get("output")):
+        seen_us: set[tuple[str, str, str]] = set()
+        rows_us: list[dict] = []
+        for code in US_EXCHANGE_CODES:
+            params = {
+                **self._acct(),
+                "PDNO": "",
+                "ORD_STRT_DT": ymd,
+                "ORD_END_DT": ymd,
+                "SLL_BUY_DVSN": "00",
+                "CCLD_NCCS_DVSN": "00",
+                "OVRS_EXCG_CD": code,
+                "SORT_SQN": "DS",
+                "ORD_DT": "",
+                "ORD_GNO_BRNO": "",
+                "ODNO": "",
+                "CTX_AREA_NK200": "",
+                "CTX_AREA_FK200": "",
+            }
+            data = self._client.get(path("OVS_CCLD_US"), "OVS_CCLD_US", params)
+            for r in _rows(data.get("output")):
+                key = (
+                    str(r.get("odno") or ""),
+                    str(r.get("pdno") or ""),
+                    str(r.get("ord_tmd") or ""),
+                )
+                if key in seen_us:
+                    continue
+                seen_us.add(key)
+                rows_us.append(r)
+        for r in rows_us:
             qty = _int(r.get("ft_ccld_qty"))
             if qty <= 0:
                 continue

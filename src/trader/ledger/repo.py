@@ -28,6 +28,7 @@ def dead_status_sql() -> str:
     """`status NOT IN (…)` 에 넣을 목록 문자열."""
     return ",".join(f"'{s}'" for s in DEAD_STATUSES)
 
+
 _DEBATE_RE = re.compile(r"^20_debate_r(\d+)_(bull|bear)$")
 
 
@@ -394,6 +395,32 @@ def has_open_order_or_approval(
     return conn.execute(sql + " LIMIT 1", args).fetchone() is not None
 
 
+def open_orders_today(
+    conn: sqlite3.Connection,
+    account_id: str,
+    ticker: str,
+    side: str,
+    d: date,
+    *,
+    market: str | None = None,
+) -> list[sqlite3.Row]:
+    """오늘(시장 현지 하루) 같은 계좌·종목·방향의 살아 있고 체결이 끝나지 않은 주문 행
+    (손절 전 취소 대상)."""
+    lo, hi = day_bounds(d, market)
+    return conn.execute(
+        "SELECT id, order_no, org_no, qty, market, status, order_type, price FROM orders "
+        "WHERE account_id=? AND ticker=? AND side=? "
+        f"AND status NOT IN ({dead_status_sql()},'filled') "
+        "AND created_at >= ? AND created_at < ? ORDER BY id",
+        (account_id, ticker, side, lo, hi),
+    ).fetchall()
+
+
+def set_order_status(conn: sqlite3.Connection, order_id: int, status: str) -> None:
+    conn.execute("UPDATE orders SET status=? WHERE id=?", (status, order_id))
+    conn.commit()
+
+
 def has_open_order_today(
     conn: sqlite3.Connection,
     account_id: str,
@@ -435,6 +462,22 @@ def latest_trigger_price(
     return _dec(row["price"]) if row else None
 
 
+def get_trigger(conn: sqlite3.Connection, trigger_id: int) -> dict | None:
+    row = conn.execute(
+        "SELECT id, market, ticker, kind, detail, price, decision_id, handled_at FROM triggers "
+        "WHERE id=?",
+        (trigger_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    out = dict(row)
+    try:
+        out["detail"] = json.loads(out["detail"]) if out.get("detail") else {}
+    except ValueError:
+        out["detail"] = {}
+    return out
+
+
 def unhandled_trigger_id(
     conn: sqlite3.Connection, market: str, ticker: str, kind: str
 ) -> int | None:
@@ -474,13 +517,21 @@ def today_buy_tickers(
 
 
 def today_order_amount(
-    conn: sqlite3.Connection, account_id: str, d: date, market: str | None = None
+    conn: sqlite3.Connection,
+    account_id: str,
+    d: date,
+    market: str | None = None,
+    *,
+    exclude_filled: bool = False,
 ) -> Decimal:
-    """운영일 d(시장 현지 하루)의 누적 매수 주문금액. 통화가 달라 market 으로 거른다."""
+    """운영일 d(시장 현지 하루)의 누적 매수 주문금액. 통화가 달라 market 으로 거른다.
+    exclude_filled=True 면 체결 완료 주문은 빼고 미체결(accepted·partial·unknown)만 더한다 —
+    주문가능금액(D+2 정산 반영)이 체결분을 이미 뺐을 때 이중 차감을 막는다."""
     lo, hi = day_bounds(d, market)
+    excluded = dead_status_sql() + (",'filled'" if exclude_filled else "")
     sql = (
         "SELECT qty, price, amount FROM orders WHERE account_id=? AND side='BUY' "
-        f"AND status NOT IN ({dead_status_sql()}) AND created_at >= ? AND created_at < ?"
+        f"AND status NOT IN ({excluded}) AND created_at >= ? AND created_at < ?"
     )
     args: list = [account_id, lo, hi]
     if market:
@@ -835,9 +886,7 @@ def upsert_ticker_name(
     return True
 
 
-def ticker_names(
-    conn: sqlite3.Connection, market: str | None = None
-) -> dict[tuple[str, str], str]:
+def ticker_names(conn: sqlite3.Connection, market: str | None = None) -> dict[tuple[str, str], str]:
     sql = "SELECT market, ticker, name FROM ticker_names"
     params: tuple = ()
     if market is not None:

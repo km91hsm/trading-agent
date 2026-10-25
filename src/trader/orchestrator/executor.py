@@ -156,7 +156,10 @@ def build_portfolio(
     positions = {p.ticker: p for p in pos_list}
     for p in positions.values():  # 잔고 응답의 종목명은 추가 호출 없이 얻는 이름이다
         repo.upsert_ticker_name(conn, p.market, p.ticker, getattr(p, "name", None), "balance")
-    nav = cash.total + sum((p.eval_amount for p in positions.values()), Decimal(0))
+    # NAV: 잔고 응답의 총평가(tot_evlu_amt)가 있으면 그것. 예수금(dnca_tot_amt) + 평가 합은 체결 뒤
+    # 2영업일(결제 전) 동안 매수분을 이중 계산해 일일손실 −5% 오탐·비중 과대를 만들었다
+    eval_sum = sum((p.eval_amount for p in positions.values()), Decimal(0))
+    nav = cash.nav if getattr(cash, "nav", None) else cash.total + eval_sum
     prev = repo.latest_nav_before(conn, account.id, today, market=market)
     today_pnl = float(nav / prev - 1) if prev else 0.0
     if account.env == "paper":
@@ -188,7 +191,10 @@ def build_portfolio(
         positions=positions,
         today_pnl_pct=today_pnl,
         today_buy_tickers=repo.today_buy_tickers(conn, account.id, today, market=market),
-        today_order_amount=repo.today_order_amount(conn, account.id, today, market=market),
+        # 가능금액(prvs_rcdl_excc_amt)은 체결된 매수를 이미 반영하므로 미체결 live 주문만 더 뺀다
+        today_order_amount=repo.today_order_amount(
+            conn, account.id, today, market=market, exclude_filled=True
+        ),
         held_since=repo.held_since(conn, account.id, tickers=list(positions)),
         trades_this_week=repo.trades_this_week(conn, account.id, today, market=market),
         sector_of=sector_of,
@@ -379,9 +385,7 @@ def execute(
             verdict.approved
             and decision_id is not None
             and not is_stop_loss
-            and repo.has_open_order_or_approval(
-                ctx.conn, decision_id, account.id, verdict.side
-            )
+            and repo.has_open_order_or_approval(ctx.conn, decision_id, account.id, verdict.side)
         ):
             verdict = verdict.model_copy(
                 update={

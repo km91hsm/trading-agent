@@ -41,6 +41,7 @@ const KIND_LABEL: Record<string, string> = {
   rl_train: "RL 학습",
   analyze_ticker: "종목 분석",
   market_view: "시장 세션",
+  reevaluate: "재평가",
 };
 
 export function jobLabel(j: Pick<JobRow, "id" | "kind" | "market">): string {

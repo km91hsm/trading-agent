@@ -63,6 +63,18 @@ class MarketViewParams(_P):
     market: Market
 
 
+class ReevaluateParams(_P):
+    """monitor 가 트리거를 기록한 뒤 재평가 세션을 큐로 넘긴다(손절 점검 틱을 막지 않도록)."""
+
+    market: Market
+    ticker: str = Field(min_length=1, max_length=12, pattern=r"^[A-Za-z0-9.\-]+$")
+    exchange: Literal["NAS", "NYS", "AMS"] | None = None
+    trigger_id: int = Field(ge=1)
+    trigger_ids: list[int] = Field(
+        default_factory=list
+    )  # 같은 틱의 나머지 트리거(같은 세션이 처리)
+
+
 class AnalyzeTickerParams(_P):
     market: Market
     ticker: str = Field(min_length=1, max_length=12, pattern=r"^[A-Za-z0-9.\-]+$")
@@ -87,6 +99,7 @@ PARAMS: dict[str, type[BaseModel]] = {
     "rl_train": RlTrainParams,
     "scan_analyze": ScanAnalyzeParams,
     "market_view": MarketViewParams,
+    "reevaluate": ReevaluateParams,
     "analyze_ticker": AnalyzeTickerParams,
     "reflect": ReflectParams,
     "fills_sync": EmptyParams,
@@ -94,7 +107,6 @@ PARAMS: dict[str, type[BaseModel]] = {
 KINDS: tuple[str, ...] = tuple(PARAMS)
 # 가벼운 kind(체결 동기화)만 heavy 락 밖. 나머지는 세션·KIS·CPU 를 오래 쓴다.
 HEAVY_KINDS: frozenset[str] = frozenset(k for k in KINDS if k != "fills_sync")
-_SCHEDULED_AS_IS = {"ml_train", "reflect", "fills_sync"}
 _KIND_LABEL = {
     "features_backfill": "피처 백필",
     "features_snapshot": "피처 스냅샷",
@@ -103,6 +115,7 @@ _KIND_LABEL = {
     "rl_train": "RL 학습",
     "scan_analyze": "스캔 → 분석",
     "market_view": "시장 세션",
+    "reevaluate": "재평가",
     "analyze_ticker": "종목 분석",
     "reflect": "복기",
     "fills_sync": "체결 동기화",
@@ -134,19 +147,17 @@ def job_id_for(kind: str, params: dict) -> str:
     """하트비트·runs 에 쓰는 이름. 스케줄 잡과 같은 작업이면 같은 id 로 적어 잡 표에 섞인다."""
     if kind == "scan_analyze":
         return f"{str(params.get('market', 'KR')).lower()}_scan_analyze"
-    if kind in _SCHEDULED_AS_IS:
-        return kind
-    return kind
+    return kind  # ml_train·reflect·fills_sync 는 스케줄 잡 id 와 같다
 
 
 def label(kind: str, params: dict, name: str | None = None) -> str:
     base = _KIND_LABEL.get(kind, kind)
     market = params.get("market")
-    if kind == "analyze_ticker":
+    if kind in ("analyze_ticker", "reevaluate"):
         from trader import names
 
         who = names.label(str(params.get("ticker", "")), name)
-        mode = " (모의)" if params.get("dry_run", True) else ""
+        mode = " (모의)" if kind == "analyze_ticker" and params.get("dry_run", True) else ""
         return f"{base} {who}{mode}"
     if kind == "features_backfill":
         return f"{base} {params.get('years', 3)}년" + (f" {market}" if market else "")

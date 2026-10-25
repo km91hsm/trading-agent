@@ -749,7 +749,19 @@ def submit_decision(
             "action": (existing.get("data") or {}).get("action"),
             "message": "30_decision 이 이미 있어 기존 결정을 유지함",
         }
-        if any(s.startswith("40_risk_check_") for s in stages):
+        # dry-run(`trader analyze --dry-run`·FAKE·웹 dry_run 요청)이 남긴 40_ 는 실행이 아니다 —
+        # 그대로 두면 아침 dry-run 뒤 데몬의 실전 세션이 "이미 실행" 으로 보고 그날 주문을
+        # 내지 않는다. 지금도 dry-run 이면 dry-run 판정으로 충분하다(반복하지 않음)
+        executed = [
+            s
+            for s in stages
+            if s.startswith("40_risk_check_")
+            and (
+                ctx.dry_run
+                or not ((read_checkpoint(d, s) or {}).get("data") or {}).get("dry_run")
+            )
+        ]
+        if executed:
             return out
         try:
             decision = schemas.Decision.model_validate(existing.get("data") or {})
