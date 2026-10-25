@@ -4,6 +4,9 @@ import sys
 
 from trader.platform import bundle, paths
 
+# 콘솔 CLI 파일명: bundle.cli_executable 이 Windows 에서는 trader.exe 를 찾는다
+CLI_NAME = "trader.exe" if sys.platform == "win32" else "trader"
+
 
 def _freeze(monkeypatch, exe_dir):
     (exe_dir / "_internal").mkdir(parents=True, exist_ok=True)
@@ -50,12 +53,12 @@ def test_cli_executable_prefers_console_binary(tmp_path, monkeypatch):
     콘솔 CLI 를 쓴다."""
     exe_dir = tmp_path / "dist" / "trader"
     _freeze(monkeypatch, exe_dir)
-    (exe_dir / "trader").write_text("", encoding="utf-8")
+    (exe_dir / CLI_NAME).write_text("", encoding="utf-8")
     monkeypatch.setattr(sys, "executable", str(exe_dir / "TraderApp"))
     assert bundle.executable() == (exe_dir / "TraderApp").resolve()
-    assert bundle.cli_executable() == (exe_dir / "trader").resolve()
+    assert bundle.cli_executable() == (exe_dir / CLI_NAME).resolve()
     assert bundle.tool_bin_dir() == exe_dir.resolve()
-    assert bundle.daemon_argv() == [str((exe_dir / "trader").resolve()), "daemon"]
+    assert bundle.daemon_argv() == [str((exe_dir / CLI_NAME).resolve()), "daemon"]
 
 
 def test_cli_executable_falls_back_to_self(tmp_path, monkeypatch):
@@ -84,7 +87,7 @@ def test_bundle_root_outside_app_bundle(tmp_path, monkeypatch):
     frameworks = root / "Trader.app" / "Contents" / "Frameworks"
     macos.mkdir(parents=True)
     frameworks.mkdir(parents=True)
-    (macos / "trader").write_text("", encoding="utf-8")
+    (macos / CLI_NAME).write_text("", encoding="utf-8")
     monkeypatch.setattr(sys, "frozen", True, raising=False)
     monkeypatch.setattr(sys, "executable", str(macos / "TraderApp"))
     monkeypatch.setattr(sys, "_MEIPASS", str(frameworks), raising=False)
@@ -94,7 +97,7 @@ def test_bundle_root_outside_app_bundle(tmp_path, monkeypatch):
     assert paths.project_root() == root.resolve()
     assert bundle.resource_dir() == frameworks.resolve()
     assert bundle.tool_bin_dir() == macos.resolve()
-    assert bundle.cli_executable() == (macos / "trader").resolve()
+    assert bundle.cli_executable() == (macos / CLI_NAME).resolve()
     assert bundle.icons_dir() == frameworks.resolve() / "icons"
 
 
