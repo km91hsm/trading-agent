@@ -98,9 +98,6 @@ def test_population_rewards_match_episode_loop():
     pop = rng.normal(0, 1, size=(6, OBS_SIZE + 1))
     fast = learners.population_rewards(env, pop, mean=mean, std=std, max_weight=0.25)
     slow = np.array(
-        [
-            learners._episode_reward(env, LinearPolicy(th, 0.25, mean=mean, std=std))
-            for th in pop
-        ]
+        [learners._episode_reward(env, LinearPolicy(th, 0.25, mean=mean, std=std)) for th in pop]
     )
     assert np.allclose(fast, slow, atol=1e-9)

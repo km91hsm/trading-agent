@@ -74,9 +74,15 @@ def hedge_decision(
     )
 
 
-def _held_hedges(ctx: executor.ExecContext, market: str, tickers: set[str]) -> set[str]:
-    """어느 계좌든 들고 있는 헤지 종목."""
-    held: set[str] = set()
+MAX_RETRIES = 3  # 실패한 계좌의 재시도 상한(운영일 안, monitor 틱마다 1회)
+
+
+def _held_hedges(
+    ctx: executor.ExecContext, market: str, tickers: set[str]
+) -> tuple[dict[str, set[str]], set[str]]:
+    """계좌별 보유 헤지 종목 + 잔고 조회에 실패한 계좌(보유를 몰라 이번엔 건너뛴다)."""
+    held: dict[str, set[str]] = {}
+    failed: set[str] = set()
     for a in ctx.accounts:
         if market not in a.markets:
             continue
@@ -84,12 +90,26 @@ def _held_hedges(ctx: executor.ExecContext, market: str, tickers: set[str]) -> s
         if b is None:
             continue
         try:
-            for p in b.get_positions(market):
-                if p.ticker in tickers and p.qty > 0:
-                    held.add(p.ticker)
+            held[a.id] = {
+                p.ticker for p in b.get_positions(market) if p.ticker in tickers and p.qty > 0
+            }
         except (KisApiError, ValueError) as e:
             logger.warning("헤지 보유 조회 실패 %s: %s", a.id, e)
-    return held
+            failed.add(a.id)
+    return held, failed
+
+
+def _failed_accounts(results: list[dict]) -> set[str]:
+    """주문이 나가야 했는데 못 나간 계좌(시세·잔고·주문 실패).
+    거부 판정·off·dry-run 은 실패가 아니다."""
+    out: set[str] = set()
+    for r in results:
+        if "error" in r and r.get("account_id"):
+            out.add(str(r["account_id"]))
+        o = r.get("order")
+        if o and not o.get("accepted") and o.get("status") != "unknown":
+            out.add(str(r["account_id"]))
+    return out
 
 
 def rebalance(
@@ -106,17 +126,27 @@ def rebalance(
     if not cfg.enabled:
         return {"skipped": "hedge.enabled=false"}
     key = done_key(market, today)
-    if not force and control.get_flag(ctx.conn, key):
+    prev = control.get_flag(ctx.conn, key) if not force else None
+    if prev and not isinstance(prev, dict):
+        return {"skipped": "오늘 이미 실행"}
+    retry = int((prev or {}).get("retry") or 0)
+    done_accounts = set((prev or {}).get("done") or [])
+    if prev and (not (prev.get("pending")) or retry >= MAX_RETRIES):
         return {"skipped": "오늘 이미 실행"}
     state = regime_mod.load(ctx.conn, market) or {}
     st = str(state.get("state") or "bull")
     tickers = cfg.tickers(market)
-    held = _held_hedges(ctx, market, tickers)
+    held_by, unknown = _held_hedges(ctx, market, tickers)
+    held = set().union(*held_by.values()) if held_by else set()
+    # 계좌별로 본다: 보유한 계좌는 진입하지 않고, 보유하지 않은 계좌는 해제하지 않는다.
+    # 오늘 이미 성공한 계좌·잔고를 모르는 계좌는 건너뛴다
+    skip_enter = frozenset(done_accounts | unknown | {a for a, h in held_by.items() if h})
     view = market_view_mod.load_view(ctx.conn, market, today)
     out: dict[str, Any] = {
         "market": market,
         "state": st,
         "held": sorted(held),
+        "held_by": {a: sorted(h) for a, h in held_by.items()},
         "action": "none",
         "view": (
             {k: view.get(k) for k in ("stance", "hedge_weight", "leveraged")} if view else None
@@ -133,7 +163,43 @@ def rebalance(
             weight = market_view_mod.clamp_weight(view, cfg)
             out.update(action="enter", ticker=inst.symbol, weight=weight)
             out["results"] = _execute(
-                ctx, "BUY", inst, market, today, cfg, state, quote_fn, dry_run, weight, view
+                ctx,
+                "BUY",
+                inst,
+                market,
+                today,
+                cfg,
+                state,
+                quote_fn,
+                dry_run,
+                weight,
+                view,
+                skip_accounts=skip_enter,
+            )
+    elif st == "bear" and any(
+        not h for a, h in held_by.items() if a not in done_accounts | unknown
+    ):
+        # 일부 계좌만 들고 있다(어제 한 계좌가 실패): 없는 계좌만 진입
+        inst = cfg.instrument(market, leveraged=False)
+        for t in sorted(held):
+            known = cfg.instruments.get(market, {})  # type: ignore[arg-type]
+            inst = next((i for i in known.values() if i.symbol == t), inst)
+        if inst is not None:
+            weight = market_view_mod.clamp_weight(view, cfg)
+            out.update(action="enter", ticker=inst.symbol, weight=weight)
+            out["results"] = _execute(
+                ctx,
+                "BUY",
+                inst,
+                market,
+                today,
+                cfg,
+                state,
+                quote_fn,
+                dry_run,
+                weight,
+                view,
+                skip_accounts=skip_enter,
             )
     elif st != "bear" and held:
         out["action"] = "exit"
@@ -143,23 +209,66 @@ def rebalance(
             inst = next((i for i in known.values() if i.symbol == t), None)
             if inst is None:
                 inst = HedgeInstrument(symbol=t)
+            holders = {a for a, h in held_by.items() if t in h} - done_accounts
+            skip_exit = frozenset({a.id for a in ctx.accounts} - holders)
             out["results"] += _execute(
-                ctx, "SELL", inst, market, today, cfg, state, quote_fn, dry_run
+                ctx,
+                "SELL",
+                inst,
+                market,
+                today,
+                cfg,
+                state,
+                quote_fn,
+                dry_run,
+                skip_accounts=skip_exit,
             )
     if not dry_run:
-        control.set_flag(ctx.conn, key, {"state": st, "action": out["action"]})
+        results = out.get("results") or []
+        failed = _failed_accounts(results) | unknown if out["action"] != "none" else set()
+        touched = {str(r["account_id"]) for r in results if r.get("account_id")}
+        flag = {
+            "state": st,
+            "action": out["action"],
+            "done": sorted(done_accounts | (touched - failed)),
+            "pending": sorted(failed),
+            "retry": retry + 1 if failed else retry,
+        }
+        control.set_flag(ctx.conn, key, flag)
+        if failed and flag["retry"] >= MAX_RETRIES:
+            executor._notify_quietly(
+                ctx,
+                f"[헤지 보류] {market} 계좌 {', '.join(sorted(failed))} 는 {MAX_RETRIES}회 실패해 "
+                f"오늘은 더 시도하지 않음",
+            )
+        out["pending_accounts"] = sorted(failed)
     return out
 
 
 def _execute(
-    ctx, action, inst, market, today, cfg, state, quote_fn, dry_run, weight=None, view=None
+    ctx,
+    action,
+    inst,
+    market,
+    today,
+    cfg,
+    state,
+    quote_fn,
+    dry_run,
+    weight=None,
+    view=None,
+    *,
+    skip_accounts: frozenset[str] = frozenset(),
 ) -> list[dict]:
+    targets = [a.id for a in ctx.accounts if market in a.markets and a.id not in skip_accounts]
     try:
         price = Decimal(str(quote_fn(inst)))
     except (KisApiError, ValueError) as e:
         logger.warning("헤지 시세 실패 %s %s: %s", market, inst.symbol, e)
         executor._notify_quietly(ctx, f"[헤지 보류] {market} {inst.symbol} 시세 실패: {e}")
-        return [{"error": f"시세 실패: {e}"}]
+        return [{"error": f"시세 실패: {e}", "account_id": a} for a in targets] or [
+            {"error": f"시세 실패: {e}"}
+        ]
     if price <= 0:
         return [{"error": "시세 0"}]
     dec = hedge_decision(
@@ -182,6 +291,7 @@ def _execute(
         dry_run=dry_run,
         decision_id=did,
         is_hedge=True,
+        skip_accounts=skip_accounts,
     )
     for r in results:
         o = r.get("order")

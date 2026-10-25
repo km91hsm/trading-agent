@@ -129,7 +129,12 @@ def _build_client(secrets: config.Secrets, env: config.Env) -> KisClient:
         raise config.ConfigError(f"{env} 앱키·시크릿이 secrets/.env 에 없습니다")
     cache_key = (env, key)
     if cache_key not in _clients:
-        _clients[cache_key] = KisClient(env, KisAuth(env, key, secret))
+        from trader.broker.kis_client import RATE_PER_SEC
+        from trader.broker.rate_store import SharedRateLimiter
+
+        # 데몬·세션 도구 서브프로세스가 같은 1초 창을 나눠 쓴다(교차 프로세스 한도)
+        limiter = SharedRateLimiter(RATE_PER_SEC[env], paths.state_dir() / "kis_rate.db", env)
+        _clients[cache_key] = KisClient(env, KisAuth(env, key, secret), limiter=limiter)
     return _clients[cache_key]
 
 

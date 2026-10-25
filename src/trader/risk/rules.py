@@ -211,7 +211,9 @@ def evaluate(
                 ),
                 Decimal(0),
             )
-            after = (others + current_value + buy_value) / nav
+            # 반감·수량 절사 뒤의 실제 주문금액으로 본다(buy_value 는 반감 전 가능금액)
+            order_amount = Decimal(qty) * (order_price if order_price is not None else price)
+            after = (others + current_value + order_amount) / nav
             if after > Decimal(str(lim.max_sector_pct)):
                 rejected.append(
                     f"섹터 '{sector}' 비중이 주문 뒤 {float(after):.0%} 로 상한 "

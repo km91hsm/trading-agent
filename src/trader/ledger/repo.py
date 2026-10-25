@@ -367,13 +367,10 @@ def has_open_order_or_approval(
     decision_id: int,
     account_id: str,
     side: str | None = None,
-    *,
-    include_approvals: bool = True,
 ) -> bool:
     """같은 결정·계좌(·방향)에 살아 있는 주문(실패·거부·취소 제외)이나 pending 승인이 있으면 True.
 
     재평가(31_decision_r<n>)는 같은 decisions 행을 갱신하므로 방향이 다르면(BUY 뒤 SELL) 허용한다.
-    include_approvals=False 면 주문만 본다 (손절은 아직 승인되지 않은 요청에 막히지 않아야 한다).
     """
     sql = (
         "SELECT 1 FROM orders WHERE decision_id=? AND account_id=? "
@@ -385,8 +382,6 @@ def has_open_order_or_approval(
         args.append(side)
     if conn.execute(sql + " LIMIT 1", args).fetchone():
         return True
-    if not include_approvals:
-        return False
     sql = "SELECT 1 FROM approvals WHERE decision_id=? AND account_id=? AND status='pending'"
     args = [decision_id, account_id]
     if side:
@@ -479,14 +474,18 @@ def get_trigger(conn: sqlite3.Connection, trigger_id: int) -> dict | None:
 
 
 def unhandled_trigger_id(
-    conn: sqlite3.Connection, market: str, ticker: str, kind: str
+    conn: sqlite3.Connection, market: str, ticker: str, kind: str, d: date | None = None
 ) -> int | None:
-    """같은 종목·종류의 미처리 트리거 id (있으면 다시 쌓지 않고 그 행을 재평가에 연결한다)."""
-    row = conn.execute(
-        "SELECT id FROM triggers WHERE market=? AND ticker=? AND kind=? AND handled_at IS NULL "
-        "ORDER BY id LIMIT 1",
-        (market, ticker, kind),
-    ).fetchone()
+    """같은 종목·종류의 미처리 트리거 id (있으면 다시 쌓지 않고 그 행을 재평가에 연결한다).
+    d 가 있으면 그 운영일(시장 현지 하루)에 쌓인 것만 — 어제 처리 못 한 트리거가 날짜 없이
+    이월돼 오늘 재평가가 옛 가격·사유로 돌지 않게 한다."""
+    sql = "SELECT id FROM triggers WHERE market=? AND ticker=? AND kind=? AND handled_at IS NULL "
+    args: list = [market, ticker, kind]
+    if d is not None:
+        lo, hi = day_bounds(d, market)
+        sql += "AND created_at >= ? AND created_at < ? "
+        args += [lo, hi]
+    row = conn.execute(sql + "ORDER BY id LIMIT 1", args).fetchone()
     return int(row["id"]) if row else None
 
 
@@ -543,6 +542,20 @@ def today_order_amount(
             total += _dec(r["amount"])
         else:
             total += Decimal(r["qty"]) * _dec(r["price"])
+    # pending 승인 요청도 현금을 예약한다 — 승인이 누적되면 가능금액을 넘겨 과매수하기 때문
+    sql = (
+        "SELECT order_json FROM approvals WHERE account_id=? AND status='pending' "
+        "AND json_extract(order_json, '$.side')='BUY' AND requested_at >= ? AND requested_at < ?"
+    )
+    args = [account_id, lo, hi]
+    if market:
+        sql += " AND json_extract(order_json, '$.market')=?"
+        args.append(market)
+    for r in conn.execute(sql, args).fetchall():
+        o = json.loads(r["order_json"])
+        price = o.get("price") if o.get("price") is not None else o.get("quote_price")
+        if price is not None:
+            total += Decimal(int(o.get("qty") or 0)) * _dec(price)
     return total
 
 
@@ -575,8 +588,8 @@ def realized_pnl_5d(
     전 이력 BUY 평균을 쓰면 전량 매도 뒤 재매수한 종목의 손익 부호가 뒤집혀 성향 판정이 틀린다.
     금액은 Decimal 로만 계산한다. 통화가 섞이지 않게 market 으로 거른다.
     """
-    lo, _ = _kst_day_bounds(d - timedelta(days=7))
-    _, hi = _kst_day_bounds(d)
+    lo, _ = day_bounds(d - timedelta(days=7), market)  # 시장 현지 창(US 는 KST 자정을 넘긴다)
+    _, hi = day_bounds(d, market)
     sql = (
         "SELECT DISTINCT o.ticker FROM fills f JOIN orders o ON o.id=f.order_id "
         "WHERE f.account_id=? AND o.side='SELL' AND f.filled_at >= ? AND f.filled_at < ?"
@@ -879,7 +892,8 @@ def upsert_ticker_name(
     conn.execute(
         "INSERT INTO ticker_names(market, ticker, name, source, updated_at) VALUES (?, ?, ?, ?, ?) "
         "ON CONFLICT(market, ticker) DO UPDATE SET name=excluded.name, source=excluded.source, "
-        "updated_at=excluded.updated_at",
+        "updated_at=excluded.updated_at WHERE name IS NOT excluded.name "
+        "OR source IS NOT excluded.source",  # 같은 값이면 쓰기(WAL·잠금) 없음
         (market, ticker, clean, source, now_iso()),
     )
     conn.commit()

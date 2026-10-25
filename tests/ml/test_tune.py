@@ -26,8 +26,14 @@ def test_tune_selects_on_dev_folds_only(project, monkeypatch):
         folds = [
             {"index": i, "alpha_topn": a, "accuracy": 0.4, "up_count": 9} for i in fold_indices
         ]
-        return {"folds": folds, "accuracy": 0.4, "baseline": 0.33, "alpha": a, "alpha_topn": a,
-                "n_test": 10}
+        return {
+            "folds": folds,
+            "accuracy": 0.4,
+            "baseline": 0.33,
+            "alpha": a,
+            "alpha_topn": a,
+            "n_test": 10,
+        }
 
     monkeypatch.setattr(quant, "evaluate_walkforward", fake_eval)
     monkeypatch.setitem(tune.GRIDS, "tiny", TINY)
@@ -79,8 +85,14 @@ def _fake_eval_factory(calls, *, alpha_by_lr, holdout_by_lr=None, drop_dev=False
                 {"index": i, "alpha_topn": a, "accuracy": 0.4, "up_count": 9} for i in fold_indices
             ]
         mean = sum(f["alpha_topn"] for f in folds) / len(folds) if folds else 0.0
-        return {"folds": folds, "accuracy": 0.4, "baseline": 0.33, "alpha": mean,
-                "alpha_topn": mean, "n_test": 10}
+        return {
+            "folds": folds,
+            "accuracy": 0.4,
+            "baseline": 0.33,
+            "alpha": mean,
+            "alpha_topn": mean,
+            "n_test": 10,
+        }
 
     return fake_eval
 

@@ -57,4 +57,3 @@ def current(state: Path | None = None) -> tuple[Callable[[pd.DataFrame], pd.Data
         return out.reset_index(drop=True)
 
     return rank_fn, label
-

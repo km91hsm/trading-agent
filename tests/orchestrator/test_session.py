@@ -582,3 +582,15 @@ def test_run_session_passes_cancel_to_runner_and_reports_cancelled(
     row = conn.execute("SELECT status FROM agent_calls").fetchone()
     assert row["status"] == "error"
     assert subprocess.TimeoutExpired  # 하위 클래스 관계 유지
+
+
+def test_start_call_checks_cap_inside_write_lock(conn):
+    """상한 검사와 running 행 삽입이 한 쓰기 트랜잭션이라 두 프로세스가 동시에 마지막 자리를
+    잡지 못한다. 넘으면 PipelineError 이고 행은 남지 않는다."""
+    spec = SessionSpec(market="KR", date=date(2026, 10, 9), tickers=[{"ticker": "005930"}])
+    assert session._start_call(conn, None, spec, session_id="a", model="sonnet", cap=1) is not None
+    with pytest.raises(session.PipelineError):
+        session._start_call(conn, None, spec, session_id="b", model="sonnet", cap=1)
+    assert conn.execute("SELECT COUNT(*) AS n FROM agent_calls").fetchone()["n"] == 1
+    assert session._start_call(conn, None, spec, session_id="f", model="fake", cap=1) is not None
+    conn.execute("SELECT 1").fetchone()  # 잠금이 풀려 있다

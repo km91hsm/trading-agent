@@ -15,7 +15,7 @@ from trader.broker.errors import KisApiError
 from trader.broker.kis_client import KisClient
 from trader.broker.models import Cash, Fill, Market, OrderRequest, OrderResult, Position
 from trader.broker.tr_ids import path
-from trader.config import KST, AccountConfig
+from trader.config import KST, MARKET_TZ, AccountConfig
 
 logger = logging.getLogger("trader.kis")
 
@@ -266,7 +266,7 @@ class KisBroker:
                     side="SELL" if str(r.get("sll_buy_dvsn_cd")) == "01" else "BUY",
                     qty=qty,
                     price=_dec(r.get("ft_ccld_unpr3")),
-                    filled_at=_local_dt(r.get("ord_dt"), r.get("ord_tmd"), _ET),
+                    filled_at=_local_dt(r.get("ord_dt"), r.get("ord_tmd"), MARKET_TZ["US"]),
                 )
             )
         return out
@@ -355,9 +355,6 @@ class KisBroker:
             accepted=True,
             message=str(data.get("msg1") or ""),
         )
-
-
-_ET = ZoneInfo("America/New_York")
 
 
 def _local_dt(ymd: Any, hms: Any, tz: ZoneInfo) -> datetime:

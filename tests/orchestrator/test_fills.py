@@ -59,10 +59,21 @@ def test_sync_marks_filled_and_partial(conn):
     oid_full = _order(conn, "A", qty=3)
     oid_part = _order(conn, "B", qty=5)
     broker = FakeBroker(acct, fills={("KR", D): [_fill("A", qty=3), _fill("B", qty=2)]})
-    r = fills_mod.sync_fills(conn, broker, acct, D)
+    in_session = datetime(2026, 10, 9, 2, 0, tzinfo=UTC)  # 11:00 KST
+    r = fills_mod.sync_fills(conn, broker, acct, D, now=lambda: in_session)
     assert r["inserted"] == 2 and r["orders_updated"] == 2
     rows = {r["id"]: r["status"] for r in conn.execute("SELECT id, status FROM orders")}
     assert rows[oid_full] == "filled" and rows[oid_part] == "partial"
+    # 마감 뒤: 잔량이 남은 partial 은 죽은 주문(expired)이 되고 체결은 그대로 남는다.
+    # 다음 동기화가 같은 누적 체결을 다시 보고 partial 로 되살리지 않는다
+    after_close = datetime(2026, 10, 9, 7, 0, tzinfo=UTC)
+    r2 = fills_mod.sync_fills(conn, broker, acct, D, now=lambda: after_close)
+    rows = {r["id"]: r["status"] for r in conn.execute("SELECT id, status FROM orders")}
+    assert rows[oid_part] == "expired" and r2["expired"] == 1
+    assert conn.execute("SELECT COUNT(*) AS n FROM fills").fetchone()["n"] == 2
+    fills_mod.sync_fills(conn, broker, acct, D, now=lambda: after_close)
+    rows = {r["id"]: r["status"] for r in conn.execute("SELECT id, status FROM orders")}
+    assert rows[oid_part] == "expired"
 
 
 def test_external_fill_creates_order_row(conn):

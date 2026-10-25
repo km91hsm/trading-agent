@@ -14,7 +14,7 @@ import re
 import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime, time
+from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
@@ -752,16 +752,16 @@ def submit_decision(
         # dry-run(`trader analyze --dry-run`·FAKE·웹 dry_run 요청)이 남긴 40_ 는 실행이 아니다 —
         # 그대로 두면 아침 dry-run 뒤 데몬의 실전 세션이 "이미 실행" 으로 보고 그날 주문을
         # 내지 않는다. 지금도 dry-run 이면 dry-run 판정으로 충분하다(반복하지 않음)
-        executed = [
-            s
+        executed = {
+            s[len("40_risk_check_") :]
             for s in stages
             if s.startswith("40_risk_check_")
             and (
-                ctx.dry_run
-                or not ((read_checkpoint(d, s) or {}).get("data") or {}).get("dry_run")
+                ctx.dry_run or not ((read_checkpoint(d, s) or {}).get("data") or {}).get("dry_run")
             )
-        ]
-        if executed:
+        }
+        wanted = {a.id for a in ctx.accounts if market in a.markets}
+        if executed and not (wanted - executed):
             return out
         try:
             decision = schemas.Decision.model_validate(existing.get("data") or {})
@@ -773,8 +773,9 @@ def submit_decision(
         if price is None:
             return out | {"message": "00_inputs 에 현재가가 없어 실행을 재개하지 못함"}
         _ingest_run(ctx, d, date, market, ticker)
+        # 판정이 이미 있는 계좌는 다시 돌리지 않는다(한 계좌의 예외로 끊긴 뒤 나머지만 재개)
         executions, memory_entry_id = _execute_and_record(
-            ctx, d, date, market, decision, inputs, price
+            ctx, d, date, market, decision, inputs, price, skip_accounts=frozenset(executed)
         )
         logger.warning("미실행 결정의 실행 재개 %s %s: %s", market, ticker, decision.action)
         return out | {
@@ -867,6 +868,7 @@ def _execute_and_record(
     price: Decimal,
     *,
     resume_round: int | None = None,
+    skip_accounts: frozenset[str] = frozenset(),
 ) -> tuple[list[dict], int | None]:
     """리스크 게이트·계좌별 실행(주문은 executor 안에서만) + 메모리 엔트리.
 
@@ -894,6 +896,7 @@ def _execute_and_record(
         exchange=(inputs.get("meta") or {}).get("exchange"),
         dry_run=ctx.dry_run,
         resume_round=resume_round,
+        skip_accounts=skip_accounts,
     )
     memory_entry_id = _record_memory(ctx, decision, market, date)
     return executions, memory_entry_id
@@ -911,14 +914,13 @@ def _load_sizer(state: Path | None):
         return None
 
 
-_KST_CLOSE = time(15, 30)
-
-
 def _decided_at(now: datetime, run_date: date) -> datetime:
     """운영일(run date)이 오늘(KST)이면 현재 시각, 아니면 그날 장 마감(15:30 KST) 시각(UTC)."""
+    from trader.orchestrator.fills import MARKET_CLOSE
+
     if now.astimezone(KST).date() == run_date:
         return now
-    return datetime.combine(run_date, _KST_CLOSE, KST).astimezone(UTC)
+    return datetime.combine(run_date, MARKET_CLOSE["KR"], KST).astimezone(UTC)
 
 
 def _record_memory(

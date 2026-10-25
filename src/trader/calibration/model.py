@@ -128,9 +128,7 @@ def build_calibration(
         "SELECT id, created_at FROM calibration_runs ORDER BY id DESC LIMIT 1"
     ).fetchone()
     if existing is not None:
-        prev_day = (
-            datetime.fromisoformat(existing["created_at"]).astimezone(KST).date().isoformat()
-        )
+        prev_day = datetime.fromisoformat(existing["created_at"]).astimezone(KST).date().isoformat()
         if prev_day != kst_day:
             existing = None
     if existing:

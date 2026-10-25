@@ -62,8 +62,6 @@ def metrics_of(series: list[tuple[str, Decimal]]) -> dict:
     }
 
 
-
-
 def _close_table(state: Path | None, market: str, start: date, end: date) -> pd.DataFrame:
     # 창 안의 날짜 파일만 읽는다 (성과 페이지는 원장 이벤트마다 다시 불린다)
     df = dataset.load_all(state, market=market, since=start, until=end)

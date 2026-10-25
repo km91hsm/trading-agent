@@ -253,6 +253,7 @@ def test_app_tray_exits_when_daemon_fails_early(project, monkeypatch):
     monkeypatch.setattr(cli, "_build_market", lambda s: None)
     monkeypatch.setattr(cli, "_build_brokers", lambda s, a: [])
     monkeypatch.setattr("trader.daemon.run", lambda deps, **kw: {"ok": False, "error": "잠금 실패"})
+
     def must_not_run(**kw):
         raise AssertionError("트레이가 떠선 안 된다")
 

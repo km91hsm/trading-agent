@@ -243,3 +243,77 @@ def test_stale_proposal_is_ignored(project, conn):
     _view(conn, date="2026-10-23", hedge_weight=0.05)  # 어제 제안
     out = hedge.rebalance(ctx, market="KR", today=D, cfg=CFG, quote_fn=lambda i: Decimal("5000"))
     assert out["view"] is None and out["weight"] == 0.2
+
+
+# --- 리뷰 F12: 계좌별 보유 판단·실패 계좌만 재시도 ---------------------------------------
+
+
+def _hedge_pos(ticker="114800", qty=100):
+    return Position(
+        ticker=ticker,
+        market="KR",
+        qty=qty,
+        avg_price=Decimal("5000"),
+        current_price=Decimal("5000"),
+        eval_amount=Decimal("500000"),
+        pnl_pct=0.0,
+    )
+
+
+def test_enter_skips_accounts_that_already_hold_hedge(project, conn):
+    """paper 만 들고 있으면 real 만 진입 판정을 받고 paper 는 다시 사지 않는다(합집합 보유 아님)."""
+    ctx = _ctx(conn, real_mode="off")
+    ctx.brokers["paper-main"].positions = [_hedge_pos()]
+    _set_regime(conn, "bear", 2)
+    out = hedge.rebalance(ctx, market="KR", today=D, cfg=CFG, quote_fn=lambda i: Decimal("5000"))
+    assert out["action"] == "enter" and out["held_by"]["paper-main"] == ["114800"]
+    assert [r["account_id"] for r in out["results"]] == ["real-main"]
+    assert ctx.brokers["paper-main"].orders == []
+
+
+def test_exit_sells_only_from_holding_accounts(project, conn):
+    ctx = _ctx(conn, real_mode="off")
+    ctx.brokers["paper-main"].positions = [_hedge_pos()]
+    _set_regime(conn, "bull", 0)
+    out = hedge.rebalance(ctx, market="KR", today=D, cfg=CFG, quote_fn=lambda i: Decimal("5000"))
+    assert out["action"] == "exit"
+    assert [r["account_id"] for r in out["results"]] == ["paper-main"]
+    assert len(ctx.brokers["paper-main"].orders) == 1
+
+
+def test_failed_account_is_retried_and_successful_one_is_done(project, conn):
+    """잔고 조회가 실패한 계좌는 pending 으로 남아 다음 틱에 다시 시도하고, 성공한 계좌는
+    done 으로 기록돼 다시 사지 않는다. 상한(MAX_RETRIES) 뒤엔 오늘은 더 시도하지 않는다."""
+    ctx = _ctx(conn, real_mode="auto")
+    control.set_account_mode(conn, ctx.accounts[1], "auto", confirm="LIVE")
+    _set_regime(conn, "bear", 2)
+    ctx.brokers["real-main"].fail = {"get_positions"}
+    out = hedge.rebalance(ctx, market="KR", today=D, cfg=CFG, quote_fn=lambda i: Decimal("5000"))
+    assert [r["account_id"] for r in out["results"]] == ["paper-main"]
+    flag = control.get_flag(conn, hedge.done_key("KR", D))
+    assert flag["done"] == ["paper-main"] and flag["pending"] == ["real-main"]
+    assert len(ctx.brokers["paper-main"].orders) == 1
+    # 다음 틱: real 만 다시, paper 는 건너뜀 (브로커 복구)
+    ctx.brokers["real-main"].fail = set()
+    out2 = hedge.rebalance(ctx, market="KR", today=D, cfg=CFG, quote_fn=lambda i: Decimal("5000"))
+    assert [r["account_id"] for r in out2["results"]] == ["real-main"]
+    assert len(ctx.brokers["paper-main"].orders) == 1
+    assert control.get_flag(conn, hedge.done_key("KR", D))["pending"] == []
+    out3 = hedge.rebalance(ctx, market="KR", today=D, cfg=CFG, quote_fn=lambda i: Decimal("5000"))
+    assert out3 == {"skipped": "오늘 이미 실행"}
+
+
+def test_retry_cap_stops_after_max(project, conn):
+    ctx = _ctx(conn, real_mode="off")
+    _set_regime(conn, "bear", 2)
+
+    def boom(i):
+        raise ValueError("시세 없음")
+
+    for _ in range(hedge.MAX_RETRIES):
+        out = hedge.rebalance(ctx, market="KR", today=D, cfg=CFG, quote_fn=boom)
+        assert out["action"] == "enter"
+    assert hedge.rebalance(ctx, market="KR", today=D, cfg=CFG, quote_fn=boom) == {
+        "skipped": "오늘 이미 실행"
+    }
+    assert any("더 시도하지 않음" in m for m in ctx.notifier.sent)

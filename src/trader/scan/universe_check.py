@@ -26,9 +26,7 @@ def _transient(e: KisApiError) -> bool:
     return code in TRANSIENT_CODES or code.startswith("HTTP5")
 
 
-def _price_us(
-    market_client: Any, symbol: str, exchange: str
-) -> tuple[Decimal | None, str | None]:
+def _price_us(market_client: Any, symbol: str, exchange: str) -> tuple[Decimal | None, str | None]:
     """(가격, 일시 오류 note). 일시 오류면 (None, note), 그 밖의 실패·가격 0 은 (None, None)."""
     try:
         q = market_client.get_price_us(symbol, exchange)

@@ -179,9 +179,7 @@ def test_reflect_body_matures_market_views(conn, monkeypatch):
     monkeypatch.setattr(deps, "snapshot_fn", None)
     monkeypatch.setattr("trader.memory.outcomes.mature", lambda conn, **kw: [])
     monkeypatch.setattr("trader.orchestrator.reflect.pending", lambda conn, **kw: False)
-    monkeypatch.setattr(
-        "trader.memory.store.promote_and_prune", lambda conn, **kw: {"deleted": 0}
-    )
+    monkeypatch.setattr("trader.memory.store.promote_and_prune", lambda conn, **kw: {"deleted": 0})
     first_date = deps.market_client.candles["069500"][0].date
     mv.record_view(
         conn,

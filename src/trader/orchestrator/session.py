@@ -146,22 +146,35 @@ def _start_call(
     *,
     session_id: str,
     model: str,
+    cap: int | None = None,
+    now: datetime | None = None,
 ) -> int | None:
-    """세션 시작 시 running 행을 먼저 쓴다 (크래시·동시 실행 때도 상한 집계에 잡히도록)."""
+    """세션 시작 시 running 행을 먼저 쓴다 (크래시·동시 실행 때도 상한 집계에 잡히도록).
+    cap 이 있으면 같은 쓰기 잠금(`BEGIN IMMEDIATE`) 안에서 오늘 세션 수를 세어 두 프로세스가
+    동시에 마지막 자리를 잡는 경합을 막는다(넘으면 PipelineError, 행 없음)."""
     if conn is None:
         return None
-    cur = conn.execute(
-        "INSERT INTO agent_calls(run_id, ticker, market, agent, model, session_id, status, "
-        "created_at) VALUES (?, ?, ?, 'orchestrator', ?, ?, 'running', ?)",
-        (
-            run_id,
-            ",".join(t["ticker"] for t in spec.tickers),
-            spec.market,
-            model,
-            session_id,
-            db.now_iso(),
-        ),
-    )
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        if cap is not None and model != "fake":
+            n = tools.sessions_today(conn, now or datetime.now(UTC))
+            if n >= cap:
+                raise PipelineError(f"오늘 세션 상한({cap})에 도달해 세션을 띄우지 않습니다")
+        cur = conn.execute(
+            "INSERT INTO agent_calls(run_id, ticker, market, agent, model, session_id, status, "
+            "created_at) VALUES (?, ?, ?, 'orchestrator', ?, ?, 'running', ?)",
+            (
+                run_id,
+                ",".join(t["ticker"] for t in spec.tickers),
+                spec.market,
+                model,
+                session_id,
+                db.now_iso(),
+            ),
+        )
+    except BaseException:
+        conn.rollback()
+        raise
     conn.commit()
     return int(cur.lastrowid)
 
@@ -414,7 +427,15 @@ def run_session(
             "PATH": venv_bin + os.pathsep + os.environ.get("PATH", ""),
         }
         model = settings.models.get("orchestrator", "sonnet")
-        call_id = _start_call(conn, run_id, spec, session_id=session_id, model=model)
+        call_id = _start_call(
+            conn,
+            run_id,
+            spec,
+            session_id=session_id,
+            model=model,
+            cap=settings.llm.daily_session_cap,
+            now=started,
+        )
     except Exception as e:
         # 기동 전 단계(실행파일·에이전트 md·프롬프트) 실패: runs 행이 running 으로 남고 임시 cwd 가
         # 누수되지 않게 닫고 지운 뒤 그대로 올린다 (호출자가 ClaudeNotFound·ConfigError 를 구분한다)
@@ -463,7 +484,16 @@ def run_session(
         data = _parse_result(proc.stdout)
     except PipelineError as e:
         return fail(f"{e} (exit={proc.returncode}, stderr={proc.stderr[:200]!r})")
+    try:
+        return _finish_session(conn, call_id, run_id, spec, data, proc, session_id, elapsed_ms)
+    except Exception as e:  # noqa: BLE001 - 결과 처리 중 예외에도 running 행을 남기지 않는다
+        logger.exception("세션 결과 처리 실패 %s", spec.market)
+        return fail(f"세션 결과 처리 실패: {type(e).__name__}: {e}")
 
+
+def _finish_session(
+    conn, call_id, run_id, spec: SessionSpec, data: dict, proc, session_id: str, elapsed_ms
+) -> SessionResult:
     cost = data.get("total_cost_usd")
     duration = elapsed_ms()  # claude 의 duration_ms 는 마지막 턴 기준이라 파이썬 측 측정값을 쓴다
     sid = str(data.get("session_id") or session_id)

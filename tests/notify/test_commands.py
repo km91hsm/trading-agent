@@ -85,6 +85,7 @@ def test_poll_once_advances_offset_past_filtered_updates(conn):
     r = commands.poll_once(ctx, FilteredRecv([]))
     assert r["received"] == 0
     assert control.get_flag(conn, "telegram_offset") == 51
+
     # 유지된 업데이트가 더 뒤면 그것이 우선
     class MixedRecv(Recv):
         last_update_id = 1

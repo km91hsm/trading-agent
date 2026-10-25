@@ -580,11 +580,15 @@ def test_nav_history_window_and_latest_per_day(conn):
         ("2026-10-03", Decimal("120")),
         ("2026-10-04", Decimal("135")),
     ]
-    assert repo.nav_history(conn, "paper-main", "KR", days=1, today=date(2026, 10, 3)) == [
-        ("2026-10-02", Decimal("110")),
-        ("2026-10-03", Decimal("120")),
-        ("2026-10-04", Decimal("135")),
-    ] or True  # today 가 있으면 today−days 이후 전부 (미래 날짜 스냅샷 포함 여부는 기존 동작 유지)
+    assert (
+        repo.nav_history(conn, "paper-main", "KR", days=1, today=date(2026, 10, 3))
+        == [
+            ("2026-10-02", Decimal("110")),
+            ("2026-10-03", Decimal("120")),
+            ("2026-10-04", Decimal("135")),
+        ]
+        or True
+    )  # today 가 있으면 today−days 이후 전부 (미래 날짜 스냅샷 포함 여부는 기존 동작 유지)
     assert repo.nav_history(conn, "paper-main", "US") == []
 
 

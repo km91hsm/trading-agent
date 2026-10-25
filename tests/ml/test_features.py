@@ -548,6 +548,7 @@ def test_backfill_rederives_everything_when_final_flush_fails(project, monkeypat
     monkeypatch.setattr(features, "BACKFILL_CHUNK", 1)
     seen: list = []
     real_rederive = features.rederive
+
     def spy(*a, **kw):
         seen.append(kw.get("paths"))
         return real_rederive(*a, **kw)

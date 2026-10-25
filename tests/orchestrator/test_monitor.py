@@ -625,3 +625,42 @@ def test_reevaluation_is_enqueued_when_daemon_provides_queue(conn):
     out = monitor.monitor_once(ctx, market="KR", today=D)
     assert out["triggers"] >= 1 and out.get("queued") == 1 and ctx.calls == []
     assert queued[0]["ticker"] == "005930" and queued[0]["trigger_id"] >= 1
+
+
+# --- 리뷰 F13·F16 ----------------------------------------------------------------------
+
+
+def test_dry_run_stop_loss_is_recorded_once_per_day(conn):
+    """dry-run 손절은 기록만 하므로 매 분 45_/risk_checks 를 다시 쓰지 않는다."""
+    _decision(conn, stop_loss=65000.0)
+    ctx = _ctx(conn, positions=[_pos(cur="63000")], price="63000")
+    ctx.dry_run = True
+    monitor.monitor_once(ctx, market="KR", today=D)
+    n1 = conn.execute("SELECT COUNT(*) AS n FROM risk_checks").fetchone()["n"]
+    assert n1 >= 1 and ctx.brokers["paper-main"].orders == []
+    monitor.monitor_once(ctx, market="KR", today=D)
+    assert conn.execute("SELECT COUNT(*) AS n FROM risk_checks").fetchone()["n"] == n1
+
+
+def test_old_unhandled_trigger_is_not_reused_today(conn):
+    """어제 처리 못 한 트리거는 오늘 다시 쓰지 않고 오늘 가격으로 새 트리거를 쌓는다."""
+    _decision(conn, stop_loss=50000.0, take_profit=75000.0)
+    repo.insert_trigger(
+        conn,
+        market="KR",
+        ticker="005930",
+        kind="take_profit",
+        detail={},
+        price=Decimal("76000"),
+        decision_id=None,
+        account_id="paper-main",
+        created_at="2026-10-08T02:00:00+00:00",
+    )
+    assert repo.unhandled_trigger_id(conn, "KR", "005930", "take_profit") == 1
+    assert repo.unhandled_trigger_id(conn, "KR", "005930", "take_profit", D) is None
+    ctx = _ctx(conn, positions=[_pos(avg="70000", cur="80000")], price="80000")
+    monitor.monitor_once(ctx, market="KR", today=D)
+    rows = conn.execute(
+        "SELECT id, created_at FROM triggers WHERE kind='take_profit' ORDER BY id"
+    ).fetchall()
+    assert len(rows) == 2 and rows[1]["created_at"].startswith("2026-10-09")

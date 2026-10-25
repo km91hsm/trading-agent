@@ -87,6 +87,8 @@ def _refresh_status(conn: sqlite3.Connection, order_id: int) -> bool:
     status = "filled" if int(filled) >= int(o["qty"]) else "partial" if int(filled) > 0 else None
     if status is None or status == o["status"]:
         return False
+    if status == "partial" and o["status"] in repo.DEAD_STATUSES:
+        return False  # 마감에 잔량이 만료된 부분체결 주문을 다음 동기화가 다시 살리지 않는다
     conn.execute("UPDATE orders SET status=? WHERE id=?", (status, order_id))
     conn.commit()
     return True
@@ -107,15 +109,16 @@ def _session_closed(market: str, day: date, now: datetime) -> bool:
     return local.date() == day and local.time() >= market_close(market, day)
 
 
-def expire_unfilled(
-    conn: sqlite3.Connection, account_id: str, market: str, day: date
-) -> int:
-    """day(현지)의 체결 없는 accepted·unknown 주문을 expired 로 (마감 뒤인지는 호출자가 본다)."""
+def expire_unfilled(conn: sqlite3.Connection, account_id: str, market: str, day: date) -> int:
+    """day(현지)의 체결 없는 accepted·unknown 주문과 잔량이 남은 partial 주문을 expired 로
+    (마감 뒤인지는 호출자가 본다). 당일 주문은 마감에 소멸하므로 partial 의 잔량도 죽었다 —
+    살아 있는 상태로 두면 중복 방지 조건에 영구히 남는다(체결분은 fills 에 그대로)."""
     lo, hi = repo.day_bounds(day, market)
     cur = conn.execute(
         "UPDATE orders SET status='expired' WHERE account_id=? AND market=? "
-        "AND status IN ('accepted','unknown') AND created_at >= ? AND created_at < ? "
-        "AND id NOT IN (SELECT order_id FROM fills)",
+        "AND created_at >= ? AND created_at < ? AND ("
+        "(status IN ('accepted','unknown') AND id NOT IN (SELECT order_id FROM fills)) "
+        "OR status='partial')",
         (account_id, market, lo, hi),
     )
     conn.commit()
@@ -157,18 +160,21 @@ def sync_fills(
             if int(existing) == f.qty:
                 _refresh_status(conn, oid)
                 continue
-            if int(existing) > 0:
-                conn.execute("DELETE FROM fills WHERE order_id=?", (oid,))
-                conn.commit()
-                replaced += 1
-            fid = repo.insert_fill(
-                conn,
-                order_id=oid,
-                account_id=account.id,
-                qty=f.qty,
-                price=Decimal(f.price),
-                filled_at=f.filled_at.isoformat(),
-            )
+            try:  # 교체(DELETE + INSERT)는 한 트랜잭션 — 중간에 끊기면 체결이 사라진다
+                if int(existing) > 0:
+                    conn.execute("DELETE FROM fills WHERE order_id=?", (oid,))
+                    replaced += 1
+                fid = repo.insert_fill(
+                    conn,
+                    order_id=oid,
+                    account_id=account.id,
+                    qty=f.qty,
+                    price=Decimal(f.price),
+                    filled_at=f.filled_at.isoformat(),
+                )
+            except sqlite3.Error:
+                conn.rollback()
+                raise
             if fid is not None:
                 inserted += 1
             if _refresh_status(conn, oid):

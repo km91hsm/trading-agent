@@ -1139,3 +1139,19 @@ def test_dry_run_risk_checks_do_not_block_live_resume(ctx, project, monkeypatch)
         ctx, ticker="005930", market="KR", date=D, payload=ok_decision(action="HOLD")
     )
     assert third["already"] and not third.get("resumed_execution")
+
+
+def test_resume_runs_only_accounts_without_risk_check(ctx, project):
+    """한 계좌의 판정만 남고 끊겼으면 재제출은 나머지 계좌만 실행한다(있는 판정은 덮지 않음)."""
+    ctx.dry_run = False
+    _ready_for_submit(ctx, project)
+    d = run_dir(D, "KR", "005930")
+    dec = Decision(**ok_decision())
+    run_store.write_checkpoint(d, "30_decision", {"schema_version": 1, "data": dec.model_dump()})
+    run_store.write_checkpoint(
+        d, "40_risk_check_paper-main", {"schema_version": 1, "data": {"approved": False, "x": 1}}
+    )
+    r = tools.submit_decision(ctx, ticker="005930", market="KR", date=D, payload=ok_decision())
+    assert r["resumed_execution"] is True
+    assert [e["account_id"] for e in r["executions"]] == ["real-main"]
+    assert read_checkpoint(d, "40_risk_check_paper-main")["data"] == {"approved": False, "x": 1}

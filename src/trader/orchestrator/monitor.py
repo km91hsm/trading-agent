@@ -226,7 +226,7 @@ def monitor_once(ctx: MonitorContext, *, market: str, today: date) -> dict:
             # (익절선 위에 머무는 종목이 30분마다 유료 세션을 띄워 일일 상한을 소진하지 않도록)
             if repo.reevaluated_between(ctx.conn, market, pos.ticker, sig.kind, day_lo, day_hi):
                 continue
-            existing = repo.unhandled_trigger_id(ctx.conn, market, pos.ticker, sig.kind)
+            existing = repo.unhandled_trigger_id(ctx.conn, market, pos.ticker, sig.kind, today)
             if existing is not None:  # 미처리 트리거가 있으면 다시 쌓지 않고 그 행을 쓴다
                 tids.append(existing)
                 continue
@@ -432,6 +432,9 @@ def _sell_now(
     unrecorded = f"sl_unrecorded:{account.id}:{market}:{pos.ticker}:{local_day.isoformat()}"
     if control.get_flag(ctx.conn, unrecorded):
         return 0  # 접수됐지만 원장에 못 적은 손절이 있다 (아래) — 오늘은 다시 내지 않는다
+    recorded = f"sl_recorded:{account.id}:{market}:{pos.ticker}:{local_day.isoformat()}"
+    if control.get_flag(ctx.conn, recorded):
+        return 0  # dry-run·off 계좌의 손절은 기록만 하므로 하루 1회면 충분하다(매 분 반복 금지)
     if control.is_paused(ctx.conn):
         key = f"sl_paused_notified:{market}:{pos.ticker}:{today.isoformat()}"
         if not control.get_flag(ctx.conn, key):
@@ -471,6 +474,8 @@ def _sell_now(
         control.set_flag(ctx.conn, unrecorded, e.order_no or "-")
         return 0
     r = results[0] if results else {}
+    if r and not r.get("error") and (ctx.dry_run or r.get("mode") == "off"):
+        control.set_flag(ctx.conn, recorded, True)
     order = r.get("order")
     if order and order.get("accepted"):
         ctx.notifier.send(
