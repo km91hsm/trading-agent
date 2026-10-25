@@ -141,6 +141,26 @@ def _regime_lines(conn: sqlite3.Connection, settings: Settings) -> list[str]:
     return out
 
 
+def scan_lines(settings: Settings, now: datetime, state: Path | None = None) -> list[str]:
+    """시장별 오늘 `_scan.json` 한 줄(picks·분석 대상·뉴스 발굴). 텔레그램 /status 와 공용."""
+    from trader.orchestrator import run_store
+    from trader.scan import discovery as discovery_mod
+
+    out = []
+    for m in settings.markets:
+        d = run_store.run_date_for(m, now)
+        scan = run_store.read_checkpoint(run_store.market_dir(d, m, state), "_scan")
+        if not scan:
+            out.append(f"- {m} {d}: 아직 없음")
+            continue
+        picks = ", ".join(str(p.get("ticker")) for p in scan.get("picks") or []) or "-"
+        out.append(
+            f"- {m} {d}: picks {picks} · 분석 대상 {len(scan.get('analyze_targets') or [])} · "
+            f"{discovery_mod.line(scan.get('discovery'))}"
+        )
+    return out
+
+
 def _ml_lines() -> list[str]:
     try:
         from trader.ml import registry
@@ -223,6 +243,7 @@ def build_status(
     if decisions:
         lines += ["", "## 최근 결정"]
         lines += [f"- {d}" for d in decisions]
+    lines += ["", "## 오늘 스캔", *scan_lines(settings, now)]
     lines += ["", "## 국면·헤지", *_regime_lines(conn, settings)]
     lines += ["", "## 성과(30일)", *_perf_lines(conn, accounts)]
     lines += ["", "## ML 모델", *_ml_lines()]

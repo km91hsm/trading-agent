@@ -12,12 +12,91 @@ import { useApp, useLoad } from "../hooks";
 import { Link } from "react-router-dom";
 import { labelOf } from "../names";
 import { sectionForStage } from "../how";
-import { pipelineStages, stageSummary, type Stage } from "../pipeline";
+import { pickReason, pipelineStages, scanHeadline, stageSummary, type ScanSummary, type Stage } from "../pipeline";
+import { Table, Td, Th } from "../components/Table";
 import type { Checkpoint, Market } from "../types";
 import { Ticker } from "../components/Ticker";
 import { RunJobButton, useCanRun } from "../components/RunJob";
 
-type TodayResp = { date: string; market: string; tickers: Record<string, string[]> };
+type TodayResp = { date: string; market: string; tickers: Record<string, string[]>; scan?: ScanSummary | null; market_files?: string[] };
+type MarketCp = { stage: string; schema_version: number | null; data: unknown };
+
+const MARKET_FILE_LABEL: Record<string, string> = {
+  _market_inputs: "시장 세션 입력",
+  _market_view: "전략가 제안",
+  _market_debate_r0_bull: "시장 토론 강세",
+  _market_debate_r0_bear: "시장 토론 약세",
+  _market_summary: "시장 토론 요약",
+  _scan: "스캔 결과",
+  _screen: "스크리너 picks",
+  _discovery_inputs: "발굴 입력",
+  _discovery: "발굴 결과",
+};
+
+function marketFileLabel(f: string): string {
+  if (MARKET_FILE_LABEL[f]) return MARKET_FILE_LABEL[f];
+  if (f.startsWith("_market_analyst_")) return `거시 애널리스트 ${f.slice("_market_analyst_".length)}`;
+  return f;
+}
+
+/** 시장 단위 단계 파일(시장 세션·스캔·발굴) — 종목 판과 달리 시장 디렉터리에 있다. */
+function MarketFiles({ files, market, date }: { files: string[]; market: Market; date: string }) {
+  const [stage, setStage] = useState("");
+  const cp = useLoad(
+    () => (stage ? getJson<MarketCp>("/api/market-checkpoint", { market, date, stage }) : null),
+    [market, date, stage],
+  );
+  return (
+    <Section title="시장 단계" aside={`${files.length}개 파일`}>
+      <div className="row tight">
+        {files.map((f) => (
+          <button key={f} type="button" className={f === stage ? "btn btn-sm sel" : "btn btn-sm btn-ghost"} onClick={() => setStage(f === stage ? "" : f)} title={f}>
+            {marketFileLabel(f)}
+          </button>
+        ))}
+      </div>
+      <ErrorBox error={cp.error} />
+      {stage && cp.data && (
+        <details open>
+          <summary>{marketFileLabel(stage)} · {stage}.json</summary>
+          <JsonView value={cp.data.data as Record<string, unknown>} depth={1} />
+        </details>
+      )}
+    </Section>
+  );
+}
+
+function ScanBlock({ scan, market, onPick }: { scan: ScanSummary; market: Market; onPick: (t: string) => void }) {
+  return (
+    <Section title="오늘 스캔" aside={scanHeadline(scan)}>
+      {scan.picks.length ? (
+        <Table dense caption="스크리너 picks 와 사유">
+          <thead>
+            <tr>
+              <Th>종목</Th>
+              <Th>사유</Th>
+            </tr>
+          </thead>
+          <tbody>
+            {scan.picks.map((p) => (
+              <tr key={p.ticker}>
+                <Td>
+                  <button type="button" className="btn btn-sm btn-ghost" onClick={() => onPick(p.ticker)}>
+                    <Ticker market={market} ticker={p.ticker} showMarket={false} />
+                  </button>
+                  {p.discovery && <Badge kind="pending" value={p.discovery.tier === "listed" ? "발굴·밖" : "발굴"} title="scout 이 뉴스에서 찾은 종목" />}
+                </Td>
+                <Td>{pickReason(p)}</Td>
+              </tr>
+            ))}
+          </tbody>
+        </Table>
+      ) : (
+        <p className="muted">picks 없음 — 보유·관심종목만 분석 대상</p>
+      )}
+    </Section>
+  );
+}
 
 function DebateView({ data }: { data: Record<string, unknown> }) {
   const s = (k: string) => String(data[k] ?? "");
@@ -166,6 +245,19 @@ export function TodayPage({ title = "오늘의 실행", inputsOnly = false }: { 
         <span className="muted">운영일 {runDate ?? "—"}</span>
       </div>
       <ErrorBox error={today.error} />
+      {!inputsOnly && runDate && (today.data?.market_files?.length ?? 0) > 0 && (
+        <MarketFiles files={today.data?.market_files ?? []} market={market} date={runDate} />
+      )}
+      {!inputsOnly && today.data?.scan && (
+        <ScanBlock
+          scan={today.data.scan}
+          market={market}
+          onPick={(t) => {
+            setTicker(t);
+            setStage("");
+          }}
+        />
+      )}
       <Section title="종목" aside={`${tickers.length}개`}>
         {today.loading && !today.data ? (
           <Skeleton rows={1} cols={4} />

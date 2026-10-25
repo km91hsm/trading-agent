@@ -199,8 +199,15 @@ def test_promotion_alpha_mode_prefers_topn_alpha():
         {"models": {"quant": {"promote_metric": "alpha", "promote_min_alpha": 0.003}}}
     )
     folds = [
-        {"index": i, "accuracy": 0.34, "baseline": 0.34, "alpha": 0.01, "alpha_topn": -0.01,
-         "up_count": 20, "test_rows": 100}
+        {
+            "index": i,
+            "accuracy": 0.34,
+            "baseline": 0.34,
+            "alpha": 0.01,
+            "alpha_topn": -0.01,
+            "up_count": 20,
+            "test_rows": 100,
+        }
         for i in range(6)
     ]
     m = {
@@ -231,8 +238,14 @@ def test_promotion_alpha_mode_uses_market_specific_threshold():
         }
     )
     folds = _alpha_folds([0.0033] * 6)
-    m = {"accuracy": 0.36, "baseline": 0.33, "alpha": 0.001, "alpha_topn": 0.0033,
-         "folds": folds, "n_test": 600}
+    m = {
+        "accuracy": 0.36,
+        "baseline": 0.33,
+        "alpha": 0.001,
+        "alpha_topn": 0.0033,
+        "folds": folds,
+        "n_test": 600,
+    }
     assert train.promotion_decision(m, cfg, market="KR")[0] is True
     ok, why = train.promotion_decision(m, cfg, market="US")
     assert ok is False and "0.005" in why

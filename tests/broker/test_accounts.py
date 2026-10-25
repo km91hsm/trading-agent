@@ -130,3 +130,66 @@ def test_positions_us_carry_exchange_code(paper_client, respx_mock):
     kr = KisBroker(make_account("paper-main", "paper", "auto"), paper_client)
     _route(respx_mock, "/uapi/domestic-stock/v1/trading/inquire-balance", "balance_kr.json", load)
     assert kr.get_positions("KR")[0].exchange is None
+
+
+def test_cash_kr_carries_total_evaluation_as_nav(paper_client, respx_mock):
+    """NAV 는 예수금(dnca_tot_amt, 미결제) + 평가 합이 아니라 잔고 응답의 총평가(tot_evlu_amt)다 —
+    체결 뒤 2영업일 동안 매수분이 이중 계산돼 일일손실 −5% 오탐이 났다."""
+    from conftest_broker import load
+
+    _route(respx_mock, "/uapi/domestic-stock/v1/trading/inquire-balance", "balance_kr.json", load)
+    positions, cash = KisBroker(
+        make_account("paper-main", "paper", "auto"), paper_client
+    ).get_balance("KR")
+    assert cash.nav == Decimal("10015000")
+    assert positions[0].sellable_qty == 10 and positions[0].sell_qty == 10
+
+
+def test_us_balance_and_fills_query_all_three_exchanges(paper_client, respx_mock):
+    """US 잔고·체결은 NASD 고정이 아니라 NASD·NYSE·AMEX 를 모두 조회해 합친다(중복 제거)."""
+    from conftest_broker import load
+
+    bal = _route(
+        respx_mock, "/uapi/overseas-stock/v1/trading/inquire-balance", "balance_us.json", load
+    )
+    broker = KisBroker(make_account("paper-main", "paper", "auto", ["KR", "US"]), paper_client)
+    positions = broker.get_positions("US")
+    assert bal.call_count == 3
+    tickers = [p.ticker for p in positions]
+    assert len(tickers) == len(set(tickers))  # 같은 응답을 세 번 받아도 종목은 한 번
+
+
+def test_kr_fills_merge_continuation_pages(paper_client, respx_mock):
+    """체결 조회가 한 페이지를 넘으면(tr_cont=M) 다음 페이지 체결도 받는다 (리뷰 F14)."""
+    from datetime import date as _date
+
+    ccld = "/uapi/domestic-stock/v1/trading/inquire-daily-ccld"
+
+    def row(odno, qty):
+        return {
+            "odno": odno,
+            "pdno": "005930",
+            "sll_buy_dvsn_cd": "02",
+            "tot_ccld_qty": str(qty),
+            "avg_prvs": "70000",
+            "ord_dt": "20261009",
+            "ord_tmd": "100000",
+        }
+
+    respx_mock.get(PAPER + ccld).mock(
+        side_effect=[
+            httpx.Response(
+                200,
+                headers={"tr_cont": "M"},
+                json={"rt_cd": "0", "msg_cd": "", "msg1": "", "output1": [row("1", 3)]},
+            ),
+            httpx.Response(
+                200,
+                headers={"tr_cont": "D"},
+                json={"rt_cd": "0", "msg_cd": "", "msg1": "", "output1": [row("2", 5)]},
+            ),
+        ]
+    )
+    broker = KisBroker(make_account("paper-main", "paper", "auto"), paper_client)
+    fills = broker.get_fills("KR", _date(2026, 10, 9))
+    assert [(f.order_no, f.qty) for f in fills] == [("1", 3), ("2", 5)]

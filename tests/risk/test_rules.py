@@ -349,3 +349,114 @@ def test_hedge_order_exempts_rules_and_uses_hedge_cap():
     )
     v4 = _eval({**dec, "action": "SELL", "target_weight": 0.0}, p2, price="5000", is_hedge=True)
     assert v4.approved and v4.adjusted_qty == 100
+
+
+def test_sell_uses_sellable_qty_not_holding_qty():
+    """매도가능수량(ord_psbl_qty)이 보유량보다 적으면(미체결 매도 등) 그만큼만 판다."""
+    from decimal import Decimal
+
+    from trader.agents.schemas import Decision
+    from trader.broker.models import Position
+    from trader.config import RiskLimits
+    from trader.risk import rules
+
+    held = Position(
+        ticker="005930",
+        market="KR",
+        qty=10,
+        avg_price=Decimal("70000"),
+        current_price=Decimal("63000"),
+        eval_amount=Decimal("630000"),
+        pnl_pct=-0.1,
+        sellable_qty=6,
+    )
+    pf = rules.Portfolio(
+        account_id="a",
+        market="KR",
+        nav=Decimal("10000000"),
+        cash_available=Decimal("5000000"),
+        positions={"005930": held},
+        today_pnl_pct=0.0,
+        today_buy_tickers=set(),
+        today_order_amount=Decimal(0),
+        held_since={},
+        trades_this_week=0,
+    )
+    dec = Decision(
+        ticker="005930",
+        action="SELL",
+        target_weight=0.0,
+        order_type="MARKET",
+        limit_price=None,
+        stop_loss=None,
+        take_profit=None,
+        horizon_days=1,
+        confidence=1.0,
+        rationale="x",
+        invalidation_conditions=[],
+    )
+    v = rules.evaluate(
+        dec,
+        pf,
+        limits=RiskLimits(),
+        stance="normal",
+        market="KR",
+        price=Decimal("63000"),
+        today=__import__("datetime").date(2026, 10, 9),
+        is_stop_loss=True,
+    )
+    assert v.adjusted_qty == 6 and any("매도가능수량 6" in r for r in v.reasons)
+
+
+def test_agent_tilt_shifts_regime_limits_one_step_and_opens_bear_conditionally():
+    """Phase 22: 전략가 기울기 — neutral+RISK_ON 20%·4, neutral+RISK_OFF 10%·2, bull+RISK_OFF 는
+    neutral 한도, bear+RISK_ON 은 10%·2 로 조건부 허용. 헤지·손절은 기울기와 무관."""
+    f = stance.limits_for_regime
+    assert (f("neutral", LIMITS, 1).max_position_pct, f("neutral", LIMITS, 1).max_positions) == (
+        0.20,
+        4,
+    )
+    assert (f("neutral", LIMITS, -1).max_position_pct, f("neutral", LIMITS, -1).max_positions) == (
+        0.10,
+        2,
+    )
+    assert f("bull", LIMITS, -1) == f("neutral", LIMITS) and f("bull", LIMITS, 1) == LIMITS
+    assert (f("bear", LIMITS, 1).max_position_pct, f("bear", LIMITS, 1).max_positions) == (0.10, 2)
+    assert f("bear", LIMITS, -1) == LIMITS
+    # 설정 한도보다 넓어지지 않는다
+    tight = LIMITS.model_copy(update={"max_position_pct": 0.12, "max_positions": 3})
+    assert (f("neutral", tight, 1).max_position_pct, f("neutral", tight, 1).max_positions) == (
+        0.12,
+        3,
+    )
+    # tilt_of: 확신 기준·stance
+    assert stance.tilt_of(None, min_confidence=0.7) == 0
+    assert stance.tilt_of({"stance": "RISK_ON", "confidence": 0.8}, min_confidence=0.7) == 1
+    assert stance.tilt_of({"stance": "RISK_ON", "confidence": 0.6}, min_confidence=0.7) == 0
+    assert stance.tilt_of({"stance": "RISK_OFF", "confidence": 0.9}, min_confidence=0.7) == -1
+    assert stance.tilt_of({"stance": "NEUTRAL", "confidence": 0.9}, min_confidence=0.7) == 0
+    # 게이트: bear + RISK_ON → 0.2 요청이 10% 한도로 잘려 14주(0.10 × 1천만 / 7만)
+    v = _eval(ok_decision(target_weight=0.2), regime="bear", agent_tilt=1)
+    assert v.approved and v.adjusted_qty == 14
+    assert any("조건부 허용" in r for r in v.reasons) and any("10%·2종목" in r for r in v.reasons)
+    # bear + RISK_OFF/없음 → 여전히 거부
+    assert not _eval(ok_decision(), regime="bear", agent_tilt=-1).approved
+    # neutral + RISK_ON → 20% 한도(0.2 요청 그대로 28주)
+    v = _eval(ok_decision(target_weight=0.2), regime="neutral", agent_tilt=1)
+    assert v.adjusted_qty == 28 and any("전략가 RISK_ON" in r for r in v.reasons)
+    # bull + RISK_OFF → neutral 한도 15%
+    v = _eval(ok_decision(target_weight=0.2), regime="bull", agent_tilt=-1)
+    assert v.adjusted_qty == 21 and any("전략가 RISK_OFF" in r for r in v.reasons)
+    # 손절은 기울기 무관
+    p = _portfolio(
+        positions={"005930": _pos("005930", 10, "70000")},
+        held_since={"005930": D - timedelta(days=1)},
+    )
+    v = _eval(
+        ok_decision(action="SELL", target_weight=0.0),
+        p,
+        regime="bear",
+        agent_tilt=-1,
+        is_stop_loss=True,
+    )
+    assert v.approved

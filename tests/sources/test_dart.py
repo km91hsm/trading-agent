@@ -197,3 +197,25 @@ def test_disclosure_end_date_kst(respx_mock, tmp_path):
     c.disclosures("00126380", datetime(2026, 10, 9, 16, 0, tzinfo=UTC), days=7)
     p = route.calls[0].request.url.params
     assert p["end_de"] == "20261010" and p["bgn_de"] == "20261003"
+
+
+def test_corpcode_failure_backs_off_and_uses_stale_cache(project, respx_mock):
+    """corpCode 받기가 실패하면 10분 동안 다시 요청하지 않고, 만료된 캐시가 있으면 그것을 쓴다."""
+    from datetime import timedelta
+
+    from trader.sources import dart as dart_mod
+
+    ok = httpx.Response(200, content=corpcode_zip())
+    err = httpx.Response(500, text="x")
+    route = respx_mock.get(BASE + "/corpCode.xml").mock(side_effect=[ok, err, ok])
+    DartClient("DART-KEY-SECRET", project / "state" / "cache", now=lambda: T0).corp_code("005930")
+    later = T0 + timedelta(days=dart_mod.CACHE_DAYS + 1)
+    d2 = DartClient("DART-KEY-SECRET", project / "state" / "cache", now=lambda: later)
+    assert d2.corp_code("005930") == "00126380"  # 받기 실패 → 만료 캐시
+    d2._corp_map = None
+    assert d2.corp_code("000660") == "00164779"  # 백오프 중: 재요청 없음
+    assert route.call_count == 2
+    d3 = DartClient("DART-KEY-SECRET", project / "state" / "cache", now=lambda: later)
+    d3._map_failed_at = later - timedelta(hours=1)  # 백오프 지남 → 다시 받는다
+    d3._corp_map = None
+    assert d3.corp_code("005930") == "00126380" and route.call_count == 3

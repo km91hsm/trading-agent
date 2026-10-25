@@ -31,8 +31,10 @@ class FakeMarket:
         fail: set[str] | None = None,
         industries: dict[str, str] | None = None,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
+        flows: dict[str, list] | None = None,
     ) -> None:
         self.prices = prices or {}
+        self.flows = flows or {}  # ticker → [InvestorFlow] (날짜 오름차순)
         self.industries = industries or {}
         self.candles = candles or {}
         self.minutes = minutes or {}
@@ -73,6 +75,10 @@ class FakeMarket:
     def get_price_us(self, symbol: str, exchange: str) -> Quote:
         self._record("get_price_us")
         return self._quote(symbol, "US")
+
+    def get_investor_kr(self, ticker: str, days: int = 20) -> list:
+        self._record("get_investor_kr")
+        return list(self.flows.get(ticker, []))[-days:]
 
     def get_daily_kr(self, ticker: str, days: int = 250) -> list[Candle]:
         self._record("get_daily_kr")

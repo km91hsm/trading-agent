@@ -174,10 +174,13 @@ def test_report_quant_benchmark_passes_universe_to_latest_rows(conn, project, mo
 
     def fake_latest_rows(state, market, *, tickers=None, asof=None, max_files=60):
         seen["tickers"] = tickers
+        seen["asof"] = asof
         return pd.DataFrame()
 
     monkeypatch.setattr(features, "latest_rows", fake_latest_rows)
-    monkeypatch.setattr(ranker, "current", lambda state=None: (lambda df: df, "v1"))
+    monkeypatch.setattr(ranker, "current", lambda state=None, **kw: (lambda df: df, "v1"))
     _navs(conn, [100, 110])
-    performance.report(conn, None, "paper-main", "KR", days=30)
+    r = performance.report(conn, None, "paper-main", "KR", days=30)
     assert seen["tickers"] == ["A", "B"]
+    # 퀀트 벤치마크 종목은 **창 시작** 시점 피처로 고른다 (창 끝 피처는 룩어헤드)
+    assert seen["asof"].isoformat() == r["nav"][0]["time"]

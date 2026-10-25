@@ -11,6 +11,15 @@ news:
   naver: true          # NAVER_CLIENT_ID/SECRET 필요, 없으면 건너뜀
   max_items: 20
   macro_items: 10
+  # 시장 전체 뉴스 저장소(Phase 19): 데몬 news_collect 잡이 질의 묶음을 돌려 원장 news_items 에 쌓고
+  # 발굴(scout)·시장 세션·종목 세션이 읽는다. 질의는 사용자가 고친다.
+  market_queries:
+    KR: ["증시", "코스피 OR 코스닥", "실적 발표", "수주 OR 계약", "신약 OR 임상", "반도체 OR 2차전지 OR 자동차", "금리 OR 환율"]
+    US: ["stock market", "earnings", "Fed OR Treasury yields", "guidance OR upgrade", "semiconductor OR AI OR biotech"]
+  store_retention_days: 14
+  store_hours: 48
+  store_items: 60
+  saveticker_dir: state/external/saveticker   # 사용자 별도 수집기가 쌓는 폴더(data/<날짜>/*.jsonl, data/latest/*.json). 없으면 건너뜀
 
 macro:
   enabled: true
@@ -41,6 +50,7 @@ channels:
   naver_blog: ["ranto28"]   # 메르의 블로그. 공개 RSS, 키워드 무관 최근 naver_blog_posts 건을 분위기 입력에 싣는다
   naver_blog_posts: 5
 
-# 자동 수집 불가로 확인된 사이트 (기록용). 세이브티커는 Cloudflare 봇 검증으로 403.
+# 자동 수집 불가로 확인된 사이트 (기록용). 세이브티커는 Cloudflare 봇 검증으로 403 —
+# 이 저장소는 긁지 않고 사용자 수집기가 쌓은 로컬 폴더(news.saveticker_dir)만 읽는다.
 disabled_sites:
   - "https://www.saveticker.com/news"   # Cloudflare 봇 검증으로 403, 2026-10-09 확인

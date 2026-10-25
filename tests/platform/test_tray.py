@@ -89,3 +89,94 @@ def test_watch_signals_off_main_thread_is_noop():
     t.start()
     t.join()
     out[0]()  # 예외 없이 no-op 해제
+
+
+class _FakeIcon:
+    def __init__(self):
+        self.title = ""
+        self.stopped = False
+        self.menu_updates = 0
+
+    def stop(self):
+        self.stopped = True
+
+    def update_menu(self):
+        self.menu_updates += 1
+
+
+def _controller(state_fn, *, on_toggle=lambda: None, on_quit=lambda: None):
+    icon = _FakeIcon()
+    ctl = tray.TrayController(
+        state_fn=state_fn,
+        on_toggle_pause=on_toggle,
+        on_quit=on_quit,
+        initial=state_fn(),
+        run_on_main=lambda fn: fn(),
+    )
+    ctl.icon = icon
+    return ctl, icon
+
+
+def test_controller_labels_read_cached_state_without_db_calls():
+    """메뉴 라벨·checked 는 캐시만 읽는다 — 메인 스레드(AppKit 런루프)에서 SQLite 를 열지 않는다."""
+    calls = {"n": 0}
+
+    def state_fn():
+        calls["n"] += 1
+        return _state(paused=calls["n"] > 1)
+
+    ctl, _icon = _controller(state_fn)
+    assert calls["n"] == 1
+    for _ in range(10):
+        ctl.label("toggle_pause")
+        ctl.checked("toggle_pause")
+        ctl.title()
+    assert calls["n"] == 1 and ctl.label("toggle_pause") == "일시정지"
+    ctl.refresh_state()
+    assert calls["n"] == 2 and ctl.label("toggle_pause") == "재개" and ctl.checked("toggle_pause")
+
+
+def test_quit_action_returns_immediately_and_stops_icon_after_shutdown():
+    """종료는 워커 스레드에서 돈다. 메뉴를 누른 메인 스레드는 바로 돌아오고 제목이 '종료 중' 이
+    되며, shutdown 이 끝난 뒤에 아이콘이 내려간다(이전엔 메인 스레드가 shutdown(wait=True) 에
+    막혀 비치볼)."""
+    started = threading.Event()
+    release = threading.Event()
+
+    def on_quit():
+        started.set()
+        release.wait(5)
+
+    ctl, icon = _controller(lambda: _state(), on_quit=on_quit)
+    ctl.quit_action(icon, None)
+    assert started.wait(2)
+    assert icon.title == tray.QUITTING_TITLE and icon.stopped is False
+    ctl.quit_action(icon, None)  # 두 번 눌러도 한 번만
+    release.set()
+    for _ in range(50):
+        if icon.stopped:
+            break
+        threading.Event().wait(0.02)
+    assert icon.stopped is True
+
+
+def test_pause_action_toggles_on_worker_and_refreshes_title():
+    flag = {"paused": False}
+
+    def toggle():
+        flag["paused"] = not flag["paused"]
+
+    ctl, icon = _controller(lambda: _state(paused=flag["paused"]), on_toggle=toggle)
+    ctl.pause_action(icon, None)
+    for _ in range(50):
+        if icon.title == "trader · 일시정지":
+            break
+        threading.Event().wait(0.02)
+    assert icon.title == "trader · 일시정지" and ctl.checked("toggle_pause") is True
+    assert icon.menu_updates >= 1
+
+
+def test_on_main_falls_back_to_direct_call_without_appkit():
+    done = []
+    tray.on_main(lambda: done.append(1))
+    assert done == [1]

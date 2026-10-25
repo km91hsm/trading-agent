@@ -14,7 +14,7 @@ import re
 import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime, time
+from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
@@ -34,6 +34,7 @@ from trader.orchestrator.run_store import (
     run_dir,
     write_checkpoint,
 )
+from trader.platform import paths
 from trader.risk import costs
 
 logger = logging.getLogger("trader.orchestrator")
@@ -106,6 +107,7 @@ class ToolContext:
     notifier: Any = None
     dry_run: bool = True
     holiday_fn: Callable[[date], bool] | None = None  # 보유 거래일 계산용 (KIS 휴장일)
+    market_client: Any | None = None  # Phase 19 발굴: 유니버스 밖 종목의 시세·거래소 확인
 
 
 def _dir(ctx: ToolContext, ticker: str, market: Market, d: date) -> Path:
@@ -749,7 +751,19 @@ def submit_decision(
             "action": (existing.get("data") or {}).get("action"),
             "message": "30_decision 이 이미 있어 기존 결정을 유지함",
         }
-        if any(s.startswith("40_risk_check_") for s in stages):
+        # dry-run(`trader analyze --dry-run`·FAKE·웹 dry_run 요청)이 남긴 40_ 는 실행이 아니다 —
+        # 그대로 두면 아침 dry-run 뒤 데몬의 실전 세션이 "이미 실행" 으로 보고 그날 주문을
+        # 내지 않는다. 지금도 dry-run 이면 dry-run 판정으로 충분하다(반복하지 않음)
+        executed = {
+            s[len("40_risk_check_") :]
+            for s in stages
+            if s.startswith("40_risk_check_")
+            and (
+                ctx.dry_run or not ((read_checkpoint(d, s) or {}).get("data") or {}).get("dry_run")
+            )
+        }
+        wanted = {a.id for a in ctx.accounts if market in a.markets}
+        if executed and not (wanted - executed):
             return out
         try:
             decision = schemas.Decision.model_validate(existing.get("data") or {})
@@ -760,9 +774,23 @@ def submit_decision(
         price = _quote_price(inputs)
         if price is None:
             return out | {"message": "00_inputs 에 현재가가 없어 실행을 재개하지 못함"}
+        price, requote = _requote(ctx, inputs, market, ticker, price)
+        if decision.stop_loss is not None and Decimal(str(decision.stop_loss)) >= price:
+            return out | {
+                "message": f"손절선 {decision.stop_loss} 이 재시세 {price} 이상이라 실행 생략"
+            }
         _ingest_run(ctx, d, date, market, ticker)
+        # 판정이 이미 있는 계좌는 다시 돌리지 않는다(한 계좌의 예외로 끊긴 뒤 나머지만 재개)
         executions, memory_entry_id = _execute_and_record(
-            ctx, d, date, market, decision, inputs, price
+            ctx,
+            d,
+            date,
+            market,
+            decision,
+            inputs,
+            price,
+            skip_accounts=frozenset(executed),
+            extra_note=requote,
         )
         logger.warning("미실행 결정의 실행 재개 %s %s: %s", market, ticker, decision.action)
         return out | {
@@ -790,11 +818,14 @@ def submit_decision(
         return {"ok": False, "error": f"ticker 불일치: {decision.ticker} ≠ {ticker}"}
     inputs = read_checkpoint(d, "00_inputs") or {}
     price = _quote_price(inputs)
+    requote: str | None = None
     if resume_stage:
         # 재평가의 현재가는 아침 시세가 아니라 장중 트리거 가격이다 (트레이더 md 의 "현재가")
         trig = repo.latest_trigger_price(ctx.conn, market, ticker, date)
         if trig is not None:
             price = trig
+    elif price is not None:
+        price, requote = _requote(ctx, inputs, market, ticker, price)
     if price is None:
         return {
             "ok": False,
@@ -831,6 +862,7 @@ def submit_decision(
         inputs,
         price,
         resume_round=int(m_round.group(1)) if m_round else None,
+        extra_note=requote,
     )
     logger.info("결정 저장 %s %s: %s (계좌 %d)", market, ticker, decision.action, len(executions))
     return {
@@ -839,6 +871,7 @@ def submit_decision(
         "stage": stage_name,
         "action": decision.action,
         "price": str(price),
+        "requote": requote,
         "dry_run": ctx.dry_run,
         "executions": executions,
         "memory_entry_id": memory_entry_id,
@@ -855,6 +888,8 @@ def _execute_and_record(
     price: Decimal,
     *,
     resume_round: int | None = None,
+    skip_accounts: frozenset[str] = frozenset(),
+    extra_note: str | None = None,
 ) -> tuple[list[dict], int | None]:
     """리스크 게이트·계좌별 실행(주문은 executor 안에서만) + 메모리 엔트리.
 
@@ -882,6 +917,8 @@ def _execute_and_record(
         exchange=(inputs.get("meta") or {}).get("exchange"),
         dry_run=ctx.dry_run,
         resume_round=resume_round,
+        skip_accounts=skip_accounts,
+        extra_note=extra_note,
     )
     memory_entry_id = _record_memory(ctx, decision, market, date)
     return executions, memory_entry_id
@@ -899,14 +936,13 @@ def _load_sizer(state: Path | None):
         return None
 
 
-_KST_CLOSE = time(15, 30)
-
-
 def _decided_at(now: datetime, run_date: date) -> datetime:
     """운영일(run date)이 오늘(KST)이면 현재 시각, 아니면 그날 장 마감(15:30 KST) 시각(UTC)."""
+    from trader.orchestrator.fills import MARKET_CLOSE
+
     if now.astimezone(KST).date() == run_date:
         return now
-    return datetime.combine(run_date, _KST_CLOSE, KST).astimezone(UTC)
+    return datetime.combine(run_date, MARKET_CLOSE["KR"], KST).astimezone(UTC)
 
 
 def _record_memory(
@@ -941,6 +977,43 @@ def _record_memory(
     except Exception as e:  # noqa: BLE001
         logger.warning("메모리 기록 실패 %s %s: %s", market, decision.ticker, e)
         return None
+
+
+REQUOTE_AFTER_S = 600  # 입력 수집 뒤 이만큼 지났으면 제출 때 현재가를 다시 받는다(Phase 21)
+
+
+def _requote(
+    ctx: ToolContext, inputs: dict, market: Market, ticker: str, price: Decimal
+) -> tuple[Decimal, str | None]:
+    """제출 시 재시세: `00_inputs.meta.asof` 가 REQUOTE_AFTER_S 넘게 늙었고 시세 클라이언트가 있으면
+    현재가를 다시 받아 게이트(수량·손절 검사)에 쓴다. 실패·0·변동 없음은 입력가 유지. 둘째 값은
+    판정 note 에 남길 문구("재시세 71500→71800")."""
+    if ctx.market_client is None:
+        return price, None
+    asof_raw = (inputs.get("meta") or {}).get("asof")
+    try:
+        asof = datetime.fromisoformat(str(asof_raw))
+        if asof.tzinfo is None:
+            asof = asof.replace(tzinfo=UTC)
+    except (TypeError, ValueError):
+        return price, None
+    if (ctx.now() - asof).total_seconds() < REQUOTE_AFTER_S:
+        return price, None
+    try:
+        if market == "KR":
+            q = ctx.market_client.get_price_kr(ticker)
+        else:
+            exch = (inputs.get("meta") or {}).get("exchange") or "NAS"
+            q = ctx.market_client.get_price_us(ticker, exch)
+        fresh = Decimal(str(getattr(q, "price", None) or 0))
+    except Exception as e:  # noqa: BLE001 - 재시세 실패는 입력가로 간다
+        logger.warning("재시세 실패 %s %s: %s", market, ticker, e)
+        return price, None
+    if fresh <= 0 or fresh == price:
+        return price, None
+    note = f"재시세 {price}→{fresh}"
+    logger.info("%s %s %s (입력 %s)", market, ticker, note, asof_raw)
+    return fresh, note
 
 
 def _quote_price(inputs: dict) -> Decimal | None:
@@ -1227,6 +1300,75 @@ def submit_screen(
     path = write_checkpoint(d, "_screen", _wrap(screened.model_dump(), _call(agent, call_meta)))
     logger.info("스크리닝 저장 %s: %s", market, [p.ticker for p in screened.picks])
     return {"ok": True, "path": str(path), "picks": [p.ticker for p in screened.picks]}
+
+
+# --- 뉴스 발굴 (Phase 19 scout) --------------------------------------------------
+
+
+def discovery_inputs(ctx: ToolContext, *, market: Market, date: date) -> dict:
+    """scout 입력(`_discovery_inputs`, 파이썬이 세션 앞에서 만든다). 없으면 ok=false → 발굴 생략."""
+    if market not in ("KR", "US"):
+        return {"ok": False, "error": f"market 은 KR 또는 US: {market!r}"}
+    d = market_dir(date, market, ctx.state)
+    data = (read_checkpoint(d, "_discovery_inputs") or {}).get("data") or {}
+    if not data:
+        return {"ok": False, "error": "_discovery_inputs 없음 (발굴 단계 생략)"}
+    return {"ok": True, "data": _shrink(data, BUNDLE_LIMIT_BYTES)}
+
+
+def submit_discovery(
+    ctx: ToolContext,
+    *,
+    market: Market,
+    date: date,
+    payload: dict,
+    agent: str = "scout",
+    call_meta: dict | None = None,
+) -> dict:
+    """Discovered 검증 → 파이썬이 코드·거래소·제외 확정(`discovery.resolve`) → `_discovery` 저장 →
+    정량 후보와 병합한 screener 입력(`candidates`) 반환."""
+    from trader import names
+    from trader.config import Universe, load_universe
+    from trader.scan import discovery
+
+    if market not in ("KR", "US"):
+        return {"ok": False, "error": f"market 은 KR 또는 US: {market!r}"}
+    try:
+        found = schemas.Discovered.model_validate(_unescape(payload))
+    except ValidationError as e:
+        msgs = "; ".join(
+            f"{'.'.join(str(x) for x in err['loc'])}: {err['msg']}" for err in e.errors()
+        )
+        return {"ok": False, "error": f"스키마 검증 실패(Discovered): {msgs}"}
+    d = market_dir(date, market, ctx.state, create=True)
+    inputs = (read_checkpoint(d, "_discovery_inputs") or {}).get("data") or {}
+    try:
+        universe = load_universe()
+    except Exception:  # noqa: BLE001 - 설정이 없으면 유니버스 비움(전부 listed 로 본다)
+        universe = Universe()
+    cache_dir = (ctx.state or paths.state_dir()) / "cache"
+    cache_names = names.load_cache_names(cache_dir)
+    hedge = ctx.settings.hedge
+    exclude = set(hedge.tickers(market)) if hedge.enabled else set()
+    exclude |= set(inputs.get("held") or [])
+    resolved = discovery.resolve(
+        found.model_dump(),
+        market=market,
+        universe=universe,
+        cache_names=cache_names,
+        market_client=ctx.market_client,
+        exclude=exclude,
+    )
+    path = write_checkpoint(d, "_discovery", _wrap(resolved, _call(agent, call_meta)))
+    merged = discovery.merge(list(inputs.get("quant_candidates") or []), resolved)
+    logger.info("발굴 저장 %s: %s", market, discovery.line(resolved))
+    return {
+        "ok": True,
+        "path": str(path),
+        "candidates": merged,
+        "discovered": [c["ticker"] for c in resolved["candidates"]],
+        "unresolved": resolved["unresolved"],
+    }
 
 
 # --- submit-reflection (Phase 8 reflect) ----------------------------------------

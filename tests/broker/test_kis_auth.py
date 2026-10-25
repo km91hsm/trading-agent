@@ -135,3 +135,16 @@ def test_failed_issue_does_not_overwrite_token_written_by_other_process(project)
     cache = json.loads(a.cache_path.read_text(encoding="utf-8"))
     assert cache["access_token"] == "NEW" and cache.get("failed_at")
     assert a.token() == "NEW"
+
+
+@respx.mock
+def test_token_is_memoized_in_process(project):
+    """같은 인스턴스는 유효한 토큰을 메모해 호출마다 캐시 파일을 읽지 않는다."""
+    respx.post(TOKEN_URL).mock(return_value=token_response())
+    auth = make_auth(project, lambda: T0)
+    assert auth.token() == "tok1"
+    (project / "state" / "kis_token_paper.json").unlink()
+    assert auth.token() == "tok1"  # 메모
+    auth.invalidate()
+    respx.post(TOKEN_URL).mock(return_value=token_response("tok2"))
+    assert auth.token() == "tok2"

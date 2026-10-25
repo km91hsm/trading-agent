@@ -167,9 +167,7 @@ class FakeDart:
         return [{"title": "공시", "rcept_dt": "2026-10-07", "url": "https://dart.fss.or.kr/x"}]
 
 
-def _fact_entries(
-    values: dict[int, int], *, filed: dict[int, str], duration: bool
-) -> list[dict]:
+def _fact_entries(values: dict[int, int], *, filed: dict[int, str], duration: bool) -> list[dict]:
     out = []
     for fy, val in values.items():
         e = {"form": "10-K", "fy": fy, "end": f"{fy}-12-31", "filed": filed[fy], "val": val}

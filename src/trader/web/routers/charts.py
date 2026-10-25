@@ -6,6 +6,7 @@ US 는 America/New_York 현지 시각(`xhms`)을 변환한다.
 
 from __future__ import annotations
 
+import threading
 import time
 from contextlib import closing
 from datetime import date, datetime
@@ -17,7 +18,7 @@ from trader.broker.errors import KisApiError
 from trader.config import MARKET_TZ
 from trader.ledger import repo
 from trader.orchestrator import tools
-from trader.web.routers._common import KST, deps_of, require_market
+from trader.web.routers._common import KST, deps_of, kis_wait, require_market
 
 router = APIRouter(prefix="/charts", tags=["charts"])
 
@@ -27,6 +28,7 @@ _candle_cache: dict[
     tuple, tuple[float, list[dict]]
 ] = {}  # (market, ticker, exchange, days, kst일) → (저장 시각, 봉)
 _minute_cache: dict[tuple, tuple[float, list[dict]]] = {}  # (market, ticker, exchange, count)
+_cache_lock = threading.Lock()  # 요청 스레드가 여럿이라 dict 순회·삭제가 겹친다
 
 
 def _remember(
@@ -39,9 +41,10 @@ def _remember(
 ) -> None:
     """저장하면서 만료된 항목을 지운다 (일봉 캐시 키에 KST 날짜가 들어가 날마다 늘어난다)."""
     t = time.monotonic() if now is None else now
-    for k in [k for k, (saved, _) in cache.items() if t - saved >= ttl]:
-        del cache[k]
-    cache[key] = (t, value)
+    with _cache_lock:
+        for k in [k for k, (saved, _) in cache.items() if t - saved >= ttl]:
+            del cache[k]
+        cache[key] = (t, value)
 
 
 def _validate(
@@ -83,16 +86,18 @@ def charts(
 ) -> dict:
     m, deps = _validate(request, ticker, market, exchange, account_id)
     key = (m, ticker, exchange, days, deps.now().astimezone(KST).date().isoformat())
-    hit = _candle_cache.get(key)
+    with _cache_lock:
+        hit = _candle_cache.get(key)
     if hit and time.monotonic() - hit[0] < CACHE_TTL_S:
         out_candles = hit[1]
     else:
         try:
-            candles = (
-                deps.market.get_daily_kr(ticker, days=days)
-                if m == "KR"
-                else deps.market.get_daily_us(ticker, exchange, days=days)
-            )
+            with kis_wait(deps.market):
+                candles = (
+                    deps.market.get_daily_kr(ticker, days=days)
+                    if m == "KR"
+                    else deps.market.get_daily_us(ticker, exchange, days=days)
+                )
         except KisApiError as e:
             raise HTTPException(status_code=502, detail=f"시세 조회 실패: {e}") from None
         out_candles = [
@@ -156,16 +161,18 @@ def minute_chart(
     m, deps = _validate(request, ticker, market, exchange, account_id)
     tz = MARKET_TZ[m]
     key = (m, ticker, exchange, count)
-    hit = _minute_cache.get(key)
+    with _cache_lock:
+        hit = _minute_cache.get(key)
     if hit and time.monotonic() - hit[0] < MINUTE_CACHE_TTL_S:
         out_candles = hit[1]
     else:
         try:
-            candles = (
-                deps.market.get_minute_kr(ticker, count=count)
-                if m == "KR"
-                else deps.market.get_minute_us(ticker, exchange, count=min(count, 120))
-            )
+            with kis_wait(deps.market):
+                candles = (
+                    deps.market.get_minute_kr(ticker, count=count)
+                    if m == "KR"
+                    else deps.market.get_minute_us(ticker, exchange, count=min(count, 120))
+                )
         except KisApiError as e:
             raise HTTPException(status_code=502, detail=f"시세 조회 실패: {e}") from None
         out_candles = [

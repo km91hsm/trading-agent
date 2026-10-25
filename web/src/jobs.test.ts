@@ -54,11 +54,14 @@ describe("jobs", () => {
       req({ id: 1, status: "running", started_at: "s", progress: "[3] KR 005930" }),
       req({ id: 2, status: "error", finished_at: "f", error: "폭발" }),
       req({ id: 3 }),
+      req({ id: 4, kind: "reevaluate", priority: 10 }),
     ]);
     expect(rows.map((r) => [r.stateLabel, r.detail, r.cancellable, r.when])).toEqual([
       ["실행 중", "[3] KR 005930", false, "s"],
       ["오류", "폭발", false, "f"],
       ["대기", null, true, "2026-10-24T01:00:00+00:00"],
+      ["대기", null, true, "2026-10-24T01:00:00+00:00"],
     ]);
+    expect(rows.map((r) => r.priority)).toEqual([false, false, false, true]);
   });
 });

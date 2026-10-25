@@ -688,3 +688,124 @@ def test_rejected_order_bookkeeping_failure_is_not_escalated(ectx, monkeypatch):
     assert by["paper-main"]["order"]["status"] == "failed"
     assert by["paper-2"]["order"]["accepted"] is True  # 다음 계좌는 계속 실행된다
     assert not any("긴급" in m for m in ectx.notifier.sent)
+
+
+# --- 리뷰 F8·F9·F17 -------------------------------------------------------------------
+
+
+def test_account_exception_does_not_block_other_accounts(ectx, monkeypatch):
+    """한 계좌의 예외(원장 잠금 등)는 그 계좌의 error 항목으로 남고 다음 계좌는 계속 실행된다."""
+    ectx.accounts[1] = AccountConfig(
+        id="real-main", env="real", cano="2", markets=["KR"], mode="off"
+    )
+    orig = executor.build_portfolio
+
+    def boom(conn, broker, account, *a, **kw):
+        if account.id == "paper-main":
+            raise OSError("disk")
+        return orig(conn, broker, account, *a, **kw)
+
+    monkeypatch.setattr(executor, "build_portfolio", boom)
+    results = _run(ectx)
+    by = {r["account_id"]: r for r in results}
+    assert "OSError" in by["paper-main"]["error"]
+    assert by["real-main"]["mode"] == "off" and "error" not in by["real-main"]
+    assert read_checkpoint(run_dir(D, "KR", "005930"), "40_risk_check_real-main") is not None
+    assert any("[실행 실패]" in m for m in ectx.notifier.sent)
+
+
+def test_skip_accounts_only_runs_remaining(ectx):
+    results = executor.execute(
+        ectx,
+        Decision(**ok_decision()),
+        date=D,
+        market="KR",
+        price=PRICE,
+        dry_run=True,
+        skip_accounts=frozenset({"paper-main"}),
+    )
+    assert [r["account_id"] for r in results] == ["real-main"]
+
+
+def test_pending_approval_reserves_cash(ectx):
+    """approve 계좌의 pending 요청 금액은 당일 주문금액에 들어가 다음 매수의 가능금액을 줄인다."""
+    aid = _pending(ectx)
+    a = repo.get_approval(ectx.conn, aid)
+    qty, price = int(a["order"]["qty"]), Decimal(str(a["order"]["price"] or PRICE))
+    assert repo.today_order_amount(ectx.conn, "paper-main", D, market="KR") == qty * price
+    executor.reject(ectx, aid)
+    assert repo.today_order_amount(ectx.conn, "paper-main", D, market="KR") == 0
+
+
+def test_approval_keeps_order_stage_and_unknown_is_not_failed(ectx, monkeypatch):
+    """재평가 승인은 51_order_r<n> 에 쓰고(오늘 분석의 50_order 를 덮지 않음), 응답 없는 주문은
+    failed 가 아니라 approved 로 두어 체결 동기화가 확정하게 한다."""
+    from trader.broker.errors import KisApiError
+
+    control.set_account_mode(ectx.conn, ectx.accounts[0], "approve")
+    dec = Decision(**ok_decision())
+    repo.ingest_checkpoint(
+        ectx.conn, D, "KR", dec.ticker, "30_decision", {"data": dec.model_dump()}
+    )
+    results = executor.execute(
+        ectx, dec, date=D, market="KR", price=PRICE, dry_run=False, resume_round=1
+    )
+    aid = next(x for x in results if x["account_id"] == "paper-main")["approval_id"]
+    assert repo.get_approval(ectx.conn, aid)["order"][executor.STAGE_KEY] == "51_order_r1"
+
+    class TimeoutBroker(FakeBroker):
+        def place_order(self, request):
+            raise KisApiError("NETWORK_UNKNOWN", "요청 실패: ReadTimeout", "TTTC0802U")
+
+    ectx.brokers["paper-main"] = TimeoutBroker(
+        ectx.accounts[0], cash=_broker(ectx.accounts[0]).cash
+    )
+    r = executor.approve(ectx, aid)
+    assert r["ok"] is False and r["order"]["status"] == "unknown"
+    assert repo.get_approval(ectx.conn, aid)["status"] == "approved"
+    d = run_dir(D, "KR", "005930")
+    assert read_checkpoint(d, "51_order_r1_paper-main") is not None
+    assert read_checkpoint(d, "50_order_paper-main") is None
+
+
+def test_reject_race_is_reported(ectx):
+    aid = _pending(ectx)
+    repo.decide_approval(ectx.conn, aid, "rejected")  # 다른 프로세스가 먼저 처리
+    r = executor.reject(ectx, aid)
+    assert r["ok"] is False and "이미" in r["error"]
+
+
+def test_breaker_sums_paper_accounts_nav(ectx):
+    """Phase 21: 모의 계좌가 둘이면 서킷브레이커는 날짜별 NAV 합으로 판정한다 — 한 계좌만 보면
+    다른 계좌의 판정이 바로 되돌리거나(OR 아님) 작은 계좌의 드로다운이 과대평가된다."""
+    from trader.config import AccountConfig
+    from trader.ledger import db
+
+    second = AccountConfig(id="paper-2", env="paper", cano="9", markets=["KR"], mode="auto")
+    db.sync_accounts(ectx.conn, [*ectx.accounts, second])
+    for i in range(6):
+        d = D - timedelta(days=6 - i)
+        repo.snapshot_positions(
+            ectx.conn,
+            account_id="paper-main",
+            d=d,
+            market="KR",
+            nav=Decimal("1000000"),
+            cash=Decimal(1),
+            positions=[],
+        )
+        repo.snapshot_positions(
+            ectx.conn,
+            account_id="paper-2",
+            d=d,
+            market="KR",
+            nav=Decimal("9000000"),
+            cash=Decimal(1),
+            positions=[],
+        )
+    # paper-main 만 보면 −15%(브레이커 켜짐), 합산이면 10,000,000 → 9,850,000 = −1.5% (꺼짐)
+    series = executor._paper_nav_series(ectx.conn, ectx.accounts[0], "KR", D, Decimal("850000"))
+    assert series[-1] == (D.isoformat(), Decimal("9850000"))
+    assert series[0][1] == Decimal("10000000")
+    executor._update_breaker(ectx.conn, ectx.accounts[0], "KR", D, Decimal("850000"))
+    assert control.get_flag(ectx.conn, "memory_breaker:KR")["active"] is False

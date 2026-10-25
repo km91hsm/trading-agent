@@ -125,7 +125,6 @@ def test_financial_history_us_quarter_none_when_not_after_latest_10k_or_after_as
     }
 
 
-
 def test_financial_history_us_keeps_latest_10k_when_two_end_in_same_year():
     """결산월 변경(transition)으로 같은 연도에 10-K end 가 둘이면 최신(end 가 늦은) 값을 남기고,
     각 연도에 `end` 를 실어 1월 결산사(NVDA FY2026=2026-01-25)의 연도 키를 오독하지 않게 한다."""

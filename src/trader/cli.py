@@ -129,7 +129,12 @@ def _build_client(secrets: config.Secrets, env: config.Env) -> KisClient:
         raise config.ConfigError(f"{env} 앱키·시크릿이 secrets/.env 에 없습니다")
     cache_key = (env, key)
     if cache_key not in _clients:
-        _clients[cache_key] = KisClient(env, KisAuth(env, key, secret))
+        from trader.broker.kis_client import RATE_PER_SEC
+        from trader.broker.rate_store import SharedRateLimiter
+
+        # 데몬·세션 도구 서브프로세스가 같은 1초 창을 나눠 쓴다(교차 프로세스 한도)
+        limiter = SharedRateLimiter(RATE_PER_SEC[env], paths.state_dir() / "kis_rate.db", env)
+        _clients[cache_key] = KisClient(env, KisAuth(env, key, secret), limiter=limiter)
     return _clients[cache_key]
 
 
@@ -324,8 +329,10 @@ def _build_input_deps(secrets: config.Secrets, cfg: config.SourcesConfig) -> Inp
     except Exception as e:  # noqa: BLE001
         logging.getLogger("trader.sources").warning("시세 클라이언트 생성 실패: %s", e)
         market = None
+    from trader.ledger import db
+
     dart = DartClient(secrets.DART_API_KEY, cache) if secrets.DART_API_KEY else None
-    return InputDeps(market=market, dart=dart, edgar=_build_edgar(cfg))
+    return InputDeps(market=market, dart=dart, edgar=_build_edgar(cfg), conn_factory=db.connect)
 
 
 @app.command("collect")
@@ -598,8 +605,10 @@ def _tool_ctx():
     # dry_run 도 잔고로 판정은 한다(주문·승인 요청만 생략). 브로커 생성은 네트워크를 쓰지 않는다.
     brokers = {b.account.id: b for b in _build_brokers(secrets, accounts)}
     try:
-        holiday_fn = _build_market(secrets).is_holiday  # 7일 캐시, 보유 거래일 계산용
+        market_client = _build_market(secrets)
+        holiday_fn = market_client.is_holiday  # 7일 캐시, 보유 거래일 계산용
     except Exception:  # noqa: BLE001 - 실전 앱키가 없으면 휴장일 없이 평일 수로 계산
+        market_client = None
         holiday_fn = None
     return ToolContext(
         settings=config.load_settings(),
@@ -609,6 +618,7 @@ def _tool_ctx():
         notifier=make_notifier(secrets),
         dry_run=dry_run,
         holiday_fn=holiday_fn,
+        market_client=market_client,
     )
 
 
@@ -987,7 +997,15 @@ def _daemon_deps(*, dry_run: bool = False):
     def web_app():
         from trader.web.app import create_app
 
-        return create_app(_web_deps())
+        wd = _web_deps()
+        extra = _hosts_for_bind(wd.settings.web.bind)  # 단독 `trader web` 과 같은 규칙
+        if extra:
+            logging.getLogger("trader.web").warning(
+                "루프백이 아닌 주소(%s)에 바인드: 조회 API 가 토큰 없이 열리고 Host 제한이 꺼짐",
+                wd.settings.web.bind,
+            )
+            wd.extra_hosts.extend(extra)
+        return create_app(wd)
 
     return daemon_mod.DaemonDeps(
         settings=settings,
@@ -1087,9 +1105,7 @@ def _run_with_tray(deps, daemon_mod, *, url: str, finished: threading.Event) -> 
     result: dict[str, Any] = {}
 
     def scheduler_factory():
-        from apscheduler.schedulers.blocking import BlockingScheduler
-
-        holder["scheduler"] = BlockingScheduler(timezone=KST)
+        holder["scheduler"] = daemon_mod.make_scheduler()
         return holder["scheduler"]
 
     def run_daemon() -> None:
@@ -1149,6 +1165,7 @@ def _run_with_tray(deps, daemon_mod, *, url: str, finished: threading.Event) -> 
             on_quit=shutdown,
             icon_dir=bundle.icons_dir(),
             stop_event=deps.stop_event,
+            finished=finished,
         )
     except tray.TrayUnavailable as e:
         typer.echo(f"트레이 없이 실행합니다 ({e}). 종료는 Ctrl+C.")
@@ -1260,6 +1277,81 @@ def fills_sync(
 
 control_app = typer.Typer(help="일시정지·계좌 모드 (SQLite control 테이블, yaml 보다 우선)")
 app.add_typer(control_app, name="control")
+jobs_app = typer.Typer(
+    help="작업 대기열 (요청만 넣고 실행은 데몬 job_queue 틱)", no_args_is_help=True
+)
+app.add_typer(jobs_app, name="jobs")
+
+
+@jobs_app.command("list")
+@_config_errors
+def jobs_list(limit: int = typer.Option(20, "--limit", help="표시 건수")) -> None:
+    """대기·실행 중 요청(실행 순서)과 최근 종료분을 보여준다."""
+    from trader import jobs as jobq
+
+    boot = _boot(conn=True)
+    try:
+        rows = jobq.list_recent(boot.conn, limit=limit)
+    finally:
+        boot.conn.close()
+    if not rows:
+        typer.echo("요청 없음")
+        return
+    for r in rows:
+        extra = r.get("progress") if r["status"] == "running" else r.get("error")
+        shown = jobq.label(r["kind"], r["params"])
+        typer.echo(
+            f"#{r['id']} {r['status']:7} p{r.get('priority', 0)} {shown}"
+            f" ({r['source']}, {r['requested_at']})" + (f" — {extra}" if extra else "")
+        )
+
+
+@jobs_app.command("run")
+@_config_errors
+def jobs_run(
+    kind: str = typer.Argument(..., help="작업 종류 (`trader jobs kinds`)"),
+    market: str | None = typer.Option(None, "--market", help="KR 또는 US"),
+    ticker: str | None = typer.Option(None, "--ticker", help="종목 (analyze_ticker)"),
+    exchange: str | None = typer.Option(None, "--exchange", help="US 거래소 NAS|NYS|AMS"),
+    live: bool = typer.Option(False, "--live", help="analyze_ticker 를 실제 모드로(dry_run=false)"),
+    priority: int | None = typer.Option(None, "--priority", help="우선순위(기본 kind 별)"),
+) -> None:
+    """요청을 대기열에 넣는다. 데몬이 켜져 있어야 실행된다(꺼져 있으면 거부)."""
+    from trader import heartbeat
+    from trader import jobs as jobq
+
+    params: dict = {}
+    if market:
+        params["market"] = market.upper()
+    if ticker:
+        params["ticker"] = ticker.upper()
+    if exchange:
+        params["exchange"] = exchange.upper()
+    if live:
+        params["dry_run"] = False
+    try:
+        p = jobq.validate(kind, params)
+    except ValueError as e:
+        raise config.ConfigError(str(e)) from e
+    if not heartbeat.read_status(paths.state_dir(), datetime.now(UTC), [])["alive"]:
+        raise config.ConfigError("데몬이 꺼져 있어 요청을 실행할 주체가 없습니다 (`trader daemon`)")
+    boot = _boot(conn=True)
+    try:
+        rid = jobq.enqueue(boot.conn, kind, p, source="cli", priority=priority)
+    except jobq.DuplicateRequest as e:
+        raise config.ConfigError(str(e)) from e
+    finally:
+        boot.conn.close()
+    typer.echo(f"요청 #{rid} {jobq.label(kind, p)} — 데몬이 순서대로 실행합니다")
+
+
+@jobs_app.command("kinds")
+def jobs_kinds() -> None:
+    """요청 가능한 작업 종류."""
+    from trader import jobs as jobq
+
+    for k in jobq.KINDS:
+        typer.echo(f"{k:18} {jobq.label(k, {})}" + ("  (가벼움)" if not jobq.is_heavy(k) else ""))
 
 
 def _control_conn():
@@ -1473,6 +1565,31 @@ def tool_submit_market_view(
     _tool_run(tools.submit_market_view, market=market, date=date, payload=_payload_arg(json_text))
 
 
+scan_tool_app = typer.Typer(help="scan 세션 도구 (Phase 19 발굴)", no_args_is_help=True)
+tool_app.add_typer(scan_tool_app, name="scan")
+
+
+@scan_tool_app.command("discovery-inputs")
+def tool_scan_discovery_inputs(
+    market: str = typer.Option(..., "--market"),
+    date: str = typer.Option(..., "--date"),
+) -> None:
+    from trader.orchestrator import tools
+
+    _tool_run(tools.discovery_inputs, market=market, date=date)
+
+
+@tool_app.command("submit-discovery")
+def tool_submit_discovery(
+    market: str = typer.Option(..., "--market"),
+    date: str = typer.Option(..., "--date"),
+    json_text: str | None = typer.Option(None, "--json", help="Discovered JSON (없으면 stdin)"),
+) -> None:
+    from trader.orchestrator import tools
+
+    _tool_run(tools.submit_discovery, market=market, date=date, payload=_payload_arg(json_text))
+
+
 @tool_app.command("submit-screen")
 def tool_submit_screen(
     market: str = typer.Option(..., "--market"),
@@ -1513,7 +1630,7 @@ def scan(
 
         day = run_date_for(market, when)
 
-        ml = ranker.current()
+        ml = ranker.current(market=market)
         try:
             runtime_watch = control.get_watchlist(conn, market=market)
             watch = [*universe.watch, *runtime_watch]
@@ -1537,6 +1654,8 @@ def scan(
                 brokers=brokers,
                 watch=watch,
                 asof=when,
+                universe=universe,
+                discovery=True,
             )
         finally:
             conn.close()
@@ -1547,6 +1666,7 @@ def scan(
             "picks": r["picks"],
             "analyze_targets": r["analyze_targets"],
             "session": r["session"],
+            "discovery": r.get("discovery"),
             "cap_hit": cap_hit,
             "ml_model": ml[1] if ml else None,
         }

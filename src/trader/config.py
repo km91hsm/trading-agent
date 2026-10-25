@@ -6,6 +6,7 @@ yaml 모델은 전부 extra="forbid" 라 yaml 키를 추가하면 모델도 같�
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 from decimal import Decimal
@@ -25,6 +26,8 @@ from pydantic import (
 )
 
 from trader.platform import paths
+
+logger = logging.getLogger("trader.config")
 
 Env = Literal["paper", "real"]
 Mode = Literal["auto", "approve", "off"]
@@ -79,6 +82,20 @@ class HedgeCfg(BaseModel):
     leverage: bool = True  # 3지표 모두 켜지면 −2x, 아니면 −1x
     bear_min_signals: int = Field(default=2, ge=1, le=3)
     exit_streak_days: int = Field(default=5, ge=1, le=30)
+    # Phase 19: 전략가(시장 세션) RISK_OFF 를 4번째 국면 지표로 센다(지표 0개면 bear 진입 불가),
+    # RISK_ON 은 지표가 bear_min_signals 와 같을 때 하루 진입 보류. 둘 다 confidence 기준 이상만
+    agent_signal: bool = True
+    agent_min_confidence: float = Field(default=0.7, ge=0, le=1)
+    # Phase 22: 전략가 제안(확신 ≥ agent_min_confidence)이 국면 한도를 한 칸 옮긴다 —
+    # neutral+RISK_ON 20%·4, neutral+RISK_OFF 10%·2, bull+RISK_OFF → neutral 한도, bear+RISK_ON →
+    # 신규 매수를 10%·2 한도로 조건부 허용. 헤지·손절은 무관. 끄면 Phase 17 국면 한도 그대로
+    agent_gate: bool = True
+    # Phase 21: KR 외인 수급(지수 proxy 20일·5일 순매수 합 모두 음수) 을 보조 지표로 센다. 기본 끔
+    flow_signal: bool = False
+    # Phase 21: bear 유지 중 보유 상품(−1x/−2x)이 판정과 다른 날이 switch_streak_days 연속이면 전량
+    # 매도 뒤 다음 운영일 재진입(같은 날 둘 다 내지 않음 — 매도 현금을 확인할 수 없다). 기본 끔
+    switch_instruments: bool = False
+    switch_streak_days: int = Field(default=3, ge=1, le=30)
     ma_days: int = Field(default=200, ge=20, le=400)
     momentum_days: int = Field(default=20, ge=5, le=120)
     momentum_min: float = -0.05
@@ -211,6 +228,26 @@ class _AccountsFile(BaseModel):
 # --- sources.yaml ----------------------------------------------------------
 
 
+DEFAULT_MARKET_QUERIES: dict[str, list[str]] = {
+    "KR": [
+        "증시",
+        "코스피 OR 코스닥",
+        "실적 발표",
+        "수주 OR 계약",
+        "신약 OR 임상",
+        "반도체 OR 2차전지 OR 자동차",
+        "금리 OR 환율",
+    ],
+    "US": [
+        "stock market",
+        "earnings",
+        "Fed OR Treasury yields",
+        "guidance OR upgrade",
+        "semiconductor OR AI OR biotech",
+    ],
+}
+
+
 class NewsCfg(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -219,6 +256,15 @@ class NewsCfg(BaseModel):
     naver: bool = True
     max_items: int = 20
     macro_items: int = 10
+    # 시장 전체 뉴스 저장소(Phase 19): 데몬이 질의 묶음을 돌려 원장 news_items 에 쌓는다
+    market_queries: dict[str, list[str]] = Field(
+        default_factory=lambda: {k: list(v) for k, v in DEFAULT_MARKET_QUERIES.items()}
+    )
+    store_retention_days: int = Field(default=14, ge=1, le=365)
+    store_hours: int = Field(default=48, ge=1, le=24 * 14)  # 세션·발굴 입력의 최근 창
+    store_items: int = Field(default=60, ge=1, le=500)  # 발굴 입력 건수 상한
+    # 세이브티커 로컬 수집 폴더(사용자 별도 수집기). 상대 경로는 프로젝트 루트 기준, 없으면 건너뜀
+    saveticker_dir: str | None = "state/external/saveticker"
 
 
 class MacroCfg(BaseModel):
@@ -357,6 +403,10 @@ class Secrets(BaseModel):
     KIS_PAPER_APP_SECRET: str | None = None
     KIS_REAL_APP_KEY: str | None = None
     KIS_REAL_APP_SECRET: str | None = None
+    # 계좌번호(8자리). accounts.yaml 의 cano 가 자리표시자("00000000"·빈 값)면 env 별로
+    # 여기서 읽는다 (저장소를 공개해도 커밋에 계좌번호가 남지 않도록, 2026-10-25)
+    KIS_PAPER_CANO: str | None = None
+    KIS_REAL_CANO: str | None = None
     DART_API_KEY: str | None = None
     TELEGRAM_BOT_TOKEN: str | None = None
     TELEGRAM_CHAT_ID: str | None = None
@@ -493,6 +543,26 @@ class WeeklyJob(BaseModel):
         return _check_hm(v)
 
 
+class IntervalJob(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    interval_s: int = Field(default=1800, ge=60, le=86400)
+
+
+class ReconcileSchedule(BaseModel):
+    """야간 KIS 대조 시각(시장별 현지 시각, 그 시장 `tz`). 체결 동기화(16:10 KST·07:10 KST) 뒤."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kr: str = "16:40"
+    us: str = "16:40"
+
+    @field_validator("kr", "us")
+    @classmethod
+    def _hm_ok(cls, v: str) -> str:
+        return _check_hm(v)
+
+
 class ScheduleConfig(BaseModel):
     """config/schedule.yaml (KST). 데몬이 잡을 등록할 때 읽는다."""
 
@@ -502,6 +572,10 @@ class ScheduleConfig(BaseModel):
     us: MarketSchedule
     reflect: str
     ml_train: WeeklyJob
+    news_collect: IntervalJob = Field(default_factory=IntervalJob)  # 시장 전체 뉴스 수집 주기
+    reconcile: ReconcileSchedule = Field(
+        default_factory=ReconcileSchedule
+    )  # 야간 KIS 대조(Phase 21)
 
     @field_validator("reflect")
     @classmethod
@@ -635,9 +709,32 @@ def load_settings(path: Path | None = None) -> Settings:
     return _validate(Settings, _read_yaml(p), p.name)
 
 
-def load_accounts(path: Path | None = None) -> list[AccountConfig]:
+CANO_PLACEHOLDER = "00000000"
+
+
+def _cano_from_secrets(a: AccountConfig, secrets: Secrets | None) -> AccountConfig:
+    """cano 가 자리표시자면 `KIS_<PAPER|REAL>_CANO` 로 채운다(없으면 그대로 두고 경고)."""
+    if a.cano and a.cano != CANO_PLACEHOLDER and not a.cano.startswith("${"):
+        return a
+    key = "KIS_PAPER_CANO" if a.env == "paper" else "KIS_REAL_CANO"
+    value = (getattr(secrets, key, None) or "").strip() if secrets is not None else ""
+    if not value:
+        logger.warning("계좌 %s 의 계좌번호가 자리표시자이고 secrets %s 도 비어 있음", a.id, key)
+        return a
+    return a.model_copy(update={"cano": value})
+
+
+def load_accounts(
+    path: Path | None = None, *, secrets: Secrets | None = None
+) -> list[AccountConfig]:
+    """accounts.yaml → 계좌 목록. cano 자리표시자는 secrets(.env) 의 `KIS_*_CANO` 로 채운다
+    (secrets 를 넘기지 않으면 자리표시자가 있을 때만 `load_secrets()` 를 읽는다)."""
     p = path or paths.config_dir() / "accounts.yaml"
     accounts = _validate(_AccountsFile, _read_yaml(p), p.name).accounts
+    if any(not a.cano or a.cano == CANO_PLACEHOLDER or a.cano.startswith("${") for a in accounts):
+        if secrets is None:
+            secrets = load_secrets()
+        accounts = [_cano_from_secrets(a, secrets) for a in accounts]
     seen: set[str] = set()
     for a in accounts:
         if a.id in seen:

@@ -27,6 +27,7 @@ logger = logging.getLogger("trader.sources")
 
 BASE = "https://opendart.fss.or.kr/api"
 CACHE_DAYS = 7
+MAP_FAIL_BACKOFF = timedelta(minutes=10)  # corpCode 받기 실패 뒤 재요청 간격
 ANNUAL = "11011"
 RATIO_KEYS = ("매출성장률", "영업이익률", "ROE", "부채비율", "PER", "PBR", "PSR")
 
@@ -76,6 +77,7 @@ class DartClient:
         self._now = now
         self._corp_map: dict[str, dict[str, str]] | None = None
         self._map_lock = threading.Lock()  # 수집 절이 병렬로 돌 때 고유번호 맵을 한 번만 받는다
+        self._map_failed_at: datetime | None = None  # 실패 뒤 MAP_FAIL_BACKOFF 동안 재요청 안 함
 
     # --- 공통 ---------------------------------------------------------------
 
@@ -106,13 +108,31 @@ class DartClient:
     def _fetch_corp_map(self) -> dict[str, dict[str, str]]:
         cache = self._cache_dir / "dart_corpcode.json"
         now = self._now()
+        stale: dict[str, dict[str, str]] | None = None
         try:
             cached = json.loads(cache.read_text(encoding="utf-8"))
             fetched = datetime.fromisoformat(cached["fetched_at"])
             if now - fetched < timedelta(days=CACHE_DAYS):
                 return cached["map"]
+            stale = cached.get("map") or None  # 만료됐어도 받기 실패하면 쓴다(이름·코드는 안정적)
         except (OSError, ValueError, KeyError, TypeError):
             pass
+        if self._map_failed_at is not None and now - self._map_failed_at < MAP_FAIL_BACKOFF:
+            if stale:
+                return stale
+            raise DartError("DART corpCode 직전 실패로 잠시 재요청하지 않음")
+        try:
+            return self._download_corp_map(cache, now)
+        except (DartError, httpx.HTTPError) as e:
+            self._map_failed_at = now  # 종목마다(수집 절마다) 20MB zip 을 다시 받지 않는다
+            if stale:
+                logger.warning("DART corpCode 갱신 실패, 만료 캐시 사용: %s", e)
+                return stale
+            if isinstance(e, httpx.HTTPError):
+                raise DartError(f"DART corpCode 요청 실패: {type(e).__name__}") from None
+            raise
+
+    def _download_corp_map(self, cache: Path, now: datetime) -> dict[str, dict[str, str]]:
         resp = self._http.get(f"{BASE}/corpCode.xml", params={"crtfc_key": self._key})
         if resp.status_code != 200:
             raise DartError(f"DART corpCode HTTP {resp.status_code}")

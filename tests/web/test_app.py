@@ -130,3 +130,72 @@ def test_daemon_endpoint_without_daemon_lists_schedule(client, deps):
     )
     r = client.get("/api/system/daemon").json()
     assert any(j["id"] == "kr_scan_analyze" for j in r["jobs"]) and r["pid"] is None
+
+
+def test_today_includes_scan_summary_with_discovery_reason(client, deps):
+    """Phase 21: /api/today.scan 은 picks 사유 + 발굴 촉매, 발굴 한 줄."""
+    from trader.orchestrator import run_store
+
+    r = client.get("/api/today", params={"market": "KR"})
+    assert r.status_code == 200 and r.json()["scan"] is None
+    d = run_store.run_date_for("KR", deps.now())
+    run_store.write_checkpoint(
+        run_store.market_dir(d, "KR", deps.state, create=True),
+        "_scan",
+        {
+            "picks": [
+                {"ticker": "247540", "reason": "screener"},
+                {"ticker": "005930", "reason": "x"},
+            ],
+            "analyze_targets": [{"ticker": "247540"}, {"ticker": "005930"}],
+            "cap_hit": False,
+            "discovery": {
+                "candidates": [
+                    {
+                        "ticker": "247540",
+                        "tier": "listed",
+                        "catalyst": "대규모 수주",
+                        "name": "에코프로비엠",
+                    }
+                ],
+                "universe": 0,
+                "listed": 1,
+                "unresolved": 0,
+            },
+        },
+    )
+    scan = client.get("/api/today", params={"market": "KR"}).json()["scan"]
+    assert scan["targets"] == 2 and scan["cap_hit"] is False
+    assert scan["picks"][0] == {
+        "ticker": "247540",
+        "reason": "screener",
+        "discovery": {"tier": "listed", "catalyst": "대규모 수주"},
+    }
+    assert scan["picks"][1]["discovery"] is None
+    assert scan["discovery_line"] == "뉴스 발굴 1(유니버스 0·밖 1·미해결 0)"
+
+
+def test_today_lists_market_files_and_market_checkpoint_endpoint(client, deps):
+    """Phase 21: /api/today.market_files + /api/market-checkpoint 로 시장 단계 파일을 읽는다."""
+    from trader.orchestrator import run_store
+
+    d = run_store.run_date_for("KR", deps.now())
+    mdir = run_store.market_dir(d, "KR", deps.state, create=True)
+    run_store.write_checkpoint(
+        mdir, "_market_view", {"schema_version": 1, "data": {"stance": "RISK_OFF"}}
+    )
+    run_store.write_checkpoint(mdir, "_scan", {"picks": []})
+    r = client.get("/api/today", params={"market": "KR"}).json()
+    assert r["market_files"] == ["_market_view", "_scan"]
+    cp = client.get("/api/market-checkpoint", params={"market": "KR", "stage": "_market_view"})
+    assert cp.status_code == 200 and cp.json()["data"] == {"stance": "RISK_OFF"}
+    raw = client.get("/api/market-checkpoint", params={"market": "KR", "stage": "_scan"}).json()
+    assert raw["data"] == {"picks": []} and raw["schema_version"] is None
+    assert (
+        client.get("/api/market-checkpoint", params={"market": "KR", "stage": "_nope"}).status_code
+        == 404
+    )
+    assert (
+        client.get("/api/market-checkpoint", params={"market": "KR", "stage": "../x"}).status_code
+        == 400
+    )

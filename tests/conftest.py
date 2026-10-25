@@ -65,3 +65,13 @@ def client(deps):
     from trader.web.app import create_app
 
     return TestClient(create_app(deps))
+
+
+@pytest.fixture(autouse=True)
+def _clear_macro_memo():
+    """거시 수집 메모(inputs._MACRO_MEMO)는 프로세스 전역이라 테스트 사이에 비운다."""
+    from trader.sources import inputs as _inputs
+
+    _inputs._MACRO_MEMO.clear()
+    yield
+    _inputs._MACRO_MEMO.clear()

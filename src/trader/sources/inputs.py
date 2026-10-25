@@ -12,8 +12,10 @@
 from __future__ import annotations
 
 import logging
+import threading
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeout
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
@@ -24,6 +26,7 @@ import httpx
 import pandas as pd
 from pydantic import BaseModel
 
+from trader.broker.models import drop_incomplete_tail
 from trader.config import (
     KST,
     MARKET_TZ,
@@ -36,6 +39,7 @@ from trader.config import (
 )
 from trader.orchestrator.run_store import read_checkpoint, run_date_for, run_dir, write_checkpoint
 from trader.sources import indicators, manual_inputs
+from trader.sources.base import MAX_PAST as _MAX_PAST
 from trader.sources.base import SKIP_REASONS, Section, run_section, skipped_section
 from trader.sources.community import collect_channels, collect_community  # noqa: F401
 from trader.sources.dart import ratios_kr
@@ -43,11 +47,13 @@ from trader.sources.edgar import financial_history_us, ratios_from_facts
 from trader.sources.macro import collect_macro
 from trader.sources.news import collect_news
 
+SECTION_TIMEOUT_S = 180.0  # 절(fundamental·news_macro·sentiment) 하나의 최대 대기
+
 logger = logging.getLogger("trader.sources")
 
 # v2: fundamental.history (3개년 + 최근 분기), v3: fundamental.peer (동종업 중앙값)
 SCHEMA_VERSION = 3
-MAX_PAST = timedelta(hours=24)
+MAX_PAST = _MAX_PAST  # 정본은 sources/base (ml/features 와 공유)
 MAX_FUTURE = timedelta(hours=24)  # 과거와 대칭. 연도 오타 같은 먼 미래만 거부
 
 
@@ -60,6 +66,8 @@ class InputDeps:
     edgar: Any | None
     http: httpx.Client | None = None
     now: Callable[[], datetime] = field(default=lambda: datetime.now(UTC))
+    # 시장 전체 뉴스 저장소(원장 news_items) 읽기용. None 이면 종목별 수집만
+    conn_factory: Callable[[], Any] | None = None
 
 
 def _jsonable(obj: Any) -> Any:
@@ -141,8 +149,9 @@ def _technical(ticker, market, exchange, cfg, deps, asof: datetime) -> dict[str,
             if kr
             else m.get_daily_us(ticker, exchange, days=cfg.kis.daily_days)
         )
-        # 과거 asof 재수집(24시간 안)이면 KIS 는 현재 기준 봉을 주므로 asof 뒤 봉을 잘라 낸다
-        candles = [c for c in got if c.date <= cutoff]
+        # 과거 asof 재수집(24시간 안)이면 KIS 는 현재 기준 봉을 주므로 asof 뒤 봉을 잘라 낸다.
+        # 개장 전 거래량 0 스텁 봉은 지표(이동평균·RSI)를 가짜 종가로 틀어 놓으므로 버린다
+        candles = drop_incomplete_tail([c for c in got if c.date <= cutoff])
         if not candles:
             raise ValueError("일봉이 비어 있습니다")
         return _dump(candles)
@@ -280,27 +289,104 @@ def _fundamental(ticker, market, asof, cfg, deps, technical) -> dict[str, Sectio
 def _news_macro(ticker, market, name, asof, cfg, secrets, deps) -> dict[str, Any]:
     now = deps.now
     news = run_section(
-        lambda: collect_news(
-            cfg.news,
-            secrets,
-            ticker=ticker,
-            name=name,
-            market=market,
-            asof=asof,
-            http=deps.http,
-            now=now,
+        lambda: _with_store_news(
+            collect_news(
+                cfg.news,
+                secrets,
+                ticker=ticker,
+                name=name,
+                market=market,
+                asof=asof,
+                http=deps.http,
+                now=now,
+            ),
+            ticker,
+            market,
+            asof,
+            cfg,
+            deps,
         ),
         enabled=cfg.news.enabled,
         now=now,
     )
     macro: Any
     if cfg.macro.enabled:
-        macro = collect_macro(
-            cfg.macro, secrets, market_client=deps.market, asof=asof, http=deps.http, now=now
-        )
+        macro = _macro_memoized(cfg, secrets, market, asof, deps, now)
     else:
         macro = skipped_section("disabled", now=now)
     return {"news": news, "macro": macro}
+
+
+def _with_store_news(news: dict, ticker: str, market: str, asof, cfg, deps) -> dict:
+    """저장소(news_items)에서 이 종목으로 태그된 최근 뉴스를 종목 뉴스에 합친다(URL 중복 제거).
+    저장소가 없거나 읽기에 실패하면 수집 결과 그대로."""
+    if deps.conn_factory is None:
+        return news
+    try:
+        from trader.sources import news_store
+
+        conn = deps.conn_factory()
+        try:
+            items = news_store.recent(
+                conn,
+                market,
+                asof=asof,
+                hours=cfg.news.store_hours,
+                limit=cfg.news.max_items,
+                ticker=ticker,
+            )
+        finally:
+            conn.close()
+    except Exception as e:  # noqa: BLE001 - 저장소는 보조 입력
+        logger.debug("뉴스 저장소 읽기 실패 %s %s: %s", market, ticker, e)
+        return news
+    if not items:
+        return news
+    seen = {i.get("url") for i in news.get("stock") or []}
+    extra = [
+        {
+            "title": i["title"],
+            "summary": i.get("summary") or "",
+            "source": f"store:{i.get('source')}",
+            "published_at": i.get("published_at"),
+            "url": i["url"],
+            "received_at": i.get("received_at"),
+        }
+        for i in items
+        if i.get("url") not in seen
+    ]
+    out = dict(news)
+    merged = [*(news.get("stock") or []), *extra]
+    merged.sort(key=lambda i: i.get("published_at") or "", reverse=True)
+    out["stock"] = merged[: cfg.news.max_items]
+    out["sources"] = {**(news.get("sources") or {}), "store": f"{len(extra)}건 합침"}
+    return out
+
+
+MACRO_MEMO_TTL = timedelta(minutes=15)
+_MACRO_MEMO: dict[tuple[str, str], tuple[datetime, dict[str, Any]]] = {}
+_MACRO_MEMO_LOCK = threading.Lock()
+
+
+def _macro_memoized(cfg, secrets, market: str, asof: datetime, deps, now) -> dict[str, Any]:
+    """거시 지표(FRED·ECOS·지수)는 종목과 무관하다 — 같은 시장·운영일의 수집은 15분 동안 재사용해
+    종목마다 8회씩 외부 API 를 다시 부르지 않는다. 전부 실패한 결과는 메모하지 않는다."""
+    key = (market, asof.astimezone(UTC).date().isoformat())
+    t = now()
+    with _MACRO_MEMO_LOCK:
+        hit = _MACRO_MEMO.get(key)
+        if hit is not None and t - hit[0] < MACRO_MEMO_TTL:
+            return hit[1]
+    macro = collect_macro(
+        cfg.macro, secrets, market_client=deps.market, asof=asof, http=deps.http, now=now
+    )
+    if isinstance(macro, dict) and any(
+        (s.get("error") if isinstance(s, dict) else getattr(s, "error", None)) is None
+        for s in macro.values()
+    ):
+        with _MACRO_MEMO_LOCK:
+            _MACRO_MEMO[key] = (t, macro)
+    return macro
 
 
 _EVENT_KINDS = (
@@ -315,8 +401,9 @@ _EVENT_KINDS = (
 )
 
 
-def _events(fundamental: dict, asof: datetime, now) -> Section:
-    """최근 7일 공시를 이벤트 종류로 분류한다. 예정 이벤트 소스는 아직 없어 upcoming 은 빈 목록."""
+def _events(fundamental: dict, asof: datetime, now, upcoming: list[dict] | None = None) -> Section:
+    """최근 7일 공시를 이벤트 종류로 분류한다. `upcoming` 은 세이브티커 캘린더(asof ~ +7일 경제
+    일정, Phase 21)이고 폴더가 없으면 빈 목록(종목 실적일·배당락 소스는 아직 없다)."""
 
     def build() -> dict:
         disc = fundamental.get("disclosures") or {}
@@ -331,7 +418,12 @@ def _events(fundamental: dict, asof: datetime, now) -> Section:
             title = str(it.get("title") or "")
             kind = next((k for word, k in _EVENT_KINDS if word in title), "other")
             recent.append({"date": d, "kind": kind, "title": title, "source": it.get("source")})
-        return {"recent": recent, "upcoming": [], "note": "예정 이벤트(실적일·배당락) 소스 미확정"}
+        note = (
+            "upcoming 은 세이브티커 경제 일정(7일); 종목 실적일·배당락 소스는 미확정"
+            if upcoming
+            else "예정 이벤트(실적일·배당락) 소스 미확정"
+        )
+        return {"recent": recent, "upcoming": list(upcoming or []), "note": note}
 
     return run_section(build, now=now)
 
@@ -374,7 +466,32 @@ def _sentiment(ticker, market, name, asof, cfg, deps, secrets=None) -> dict[str,
         ),
         "trends": skipped_section("phase8", now=now),
         "manual_inputs": _manual(ticker, market, asof, now),
+        "saveticker": _saveticker_section(ticker, asof, cfg, now),
     }
+
+
+def _upcoming(asof: datetime, cfg) -> list[dict]:
+    """세이브티커 캘린더의 7일 경제 일정(없으면 빈 목록, 실패도 빈 목록 — 보조 입력)."""
+    from trader.sources import saveticker
+
+    try:
+        root = saveticker.resolve_dir(getattr(cfg.news, "saveticker_dir", None))
+        return saveticker.upcoming(root, asof=asof)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("세이브티커 일정 읽기 실패: %s", e)
+        return []
+
+
+def _saveticker_section(ticker: str, asof: datetime, cfg, now) -> Section:
+    """세이브티커 로컬 폴더(사용자 수집기)의 커뮤니티·시세 상위에서 이 종목 언급 + 시장 트렌드."""
+    from trader.sources import saveticker
+
+    root = saveticker.resolve_dir(getattr(cfg.news, "saveticker_dir", None))
+    if not saveticker.available(root):
+        return skipped_section("no saveticker dir", now=now)
+    return run_section(
+        lambda: saveticker.for_ticker(saveticker.snapshot(root, asof=asof), ticker), now=now
+    )
 
 
 def _reddit_auth(secrets: Secrets | None) -> tuple[str, str, str] | None:
@@ -460,8 +577,20 @@ def build_inputs(
             "sentiment": pool.submit(_sentiment, ticker, market, name, asof, cfg, deps, secrets),
         }
         for key, fut in futures.items():
-            result[key] = fut.result()
-    result["news_macro"]["events"] = _events(result["fundamental"], asof, deps.now)
+            try:
+                result[key] = fut.result(timeout=SECTION_TIMEOUT_S)
+            except FuturesTimeout:
+                # 한 절이 멈춰도(네트워크 TLS 교착 등) 수집 전체·세션을 막지 않는다. 스레드는 풀이
+                # 닫힐 때까지 남지만 결과는 오류 절로 기록한다
+                logger.warning("수집 절 %s 시간 초과(%ss) %s", key, SECTION_TIMEOUT_S, ticker)
+                result[key] = Section(
+                    data=None,
+                    received_at=deps.now().isoformat(),
+                    error=f"timeout after {SECTION_TIMEOUT_S}s",
+                )
+    result["news_macro"]["events"] = _events(
+        result["fundamental"], asof, deps.now, upcoming=_upcoming(asof, cfg)
+    )
     result = _jsonable(result)
     result["errors"] = _collect_errors(result)
     return result

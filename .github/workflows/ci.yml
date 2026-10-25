@@ -1,0 +1,36 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: 의존성
+        run: uv sync
+      - name: 린트
+        run: uv run ruff check src tests
+      - name: 테스트
+        run: uv run pytest -q
+      - name: 웹 타입검사·테스트·빌드
+        working-directory: web
+        run: |
+          npm ci
+          npm run typecheck
+          npm test -- --run
+          npm run build

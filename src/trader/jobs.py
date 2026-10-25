@@ -4,6 +4,8 @@ interval 잡이 한 번에 하나씩 꺼내 기존 잡 본체로 실행한다. �
 - kind·params 는 여기의 pydantic 모델(`PARAMS`)이 유일한 검증이고, 같은 kind+params 가
   queued|running 이면 `DuplicateRequest`.
 - claim 은 조건부 UPDATE(`status='queued'`)라 웹의 enqueue/cancel 과 경합해도 한 번만 실행된다.
+- 우선순위(Phase 21): `priority DESC, id` 순으로 꺼낸다. 재평가(monitor 트리거)는 `PRIORITY[kind]`
+  로 10, 나머지 0 — 백필·학습 뒤에 재평가가 수십 분 밀리지 않게.
 """
 
 from __future__ import annotations
@@ -63,6 +65,18 @@ class MarketViewParams(_P):
     market: Market
 
 
+class ReevaluateParams(_P):
+    """monitor 가 트리거를 기록한 뒤 재평가 세션을 큐로 넘긴다(손절 점검 틱을 막지 않도록)."""
+
+    market: Market
+    ticker: str = Field(min_length=1, max_length=12, pattern=r"^[A-Za-z0-9.\-]+$")
+    exchange: Literal["NAS", "NYS", "AMS"] | None = None
+    trigger_id: int = Field(ge=1)
+    trigger_ids: list[int] = Field(
+        default_factory=list
+    )  # 같은 틱의 나머지 트리거(같은 세션이 처리)
+
+
 class AnalyzeTickerParams(_P):
     market: Market
     ticker: str = Field(min_length=1, max_length=12, pattern=r"^[A-Za-z0-9.\-]+$")
@@ -79,6 +93,10 @@ class ReflectParams(_P):
     market: Market | None = None
 
 
+class ReconcileParams(_P):
+    market: Market | None = None
+
+
 PARAMS: dict[str, type[BaseModel]] = {
     "features_backfill": FeaturesBackfillParams,
     "features_snapshot": FeaturesSnapshotParams,
@@ -87,14 +105,19 @@ PARAMS: dict[str, type[BaseModel]] = {
     "rl_train": RlTrainParams,
     "scan_analyze": ScanAnalyzeParams,
     "market_view": MarketViewParams,
+    "reevaluate": ReevaluateParams,
     "analyze_ticker": AnalyzeTickerParams,
     "reflect": ReflectParams,
     "fills_sync": EmptyParams,
+    "news_collect": EmptyParams,
+    "reconcile": ReconcileParams,
 }
 KINDS: tuple[str, ...] = tuple(PARAMS)
-# 가벼운 kind(체결 동기화)만 heavy 락 밖. 나머지는 세션·KIS·CPU 를 오래 쓴다.
-HEAVY_KINDS: frozenset[str] = frozenset(k for k in KINDS if k != "fills_sync")
-_SCHEDULED_AS_IS = {"ml_train", "reflect", "fills_sync"}
+# kind 기본 우선순위. 손절 뒤 재평가는 시간이 생명이라 앞으로, 나머지는 요청 순서.
+PRIORITY: dict[str, int] = {"reevaluate": 10}
+# 가벼운 kind(체결 동기화·뉴스 수집)만 heavy 락 밖. 나머지는 세션·KIS·CPU 를 오래 쓴다.
+LIGHT_KINDS: frozenset[str] = frozenset({"fills_sync", "news_collect", "reconcile"})
+HEAVY_KINDS: frozenset[str] = frozenset(k for k in KINDS if k not in LIGHT_KINDS)
 _KIND_LABEL = {
     "features_backfill": "피처 백필",
     "features_snapshot": "피처 스냅샷",
@@ -103,9 +126,12 @@ _KIND_LABEL = {
     "rl_train": "RL 학습",
     "scan_analyze": "스캔 → 분석",
     "market_view": "시장 세션",
+    "reevaluate": "재평가",
     "analyze_ticker": "종목 분석",
     "reflect": "복기",
     "fills_sync": "체결 동기화",
+    "news_collect": "뉴스 수집",
+    "reconcile": "KIS 대조",
 }
 
 
@@ -134,19 +160,19 @@ def job_id_for(kind: str, params: dict) -> str:
     """하트비트·runs 에 쓰는 이름. 스케줄 잡과 같은 작업이면 같은 id 로 적어 잡 표에 섞인다."""
     if kind == "scan_analyze":
         return f"{str(params.get('market', 'KR')).lower()}_scan_analyze"
-    if kind in _SCHEDULED_AS_IS:
-        return kind
-    return kind
+    if kind == "reconcile" and params.get("market"):
+        return f"{str(params['market']).lower()}_reconcile"
+    return kind  # ml_train·reflect·fills_sync 는 스케줄 잡 id 와 같다
 
 
 def label(kind: str, params: dict, name: str | None = None) -> str:
     base = _KIND_LABEL.get(kind, kind)
     market = params.get("market")
-    if kind == "analyze_ticker":
+    if kind in ("analyze_ticker", "reevaluate"):
         from trader import names
 
         who = names.label(str(params.get("ticker", "")), name)
-        mode = " (모의)" if params.get("dry_run", True) else ""
+        mode = " (모의)" if kind == "analyze_ticker" and params.get("dry_run", True) else ""
         return f"{base} {who}{mode}"
     if kind == "features_backfill":
         return f"{base} {params.get('years', 3)}년" + (f" {market}" if market else "")
@@ -166,9 +192,12 @@ def enqueue(
     *,
     source: str,
     now: datetime | None = None,
+    priority: int | None = None,
 ) -> int:
-    """검증 → 중복(queued|running) 검사 → 삽입. 반환은 요청 id."""
+    """검증 → 중복(queued|running) 검사 → 삽입. 반환은 요청 id. priority 가 None 이면
+    `PRIORITY[kind]`(없으면 0)."""
     p = validate(kind, params)
+    prio = PRIORITY.get(kind, 0) if priority is None else int(priority)
     key = canonical(p)
     dup = conn.execute(
         "SELECT id FROM job_requests WHERE kind=? AND params=? AND status IN ('queued','running') "
@@ -178,19 +207,20 @@ def enqueue(
     if dup is not None:
         raise DuplicateRequest(f"같은 작업이 이미 대기·실행 중이에요 (#{dup['id']})")
     cur = conn.execute(
-        "INSERT INTO job_requests(kind, params, status, source, requested_at) "
-        "VALUES (?, ?, 'queued', ?, ?)",
-        (kind, key, source, _iso(now)),
+        "INSERT INTO job_requests(kind, params, status, source, requested_at, priority) "
+        "VALUES (?, ?, 'queued', ?, ?, ?)",
+        (kind, key, source, _iso(now), prio),
     )
     conn.commit()
     return int(cur.lastrowid)
 
 
 def claim_next(conn: sqlite3.Connection, *, now: datetime | None = None) -> sqlite3.Row | None:
-    """가장 오래된 queued 를 running 으로 바꿔 돌려준다. 다른 연결이 먼저 가져갔으면 다음 건."""
+    """우선순위가 높은 것, 같으면 가장 오래된 queued 를 running 으로 바꿔 돌려준다. 다른 연결이
+    먼저 가져갔으면 다음 건."""
     while True:
         row = conn.execute(
-            "SELECT id FROM job_requests WHERE status='queued' ORDER BY id LIMIT 1"
+            "SELECT id FROM job_requests WHERE status='queued' ORDER BY priority DESC, id LIMIT 1"
         ).fetchone()
         if row is None:
             return None
@@ -272,9 +302,10 @@ def _hydrate(row: sqlite3.Row) -> dict:
 
 
 def list_recent(conn: sqlite3.Connection, *, limit: int = 30) -> list[dict]:
-    """queued·running(오래된 순) 먼저, 그 뒤 최근 종료분(최신 순)."""
+    """running, 그 다음 queued(실행될 순서 = priority DESC, id), 그 뒤 최근 종료분(최신 순)."""
     active = conn.execute(
-        "SELECT * FROM job_requests WHERE status IN ('queued','running') ORDER BY id"
+        "SELECT * FROM job_requests WHERE status IN ('queued','running') "
+        "ORDER BY status='running' DESC, priority DESC, id"
     ).fetchall()
     done = conn.execute(
         "SELECT * FROM job_requests WHERE status NOT IN ('queued','running') "

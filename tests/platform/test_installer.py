@@ -1,3 +1,4 @@
+import sys
 from pathlib import Path
 
 import pytest
@@ -22,9 +23,7 @@ def test_render_plist_contains_python_and_cwd(tmp_path):
 
 
 def test_render_schtasks_xml_logon_trigger(tmp_path):
-    text = installer.render(
-        "win32", program=WIN_PY, project_root=tmp_path
-    )
+    text = installer.render("win32", program=WIN_PY, project_root=tmp_path)
     assert "<LogonTrigger>" in text and "<Command>C:\\venv\\Scripts\\python.exe</Command>" in text
     assert "<Arguments>-m trader daemon</Arguments>" in text
     assert f"<WorkingDirectory>{tmp_path}</WorkingDirectory>" in text
@@ -128,6 +127,9 @@ def test_install_failure_is_error(tmp_path):
         )
 
 
+@pytest.mark.skipif(
+    sys.platform == "linux", reason="install 은 macOS(launchd)·Windows(작업 스케줄러) 전용"
+)
 def test_cli_install_dry_run(project):
     r = CliRunner().invoke(app, ["install", "--dry-run"])
     assert r.exit_code == 0, r.stdout
@@ -174,9 +176,7 @@ def test_install_darwin_unloads_before_load(tmp_path):
 def test_render_plist_exit_timeout_covers_session(tmp_path):
     """SIGTERM 뒤 shutdown(wait=True) 가 analyze 세션(llm.timeout_s)을 기다리므로 launchd 가
     기본 20초 뒤 SIGKILL 하지 않도록 ExitTimeOut 을 세션 타임아웃보다 길게 둔다."""
-    text = installer.render(
-        "darwin", program=PY, project_root=tmp_path, exit_timeout_s=660
-    )
+    text = installer.render("darwin", program=PY, project_root=tmp_path, exit_timeout_s=660)
     assert "<key>ExitTimeOut</key><integer>660</integer>" in text
 
 

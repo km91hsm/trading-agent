@@ -50,6 +50,7 @@ class KisAuth:
         self._http = http or httpx.Client(timeout=10)
         self._state = state
         self._clock = clock
+        self._mem: tuple[str, datetime] | None = None  # (token, expires_at) 프로세스 메모
 
     @property
     def cache_path(self) -> Path:
@@ -99,6 +100,7 @@ class KisAuth:
 
     def invalidate(self) -> None:
         """토큰이 서버에서 무효화됐을 때 캐시를 버린다."""
+        self._mem = None
         try:
             self.cache_path.unlink()
         except FileNotFoundError:
@@ -145,14 +147,25 @@ class KisAuth:
         self._write_cache(self._cache_payload(self._read_cache(), failed_at=now.isoformat()))
 
     def token(self) -> str:
-        cache = self._read_cache()
         now = self._clock()
+        if self._mem is not None and now < self._mem[1] - REFRESH_MARGIN:
+            return self._mem[0]  # 호출마다 캐시 파일을 읽지 않는다 (백필 수천 호출)
+        tok = self._token_from_cache_or_issue(now)
+        return tok
+
+    def _token_from_cache_or_issue(self, now: datetime) -> str:
+        cache = self._read_cache()
         token = cache.get("token")
         expires_at = cache.get("expires_at")
         if token and expires_at and now < expires_at - REFRESH_MARGIN:
+            self._mem = (token, expires_at)
             return token
         try:
-            return self._issue(cache)
+            issued = self._issue(cache)
+            fresh = self._read_cache()
+            if fresh.get("token") == issued and fresh.get("expires_at"):
+                self._mem = (issued, fresh["expires_at"])
+            return issued
         except KisApiError as e:
             # 갱신 창 안의 실패: 아직 유효한 토큰이 있으면 그대로 쓴다.
             if token and expires_at and now < expires_at:

@@ -183,3 +183,33 @@ def test_status_regime_section(conn, project):
     )
     text = status.build_status(conn, Settings(), [make_account("paper-main", "paper", "auto")], p)
     assert "KR bear(" in text
+
+
+def test_status_scan_section(conn, project):
+    """Phase 21: 오늘 `_scan.json` 의 picks·분석 대상·뉴스 발굴 한 줄(없으면 '아직 없음')."""
+    from trader.orchestrator import run_store
+
+    p = project / "docs" / "TODO.md"
+    p.write_text(TODO, encoding="utf-8")
+    now = datetime(2026, 10, 8, 1, 0, tzinfo=UTC)
+    text = status.build_status(
+        conn, Settings(), [make_account("paper-main", "paper", "auto")], p, now=now
+    )
+    assert "## 오늘 스캔" in text and "- KR 2026-10-08: 아직 없음" in text
+    d = run_store.run_date_for("KR", now)
+    run_store.write_checkpoint(
+        run_store.market_dir(d, "KR", create=True),
+        "_scan",
+        {
+            "picks": [{"ticker": "005930", "reason": "r"}],
+            "analyze_targets": [{"ticker": "005930"}, {"ticker": "000660"}],
+            "discovery": {"candidates": [{"ticker": "005930", "tier": "universe"}]},
+        },
+    )
+    text = status.build_status(
+        conn, Settings(), [make_account("paper-main", "paper", "auto")], p, now=now
+    )
+    assert (
+        "- KR 2026-10-08: picks 005930 · 분석 대상 2 · 뉴스 발굴 1(유니버스 1·밖 0·미해결 0)"
+        in text
+    )

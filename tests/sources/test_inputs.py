@@ -386,6 +386,30 @@ def test_events_and_channel_sections_present(project):
     assert d["errors"] == []
 
 
+def test_events_upcoming_from_saveticker_calendar(project):
+    """Phase 21: 세이브티커 폴더가 있으면 events.upcoming 에 7일 경제 일정이 들어간다."""
+    import shutil
+    from datetime import UTC, datetime
+
+    from helpers_sources import FIXTURES
+
+    dst = project / "state" / "external" / "saveticker"
+    shutil.copytree(FIXTURES / "saveticker", dst)
+    asof = datetime(2026, 10, 30, 3, 0, tzinfo=UTC)  # +7일 창에 11/2 일정이 든다
+    d = build_inputs(
+        ticker="005930",
+        market="KR",
+        exchange=None,
+        asof=asof,
+        cfg=cfg(),
+        secrets=Secrets(),
+        deps=deps(now=lambda: asof),
+    )
+    up = d["news_macro"]["events"]["data"]["upcoming"]
+    assert up and up[0]["kind"] == "macro" and up[0]["source"] == "saveticker"
+    assert "세이브티커" in d["news_macro"]["events"]["data"]["note"]
+
+
 def test_manual_inputs_section_reads_file(project):
     md = project / "state" / "manual_inputs"
     md.mkdir()
@@ -729,3 +753,158 @@ def test_market_manual_notes_merge_into_manual_inputs(project):
     mi = d["sentiment"]["manual_inputs"]
     assert mi["error"] is None and mi["data"]["format"] == "market"
     assert [n["title"] for n in mi["data"]["market_notes"]] == ["시장 메모"]
+
+
+def test_macro_is_memoized_per_market_and_day(project, monkeypatch):
+    """거시 지표는 종목과 무관하다 — 같은 시장·운영일의 수집은 15분 동안 한 번만 외부를 부른다."""
+    from trader.sources.base import Section
+
+    calls = []
+
+    def fake_macro(cfg_, secrets, *, market_client, asof, http, now):
+        calls.append(asof)
+        return {"kospi": Section(data={"value": 1.0}, received_at=T0.isoformat(), error=None)}
+
+    monkeypatch.setattr(inputs, "collect_macro", fake_macro)
+    c = SourcesConfig.model_validate(
+        {
+            "edgar": {"user_agent": "t t@e.com"},
+            "news": {"enabled": False},
+            "macro": {"enabled": True},
+            "community": {"enabled": False},
+        }
+    )
+    for ticker in ("005930", "000660"):
+        build_inputs(
+            ticker=ticker,
+            market="KR",
+            exchange=None,
+            asof=T0,
+            cfg=c,
+            secrets=Secrets(),
+            deps=deps(),
+        )
+    assert len(calls) == 1
+    later = deps(now=lambda: T0 + timedelta(minutes=16))
+    build_inputs(
+        ticker="005930", market="KR", exchange=None, asof=T0, cfg=c, secrets=Secrets(), deps=later
+    )
+    assert len(calls) == 2  # TTL 지남
+    # 전부 실패한 결과는 메모하지 않는다
+    monkeypatch.setattr(
+        inputs,
+        "collect_macro",
+        lambda *a, **k: (
+            calls.append("err")
+            or {"kospi": Section(data=None, received_at=T0.isoformat(), error="boom")}
+        ),
+    )
+    us = deps()
+    for _ in range(2):
+        build_inputs(
+            ticker="AAPL", market="US", exchange="NAS", asof=T0, cfg=c, secrets=Secrets(), deps=us
+        )
+    assert calls.count("err") == 2
+
+
+def test_stock_news_merges_store_items_tagged_for_ticker(project, conn):
+    """저장소(news_items)에 이 종목으로 태그된 뉴스가 있으면 종목 뉴스에 합친다(URL 중복 제거)."""
+    from trader.sources import news_store
+
+    news_store.insert_items(
+        conn,
+        [
+            {
+                "title": "삼성전자 대형 수주",
+                "url": "https://s/1",
+                "published_at": (T0 - timedelta(hours=5)).isoformat(),
+                "received_at": (T0 - timedelta(hours=5)).isoformat(),
+            }
+        ],
+        market="KR",
+        source="google_rss",
+        query="수주",
+        lang="ko",
+        names={"005930": "삼성전자"},
+    )
+    c = SourcesConfig.model_validate(
+        {
+            "edgar": {"user_agent": "t t@e.com"},
+            "news": {"enabled": True, "google_rss": False, "naver": False},
+            "macro": {"enabled": False},
+            "community": {"enabled": False},
+        }
+    )
+    d = build_inputs(
+        ticker="005930",
+        market="KR",
+        exchange=None,
+        asof=T0,
+        cfg=c,
+        secrets=Secrets(),
+        deps=deps(
+            conn_factory=lambda: __import__("trader.ledger.db", fromlist=["connect"]).connect()
+        ),
+    )
+    stock = d["news_macro"]["news"]["data"]["stock"]
+    assert [s["title"] for s in stock] == ["삼성전자 대형 수주"]
+    assert stock[0]["source"] == "store:google_rss"
+    assert d["news_macro"]["news"]["data"]["sources"]["store"] == "1건 합침"
+    # 다른 종목에는 들어가지 않는다
+    d2 = build_inputs(
+        ticker="000660",
+        market="KR",
+        exchange=None,
+        asof=T0,
+        cfg=c,
+        secrets=Secrets(),
+        deps=deps(
+            conn_factory=lambda: __import__("trader.ledger.db", fromlist=["connect"]).connect()
+        ),
+    )
+    assert d2["news_macro"]["news"]["data"]["stock"] == []
+
+
+def test_sentiment_saveticker_section_from_local_dir(project, monkeypatch):
+    """세이브티커 로컬 폴더가 있으면 sentiment.saveticker 에 종목 언급·트렌드가 들어간다."""
+    import shutil
+
+    from helpers_sources import FIXTURES
+
+    shutil.copytree(FIXTURES / "saveticker", project / "state" / "external" / "saveticker")
+    late = T0.replace(year=2026, month=10, day=25, hour=3)
+    d = build_inputs(
+        ticker="QQQ",
+        market="US",
+        exchange="NAS",
+        asof=late,
+        cfg=cfg(),
+        secrets=Secrets(),
+        deps=deps(now=lambda: late),
+    )
+    sec = d["sentiment"]["saveticker"]
+    assert sec["error"] is None and sec["data"]["mentions"]["community_top5"][0]["tickers"] == [
+        "QQQ"
+    ]
+    assert sec["data"]["trends"][0]["keyword"] == "트럼프"
+    d2 = build_inputs(
+        ticker="005930",
+        market="KR",
+        exchange=None,
+        asof=late,
+        cfg=cfg(),
+        secrets=Secrets(),
+        deps=deps(now=lambda: late),
+    )
+    assert d2["sentiment"]["saveticker"]["data"]["mentions"] == {}
+    shutil.rmtree(project / "state" / "external")
+    d3 = build_inputs(
+        ticker="005930",
+        market="KR",
+        exchange=None,
+        asof=T0,
+        cfg=cfg(),
+        secrets=Secrets(),
+        deps=deps(),
+    )
+    assert d3["sentiment"]["saveticker"]["error"] == "no saveticker dir"

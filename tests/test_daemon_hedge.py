@@ -2,6 +2,7 @@
 
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from types import SimpleNamespace
 
 from conftest import make_account
 from test_daemon import _deps
@@ -179,9 +180,7 @@ def test_reflect_body_matures_market_views(conn, monkeypatch):
     monkeypatch.setattr(deps, "snapshot_fn", None)
     monkeypatch.setattr("trader.memory.outcomes.mature", lambda conn, **kw: [])
     monkeypatch.setattr("trader.orchestrator.reflect.pending", lambda conn, **kw: False)
-    monkeypatch.setattr(
-        "trader.memory.store.promote_and_prune", lambda conn, **kw: {"deleted": 0}
-    )
+    monkeypatch.setattr("trader.memory.store.promote_and_prune", lambda conn, **kw: {"deleted": 0})
     first_date = deps.market_client.candles["069500"][0].date
     mv.record_view(
         conn,
@@ -202,3 +201,83 @@ def test_us_early_closes_rules():
     ec27 = daemon.us_early_closes(2027)
     assert date(2027, 11, 26) in ec27 and date(2027, 12, 24) not in ec27  # 금요일
     assert len(daemon.us_early_closes(2025)) == 3  # 7/3 목, 11/28, 12/24 수
+
+
+def test_proxy_candles_drop_pre_open_stub(conn):
+    """개장 전 거래량 0 스텁 봉은 국면 proxy 일봉에서 버린다 (리뷰 F15)."""
+    from decimal import Decimal as _D
+
+    from trader.broker.models import Candle
+
+    deps = _hedge_deps(conn, closes=[100] * 30)
+    good = Candle(
+        date=date(2026, 10, 23), open=_D(1), high=_D(1), low=_D(1), close=_D(100), volume=10
+    )
+    stub = Candle(
+        date=date(2026, 10, 24), open=_D(1), high=_D(1), low=_D(1), close=_D(50), volume=0
+    )
+    deps.market_client = SimpleNamespace(get_daily_kr=lambda *a, **k: [good, stub])
+    assert daemon._proxy_candles(deps, "KR") == [good]
+
+
+def test_regime_apply_view_turns_strategist_risk_off_into_fourth_signal(conn, monkeypatch):
+    """Phase 19: 시장 세션 제안이 RISK_OFF(확신 ≥ 기준)면 전략가 신호로 재판정해 1/3 → bear 전환,
+    같은 날 재호출 안전, RISK_ON 이면 신호를 끈다."""
+    from trader.orchestrator import market_view as mv
+
+    deps = _hedge_deps(conn, closes=[100] * 30 + [99.5, 99, 98.5, 98, 97.5, 97])  # 20일선 아래 1개
+    out = daemon._regime_body(deps, "KR")
+    assert out["state"] == "neutral" and out["count"] == 1
+    monkeypatch.setattr(
+        mv,
+        "load_view",
+        lambda conn_, m, d: {"stance": "RISK_OFF", "confidence": 0.8, "hedge_weight": 0.1},
+    )
+    r = daemon._regime_apply_view(deps, "KR")
+    assert r["state"] == "bear" and r["agent_risk_off"] is True
+    assert any("[국면 전환] KR neutral → bear (1/3+전략가)" in m for m in deps.notifier.msgs)
+    n = len(deps.notifier.msgs)
+    assert daemon._regime_apply_view(deps, "KR")["state"] == "bear" and len(deps.notifier.msgs) == n
+    assert regime.load(conn, "KR")["streak"] == 0
+    # 확신이 낮으면 지표로 쓰지 않는다 → 다시 neutral
+    monkeypatch.setattr(
+        mv,
+        "load_view",
+        lambda conn_, m, d: {"stance": "RISK_OFF", "confidence": 0.5, "hedge_weight": 0.1},
+    )
+    assert daemon._regime_apply_view(deps, "KR")["state"] == "neutral"
+    deps.settings = Settings(hedge=HedgeCfg(agent_signal=False))
+    assert "agent_signal" in daemon._regime_apply_view(deps, "KR")["skipped"]
+
+
+def test_scan_analyze_body_applies_view_after_market_session(conn, monkeypatch):
+    deps = _hedge_deps(conn, closes=[100] * 36)
+    order = []
+    monkeypatch.setattr(daemon, "_regime_body", lambda d, m: order.append("regime"))
+    monkeypatch.setattr(daemon, "_market_view_body", lambda d, m: order.append("view"))
+    monkeypatch.setattr(daemon, "_regime_apply_view", lambda d, m: order.append("apply"))
+    monkeypatch.setattr(daemon, "_scan_body", lambda d, m: order.append("scan"))
+    monkeypatch.setattr(daemon, "_analyze_body", lambda d, m, scan_error=None: {"ok": True})
+    daemon._scan_analyze_body(deps, "KR")
+    assert order == ["regime", "view", "apply", "scan"]
+
+
+def test_regime_body_uses_foreign_flow_only_when_enabled(conn):
+    """Phase 21: hedge.flow_signal=true ∧ KR 이면 지수 proxy 외인 수급을 보조 지표로 읽는다.
+    꺼져 있으면 KIS 수급 조회를 하지 않는다."""
+    from types import SimpleNamespace as NS
+
+    deps = _hedge_deps(conn, closes=[100] * 30 + [95, 90, 85, 80, 75, 70])
+    deps.market_client.flows = {"069500": [NS(foreign_net=-5)] * 20}
+    out = daemon._regime_body(deps, "KR")
+    assert (
+        out["signals"]["flow_weak"] is False and "get_investor_kr" not in deps.market_client.calls
+    )
+    deps.settings = Settings(hedge=CFG.model_copy(update={"flow_signal": True}))
+    out = daemon._regime_body(deps, "KR")
+    assert out["signals"]["flow_weak"] is True and out["count"] == 3
+    assert "get_investor_kr" in deps.market_client.calls
+    # 조회 실패는 False(지표 없음), 판정은 계속
+    deps.market_client.fail = {"get_investor_kr"}
+    out = daemon._regime_body(deps, "KR")
+    assert out["signals"]["flow_weak"] is False

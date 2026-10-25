@@ -176,6 +176,30 @@ class Screened(BaseModel):
     rejected: list[str] = Field(default_factory=list)
 
 
+class DiscoveredCandidate(BaseModel):
+    """scout 가 발굴한 종목 하나 (Phase 19). 코드 확정·거래소·제외는 파이썬이 한다
+    (`scan/discovery.resolve`)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(max_length=80)
+    ticker: str | None = None
+    market: Literal["KR", "US"]
+    tier: Literal["universe", "listed"]
+    catalyst: str = Field(max_length=200)
+    source_ids: list[str] = Field(default_factory=list)
+    confidence: float = Field(ge=0, le=1)
+
+
+class Discovered(BaseModel):
+    """scout 출력: 오늘 분석할 가치가 있는 종목 ≤ 8 + 메모(악재·발굴 없음 이유)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    candidates: list[DiscoveredCandidate] = Field(default_factory=list, max_length=8)
+    notes: list[str] = Field(default_factory=list, max_length=10)
+
+
 MarketStance = Literal["RISK_ON", "NEUTRAL", "RISK_OFF"]
 
 

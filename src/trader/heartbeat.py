@@ -15,7 +15,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from trader.platform.procs import pid_alive
+from trader.platform.procs import pid_alive, same_process
 
 logger = logging.getLogger("trader.heartbeat")
 
@@ -146,7 +146,9 @@ def read_status(state_dir: Path, now: datetime, schedule_jobs: list[Any]) -> dic
     lock = _read_json(state_dir / LOCK_NAME) or {}
     hb = _read_json(state_dir / FILE_NAME) or {}
     lock_pid = int(lock.get("pid") or 0) or None
-    alive = bool(lock_pid and pid_alive(lock_pid))
+    alive = bool(
+        lock_pid and same_process(lock_pid, lock.get("proc_start") or None, alive=pid_alive)
+    )
     hb_pid = hb.get("pid")
     age = _secs(now, hb.get("updated_at"))
     hb_jobs = hb.get("jobs") if isinstance(hb.get("jobs"), dict) else {}

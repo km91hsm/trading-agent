@@ -1,4 +1,5 @@
 // FastAPI 호출 헬퍼. 조회는 토큰 없음, 제어(postJson)는 Bearer 토큰. 계좌 단위 조회는 withAccount 로만.
+import { browserDeps, createEventsClient } from "./events";
 
 export class ApiError extends Error {
   status: number;
@@ -91,15 +92,23 @@ export type EventSnapshot = {
   jobs_done?: number;
 };
 
-export function subscribeEvents(onChange: (snap: EventSnapshot) => void): () => void {
+/** 탭 하나(리더)만 EventSource 를 열고 나머지 탭에는 BroadcastChannel 로 중계한다 (events.ts).
+ * 탭마다 열면 브라우저 호스트당 연결 한도(약 6개)를 다 써 모든 fetch 가 멈춘다. */
+export function subscribeEvents(onChange: (snap: EventSnapshot) => void, onStatus?: (connected: boolean) => void): () => void {
   if (typeof EventSource === "undefined") return () => {};
-  const es = new EventSource("/api/events");
-  es.addEventListener("change", (e) => {
-    try {
-      onChange(JSON.parse((e as MessageEvent).data) as EventSnapshot);
-    } catch {
-      /* 잘못된 이벤트는 무시 */
-    }
-  });
-  return () => es.close();
+  const openSource = (onSnap: (snap: EventSnapshot) => void, status?: (connected: boolean) => void) => {
+    const es = new EventSource("/api/events");
+    es.addEventListener("change", (e) => {
+      try {
+        onSnap(JSON.parse((e as MessageEvent).data) as EventSnapshot);
+      } catch {
+        /* 잘못된 이벤트는 무시 */
+      }
+    });
+    // 브라우저가 자동 재연결하는 동안(onerror) 끊김으로 표시하고, 다시 열리면(onopen) 지운다
+    es.onopen = () => status?.(true);
+    es.onerror = () => status?.(false);
+    return { close: () => es.close() };
+  };
+  return createEventsClient(onChange, browserDeps(openSource), onStatus);
 }

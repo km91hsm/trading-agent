@@ -97,24 +97,32 @@ def evaluate(
     regime: str = "bull",
     is_hedge: bool = False,
     hedge_max_weight: float | None = None,
+    agent_tilt: int = 0,
 ) -> RiskVerdict:
     """regime(bull|neutral|bear)·is_hedge 는 Phase 17 H: neutral 은 신규 매수 한도 축소, bear 는
     일반 BUY/ADD 거부(SELL·TRIM·손절·헤지만 통과). 헤지 주문은 비용·보유기간·주 2회·중복·종목 수·
-    섹터·일일손실 규칙을 면제하고 비중 상한만 hedge_max_weight 로 바꾼다."""
+    섹터·일일손실 규칙을 면제하고 비중 상한만 hedge_max_weight 로 바꾼다.
+    agent_tilt(Phase 22)는 전략가 제안의 기울기(+1 RISK_ON / −1 RISK_OFF): 국면 한도를 한 칸
+    옮기고, bear 에서 +1 이면 신규 매수를 10%·2종목 한도로 조건부 허용한다."""
     acct = portfolio.account_id
     if decision.action == "HOLD":
         return RiskVerdict(
             account_id=acct, approved=False, adjusted_qty=0, reasons=["HOLD: 주문 없음"]
         )
 
-    lim = limits_for_regime(regime, limits_for(stance, limits))
+    tilt = 0 if is_hedge or is_stop_loss else int(agent_tilt)
+    lim = limits_for_regime(regime, limits_for(stance, limits), tilt)
     if is_hedge and hedge_max_weight is not None:
         lim = lim.model_copy(update={"max_position_pct": hedge_max_weight})
     side = "BUY" if decision.action in ("BUY", "ADD") else "SELL"
     reasons: list[str] = []
     rejected: list[str] = []
-    if regime == "neutral" and side == "BUY" and not is_hedge:
-        reasons.append("국면 neutral: 신규 매수 한도 축소(종목당 15%·3종목)")
+    if side == "BUY" and not is_hedge and (regime != "bull" or tilt != 0):
+        who = {1: "전략가 RISK_ON", -1: "전략가 RISK_OFF"}.get(tilt, "")
+        base = f"국면 {regime}" + (f" + {who}" if who else "")
+        reasons.append(
+            f"{base}: 신규 매수 한도(종목당 {lim.max_position_pct:.0%}·{lim.max_positions}종목)"
+        )
     ticker = decision.ticker
     held = portfolio.positions.get(ticker)
     nav = portfolio.nav
@@ -179,19 +187,29 @@ def evaluate(
         if held is None or held.qty <= 0:
             qty = 0
             rejected.append("보유하지 않은 종목은 매도할 수 없음")
-        elif decision.action == "SELL":
-            qty = held.qty
-        else:  # TRIM: 목표 비중까지만 줄인다
-            keep_value = Decimal(str(decision.target_weight)) * nav
-            qty = min(held.qty, _floor_qty(max(held.eval_amount - keep_value, Decimal(0)), price))
+        else:
+            sellable = getattr(held, "sell_qty", held.qty)  # 매도가능수량(미체결 매도분 제외)
+            if sellable < held.qty:
+                reasons.append(f"매도가능수량 {sellable} (보유 {held.qty})")
+            if decision.action == "SELL":
+                qty = sellable
+            else:  # TRIM: 목표 비중까지만 줄인다
+                keep_value = Decimal(str(decision.target_weight)) * nav
+                qty = min(
+                    sellable, _floor_qty(max(held.eval_amount - keep_value, Decimal(0)), price)
+                )
 
     # --- 거부 규칙 (전부 수집) ---------------------------------------------------------
     if side == "BUY" and is_hedge:
         if qty <= 0 and not rejected:
             rejected.append("가능금액 부족으로 주문 수량 0")
     elif side == "BUY":
-        if regime == "bear":
+        if regime == "bear" and tilt <= 0:
             rejected.append("하락 국면(bear): 신규 매수·추가 매수 금지")
+        elif regime == "bear":
+            reasons.append(
+                "하락 국면(bear)이지만 전략가 RISK_ON(확신 기준 이상): 축소 한도로 조건부 허용"
+            )
         equities = portfolio.equity_positions()
         if held is None and len(equities) >= lim.max_positions:
             rejected.append(f"보유 종목 수 {len(equities)} 이 상한 {lim.max_positions} 에 도달")
@@ -205,7 +223,9 @@ def evaluate(
                 ),
                 Decimal(0),
             )
-            after = (others + current_value + buy_value) / nav
+            # 반감·수량 절사 뒤의 실제 주문금액으로 본다(buy_value 는 반감 전 가능금액)
+            order_amount = Decimal(qty) * (order_price if order_price is not None else price)
+            after = (others + current_value + order_amount) / nav
             if after > Decimal(str(lim.max_sector_pct)):
                 rejected.append(
                     f"섹터 '{sector}' 비중이 주문 뒤 {float(after):.0%} 로 상한 "

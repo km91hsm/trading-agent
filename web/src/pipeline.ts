@@ -113,3 +113,29 @@ export function stageSummary(key: StageKey, items: Array<{ file: string; data: u
   }
   return "";
 }
+
+// --- 오늘 스캔(`_scan.json` 요약, /api/today.scan) -------------------------------------
+export type ScanPick = { ticker: string; reason: string | null; discovery: { tier: string; catalyst: string } | null };
+export type ScanSummary = {
+  picks: ScanPick[];
+  targets: number;
+  cap_hit: boolean;
+  discovery: { candidates: unknown[]; universe: number; listed: number; unresolved: number } | null;
+  discovery_line: string;
+};
+
+/** picks 한 행의 사유 문구: 뉴스 발굴이면 "뉴스 발굴(유니버스 밖) · <촉매>" 를 screener 사유 앞에 붙인다. */
+export function pickReason(p: ScanPick): string {
+  const base = p.reason?.trim() || "사유 없음";
+  if (!p.discovery) return base;
+  const tier = p.discovery.tier === "listed" ? "뉴스 발굴(유니버스 밖)" : "뉴스 발굴";
+  const cat = p.discovery.catalyst?.trim();
+  return `${tier}${cat ? ` · ${cat}` : ""} — ${base}`;
+}
+
+/** 스캔 머리 한 줄: "picks 5 · 분석 대상 7 · 뉴스 발굴 3(…)" (+ 세션 상한) */
+export function scanHeadline(s: ScanSummary): string {
+  const parts = [`picks ${s.picks.length}`, `분석 대상 ${s.targets}`, s.discovery_line];
+  if (s.cap_hit) parts.push("세션 상한");
+  return parts.join(" · ");
+}

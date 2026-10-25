@@ -42,6 +42,38 @@ class _Market:
         ]
 
 
+def test_build_inputs_prefers_news_store_over_google(project, conn, accounts, respx_mock):
+    """저장소에 최근 뉴스가 있으면 구글 질의를 부르지 않고 태그 종목까지 싣는다 (Phase 19)."""
+    from datetime import timedelta
+
+    from trader.sources import news_store
+
+    route = respx_mock.get(url__startswith="https://news.google.com").mock(
+        return_value=__import__("httpx").Response(500)
+    )
+    news_store.insert_items(
+        conn,
+        [
+            {
+                "title": "코스피 급락",
+                "url": "https://a/1",
+                "summary": "삼성전자 약세",
+                "published_at": (T0 - timedelta(hours=3)).isoformat(),
+                "received_at": (T0 - timedelta(hours=3)).isoformat(),
+            }
+        ],
+        market="KR",
+        source="google_rss",
+        query="증시",
+        lang="ko",
+        names={"005930": "삼성전자"},
+    )
+    inp = market_view.build_inputs(conn, "KR", D, settings=Settings(), asof=T0, now=lambda: T0)
+    assert [n["title"] for n in inp["macro_news"]] == ["코스피 급락"]
+    assert inp["macro_news"][0]["tickers"] == ["005930"]
+    assert route.call_count == 0 and "macro_news" not in inp["errors"]
+
+
 def test_build_inputs_collects_regime_index_and_notes(project, conn, accounts):
     control.set_flag(
         conn,
@@ -232,3 +264,18 @@ def test_regime_summary_and_status_include_scorecard(project, conn):
     )
     sc = regime.summary(conn, ["KR"])[0]["scorecard"]
     assert sc["hits"] == 1 and sc["matured"] == 1
+
+
+def test_build_inputs_includes_saveticker_snapshot_when_folder_exists(project, conn):
+    import shutil
+
+    from helpers_sources import FIXTURES
+
+    inp = market_view.build_inputs(conn, "US", D, settings=Settings(), asof=T0, now=lambda: T0)
+    assert inp["saveticker"] is None
+    shutil.copytree(FIXTURES / "saveticker", project / "state" / "external" / "saveticker")
+    late = T0.replace(year=2026, month=10, day=25, hour=3)
+    inp = market_view.build_inputs(conn, "US", D, settings=Settings(), asof=late, now=lambda: late)
+    assert inp["saveticker"]["trends"][0]["keyword"] == "트럼프"
+    assert inp["saveticker"]["report"]["report_date"] == "2026-10-23"
+    assert "saveticker" not in inp["errors"]

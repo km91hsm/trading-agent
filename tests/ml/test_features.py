@@ -548,6 +548,7 @@ def test_backfill_rederives_everything_when_final_flush_fails(project, monkeypat
     monkeypatch.setattr(features, "BACKFILL_CHUNK", 1)
     seen: list = []
     real_rederive = features.rederive
+
     def spy(*a, **kw):
         seen.append(kw.get("paths"))
         return real_rederive(*a, **kw)
@@ -562,3 +563,57 @@ def test_backfill_rederives_everything_when_final_flush_fails(project, monkeypat
         progress=lambda s: None,
     )
     assert seen and seen[-1] is None  # 마지막 호출은 전체(paths=None)
+
+
+def test_broken_parquet_file_is_skipped_not_fatal(project):
+    """쓰기 중 종료로 깨진 날짜 파일 하나가 latest_rows·write_rows·load_all 을 죽이지 않는다."""
+    from trader.ml import dataset
+
+    candles = make_candles(3)
+    df = features.history_rows(ticker="005930", market="KR", candles=candles, ratios_by_year=None)
+    features.write_rows(df)
+    fdir = project / "state" / "features"
+    broken = sorted(fdir.glob("*.parquet"))[0]
+    broken.write_bytes(b"not a parquet file")
+    latest = features.latest_rows(None, "KR")
+    assert list(latest["ticker"]) == ["005930"]
+    assert len(dataset.load_all(None, market="KR")) == 2
+    features.write_rows(df)  # 깨진 파일은 새 행으로 덮인다
+    assert len(pd.read_parquet(broken)) == 1
+    assert not list(fdir.glob("*.tmp"))
+
+
+def test_write_rows_takes_store_lock(project, monkeypatch):
+    seen = []
+    from trader.ml import features as feat_mod
+
+    orig = feat_mod.locked
+
+    def spy(path, **kw):
+        seen.append(path.name)
+        return orig(path, **kw)
+
+    monkeypatch.setattr(feat_mod, "locked", spy)
+    candles = make_candles(1)
+    df = features.history_rows(ticker="005930", market="KR", candles=candles, ratios_by_year=None)
+    features.write_rows(df)
+    features.rederive()
+    assert seen == ["features.lock", "features.lock"]
+
+
+def test_snapshot_tickers_override_universe(project):
+    """Phase 21: `tickers=` 는 유니버스 대신 그 종목만(유니버스 밖 발굴 종목의 당일 스냅샷)."""
+    from helpers_sources import T0
+
+    n = features.snapshot(
+        market_client=FakeMarket(),
+        dart=FakeDart(),
+        universe=Universe(kr=["005930"]),
+        markets=["KR"],
+        asof=T0,
+        now=lambda: T0,
+        tickers=[("247540", None)],
+    )
+    assert n == 1
+    got = pd.read_parquet(next((project / "state" / "features").glob("*.parquet")))
+    assert list(got["ticker"]) == ["247540"]

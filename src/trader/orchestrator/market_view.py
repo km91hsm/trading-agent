@@ -27,6 +27,11 @@ logger = logging.getLogger("trader.market_view")
 
 INDEX_CANDLES = 60
 MACRO_NEWS_ITEMS = 10
+STORE_HOURS = 48  # 시장 세션이 읽는 저장소 뉴스 창(시간)
+
+
+class _StoreHit(Exception):
+    """저장소에서 뉴스를 얻어 구글 질의를 건너뛴다(흐름 제어용)."""
 
 
 def _f(v: Any) -> float | None:
@@ -98,6 +103,24 @@ def build_inputs(
         errors["macro"] = f"{type(e).__name__}: {e}"
     macro_news: list[dict] = []
     try:
+        from trader.sources import news_store
+
+        # 시장 전체 뉴스 저장소(Phase 19)가 있으면 그것(태그 종목 포함), 없으면 구글 질의 1회
+        macro_news = [
+            {
+                k: v
+                for k, v in i.items()
+                if k in ("title", "source", "published_at", "url", "tickers")
+            }
+            for i in news_store.recent(
+                conn, market, asof=asof, hours=STORE_HOURS, limit=MACRO_NEWS_ITEMS
+            )
+        ]
+    except Exception as e:  # noqa: BLE001
+        errors["news_store"] = f"{type(e).__name__}: {e}"
+    try:
+        if macro_news:
+            raise _StoreHit()
         from trader.sources.base import owned_client
         from trader.sources.news import MACRO_QUERIES, GoogleNewsRss
 
@@ -111,6 +134,8 @@ def build_inputs(
         macro_news = [
             i for i in items if not (i.get("published_at") and str(i["published_at"]) > cutoff_iso)
         ][:MACRO_NEWS_ITEMS]
+    except _StoreHit:
+        pass
     except Exception as e:  # noqa: BLE001
         errors["macro_news"] = f"{type(e).__name__}: {e}"
     notes: list[dict] = []
@@ -120,6 +145,18 @@ def build_inputs(
         notes = manual_inputs.read_market(market, asof=asof, state=state)
     except Exception as e:  # noqa: BLE001
         errors["market_notes"] = f"{type(e).__name__}: {e}"
+    saveticker_snap: dict | None = None
+    try:
+        from trader.config import NewsCfg, load_sources
+        from trader.sources import saveticker
+
+        try:
+            st_dir = load_sources().news.saveticker_dir
+        except Exception:  # noqa: BLE001 - sources.yaml 이 없으면 기본 경로
+            st_dir = NewsCfg().saveticker_dir
+        saveticker_snap = saveticker.snapshot(saveticker.resolve_dir(st_dir), asof=asof)
+    except Exception as e:  # noqa: BLE001 - 선택 입력
+        errors["saveticker"] = f"{type(e).__name__}: {e}"
     held: list[str] = []
     sectors: list[dict] = []
     hedge_tickers = cfg.tickers(market)
@@ -164,6 +201,7 @@ def build_inputs(
         "date": today.isoformat(),
         "asof": asof.isoformat(),
         "proxy": tools.MARKET_PROXY_LABEL.get(market, market),
+        "saveticker": saveticker_snap,
         "regime": {
             "state": regime.get("state"),
             "count": regime.get("count"),
@@ -207,6 +245,7 @@ def run_market_view(
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
     brokers: dict[str, Any] | None = None,
     session_runner: Callable[..., Any] | None = None,
+    cancel: Any | None = None,
 ) -> dict:
     """입력 저장 → 세션 1회 → `_market_view` 읽기. {view, session} 또는 {skipped}/{error}."""
     save_inputs(inputs, market=market, today=date, state=state)
@@ -219,7 +258,10 @@ def run_market_view(
         market=market, date=date, tickers=[], dry_run=True, asof=now(), kind="market"
     )
     try:
-        res = runner(spec, settings, conn, accounts, state=state, now=now, brokers=brokers or {})
+        extra = {"cancel": cancel} if cancel is not None else {}
+        res = runner(
+            spec, settings, conn, accounts, state=state, now=now, brokers=brokers or {}, **extra
+        )
     except session_mod.PipelineError as e:
         logger.warning("시장 세션 생략 %s: %s", market, e)
         return {"skipped": str(e), "view": None}

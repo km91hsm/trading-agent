@@ -121,4 +121,3 @@ def tr_id(name: str, env: Env) -> str:
     if paper is None:
         raise KisApiError("UNSUPPORTED", f"모의 서버가 지원하지 않는 API 입니다: {name}", real)
     return paper
-

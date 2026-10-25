@@ -252,6 +252,33 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
             )""",
         ],
     ),
+    (
+        14,  # Phase 19: 시장 전체 뉴스 저장소 (발굴·시장 세션·종목 세션 입력)
+        [
+            """CREATE TABLE IF NOT EXISTS news_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                market TEXT NOT NULL,
+                source TEXT NOT NULL,
+                query TEXT,
+                title TEXT NOT NULL,
+                url TEXT NOT NULL,
+                url_hash TEXT NOT NULL UNIQUE,
+                published_at TEXT,
+                received_at TEXT NOT NULL,
+                summary TEXT,
+                tickers_json TEXT NOT NULL DEFAULT '[]',
+                lang TEXT
+            )""",
+            "CREATE INDEX IF NOT EXISTS idx_news_market_pub ON news_items(market, published_at)",
+        ],
+    ),
+    (
+        15,  # Phase 21: 대기열 우선순위(재평가 10 > 나머지 0). claim 은 priority DESC, id
+        [
+            "ALTER TABLE job_requests ADD COLUMN priority INTEGER NOT NULL DEFAULT 0",
+            "CREATE INDEX IF NOT EXISTS ix_job_requests_prio ON job_requests(status, priority, id)",
+        ],
+    ),
 ]
 
 

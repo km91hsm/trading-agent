@@ -146,3 +146,101 @@ def test_cap_fallback_picks_only_scored_candidates(conn):
         Settings(), conn, accounts, market="KR", date=D, candidates=cands, cap_hit=True
     )
     assert [p["ticker"] for p in r["picks"]] == ["005930", "000660"]
+
+
+def test_targets_skip_hedge_etf_and_take_exchange_from_position(project, conn):
+    """보유 중 헤지 ETF 는 분석 대상이 아니고(국면 규칙이 판다), US 보유의 거래소는 잔고 응답·
+    유니버스에서 찾는다 (리뷰 F24)."""
+    from decimal import Decimal
+
+    from trader.broker.fake import FakeBroker
+    from trader.broker.models import Cash, Position
+    from trader.config import Universe, UsSymbol
+
+    def pos(ticker, market, exchange=None):
+        return Position(
+            ticker=ticker,
+            market=market,
+            qty=1,
+            avg_price=Decimal(1),
+            current_price=Decimal(1),
+            eval_amount=Decimal(1),
+            pnl_pct=0.0,
+            exchange=exchange,
+        )
+
+    acct = AccountConfig(id="paper-main", env="paper", cano="1", markets=["KR", "US"], mode="auto")
+    cash = {
+        "KR": Cash(currency="KRW", available=Decimal(1), total=Decimal(1)),
+        "US": Cash(currency="USD", available=Decimal(1), total=Decimal(1)),
+    }
+    broker = FakeBroker(
+        acct,
+        cash=cash,
+        positions=[
+            pos("114800", "KR"),
+            pos("005930", "KR"),
+            pos("AAPL", "US", "NAS"),
+            pos("SPY", "US"),
+        ],
+    )
+    kr = screener.run_screen(
+        Settings(),
+        conn,
+        [acct],
+        market="KR",
+        date=D,
+        candidates=[],
+        cap_hit=True,
+        brokers={"paper-main": broker},
+        now=lambda: NOW,
+    )
+    assert [t["ticker"] for t in kr["analyze_targets"]] == ["005930"]
+    uni = Universe(kr=[], us=[UsSymbol(symbol="SPY", exchange="AMS")], watch=[], exclude=[])
+    us = screener.run_screen(
+        Settings(),
+        conn,
+        [acct],
+        market="US",
+        date=D,
+        candidates=[],
+        cap_hit=True,
+        brokers={"paper-main": broker},
+        now=lambda: NOW,
+        universe=uni,
+    )
+    assert us["analyze_targets"] == [
+        {"ticker": "AAPL", "exchange": "NAS"},
+        {"ticker": "SPY", "exchange": "AMS"},
+    ]
+
+
+def test_screen_context_has_regime_and_todays_market_view(conn):
+    """Phase 21: 스크리너 보조 입력 — 국면·오늘 시장 세션 제안. 없으면 None."""
+    from trader.control import control
+    from trader.scan.screener import screen_context
+
+    assert screen_context(conn, "KR", D) == {"regime": None, "market_view": None}
+    control.set_flag(conn, "regime:KR", {"state": "bear", "count": 2, "signals": {}})
+    control.set_flag(
+        conn,
+        "market_view:KR",
+        {
+            "date": D.isoformat(),
+            "stance": "RISK_OFF",
+            "confidence": 0.8,
+            "hedge_weight": 0.1,
+            "rationale": "r",
+            "invalidation_conditions": ["x"],
+            "leveraged": False,
+        },
+    )
+    ctx = screen_context(conn, "KR", D)
+    assert ctx["regime"] == {"state": "bear", "count": 2}
+    assert ctx["market_view"] == {
+        "stance": "RISK_OFF",
+        "confidence": 0.8,
+        "hedge_weight": 0.1,
+        "rationale": "r",
+        "invalidation_conditions": ["x"],
+    }

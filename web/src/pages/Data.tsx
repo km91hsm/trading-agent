@@ -257,10 +257,71 @@ function ManualInputs() {
   );
 }
 
+type NewsItem = { id: number; source: string; query: string | null; title: string; url: string; published_at: string | null; received_at: string; tickers: string[] };
+type NewsResp = { market: string; hours: number; total: number; asof: string; items: NewsItem[] };
+
+/** 시장 전체 뉴스 저장소(원장 news_items): 데몬이 30분마다 질의 묶음으로 모은다. 발굴·시장 세션·종목 세션의 입력. */
+function MarketNews() {
+  const { tick, names } = useApp();
+  const run = useCanRun();
+  const [market, setMarket] = useState<"KR" | "US">("KR");
+  const news = useLoad(() => getJson<NewsResp>(`/api/news?market=${market}&hours=48&limit=100`), [market, tick]);
+  return (
+    <Section
+      title="시장 뉴스"
+      aside={
+        <span className="row">
+          <label className="field">
+            <span>시장</span>
+            <select value={market} onChange={(e) => setMarket(e.target.value as "KR" | "US")}>
+              <option>KR</option>
+              <option>US</option>
+            </select>
+          </label>
+          <RunJobButton spec={{ kind: "news_collect", params: {} }} label="지금 수집" disabledReason={run.reason} />
+        </span>
+      }
+    >
+      <p className="note">
+        데몬이 질의 묶음(<code>sources.yaml news.market_queries</code>)으로 최근 48시간 뉴스를 모아 두고, 종목 발굴·시장 세션·종목 세션이 이 저장소를 읽어요. 태그는 유니버스 종목명이 제목·요약에 있을 때만 붙어요.
+      </p>
+      {news.error && <ErrorBox error={news.error} />}
+      {news.loading && !news.data && <Skeleton rows={6} />}
+      {news.data?.items.length ? (
+        <Table dense caption={`${market} 시장 뉴스`}>
+          <thead>
+            <tr>
+              <Th>시각(UTC)</Th>
+              <Th>소스</Th>
+              <Th>제목</Th>
+              <Th>태그 종목</Th>
+            </tr>
+          </thead>
+          <tbody>
+            {news.data.items.map((it) => (
+              <tr key={it.id}>
+                <Td className="muted">{(it.published_at ?? it.received_at).slice(0, 16).replace("T", " ")}</Td>
+                <Td className="muted">{it.source}{it.query ? ` · ${it.query}` : ""}</Td>
+                <Td>
+                  <a href={it.url} target="_blank" rel="noreferrer">{it.title}</a>
+                </Td>
+                <Td>{it.tickers.length ? it.tickers.map((t) => <span key={t} className="chip">{labelOf(names, market, t)}</span>) : <span className="muted">—</span>}</Td>
+              </tr>
+            ))}
+          </tbody>
+        </Table>
+      ) : (
+        news.data && <EmptyState title={`${market} 시장 뉴스가 없어요`} hint="데몬이 켜져 있으면 30분마다 모여요. '지금 수집'으로 바로 받을 수도 있어요." />
+      )}
+    </Section>
+  );
+}
+
 export function DataPage() {
   return (
     <>
       <TodayPage title="데이터" inputsOnly />
+      <MarketNews />
       <FeatureStore />
       <ManualInputs />
     </>

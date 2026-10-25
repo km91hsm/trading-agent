@@ -74,3 +74,44 @@ def test_latest_warns_with_backend_hint_when_lightgbm_model_fails_to_load(projec
         assert registry.latest("quant") is None
     msg = " ".join(r.getMessage() for r in caplog.records)
     assert "lightgbm" in msg and ("sklearn" in msg or "demote" in msg)
+
+
+def test_latest_prefers_market_model_and_never_uses_other_market(project):
+    """`train --market KR` 모델은 US scan 에 쓰이지 않는다. 시장 모델이 없으면 전시장 모델로
+    폴백."""
+    m, cols = _model()
+    v_all = registry.save("quant", m, {"features": cols}, now=lambda: NOW)
+    registry.promote("quant", v_all)
+    v_kr = registry.save(
+        "quant",
+        m,
+        {"features": cols, "market": "KR"},
+        now=lambda: datetime(2026, 10, 18, tzinfo=UTC),
+    )
+    registry.promote("quant", v_kr)
+    assert registry.latest("quant", market="KR")[1]["version"] == v_kr
+    assert registry.latest("quant", market="US")[1]["version"] == v_all  # 전시장 폴백
+    assert registry.latest("quant")[1]["version"] == v_kr  # 시장 미지정은 최신
+    registry.demote("quant", v_all)
+    assert registry.latest("quant", market="US") is None
+
+
+def test_load_is_memoized_until_meta_changes(project, monkeypatch):
+    import joblib
+
+    m, cols = _model()
+    v = registry.save("quant", m, {"features": cols}, now=lambda: NOW)
+    calls = []
+    orig = joblib.load
+    monkeypatch.setattr(joblib, "load", lambda p: calls.append(p) or orig(p))
+    registry.load("quant", v)
+    registry.load("quant", v)
+    assert len(calls) == 1
+    registry.promote("quant", v)  # 메타가 바뀌면 다시 읽는다
+    import os
+    import time
+
+    meta = project / "state" / "models" / "quant" / v / "meta.json"
+    os.utime(meta, (time.time() + 5, time.time() + 5))
+    registry.load("quant", v)
+    assert len(calls) == 2

@@ -66,16 +66,40 @@ def list_models(name: str, state: Path | None = None) -> list[dict]:
     return out
 
 
+_LOAD_CACHE: dict[tuple[str, str, float], tuple[Any, dict]] = {}
+
+
 def load(name: str, version: str, state: Path | None = None) -> tuple[Any, dict]:
+    """모델 파일을 읽는다. 같은 (경로, 메타 mtime) 은 메모해 scan·성과 페이지가 호출마다 joblib 을
+    다시 풀지 않는다(승격·해제는 메타 파일을 바꿔 mtime 이 달라진다)."""
     d = _dir(name, state) / version
+    key = (str(d), version, (d / META).stat().st_mtime)
+    hit = _LOAD_CACHE.get(key)
+    if hit is not None:
+        return hit
     meta = json.loads((d / META).read_text(encoding="utf-8"))
-    return joblib.load(d / MODEL), meta
+    out = (joblib.load(d / MODEL), meta)
+    _LOAD_CACHE.clear()  # 버전 하나만 기억한다(메모리)
+    _LOAD_CACHE[key] = out
+    return out
 
 
 def latest(
-    name: str, *, promoted_only: bool = True, state: Path | None = None
+    name: str,
+    *,
+    promoted_only: bool = True,
+    state: Path | None = None,
+    market: str | None = None,
 ) -> tuple[Any, dict] | None:
-    for meta in list_models(name, state):
+    """가장 최근(승격) 모델. market 이 있으면 그 시장으로 학습한 모델을 우선하고, 없으면 전시장
+    모델(meta.market 없음)로 폴백하며 **다른 시장 한정 모델은 쓰지 않는다**(`train --market KR`
+    모델이 US scan 에 들어가던 문제)."""
+    metas = list_models(name, state)
+    if market is not None:
+        same = [m for m in metas if m.get("market") == market]
+        any_market = [m for m in metas if not m.get("market")]
+        metas = same + any_market
+    for meta in metas:
         if promoted_only and not meta.get("promoted"):
             continue
         try:

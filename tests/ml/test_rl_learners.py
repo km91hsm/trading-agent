@@ -105,8 +105,10 @@ def test_resolve_backend_auto_falls_back_when_torch_cannot_see_numpy(monkeypatch
         if name == "stable_baselines3":
             return types.SimpleNamespace()
         if name == "torch":
+
             def from_numpy(_a):
                 raise RuntimeError("Numpy is not available")
+
             return types.SimpleNamespace(from_numpy=from_numpy)
         raise ImportError(name)
 

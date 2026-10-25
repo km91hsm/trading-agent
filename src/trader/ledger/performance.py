@@ -62,8 +62,6 @@ def metrics_of(series: list[tuple[str, Decimal]]) -> dict:
     }
 
 
-
-
 def _close_table(state: Path | None, market: str, start: date, end: date) -> pd.DataFrame:
     # 창 안의 날짜 파일만 읽는다 (성과 페이지는 원장 이벤트마다 다시 불린다)
     df = dataset.load_all(state, market=market, since=start, until=end)
@@ -223,10 +221,11 @@ def report(conn, state: Path | None, account_id: str, market: str, *, days: int 
     try:
         from trader.ml import ranker
 
-        cur = ranker.current(state)
+        cur = ranker.current(state, market=market)
         if cur is not None:
-            # 종목별 최신 행은 latest_rows 로만, 유니버스를 넘겨 파일을 전부 읽지 않는다 (이연 회수)
-            latest = features.latest_rows(state, market, tickers=_universe(market), asof=end)
+            # 종목별 최신 행은 latest_rows 로만, 유니버스를 넘겨 파일을 전부 읽지 않는다(이연 회수).
+            # 선택은 **창 시작** 시점 피처로 — 창 끝 피처로 뽑으면 기간 수익을 미리 본 벤치마크다
+            latest = features.latest_rows(state, market, tickers=_universe(market), asof=start)
             if not latest.empty:
                 ranked = cur[0](latest.reset_index(drop=True))
                 quant_top = list(ranked["ticker"].head(5))

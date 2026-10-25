@@ -533,11 +533,134 @@ def test_stop_loss_refreshes_fill_status_before_dedupe(conn):
     )
     ctx = _ctx(conn, positions=[_pos(cur="63000", qty=5)], price="63000")
     fill = Fill(
-        order_no="T1", ticker="005930", market="KR", side="SELL", qty=5,
-        price=Decimal("70500"), filled_at=NOW - timedelta(minutes=50),
+        order_no="T1",
+        ticker="005930",
+        market="KR",
+        side="SELL",
+        qty=5,
+        price=Decimal("70500"),
+        filled_at=NOW - timedelta(minutes=50),
     )
     ctx.brokers["paper-main"].fills = {("KR", D): [fill]}
     r = monitor.monitor_once(ctx, market="KR", today=D)
     assert r["stop_loss_orders"] == 1 and len(ctx.brokers["paper-main"].orders) == 1
     st = conn.execute("SELECT status FROM orders WHERE order_no='T1'").fetchone()["status"]
     assert st == "filled"
+
+
+def test_stop_loss_cancels_resting_sell_then_sells(conn):
+    """아침 TRIM 지정가가 미체결로 남아 있으면 손절은 그 주문을 취소하고 매도한다(이전엔 하루 종일
+    막혔다)."""
+    pos = _pos()
+    ctx = _ctx(conn, positions=[pos])
+    _decision(conn, action="HOLD", stop_loss=65000.0)
+    did = repo.decision_id(conn, D, "KR", "005930")
+    repo.insert_order(
+        conn,
+        decision_id=did,
+        account_id="paper-main",
+        ticker="005930",
+        market="KR",
+        side="SELL",
+        qty=3,
+        order_type="LIMIT",
+        price=Decimal("72000"),
+        status="accepted",
+        order_no="T1",
+        message=None,
+        mode="auto",
+        org_no="91252",
+        created_at=NOW.isoformat(),
+    )
+    out = monitor.monitor_once(ctx, market="KR", today=D)
+    broker = ctx.brokers["paper-main"]
+    assert broker.cancelled == ["T1"]
+    assert (
+        conn.execute("SELECT status FROM orders WHERE order_no='T1'").fetchone()[0] == "cancelled"
+    )
+    assert out["stop_loss_orders"] == 1
+    sells = [o for o in broker.orders if o.side == "SELL"]
+    assert len(sells) == 1 and sells[0].qty == 10
+
+
+def test_stop_loss_stays_blocked_when_cancel_fails(conn, monkeypatch):
+    pos = _pos()
+    ctx = _ctx(conn, positions=[pos])
+    _decision(conn, action="HOLD", stop_loss=65000.0)
+    did = repo.decision_id(conn, D, "KR", "005930")
+    repo.insert_order(
+        conn,
+        decision_id=did,
+        account_id="paper-main",
+        ticker="005930",
+        market="KR",
+        side="SELL",
+        qty=3,
+        order_type="LIMIT",
+        price=Decimal("72000"),
+        status="accepted",
+        order_no="T2",
+        message=None,
+        mode="auto",
+        created_at=NOW.isoformat(),
+    )
+    from trader.broker.errors import KisApiError
+
+    def boom(*a, **kw):
+        raise KisApiError("X", "취소 실패", "T")
+
+    monkeypatch.setattr(ctx.brokers["paper-main"], "cancel_order", boom)
+    out = monitor.monitor_once(ctx, market="KR", today=D)
+    assert out["stop_loss_orders"] == 0
+    assert any("손절 보류" in m for m in ctx.notifier.msgs)
+
+
+def test_reevaluation_is_enqueued_when_daemon_provides_queue(conn):
+    """데몬에서는 재평가 세션을 틱 안에서 돌리지 않고 큐로 넘긴다(손절 점검이 멈추지 않도록)."""
+    pos = _pos(cur="76000")  # +7% 넘김 → 트리거
+    ctx = _ctx(conn, positions=[pos], price="76000")
+    _decision(conn, action="HOLD", stop_loss=60000.0, take_profit=None)
+    queued = []
+    ctx.enqueue_reevaluate = lambda params: queued.append(params) or 7
+    out = monitor.monitor_once(ctx, market="KR", today=D)
+    assert out["triggers"] >= 1 and out.get("queued") == 1 and ctx.calls == []
+    assert queued[0]["ticker"] == "005930" and queued[0]["trigger_id"] >= 1
+
+
+# --- 리뷰 F13·F16 ----------------------------------------------------------------------
+
+
+def test_dry_run_stop_loss_is_recorded_once_per_day(conn):
+    """dry-run 손절은 기록만 하므로 매 분 45_/risk_checks 를 다시 쓰지 않는다."""
+    _decision(conn, stop_loss=65000.0)
+    ctx = _ctx(conn, positions=[_pos(cur="63000")], price="63000")
+    ctx.dry_run = True
+    monitor.monitor_once(ctx, market="KR", today=D)
+    n1 = conn.execute("SELECT COUNT(*) AS n FROM risk_checks").fetchone()["n"]
+    assert n1 >= 1 and ctx.brokers["paper-main"].orders == []
+    monitor.monitor_once(ctx, market="KR", today=D)
+    assert conn.execute("SELECT COUNT(*) AS n FROM risk_checks").fetchone()["n"] == n1
+
+
+def test_old_unhandled_trigger_is_not_reused_today(conn):
+    """어제 처리 못 한 트리거는 오늘 다시 쓰지 않고 오늘 가격으로 새 트리거를 쌓는다."""
+    _decision(conn, stop_loss=50000.0, take_profit=75000.0)
+    repo.insert_trigger(
+        conn,
+        market="KR",
+        ticker="005930",
+        kind="take_profit",
+        detail={},
+        price=Decimal("76000"),
+        decision_id=None,
+        account_id="paper-main",
+        created_at="2026-10-08T02:00:00+00:00",
+    )
+    assert repo.unhandled_trigger_id(conn, "KR", "005930", "take_profit") == 1
+    assert repo.unhandled_trigger_id(conn, "KR", "005930", "take_profit", D) is None
+    ctx = _ctx(conn, positions=[_pos(avg="70000", cur="80000")], price="80000")
+    monitor.monitor_once(ctx, market="KR", today=D)
+    rows = conn.execute(
+        "SELECT id, created_at FROM triggers WHERE kind='take_profit' ORDER BY id"
+    ).fetchall()
+    assert len(rows) == 2 and rows[1]["created_at"].startswith("2026-10-09")

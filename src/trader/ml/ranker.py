@@ -21,15 +21,18 @@ logger = logging.getLogger("trader.ml")
 ML_WEIGHT = 0.6
 
 
-def current(state: Path | None = None) -> tuple[Callable[[pd.DataFrame], pd.DataFrame], str] | None:
-    """승격 모델이 있고 ml.yaml 에서 켜져 있으면 (rank_fn, "quant@버전"), 아니면 None."""
+def current(
+    state: Path | None = None, *, market: str | None = None
+) -> tuple[Callable[[pd.DataFrame], pd.DataFrame], str] | None:
+    """승격 모델이 있고 ml.yaml 에서 켜져 있으면 (rank_fn, "quant@버전"), 아니면 None.
+    market 을 주면 그 시장(또는 전시장) 모델만 쓴다."""
     try:
         from trader.config import load_ml
 
         cfg = load_ml()
         if not (cfg.models.quant.enabled and cfg.models.ranker.enabled):
             return None
-        found = registry.latest("quant", state=state)
+        found = registry.latest("quant", state=state, market=market)
     except Exception as e:  # noqa: BLE001 - ML 은 선택 입력: 어떤 오류도 scan 을 막지 않는다
         logger.warning("ML 랭커 비활성(오류): %s", e)
         return None
@@ -57,4 +60,3 @@ def current(state: Path | None = None) -> tuple[Callable[[pd.DataFrame], pd.Data
         return out.reset_index(drop=True)
 
     return rank_fn, label
-

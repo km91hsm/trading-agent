@@ -520,3 +520,77 @@ def test_session_env_path_starts_with_tool_bin_dir(project, conn, monkeypatch):
         now=lambda: T0,
     )
     assert seen["path"].split(os.pathsep)[0] == str(Path("/bundle/dir"))  # Windows 는 역슬래시
+
+
+def test_default_runner_cancel_event_terminates_group_gracefully(tmp_path):
+    """stop_event(cancel) 가 서면 세션을 SIGTERM → 유예 → SIGKILL 로 끝내고 SessionCancelled 를
+    올린다. 정리 대기는 유한하다(이전엔 communicate() 무한 대기로 데몬 종료가 멈출 수 있었다)."""
+    import sys
+    import threading
+    import time
+
+    import pytest
+
+    from trader.orchestrator import session
+
+    if sys.platform == "win32":
+        pytest.skip("POSIX 프로세스 그룹 전용")
+    cancel = threading.Event()
+    threading.Timer(0.5, cancel.set).start()
+    t0 = time.monotonic()
+    with pytest.raises(session.SessionCancelled):
+        session.run_claude(
+            [sys.executable, "-c", "import time; time.sleep(60)"],
+            input="",
+            timeout=30,
+            cancel=cancel,
+            cwd=str(tmp_path),
+        )
+    assert time.monotonic() - t0 < 10  # 60초 sleep 을 기다리지 않는다
+
+
+def test_run_session_passes_cancel_to_runner_and_reports_cancelled(
+    project, conn, accounts, monkeypatch
+):
+    import subprocess
+    import threading
+
+    from trader.orchestrator import session
+
+    monkeypatch.delenv("FAKE_CLAUDE", raising=False)
+    _inputs()
+    seen = {}
+
+    def runner(cmd, **kw):
+        seen["cancel"] = kw.get("cancel")
+        raise session.SessionCancelled(cmd, 0)
+
+    ev = threading.Event()
+    res = run_session(
+        spec(),
+        Settings(),
+        conn,
+        accounts,
+        runner=runner,
+        claude_bin=Path("/x/claude"),
+        agents_dir=REPO_AGENTS,
+        now=lambda: T0,
+        cancel=ev,
+    )
+    assert seen["cancel"] is ev
+    assert not res.ok and "종료 요청" in (res.error or "")
+    row = conn.execute("SELECT status FROM agent_calls").fetchone()
+    assert row["status"] == "error"
+    assert subprocess.TimeoutExpired  # 하위 클래스 관계 유지
+
+
+def test_start_call_checks_cap_inside_write_lock(conn):
+    """상한 검사와 running 행 삽입이 한 쓰기 트랜잭션이라 두 프로세스가 동시에 마지막 자리를
+    잡지 못한다. 넘으면 PipelineError 이고 행은 남지 않는다."""
+    spec = SessionSpec(market="KR", date=date(2026, 10, 9), tickers=[{"ticker": "005930"}])
+    assert session._start_call(conn, None, spec, session_id="a", model="sonnet", cap=1) is not None
+    with pytest.raises(session.PipelineError):
+        session._start_call(conn, None, spec, session_id="b", model="sonnet", cap=1)
+    assert conn.execute("SELECT COUNT(*) AS n FROM agent_calls").fetchone()["n"] == 1
+    assert session._start_call(conn, None, spec, session_id="f", model="fake", cap=1) is not None
+    conn.execute("SELECT 1").fetchone()  # 잠금이 풀려 있다

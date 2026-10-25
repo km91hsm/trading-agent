@@ -110,3 +110,25 @@ def test_label_is_korean(conn):
 
 def test_schema_has_table(conn):
     assert db.current_version(conn) >= 11
+
+
+def test_claim_next_prefers_priority_then_fifo(conn):
+    """Phase 21: 재평가(priority 10)는 먼저 넣은 백필보다 먼저 꺼내진다. 같은 우선순위는 FIFO."""
+    bf = jobs.enqueue(conn, "features_backfill", {"market": "KR"}, source="web", now=NOW)
+    tr = jobs.enqueue(conn, "ml_train", {}, source="web", now=NOW)
+    re = jobs.enqueue(
+        conn,
+        "reevaluate",
+        {"market": "KR", "ticker": "005930", "trigger_id": 1},
+        source="daemon",
+        now=NOW,
+    )
+    assert jobs.PRIORITY["reevaluate"] == 10
+    ids = [r["id"] for r in jobs.list_recent(conn)]
+    assert ids == [re, bf, tr]  # 실행될 순서
+    assert jobs.claim_next(conn, now=NOW)["id"] == re
+    assert jobs.claim_next(conn, now=NOW)["id"] == bf
+    # 명시 우선순위
+    hi = jobs.enqueue(conn, "fills_sync", {}, source="cli", now=NOW, priority=5)
+    assert jobs.claim_next(conn, now=NOW)["id"] == hi
+    assert jobs.claim_next(conn, now=NOW)["id"] == tr
