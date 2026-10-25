@@ -7,6 +7,7 @@ import { Section } from "../components/Section";
 import { Skeleton } from "../components/Skeleton";
 import { SectorTable } from "../components/Sectors";
 import { ApprovalsTable, ErrorBox, OrdersTable, PositionsTable } from "../components/Tables";
+import { CsvLink } from "../components/CsvLink";
 import { Term } from "../components/Term";
 import { useToast } from "../components/Toast";
 import { fmtMoney } from "../format";
@@ -90,7 +91,15 @@ export function AccountPage() {
         )}
       </Section>
       <div className="cols-2">
-        <Section title="보유 종목" aside={`${snap?.positions.length ?? 0}종목`}>
+        <Section
+          title="보유 종목"
+          aside={
+            <span className="row tight">
+              {`${snap?.positions.length ?? 0}종목`}
+              {accountId && <CsvLink href={withAccount(`/api/portfolio?market=${market}`, accountId)} />}
+            </span>
+          }
+        >
           {pf.loading && !pf.data ? <Skeleton rows={3} cols={7} /> : <PositionsTable rows={snap?.positions ?? []} nav={snap?.nav} />}
         </Section>
         <Section title="섹터 비중" aside={`상한 ${Math.round((pf.data?.max_sector_pct ?? 0.4) * 100)}% · 헤지·현금 제외`}>

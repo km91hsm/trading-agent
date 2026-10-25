@@ -321,3 +321,20 @@
 - [x] 완료 기준(코드): `uv run pytest`·`ruff`·웹 검증 통과 (2026-10-25)
 - [ ] 결정 대기(사용자): 2~4주 뒤 `regime.summary.scorecard`(전략가 적중률)이 50% 아래면 `hedge.agent_gate: false`; 반대로 좋으면 `TILT_UP` 을 25%·5(= bull) 까지 넓힐지
 - [ ] 이연: RL 사이저 `mode: apply`(비중 결정 모델 위임)는 `rl promote` 뒤 `ml.yaml` 수동 전환 그대로 — 자동 승격 없음 원칙 유지
+
+## Phase 23 장중 뉴스 발굴 + 보유기간 프로필 + 단타 층 + 운영 점검·재호가·watchdog·결정 추적 (`docs/superpowers/plans/2026-10-25-phase23-intraday-discovery.md`)
+- [x] D 장중 뉴스 발굴: 원장 v16 `news_items.novel`·`news_store.novel_items`(유사 기사 파이썬 판정), 데몬 `_news_trigger`(종목 재분석: 오늘 결정 있으면 트리거 kind `news` + `reevaluate`, 없으면 `analyze_ticker`; 새 뉴스 ≥1 이면 큐 `discover`), 세션 kind `discover`(scout 만, `_discovery_inputs_r<n>`·`_discovery_r<n>`, FAKE), 뉴스 재평가 재수집·재시세, `llm.daily_session_cap` 40, `/api/today.news_jobs` + 오늘 페이지 '장중 발굴' (2026-10-25)
+- [x] T 보유기간 프로필: `RiskLimits.horizon_profiles`(short/mid/long)·`risk/horizon.py`, monitor 임계·간격·`periodic` 트리거, 보유 아침 재분석 주기(`_skip_held_by_profile`), 뉴스 `news_min_novel`, 보유 표 '보유기간' 열, trader.md (2026-10-25)
+- [x] S 분 단위 단타(모의 전용·기본 끔): `ScalpCfg`, `scalp/signals.py`·`scalp/engine.py`, `rules.evaluate(is_scalp)`·`executor.execute(scalp_leg)` 47_/57_, 데몬 `<시장>_scalp` 60초, CLI `scalp backtest|report`, `/api/system/scalp`·대시보드 칩·오늘 페이지 '단타'·STATUS, `HedgeProposal.scalp_ok`. **플랜과 다른 점**: `decisions` 행을 만들지 않는다(UNIQUE 키가 오늘 LLM 결정을 덮음) — `orders.decision_id=NULL` + 상태 파일 (2026-10-25)
+- [x] A 운영 점검: `ops/health.py` 다섯 영역·단계, 데몬 `ops_check`(30분, 격상 때만 알림), `/api/system/ops`, 대시보드 `Advisory`, 텔레그램 `/status`·STATUS (2026-10-25)
+- [x] B 주문 안전: unknown 체결 매칭은 후보 1건일 때만(`fill_ambiguous` 플래그·알림), 아침 미체결 재호가 `orchestrator/reprice.py`(`risk.reprice`, 42_/52_, 추격 1% 상한, monitor 틱 연결) (2026-10-25)
+- [x] C watchdog: `ops/watchdog.py`·CLI `trader watchdog [--quiet]`·`install --watchdog`(launchd StartInterval 300 / 작업 스케줄러 PT5M) (2026-10-25)
+- [x] E 결정 추적: `views.decision_trace`·`/api/decisions/{id}/trace`, 주문 페이지 '추적' 열(단계별 줄·지정가 거리·unknown 경고) (2026-10-25)
+- [x] G 웹 구조: `nav.ts`(묶음·모바일 탭·최근 추가·팔레트 후보·g 단축키), `CommandPalette`(이동 전용), `Table responsive`/`core`, CSV `?format=csv` + `CsvLink`, `useLoad` 가려진 탭 (2026-10-25)
+- [x] 완료 기준(코드): `uv run pytest`·`ruff`·`npm run typecheck && npm test && npm run build` 통과 (2026-10-25)
+- [ ] 실기(사용자 확인 대기): 데몬을 켠 장중 30분 뒤 `[뉴스 발굴]` 알림과 오늘 페이지 '장중 발굴' 표에 요청이 쌓이는지, 같은 사건의 다른 매체 기사가 `novel=0` 으로 걸러지는지(`SELECT title, novel FROM news_items`), 하루 세션 수가 40 안에서 머무는지(대시보드 사용량)
+- [ ] 실기(사용자 확인 대기): 단기(horizon_days ≤10) 결정 보유분이 60분마다 `periodic` 트리거로 재평가되는지(`triggers.kind='periodic'`), 장기 보유분이 아침 분석에서 건너뛰어지는지(`skipped_held` 로그)
+- [ ] 결정 대기(사용자): 모의에서 `trader scalp backtest` 로 며칠 신호를 본 뒤 `scalp.enabled: true` 로 켤지(모의 전용, 실전은 코드로 막힘). 켠 뒤 1~2주 `scalp report` 승률·`daily_stop` 중단 빈도를 보고 임계(`volume_mult`·`take_profit_pct`·`stop_pct`) 조정
+- [ ] 실기(사용자 확인 대기): 개장 30분 뒤 지정가 미체결이 있는 날 `[재호가]` 알림·`42_reprice_*` 체크포인트·원 주문 `cancelled`; 데몬을 꺼 둔 뒤 `trader watchdog` 가 `[감시] 데몬이 꺼져 있음` 을 보내는지; `trader install --watchdog --dry-run` 출력 확인 뒤 등록
+- [ ] 결정 대기(사용자): 종목 일정(권리·실적 발표) 블랙아웃은 DART 기준일 소스를 확인한 뒤 다음 Phase(소스 미확인으로 미구현)
+- [ ] 이연: ⌘K 팔레트의 종목명 검색은 `/api/names` 가 이미 받은 이름만 본다(원장·캐시) — 전체 상장 검색은 종목 마스터가 생기면

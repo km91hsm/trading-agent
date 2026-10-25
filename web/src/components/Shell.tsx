@@ -4,22 +4,10 @@ import { NavLink, useLocation } from "react-router-dom";
 import { useApp } from "../hooks";
 import { marketPhase } from "../tape";
 import type { Theme } from "../theme";
+import { MOBILE_TABS, NAV } from "../nav";
 import { Badge } from "./Badge";
+import { CommandPalette } from "./CommandPalette";
 import { Glyph, type GlyphName } from "./Glyph";
-
-const LINKS: Array<[string, string]> = [
-  ["/", "대시보드"],
-  ["/today", "오늘의 실행"],
-  ["/orders", "주문/승인"],
-  ["/account", "계좌"],
-  ["/compare", "계좌 비교"],
-  ["/chart", "차트"],
-  ["/performance", "성과"],
-  ["/data", "데이터"],
-  ["/ml", "ML"],
-  ["/how", "작동 방식"],
-  ["/settings", "설정/제어"],
-];
 
 const THEME_NEXT: Record<Theme, Theme> = { light: "dark", dark: "system", system: "light" };
 const THEME_GLYPH: Record<Theme, GlyphName> = { light: "sun", dark: "moon", system: "system" };
@@ -90,13 +78,30 @@ export function Shell({ children, now }: { children: ReactNode; now?: Date }) {
         </button>
       </header>
       <nav id="sidenav" className={open ? "sidenav open" : "sidenav"} aria-label="주 메뉴">
-        {LINKS.map(([to, label]) => (
-          <NavLink key={to} to={to} end={to === "/"} onClick={() => setOpen(false)}>
-            {label}
-          </NavLink>
+        {NAV.map((g) => (
+          <div key={g.id} className="nav-group">
+            <div className="nav-group-title muted">{g.title}</div>
+            {g.items.map((it) => (
+              <NavLink key={it.to} to={it.to} end={it.to === "/"} onClick={() => setOpen(false)} title={it.purpose}>
+                {it.label}
+              </NavLink>
+            ))}
+          </div>
         ))}
+        <p className="muted nav-hint">⌘K / Ctrl+K 이동</p>
       </nav>
       <main>{children}</main>
+      <nav className="tabbar" aria-label="하단 탭">
+        {MOBILE_TABS.map((it) => (
+          <NavLink key={it.to} to={it.to} end={it.to === "/"}>
+            {it.label}
+          </NavLink>
+        ))}
+        <button type="button" onClick={() => setOpen(true)} aria-label="전체 메뉴">
+          전체
+        </button>
+      </nav>
+      <CommandPalette />
     </div>
   );
 }

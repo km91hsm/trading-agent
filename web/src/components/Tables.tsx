@@ -32,17 +32,17 @@ export function PositionsTable({ rows, nav }: { rows: Position[]; nav?: string |
   if (!rows.length) return <EmptyState title="보유 종목이 없어요" hint="매수가 체결되면 다음 판정 때 스냅샷에 잡혀요." />;
   const navN = nav ? Number(nav) : NaN;
   return (
-    <Table caption="보유 종목">
+    <Table responsive caption="보유 종목">
       <thead>
         <tr>
-          <Th>종목</Th>
+          <Th core>종목</Th>
           <Th>보유기간</Th>
           <Th num>수량</Th>
           <Th num>평균단가</Th>
-          <Th num>현재가</Th>
-          <Th num>평단 대비</Th>
+          <Th num core>현재가</Th>
+          <Th num core>평단 대비</Th>
           <Th num>평가금액</Th>
-          <Th num>비중</Th>
+          <Th num core>비중</Th>
         </tr>
       </thead>
       <tbody>
@@ -51,7 +51,7 @@ export function PositionsTable({ rows, nav }: { rows: Position[]; nav?: string |
           const ev = p.eval_amount ? Number(p.eval_amount) : NaN;
           return (
             <tr key={`${p.market}:${p.ticker}`}>
-              <Td>
+              <Td core>
                 <Ticker market={p.market} ticker={p.ticker} />
               </Td>
               <Td>{horizonText(p)}</Td>
@@ -59,14 +59,14 @@ export function PositionsTable({ rows, nav }: { rows: Position[]; nav?: string |
               <Td num>
                 <Num value={p.avg_price} market={p.market} />
               </Td>
-              <Td num>
+              <Td num core>
                 <Num value={p.current_price} market={p.market} />
               </Td>
-              <Td num>{d ? <Delta value={d.pct} pct /> : "—"}</Td>
+              <Td num core>{d ? <Delta value={d.pct} pct /> : "—"}</Td>
               <Td num>
                 <Num value={p.eval_amount} market={p.market} />
               </Td>
-              <Td num>{Number.isFinite(navN) && navN > 0 && Number.isFinite(ev) ? `${((ev / navN) * 100).toFixed(1)}%` : "—"}</Td>
+              <Td num core>{Number.isFinite(navN) && navN > 0 && Number.isFinite(ev) ? `${((ev / navN) * 100).toFixed(1)}%` : "—"}</Td>
             </tr>
           );
         })}
@@ -75,20 +75,21 @@ export function PositionsTable({ rows, nav }: { rows: Position[]; nav?: string |
   );
 }
 
-export function OrdersTable({ rows }: { rows: Order[] }) {
+export function OrdersTable({ rows, onTrace, traceId }: { rows: Order[]; onTrace?: (o: Order) => void; traceId?: number | null }) {
   if (!rows.length) return <EmptyState title="주문이 없어요" hint="결정이 매수·매도로 나고 리스크 게이트를 통과하면 쌓여요." />;
   return (
-    <Table dense caption="주문">
+    <Table dense responsive caption="주문">
       <thead>
         <tr>
+          {onTrace && <Th>추적</Th>}
           <Th>날짜</Th>
           <Th>시각</Th>
-          <Th>종목</Th>
-          <Th>방향</Th>
+          <Th core>종목</Th>
+          <Th core>방향</Th>
           <Th num>수량</Th>
           <Th num>가격</Th>
-          <Th num>금액</Th>
-          <Th>상태</Th>
+          <Th num core>금액</Th>
+          <Th core>상태</Th>
           <Th>모드</Th>
           <Th>접수번호</Th>
           <Th>메시지</Th>
@@ -97,18 +98,29 @@ export function OrdersTable({ rows }: { rows: Order[] }) {
       <tbody>
         {rows.map((o) => (
           <tr key={o.id} data-status={o.status}>
+            {onTrace && (
+              <Td>
+                {o.decision_id ? (
+                  <button type="button" className={o.decision_id === traceId ? "btn btn-sm sel" : "btn btn-sm btn-ghost"} onClick={() => onTrace(o)} title="애널리스트 → 토론 → 결정 → 게이트 → 주문">
+                    #{o.decision_id}
+                  </button>
+                ) : (
+                  <span className="muted">—</span>
+                )}
+              </Td>
+            )}
             <Td>{fmtDate(o.created_at)}</Td>
             <Td>{fmtTime(o.created_at, o.market)}</Td>
-            <Td>
+            <Td core>
               <Ticker market={o.market} ticker={o.ticker} />
             </Td>
-            <Td>{o.side}</Td>
+            <Td core>{o.side}</Td>
             <Td num>{o.qty}</Td>
             <Td num>{o.price ? <Num value={o.price} market={o.market} /> : "시장가"}</Td>
-            <Td num>
+            <Td num core>
               <Num value={o.amount} market={o.market} />
             </Td>
-            <Td>
+            <Td core>
               <Badge kind="status" value={o.status} />
             </Td>
             <Td>

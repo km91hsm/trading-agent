@@ -106,6 +106,18 @@ def _perf_lines(conn: sqlite3.Connection, accounts: list[AccountConfig]) -> list
     return out or ["- 스냅샷 없음"]
 
 
+def _ops_line(conn: sqlite3.Connection) -> str:
+    """운영 점검(Phase 23 A) 머리 한 줄 + 항목 요약."""
+    from trader.control import control
+    from trader.ops import health
+
+    r = control.get_flag(conn, health.RESULT_FLAG)
+    head = health.headline(r)
+    if not r or not r.get("items"):
+        return head
+    return head + " — " + "; ".join(i["text"] for i in r["items"][:3])
+
+
 def _scalp_lines(settings: Settings, now: datetime) -> list[str]:
     """분 단위 단타(Phase 23 S) 한 줄: 켬/끔 + 오늘 진입·청산 수."""
     from trader.orchestrator.run_store import run_date_for
@@ -229,6 +241,7 @@ def build_status(
         f"# 시스템 상태 (생성: {stamp})",
         "",
         "## 실행 제어",
+        f"- 운영 점검: {_ops_line(conn)}",
         f"- 일시정지: {'예' if is_paused(conn) else '아니오'}",
         f"- 토론 라운드: {settings.debate_rounds}",
         f"- 하루 세션 상한: {settings.llm.daily_session_cap}",

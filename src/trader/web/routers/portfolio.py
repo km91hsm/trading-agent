@@ -10,19 +10,32 @@ from trader.broker.errors import KisApiError
 from trader.ledger import views
 from trader.orchestrator import run_store
 from trader.web.auth import require_token
-from trader.web.routers._common import deps_of, kis_wait, require_account, require_market
+from trader.web.routers._common import (
+    csv_response,
+    deps_of,
+    kis_wait,
+    require_account,
+    require_market,
+)
 
 router = APIRouter(prefix="/portfolio", tags=["portfolio"])
 
 
 @router.get("")
-def portfolio(request: Request, account_id: str | None = None, market: str | None = None) -> dict:
+def portfolio(
+    request: Request,
+    account_id: str | None = None,
+    market: str | None = None,
+    format: str | None = None,
+):
     acct = require_account(request, account_id)
     m = require_market(market, acct)
     deps = deps_of(request)
     with closing(deps.conn_factory()) as conn:
         snap = views.latest_positions(conn, acct.id, m)
         _attach_horizon(conn, deps, m, snap)
+        if format == "csv":  # Phase 23 G: 보유 표만
+            return csv_response((snap or {}).get("positions") or [], f"positions_{acct.id}_{m}.csv")
         return {
             "account_id": acct.id,
             "market": m,

@@ -9,6 +9,8 @@ import { fmtMoney } from "../format";
 import { useApp, useLoad } from "../hooks";
 import { labelOf } from "../names";
 import type { Approval, Order, RiskCheck } from "../types";
+import { limitDistancePct, type TraceResp, traceSteps, unknownLine } from "../trace";
+import { CsvLink } from "../components/CsvLink";
 
 export function OrdersPage() {
   const { accountId, accounts, token, tick, names } = useApp();
@@ -36,6 +38,9 @@ export function OrdersPage() {
   };
   const pending = (approvals.data ?? []).filter((a) => a.status === "pending");
   const realIds = accounts.filter((a) => a.env === "real").map((a) => a.id);
+  const [traceId, setTraceId] = useState<number | null>(null);
+  const trace = useLoad(() => (traceId ? getJson<TraceResp>(`/api/decisions/${traceId}/trace`) : null), [traceId]);
+  const warn = unknownLine(orders.data ?? []);
 
   return (
     <>
@@ -59,9 +64,47 @@ export function OrdersPage() {
           />
         )}
       </Section>
-      <Section title="주문" aside={`${orders.data?.length ?? 0}건 · 최신순`}>
+      <Section
+        title="주문"
+        aside={
+          <span className="row tight">
+            {`${orders.data?.length ?? 0}건 · 최신순`}
+            {accountId && <CsvLink href={withAccount("/api/orders", accountId)} />}
+          </span>
+        }
+      >
         <ErrorBox error={orders.error} />
-        {orders.loading && !orders.data ? <Skeleton rows={4} cols={8} /> : <OrdersTable rows={orders.data ?? []} />}
+        {warn && <p className="pend-text">{warn}</p>}
+        {orders.loading && !orders.data ? <Skeleton rows={4} cols={8} /> : <OrdersTable rows={orders.data ?? []} onTrace={(o) => setTraceId(o.decision_id === traceId ? null : o.decision_id)} traceId={traceId} />}
+        {traceId && (
+          <details open className="trace">
+            <summary>
+              결정 #{traceId} 판단 과정{trace.data ? ` · ${trace.data.decision.ticker} ${trace.data.decision.date}` : ""}
+            </summary>
+            <ErrorBox error={trace.error} />
+            {trace.data && (
+              <dl className="trace-steps">
+                {traceSteps(trace.data).map((s) => (
+                  <div key={s.key}>
+                    <dt>{s.title}</dt>
+                    {s.lines.length === 0 ? <dd className="muted">—</dd> : s.lines.map((l) => <dd key={l}>{l}</dd>)}
+                  </div>
+                ))}
+                {trace.data.quote && (
+                  <div>
+                    <dt>지정가 거리</dt>
+                    {(orders.data ?? [])
+                      .filter((o) => o.decision_id === traceId && o.price)
+                      .map((o) => {
+                        const d = limitDistancePct(o.price, trace.data?.quote);
+                        return <dd key={o.id}>#{o.id} {o.side} @{o.price}: 당시 현재가 대비 {d === null ? "—" : `${d >= 0 ? "+" : ""}${d.toFixed(2)}%`}</dd>;
+                      })}
+                  </div>
+                )}
+              </dl>
+            )}
+          </details>
+        )}
       </Section>
       <Section title="리스크 판정" aside="거부 사유는 전부 기록">
         <ErrorBox error={checks.error} />

@@ -1739,14 +1739,26 @@ def monitor_cmd(
 def install_cmd(
     dry_run: bool = typer.Option(False, "--dry-run", help="파일을 쓰지 않고 내용·명령만 출력"),
     uninstall: bool = typer.Option(False, "--uninstall", help="등록 해제"),
+    watchdog: bool = typer.Option(
+        False, "--watchdog", help="데몬 대신 외부 감시(trader watchdog, 5분 간격)를 등록·해제"
+    ),
 ) -> None:
-    """로그온 시 데몬 자동 시작 등록 (macOS launchd / Windows 작업 스케줄러)."""
+    """로그온 시 데몬 자동 시작 등록 (macOS launchd / Windows 작업 스케줄러).
+    --watchdog 이면 데몬 밖 감시 프로세스를 5분 간격 1회 실행으로 등록한다(Phase 23 C)."""
     from trader.platform import installer
 
+    kind = "watchdog" if watchdog else "daemon"
     try:
         if uninstall:
-            r = installer.uninstall()
+            r = installer.uninstall(kind=kind)
             typer.echo(f"해제: {r['path']} ({' '.join(r['command'])})")
+            return
+        if watchdog:
+            r = installer.install(dry_run=dry_run, kind="watchdog")
+            typer.echo(("[dry-run] " if dry_run else "") + f"파일: {r['path']}")
+            typer.echo("명령: " + " ".join(r["command"]))
+            if dry_run:
+                typer.echo(r["content"])
             return
         from trader.platform.claude_bin import find_claude
 
@@ -1768,6 +1780,32 @@ def install_cmd(
     typer.echo("명령: " + " ".join(r["command"]))
     if dry_run:
         typer.echo(r["content"])
+
+
+@app.command("watchdog")
+@_config_errors
+def watchdog_cmd(
+    quiet: bool = typer.Option(False, "--quiet", help="알림 없이 판정만 출력(점검용)"),
+) -> None:
+    """외부 감시 1회(Phase 23 C): 데몬 생존·하트비트·운영 점검을 지금 판정해 주의 이상이면 텔레그램.
+    `trader install --watchdog` 가 5분 간격으로 등록한다. 상태를 바꾸지 않는다."""
+    import json
+
+    from trader.ops import watchdog as watchdog_mod
+
+    b = _boot(settings=True, accounts=True, secrets=True, conn=True, log_name="watchdog")
+    try:
+        notifier = None if quiet else make_notifier(b.secrets)
+        try:
+            from trader.daemon import build_jobs
+
+            jobs = build_jobs(config.load_schedule(), b.settings, markets=list(b.settings.markets))
+        except config.ConfigError:
+            jobs = []
+        out = watchdog_mod.run_once(b.conn, b.settings, b.accounts, notifier, schedule_jobs=jobs)
+    finally:
+        b.conn.close()
+    typer.echo(json.dumps(out, ensure_ascii=False))
 
 
 # --- ML (Phase 7) ----------------------------------------------------------------

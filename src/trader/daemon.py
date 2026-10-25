@@ -36,6 +36,7 @@ from trader.platform.procs import process_start, same_process
 
 logger = logging.getLogger("trader.daemon")
 SCALP_INTERVAL_S = 60  # 분 단위 단타 틱 (Phase 23 S)
+OPS_CHECK_S = 1800  # 운영 점검 주기 (Phase 23 A)
 TELEGRAM_POLL_S = 30
 QUEUE_JOB_ID = "job_queue"  # 작업 대기열 소비 잡 (jobs.py)
 QUEUE_INTERVAL_S = 10
@@ -303,6 +304,7 @@ def build_jobs(schedule: ScheduleConfig, settings: Settings, *, markets: list[st
     jobs.append(Job("telegram_poll", "telegram_poll", interval_s=TELEGRAM_POLL_S))
     jobs.append(Job(QUEUE_JOB_ID, "job_queue", interval_s=QUEUE_INTERVAL_S))
     jobs.append(Job("news_collect", "news_collect", interval_s=schedule.news_collect.interval_s))
+    jobs.append(Job("ops_check", "ops_check", interval_s=OPS_CHECK_S))  # 운영 점검(Phase 23 A)
     for i, (h, mi) in enumerate(FILLS_SYNC_TIMES):
         jobs.append(
             Job(
@@ -959,6 +961,59 @@ def _hedge_body(deps: DaemonDeps, market: str) -> dict:
         conn.close()
 
 
+def _reprice_body(deps: DaemonDeps, market: str) -> dict:
+    """아침 미체결 재호가(Phase 23 B): monitor 틱에서 개장 + after_min 뒤 운영일 1회."""
+    from trader.orchestrator import reprice as reprice_mod
+    from trader.orchestrator.executor import ExecContext
+    from trader.orchestrator.run_store import run_date_for
+
+    cfg = deps.settings.risk.reprice
+    if not cfg.enabled or deps.market_client is None or deps.dry_run:
+        return {"skipped": "비활성"}
+    ms = deps.schedule.kr if market == "KR" else deps.schedule.us
+    local = deps.now().astimezone(ZoneInfo(ms.tz))
+    oh, om = ms.monitor.start_hm()
+    since_open = (local.hour * 60 + local.minute) - (oh * 60 + om)
+    if since_open < cfg.after_min:
+        return {"skipped": "개장 뒤 대기"}
+    today = run_date_for(market, deps.now())
+    conn = deps.conn_factory()
+    try:
+        if control.get_flag(conn, reprice_mod.done_key(market, today)):
+            return {"skipped": "오늘 이미 실행"}
+        ectx = ExecContext(
+            settings=deps.settings,
+            accounts=deps.accounts,
+            conn=conn,
+            brokers=deps.brokers,
+            notifier=deps.notifier,
+            state=deps.state,
+            now=deps.now,
+        )
+        mc = deps.market_client
+
+        def quote(ticker: str, exchange: str | None):
+            if market == "US":
+                if not exchange:
+                    raise ValueError(f"US 거래소 코드 없음: {ticker}")
+                return mc.get_price_us(ticker, exchange).price
+            return mc.get_price_kr(ticker).price
+
+        cache = _cache_dir(deps)
+        return reprice_mod.reprice(
+            ectx,
+            market=market,
+            today=today,
+            cfg=cfg,
+            quote_fn=quote,
+            exchanges={u.symbol: u.exchange for u in (deps.universe.us if deps.universe else [])},
+            dry_run=deps.dry_run,
+            label=lambda t: names.display(conn, cache, market, t),
+        )
+    finally:
+        conn.close()
+
+
 def _enqueue_reevaluate(deps: DaemonDeps, params: dict) -> int | None:
     """monitor → 큐. 같은 종목 요청이 대기·실행 중이면 None(중복)."""
     conn = deps.conn_factory()
@@ -1058,6 +1113,13 @@ def _monitor_body(deps: DaemonDeps, market: str) -> dict:
         logger.exception("헤지 실행 실패 %s", market)
         deps.notifier.send(f"[헤지 실패] {market}: {type(e).__name__}: {e}")
         hedge = {"error": f"{type(e).__name__}: {e}"}
+    rep: dict | None = None
+    try:
+        rep = _reprice_body(deps, market)
+    except Exception as e:  # noqa: BLE001 - 재호가 실패가 손절 점검을 막지 않는다
+        logger.exception("재호가 실행 실패 %s", market)
+        deps.notifier.send(f"[재호가 실패] {market}: {type(e).__name__}: {e}")
+        rep = {"error": f"{type(e).__name__}: {e}"}
     conn = deps.conn_factory()
     try:
         ctx = monitor_mod.MonitorContext(
@@ -1077,6 +1139,8 @@ def _monitor_body(deps: DaemonDeps, market: str) -> dict:
         out = monitor_mod.monitor_once(ctx, market=market, today=run_date_for(market, deps.now()))
         if hedge and "skipped" not in hedge:
             out["hedge"] = hedge
+        if rep and "skipped" not in rep:
+            out["reprice"] = rep
         return out
     finally:
         conn.close()
@@ -1110,6 +1174,32 @@ def _scalp_body(deps: DaemonDeps, market: str) -> dict:
             exchanges={u.symbol: u.exchange for u in (deps.universe.us if deps.universe else [])},
         )
         return scalp_engine.tick(ctx, market=market, today=run_date_for(market, deps.now()))
+    finally:
+        conn.close()
+
+
+def _ops_body(deps: DaemonDeps) -> dict:
+    """운영 점검(Phase 23 A): 다섯 영역 판정 → 직전보다 나빠졌으면 알림 1건. 결과는
+    `control.ops_result` 에 남겨 웹·텔레그램·STATUS 가 같은 것을 본다. 가벼운 잡(heavy 밖)."""
+    from trader.ops import health
+
+    conn = deps.conn_factory()
+    try:
+        result = health.check(
+            conn,
+            deps.settings,
+            deps.accounts,
+            now=deps.now(),
+            state=deps.state,
+            schedule_jobs=build_jobs(
+                deps.schedule, deps.settings, markets=list(deps.settings.markets)
+            ),
+        )
+        control.set_flag(conn, health.RESULT_FLAG, result)
+        msg = health.escalate(conn, result)
+        if msg:
+            deps.notifier.send(msg)
+        return {"level": result["level"], "items": len(result["items"]), "notified": bool(msg)}
     finally:
         conn.close()
 
@@ -1148,7 +1238,7 @@ def _fills_body(deps: DaemonDeps) -> dict:
                 continue
             try:
                 # US 체결은 ET 날짜로 조회해야 한다 (07:10 KST 는 전날 ET) → 시장별 현지 날짜
-                out[a.id] = sync_fills(conn, b, a, deps.now())
+                out[a.id] = sync_fills(conn, b, a, deps.now(), notifier=deps.notifier)
             except Exception as e:  # noqa: BLE001 - 한 계좌의 실패가 다른 계좌 동기화를 막지 않는다
                 logger.warning("체결 동기화 실패 %s: %s", a.id, e)
                 out[a.id] = {"error": f"{type(e).__name__}: {e}"}
@@ -1745,6 +1835,8 @@ def job_body(
         return lambda: _fills_body(deps)
     if job.kind == "news_collect":
         return lambda: _news_body(deps)
+    if job.kind == "ops_check":
+        return lambda: _ops_body(deps)
     if job.kind == "reconcile":
         return lambda: market_job(
             deps, job.market or "KR", "reconcile", lambda: _reconcile_body(deps, job.market)

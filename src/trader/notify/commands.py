@@ -176,8 +176,11 @@ def _handle_command(ectx: Any, conn: Any, cmd: tuple[str, str | None], echo: Cal
 
             regime_line = regime_mod.line(conn, list(ectx.settings.markets))
             scan = "\n".join(scan_lines(ectx.settings, ectx.now(), ectx.state))
+            from trader.ops import health
+
+            ops = health.headline(control.get_flag(conn, health.RESULT_FLAG))
             ectx.notifier.send(
-                f"[상태] {paused} · 계좌 모드: {modes}\n{daemon_line(ectx)}\n"
+                f"[상태] {paused} · 계좌 모드: {modes}\n{daemon_line(ectx)}\n{ops}\n"
                 f"국면: {regime_line}\n오늘 스캔:\n{scan}\n미승인 주문:\n{body}"
             )
             echo(f"status → 미승인 {len(pending)}건")

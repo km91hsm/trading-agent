@@ -339,6 +339,7 @@ def execute(
     skip_accounts: frozenset[str] = frozenset(),
     extra_note: str | None = None,
     scalp_leg: str | None = None,
+    is_reprice: bool = False,
 ) -> list[dict]:
     """계좌마다 판정·기록·(모드별) 주문. 계좌 하나의 실패가 다른 계좌를 막지 않는다.
     scalp_leg(Phase 23 S, "entry"|"exit")는 분 단위 단타: 결정 행 없이(decision_id None 유지 —
@@ -362,6 +363,8 @@ def execute(
         risk_stage, order_stage = "45_stop_loss", "55_order_sl"
     elif is_scalp:
         risk_stage, order_stage = f"47_scalp_{scalp_leg}", f"57_order_scalp_{scalp_leg}"
+    elif is_reprice:  # 아침 미체결 재호가(Phase 23 B): 오늘 분석의 40_/50_ 을 덮지 않는다
+        risk_stage, order_stage = "42_reprice", "52_order_reprice"
     elif is_hedge:
         risk_stage, order_stage = "46_hedge", "56_order_hedge"
     elif resume_round is not None:

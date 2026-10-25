@@ -17,6 +17,9 @@ risk:
     short: { move_pct: 0.04, reeval_interval_min: 15, periodic_check_min: 60, news_min_novel: 1, daily_reanalyze_every: 1 }
     mid:   { move_pct: 0.07, reeval_interval_min: 30, periodic_check_min: 0,  news_min_novel: 1, daily_reanalyze_every: 2 }
     long:  { move_pct: 0.10, reeval_interval_min: 60, periodic_check_min: 0,  news_min_novel: 3, daily_reanalyze_every: 5 }
+  # 아침 미체결 재호가(Phase 23). 개장 after_min 분 뒤 운영일 1회, 오늘 지정가 미체결을 취소 → 같은 결정으로
+  # 현재가 지정가 재제출(게이트 재통과). 원 지정가보다 max_chase_pct 넘게 불리하면 재제출 없이 알림만. dry-run·off 제외
+  reprice: { enabled: true, after_min: 30, max_chase_pct: 0.01 }
 
 # 하락장 대응 (Phase 17). 국면 판정·인버스 ETF 헤지는 전부 파이썬 규칙이고 LLM 은 regime 값만 입력으로 받는다.
 # 공매도는 KIS 개인 API 가 지원하지 않아 제외. 레버리지 인버스는 변동성 끌림이 있어 3지표 모두일 때만.

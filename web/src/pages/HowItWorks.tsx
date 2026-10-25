@@ -4,6 +4,8 @@ import { getJson } from "../api";
 import { Section } from "../components/Section";
 import { Table, Td, Th } from "../components/Table";
 import { HOW, type HowSection } from "../how";
+import { Link } from "react-router-dom";
+import { recentFeatures } from "../nav";
 import { useLoad } from "../hooks";
 import { jobLabel, scheduleText, type DaemonStatus } from "../jobs";
 import type { SystemSettings } from "../types";
@@ -36,6 +38,28 @@ export function HowItWorksPage() {
         <h1>작동 방식</h1>
         <p className="sub">AI 는 고르고 토론하고 결정한다. 수량·한도·주문은 파이썬이 강제한다. 실전 전환은 사람만 한다.</p>
       </header>
+      <Section title="최근 추가" aside="새 것이 위">
+        <Table dense>
+          <thead>
+            <tr>
+              <Th>단계</Th>
+              <Th>기능</Th>
+              <Th>무엇</Th>
+            </tr>
+          </thead>
+          <tbody>
+            {recentFeatures(8).map((f) => (
+              <tr key={f.title}>
+                <Td className="muted">{f.since}</Td>
+                <Td>
+                  <Link to={f.to}>{f.title}</Link>
+                </Td>
+                <Td className="wrap">{f.what}</Td>
+              </tr>
+            ))}
+          </tbody>
+        </Table>
+      </Section>
       <nav className="how-toc" aria-label="절 목록">
         {HOW.map((s) => (
           <a key={s.id} href={`#${s.id}`}>

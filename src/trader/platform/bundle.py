@@ -83,6 +83,13 @@ def daemon_argv() -> list[str]:
     return [sys.executable, "-m", "trader", "daemon"]
 
 
+def watchdog_argv() -> list[str]:
+    """watchdog 등록(5분 간격 1회 실행, Phase 23 C)에 쓰는 argv."""
+    if is_frozen():
+        return [str(cli_executable()), "watchdog"]
+    return [sys.executable, "-m", "trader", "watchdog"]
+
+
 def icons_dir() -> Path:
     """트레이 아이콘 PNG 가 있는 폴더: 번들 `_internal/icons`, 개발 `packaging/icons`."""
     if is_frozen():

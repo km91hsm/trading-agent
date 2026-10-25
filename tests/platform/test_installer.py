@@ -198,3 +198,38 @@ def test_install_defaults_program_to_bundle_daemon_argv(tmp_path, monkeypatch):
     monkeypatch.setattr(bundle, "daemon_argv", lambda: ["/dist/trader/trader", "daemon"])
     r = installer.install(dry_run=True, platform="darwin", home=tmp_path, project_root=tmp_path)
     assert "<string>/dist/trader/trader</string>" in r["content"]
+
+
+def test_render_watchdog_variants_use_interval_not_keepalive(tmp_path):
+    """Phase 23 C: watchdog 등록은 상시(KeepAlive)가 아니라 5분 간격 1회 실행."""
+    plist = installer.render(
+        "darwin",
+        program=["/py", "-m", "trader", "watchdog"],
+        project_root=tmp_path,
+        label=installer.WATCHDOG_LABEL,
+        interval_s=300,
+    )
+    assert "<key>StartInterval</key><integer>300</integer>" in plist
+    assert "KeepAlive" not in plist and "com.trader.watchdog" in plist and "watchdog.out" in plist
+    xml = installer.render(
+        "win32",
+        program=["C:\\py.exe", "-m", "trader", "watchdog"],
+        project_root=tmp_path,
+        interval_s=300,
+    )
+    assert "<Interval>PT5M</Interval>" in xml and "LogonTrigger" not in xml
+    calls = []
+    r = installer.install(
+        dry_run=True,
+        run=lambda cmd, **kw: calls.append(cmd),
+        platform="win32",
+        home=tmp_path,
+        program=["C:\\py.exe", "-m", "trader", "watchdog"],
+        project_root=tmp_path / "proj",
+        kind="watchdog",
+    )
+    assert r["path"] == tmp_path / "trader-watchdog.xml" and "trader-watchdog" in r["command"]
+    r2 = installer.uninstall(
+        run=lambda cmd, **kw: calls.append(cmd), platform="darwin", home=tmp_path, kind="watchdog"
+    )
+    assert r2["path"].name == "com.trader.watchdog.plist"

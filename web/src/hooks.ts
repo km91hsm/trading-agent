@@ -175,7 +175,28 @@ export function useLoad<T>(fn: () => Promise<T> | null, deps: unknown[]): Loaded
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [n, setN] = useState(0);
+  const stale = useRef(false);
+  // 가려진 탭은 다시 읽지 않고(탭이 돌아오면 즉시), 전역 'trader:refresh' 이벤트로도 다시 읽는다 (Phase 23 G)
   useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState === "visible" && stale.current) {
+        stale.current = false;
+        setN((x) => x + 1);
+      }
+    };
+    const onRefresh = () => setN((x) => x + 1);
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("trader:refresh", onRefresh);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("trader:refresh", onRefresh);
+    };
+  }, []);
+  useEffect(() => {
+    if (typeof document !== "undefined" && document.visibilityState === "hidden" && n > 0) {
+      stale.current = true; // 돌아오면 한 번에 읽는다
+      return;
+    }
     const p = fn();
     if (!p) {
       // 호출 조건이 빠지면(계좌 미선택 등) 이전 결과·오류를 모두 지운다

@@ -281,3 +281,22 @@ def test_regime_body_uses_foreign_flow_only_when_enabled(conn):
     deps.market_client.fail = {"get_investor_kr"}
     out = daemon._regime_body(deps, "KR")
     assert out["signals"]["flow_weak"] is False
+
+
+def test_monitor_body_runs_reprice_after_open_once(conn, monkeypatch):
+    """Phase 23 B: monitor 틱이 개장 after_min 뒤 재호가를 1회 부른다(그 전엔 대기)."""
+    from trader.orchestrator import reprice as reprice_mod
+
+    early = datetime(2026, 10, 23, 0, 10, tzinfo=UTC)  # 09:10 KST
+    deps = _hedge_deps(conn, closes=[100] * 40)
+    deps.settings = Settings()
+    deps.now = lambda: early
+    assert daemon._reprice_body(deps, "KR") == {"skipped": "개장 뒤 대기"}
+    deps.now = lambda: datetime(2026, 10, 23, 0, 40, tzinfo=UTC)  # 09:40 KST
+    out = daemon._reprice_body(deps, "KR")
+    assert out == {"repriced": [], "skipped": []}
+    assert control.get_flag(conn, reprice_mod.done_key("KR", date(2026, 10, 23))) is True
+    assert daemon._reprice_body(deps, "KR") == {"skipped": "오늘 이미 실행"}
+    deps.dry_run = True
+    control.set_flag(conn, reprice_mod.done_key("KR", date(2026, 10, 23)), None)
+    assert daemon._reprice_body(deps, "KR") == {"skipped": "비활성"}

@@ -107,6 +107,18 @@ class ScalpCfg(BaseModel):
     )  # 단타 일일 실현손실(NAV 비중 합) 한도
 
 
+class RepriceCfg(BaseModel):
+    """아침 미체결 재호가(Phase 23 B): 개장 뒤 after_min 분에 운영일 1회, 오늘 낸 지정가 미체결
+    주문을 취소하고 같은 결정으로 현재가 지정가 재제출(게이트 재통과). 원 지정가 대비
+    max_chase_pct 넘게 불리하면 재제출하지 않고 알린다. dry_run·off 계좌는 제외."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    after_min: int = Field(default=30, ge=1, le=300)
+    max_chase_pct: float = Field(default=0.01, gt=0, le=0.1)
+
+
 class RiskLimits(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -118,6 +130,7 @@ class RiskLimits(BaseModel):
     max_sector_pct: float = Field(default=0.40, gt=0, le=1)  # 같은 섹터 합계 상한 (BUY/ADD 뒤)
     # 보유기간 프로필(Phase 23 T): short(≤10일)·mid(11~40)·long(>40) 셋이 전부 있어야 한다
     horizon_profiles: dict[str, HorizonProfile] = Field(default_factory=_default_profiles)
+    reprice: RepriceCfg = Field(default_factory=RepriceCfg)  # 아침 미체결 재호가(Phase 23 B)
 
     @field_validator("horizon_profiles")
     @classmethod

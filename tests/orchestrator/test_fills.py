@@ -297,3 +297,26 @@ def test_us_early_close_day_closes_at_13_et():
     assert not fm._session_closed(
         "US", _date(2026, 11, 30), datetime(2026, 11, 30, 18, 30, tzinfo=UTC)
     )
+
+
+def test_ambiguous_unknown_candidates_are_not_attached_and_flagged(conn):
+    """Phase 23 B: 같은 날·종목·방향의 unknown 주문이 둘이면 어느 것의 체결인지 몰라 붙이지 않고
+    external 행으로 적재 + 알림 1회 + control 플래그."""
+    from trader.control import control
+
+    acct = make_account("paper-main", "paper", "auto")
+    for _ in range(2):
+        _order_with(conn, status="unknown", order_no=None, created_at="2026-10-09T00:10:00+00:00")
+    sent = []
+    notifier = type("N", (), {"send": lambda self, t, **k: sent.append(t) or True})()
+    broker = FakeBroker(acct, fills={("KR", D): [_fill("0000117057")]})
+    in_session = lambda: datetime(2026, 10, 9, 2, 0, tzinfo=UTC)  # noqa: E731 - 11:00 KST
+    fills_mod.sync_fills(conn, broker, acct, D, notifier=notifier, now=in_session)
+    rows = conn.execute("SELECT status, order_no, mode FROM orders ORDER BY id").fetchall()
+    assert [r["status"] for r in rows] == ["unknown", "unknown", "filled"]
+    assert rows[2]["mode"] == "external"
+    flag = control.get_flag(conn, "fill_ambiguous:KR:2026-10-09")
+    assert flag["candidates"] == 2 and flag["cases"][0]["order_ids"] == [1, 2]
+    assert len(sent) == 1 and "[체결 매칭 모호]" in sent[0]
+    fills_mod.sync_fills(conn, broker, acct, D, notifier=notifier, now=in_session)  # 재알림 없음
+    assert len(sent) == 1

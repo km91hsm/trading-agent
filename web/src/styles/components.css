@@ -804,3 +804,33 @@ label.check {
 tr[data-over] .pend {
   color: var(--pending);
 }
+
+/* 운영 점검 특보판 (Phase 23 A): 정상은 괘선 한 줄, 경보는 괘선·제목을 위험색으로 */
+.rule-line {
+  border-top: 1px solid var(--rule);
+  border-bottom: 1px solid var(--rule);
+  padding: 4px 0;
+  margin: 0 0 12px;
+  font-size: 0.9em;
+}
+.sec.danger .sec-h {
+  color: var(--danger);
+}
+tr.danger td:first-child {
+  box-shadow: inset 3px 0 0 var(--danger);
+}
+
+/* 결정 추적 (Phase 23 E) */
+.trace {
+  margin-top: 12px;
+  border-top: 1px solid var(--rule);
+  padding-top: 8px;
+}
+.trace-steps dt {
+  font-weight: 600;
+  margin-top: 8px;
+}
+.trace-steps dd {
+  margin: 2px 0 0 12px;
+  font-size: 0.92em;
+}

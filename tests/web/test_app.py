@@ -242,3 +242,72 @@ def test_portfolio_positions_carry_horizon_profile(client, deps, conn):
     by = {p["ticker"]: p for p in r["snapshot"]["positions"]}
     assert by["005930"]["horizon"] == "short" and by["005930"]["horizon_days"] == 5
     assert by["000660"]["horizon"] is None
+
+
+def test_system_ops_endpoint_live_and_cached(client, conn):
+    """Phase 23 A: /api/system/ops 는 데몬 결과가 없으면 지금 판정, 있으면 그것을 돌려준다."""
+    from trader.control import control
+    from trader.ops import health
+
+    r = client.get("/api/system/ops").json()
+    assert r["source"] == "live" and r["level"] in health.LEVELS and "headline" in r
+    control.set_flag(
+        conn,
+        health.RESULT_FLAG,
+        {
+            "level": "ok",
+            "label": "정상",
+            "at": "2026-10-24T01:00:00+00:00",
+            "items": [],
+            "actions": [],
+            "areas": {},
+        },
+    )
+    conn.commit()
+    r2 = client.get("/api/system/ops").json()
+    assert r2["source"] == "daemon" and r2["headline"].startswith("점검 정상")
+    assert client.get("/api/system/ops", params={"live": "true"}).json()["source"] == "live"
+
+
+def test_decision_trace_endpoint(client, conn):
+    """Phase 23 E: /api/decisions/{id}/trace, 없으면 404."""
+    from datetime import date
+
+    from helpers_agents import ok_decision
+
+    from trader.ledger import repo
+
+    did = repo.ingest_checkpoint(
+        conn, date(2026, 10, 9), "KR", "005930", "30_decision", {"data": ok_decision()}
+    )
+    conn.commit()
+    r = client.get(f"/api/decisions/{did}/trace")
+    assert r.status_code == 200 and r.json()["decision"]["id"] == did
+    assert r.json()["analysts"] == [] and "stages" in r.json()
+    assert client.get("/api/decisions/999/trace").status_code == 404
+
+
+def test_csv_format_for_orders_decisions_positions(client, conn):
+    """Phase 23 G: ?format=csv 는 같은 표를 CSV(BOM) 로."""
+    from datetime import date
+
+    from helpers_agents import ok_decision
+
+    from trader.ledger import repo
+
+    repo.ingest_checkpoint(
+        conn, date(2026, 10, 9), "KR", "005930", "30_decision", {"data": ok_decision()}
+    )
+    conn.commit()
+    r = client.get("/api/orders", params={"account_id": "paper-main", "format": "csv"})
+    assert r.status_code == 200 and r.headers["content-type"].startswith("text/csv")
+    assert r.text.startswith("﻿") and "attachment" in r.headers["content-disposition"]
+    r2 = client.get("/api/decisions", params={"format": "csv"})
+    lines = r2.text.lstrip("﻿").splitlines()
+    assert lines[0].startswith("id,date,market,ticker,action") and "005930" in lines[1]
+    r3 = client.get(
+        "/api/portfolio", params={"account_id": "paper-main", "market": "KR", "format": "csv"}
+    )
+    assert r3.status_code == 200 and r3.headers["content-type"].startswith("text/csv")
+    # 기본은 그대로 JSON
+    assert isinstance(client.get("/api/decisions").json(), list)
