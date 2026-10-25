@@ -112,6 +112,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - 셸 스크립트(.sh/.bat/.ps1)를 추가하지 않는다. 훅·설치·유틸·빌드(`packaging/build.py`)는 전부 파이썬.
 - 같은 헬퍼를 모듈마다 다시 쓰지 않는다. 정본 위치: KIS 응답 파싱 `broker/_parse`(dec·to_int·rows), 수집 문자열 `sources/base`(strip_tags·utc_now), z-score `ml/features.zscore`, 동종업 상대 비율 `ml/features.add_sector_relative`, 학습 데이터 준비 `ml/train.prepare_dataset`(train·tune 공용), 하루 경계 `ledger/repo.day_bounds`, run 경로·체크포인트 봉투 `orchestrator/run_store`(market_dir·checkpoint_payload), 왕복 비용 `risk/costs.round_trip_bp`, 호가단위 `risk/ticks.quantize_price`, 죽은 주문 상태 `ledger/repo.DEAD_STATUSES`(dead_status_sql), 로그 파일 핸들러 `logging_setup.file_handler`, 승인 한 줄 `notify/commands.approval_line`, 재평가 트리거 표시 `resume.handled_marker`. CLI 의 설정 오류 처리는 `cli._config_errors` 데코레이터(인자 파싱 오류는 `ConfigError` 로 바꿔 올린다), 명령 부트스트랩(로깅·설정·계좌·시크릿·스키마 적용 원장 연결)은 `cli._boot(...)` 하나다. 결정 행의 json→data 복원은 `repo._hydrate_decision`(`get_decision(hydrate=True)`·`latest_decision`).
 - `state/` 파일을 직접 편집하지 않는다 (STATUS.md 는 `uv run trader status` 로만 갱신).
+- 저장소는 공개다. 외부 사이트에서 수집한 원문(기사 제목·본문·리포트 텍스트)을 테스트 fixture 로 커밋하지 않는다 — 구조만 본뜬 합성 데이터를 쓴다(예: `tests/sources/fixtures/saveticker/`).
 - 커뮤니티·뉴스 수집기의 기본 on/off 는 스펙 §0.3 정책을 따른다. 사용자 결정 없이 off 소스를 켜지 않는다.
 
 ## 코딩 규칙
