@@ -100,6 +100,57 @@ def icon_image(icon_dir: Path, *, dark_menubar: bool):
     return Image.open(icon_dir / name)
 
 
+def watch_signals(on_signal: Callable[[int], None], signals) -> Callable[[], None]:
+    """메인 스레드가 AppKit 런루프(icon.run)에 막혀 있어도 시그널을 받는다.
+
+    파이썬 핸들러는 메인 스레드가 바이트코드를 돌릴 때만 실행되므로, C 레벨 핸들러가 쓰는
+    wakeup fd(소켓쌍)를 감시 스레드가 읽어 시그널 번호를 `on_signal` 로 넘긴다. 핸들러는
+    호출자가 `signal.signal` 로 따로 설치해야 한다. 반환값은 해제 함수(이전 wakeup fd 복원)."""
+    import signal
+    import socket
+
+    wanted = {int(s) for s in signals}
+    r, w = socket.socketpair()
+    w.setblocking(False)
+    try:
+        prev = signal.set_wakeup_fd(w.fileno(), warn_on_full_buffer=False)
+    except ValueError:  # 메인 스레드가 아니면 설정할 수 없다
+        r.close()
+        w.close()
+        return lambda: None
+
+    def watch() -> None:
+        while True:
+            try:
+                data = r.recv(64)
+            except OSError:
+                return
+            if not data:
+                return
+            for signum in data:
+                if signum in wanted:
+                    try:
+                        on_signal(signum)
+                    except Exception:  # noqa: BLE001 - 감시 스레드는 죽지 않는다
+                        logger.exception("시그널 처리 실패")
+
+    threading.Thread(target=watch, name="trader-signal-watch", daemon=True).start()
+
+    def release() -> None:
+        try:
+            signal.set_wakeup_fd(prev)
+        except ValueError:
+            pass
+        w.close()
+        try:
+            r.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        r.close()
+
+    return release
+
+
 def run_tray(
     *,
     state_fn: Callable[[], TrayState],

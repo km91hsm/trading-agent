@@ -1134,6 +1134,10 @@ def _run_with_tray(deps, daemon_mod, *, url: str, finished: threading.Event) -> 
             signal.signal(sig, on_signal)
         except (ValueError, OSError):
             pass
+    # 메인 스레드는 icon.run()(AppKit 런루프)에 막혀 위 핸들러가 돌지 않는다 → wakeup fd 감시
+    release_signals = tray.watch_signals(
+        lambda signum: on_signal(signum, None), (signal.SIGINT, signal.SIGTERM)
+    )
 
     conn_factory = deps.conn_factory
     try:
@@ -1149,9 +1153,11 @@ def _run_with_tray(deps, daemon_mod, *, url: str, finished: threading.Event) -> 
     except tray.TrayUnavailable as e:
         typer.echo(f"트레이 없이 실행합니다 ({e}). 종료는 Ctrl+C.")
         worker.join()
+        release_signals()
         return result
     shutdown()
     worker.join()
+    release_signals()
     return result
 
 

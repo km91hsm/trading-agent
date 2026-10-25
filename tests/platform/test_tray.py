@@ -1,5 +1,12 @@
 """트레이/메뉴바: 메뉴 모델과 제목은 순수 함수(pystray 없이 검사), 상태는 원장에서 읽는다."""
 
+import os
+import signal
+import sys
+import threading
+
+import pytest
+
 from trader.platform import tray
 
 
@@ -51,3 +58,34 @@ def test_read_state_from_ledger(conn):
     st = tray.read_state(lambda: conn, "http://127.0.0.1:8787", close=False)
     assert st.paused is True and st.pending_approvals == 1 and st.last_error == "세션 실패"
     assert st.web_url == "http://127.0.0.1:8787"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX 시그널")
+def test_watch_signals_delivers_while_python_handler_cannot_run():
+    """트레이 모드의 메인 스레드는 AppKit 런루프에 막혀 파이썬 핸들러가 돌지 않는다 →
+    wakeup fd 를 읽는 감시 스레드가 시그널 번호를 넘겨야 한다."""
+    prev = signal.signal(signal.SIGTERM, lambda *_: None)
+    got: list[int] = []
+    seen = threading.Event()
+
+    def on_signal(signum: int) -> None:
+        got.append(signum)
+        seen.set()
+
+    release = tray.watch_signals(on_signal, (signal.SIGTERM,))
+    try:
+        os.kill(os.getpid(), signal.SIGTERM)
+        assert seen.wait(5.0)
+        assert got == [signal.SIGTERM]
+    finally:
+        release()
+        signal.signal(signal.SIGTERM, prev)
+    assert signal.set_wakeup_fd(-1) == -1  # 해제가 이전 값(-1)을 복원했다
+
+
+def test_watch_signals_off_main_thread_is_noop():
+    out: list = []
+    t = threading.Thread(target=lambda: out.append(tray.watch_signals(lambda s: None, ())))
+    t.start()
+    t.join()
+    out[0]()  # 예외 없이 no-op 해제
