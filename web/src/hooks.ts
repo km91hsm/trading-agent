@@ -130,12 +130,12 @@ export function useAppState(): AppState {
     );
   }, [reloadAccounts]);
 
-  // SSE 가 끊긴 동안은 60초마다 /api/health 로 서버 생존을 확인하고, 살아 있으면 tick 을 올려
+  // SSE 가 끊긴 동안은 60초마다 /api/system/health 로 서버 생존을 확인하고, 살아 있으면 tick 을 올려
   // 페이지가 다시 읽게 한다(폴링으로 강등). 연결이 돌아오면 멈춘다.
   useEffect(() => {
     if (connected) return;
     const id = window.setInterval(() => {
-      getJson<{ ok: boolean }>("/api/health")
+      getJson<{ ok: boolean }>("/api/system/health")
         .then(() => setTick((t) => t + 1))
         .catch(() => {
           /* 서버가 없으면 끊김 표시 유지 */

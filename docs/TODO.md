@@ -309,7 +309,7 @@
 - [x] C3 제출 시 재시세: `tools._requote`(`00_inputs.meta.asof` 가 `REQUOTE_AFTER_S`=600s 넘고 `ToolContext.market_client` 있으면 현재가 재조회 → 게이트 수량·손절 검사, 판정 note "재시세 a→b", 실패는 입력가), `executor.execute(extra_note=)` (2026-10-25)
 - [x] C4 야간 KIS 대조: `orchestrator/reconcile.py`(브로커 보유 vs 원장 스냅샷, 마감 뒤 미정리 주문 → `[대조 불일치]` 알림·`control.reconcile:<acct>:<market>:<date>`·스냅샷을 KIS 값으로 보정, 주문 행 불변), 데몬 cron `<시장>_reconcile`(`schedule.yaml reconcile` 기본 16:40 현지), 큐 kind `reconcile`(가벼움) (2026-10-25)
 - [x] C5 헤지: `hedge.switch_instruments`(기본 끔, 판정과 보유 상품이 `switch_streak_days` 연속 어긋나면 전량 매도 → 다음 운영일 재진입, `hedge_switch_streak:<market>`), 국면 보조 지표 `flow_weak`(`hedge.flow_signal` 기본 끔, KR 지수 proxy 외인 20일·5일 순매수 합 음수, `regime.flow_weak`, `count_text` '+수급') (2026-10-25)
-- [x] C6 웹: SSE 끊김 배지 '실시간 끊김'(`events.ts` onStatus 리더→탭 중계, `AppState.connected`) + 끊긴 동안 60초 `/api/health` liveness 폴링으로 tick 갱신 (2026-10-25)
+- [x] C6 웹: SSE 끊김 배지 '실시간 끊김'(`events.ts` onStatus 리더→탭 중계, `AppState.connected`) + 끊긴 동안 60초 `/api/system/health` liveness 폴링으로 tick 갱신 (2026-10-25)
 - [x] C7 세이브티커 `events.upcoming`(7일 경제 일정, `saveticker.upcoming`)·`schema_version` 경고 1회, `MAX_PAST` 정본 `sources/base`, 메모리 브레이커 모의 계좌 NAV 합산(`executor._paper_nav_series`), 스크리너 `context`(국면·시장 세션 제안, `screener.screen_context`), 오늘 페이지 '시장 단계' 블록(`/api/market-checkpoint`) (2026-10-25)
 - [x] 완료 기준(코드): `uv run pytest`·`ruff`·`npm run typecheck && npm test && npm run build` 통과, PR [#20](https://github.com/km91hsm/trading-agent/pull/20) main 머지 (2026-10-25)
 - [ ] 실기(사용자 확인 대기): 첫 운영일 16:40 KST 뒤 `[대조 불일치]` 알림이 없거나(정상) 있으면 그 내용이 KIS 앱 잔고와 맞는지; `/api/today` 의 '오늘 스캔'·'시장 단계' 블록; 텔레그램 `/run scan_analyze KR` 이 대기열에 들고 데몬이 실행하는지; 아침 scan 뒤 10분 넘게 지난 종목의 `40_risk_check` note 에 "재시세" 가 붙는지
