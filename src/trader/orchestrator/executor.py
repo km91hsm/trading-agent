@@ -69,6 +69,18 @@ def _sector_of(ctx: ExecContext, market: str) -> Callable[[str], str | None] | N
     return lambda t: sectors.sector_of(t, market)  # type: ignore[arg-type]
 
 
+def _agent_tilt(ctx: ExecContext, market: str, today: date) -> int:
+    """Phase 22: 오늘 시장 세션 제안의 기울기(+1 RISK_ON / −1 RISK_OFF). `hedge.agent_gate` 가 꺼져
+    있거나 확신이 `agent_min_confidence` 미만이면 0(기존 국면 한도 그대로)."""
+    cfg = ctx.settings.hedge
+    if not cfg.enabled or not getattr(cfg, "agent_gate", False):
+        return 0
+    from trader.orchestrator.tools import market_view_today
+
+    view = market_view_today(ctx.conn, market, today)
+    return stance_mod.tilt_of(view, min_confidence=cfg.agent_min_confidence)
+
+
 def regime_state(ctx: ExecContext, market: str) -> str:
     """국면(bull|neutral|bear). 헤지 기능이 꺼져 있거나 판정 기록이 없으면 bull."""
     if not ctx.settings.hedge.enabled:
@@ -364,6 +376,7 @@ def execute(
     )
     regime = regime_state(ctx, market)
     hedge_cfg = ctx.settings.hedge
+    agent_tilt = _agent_tilt(ctx, market, date)
     hedge_tickers = frozenset(hedge_cfg.tickers(market)) if hedge_cfg.enabled else frozenset()
     sector_of = _sector_of(ctx, market)
     for account in ctx.accounts:
@@ -394,6 +407,7 @@ def execute(
                     rl_eligible=rl_eligible,
                     rl_base=rl_base,
                     extra_note=extra_note,
+                    agent_tilt=agent_tilt,
                 )
             )
         except OrderBookkeepingError as e:  # 접수 뒤 기록 실패: 다른 계좌를 마친 뒤 올린다
@@ -443,6 +457,7 @@ def _execute_account(
     rl_eligible: bool,
     rl_base: _RlBase,
     extra_note: str | None = None,
+    agent_tilt: int = 0,
 ) -> dict:
     """계좌 하나의 판정·기록·(모드별) 주문. 반환은 results 항목 하나."""
     if True:  # 들여쓰기 유지(execute 루프 본문을 그대로 옮김)
@@ -483,6 +498,7 @@ def _execute_account(
                 regime=regime,
                 is_hedge=is_hedge,
                 hedge_max_weight=hedge_cfg.max_weight_pct if is_hedge else None,
+                agent_tilt=agent_tilt,
             )
         except (KisApiError, ValueError) as e:
             verdict = rules.RiskVerdict(

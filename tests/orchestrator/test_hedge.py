@@ -418,3 +418,33 @@ def test_switch_instruments_sells_after_streak_then_reenters_next_day(project, c
         ctx, market="KR", today=date(2026, 10, 30), cfg=on, quote_fn=lambda i: Decimal("3000")
     )
     assert out["action"] == "none" and control.get_flag(conn, hedge.switch_key("KR")) is None
+
+
+def test_agent_gate_opens_bear_buy_when_strategist_risk_on(project, conn):
+    """Phase 22: hedge.agent_gate — 오늘 제안이 RISK_ON(확신 ≥ 0.7)이면 bear 에서도 신규 매수가
+    10%·2종목 한도로 통과한다. 확신이 낮거나 agent_gate=false 면 기존대로 거부."""
+    ctx = _ctx(conn)
+    _set_regime(conn, "bear", 2)
+    dec = Decision(**ok_decision(target_weight=0.2))
+    repo.ingest_checkpoint(conn, D, "KR", "005930", "30_decision", {"data": dec.model_dump()})
+    view = {
+        "date": D.isoformat(),
+        "stance": "RISK_ON",
+        "confidence": 0.8,
+        "hedge_weight": 0.0,
+        "leveraged": False,
+    }
+    control.set_flag(conn, "market_view:KR", view)
+    res = executor.execute(ctx, dec, date=D, market="KR", price=Decimal("70000"), dry_run=True)
+    paper = next(r for r in res if r["account_id"] == "paper-main")
+    assert paper["approved"] and paper["qty"] == 14  # 10% × 1천만 / 7만
+    assert any("조건부 허용" in s for s in paper["reasons"])
+    # 확신 부족 → 거부
+    control.set_flag(conn, "market_view:KR", {**view, "confidence": 0.5})
+    res = executor.execute(ctx, dec, date=D, market="KR", price=Decimal("70000"), dry_run=True)
+    assert not next(r for r in res if r["account_id"] == "paper-main")["approved"]
+    # agent_gate 끔 → 거부
+    control.set_flag(conn, "market_view:KR", view)
+    ctx.settings = Settings(hedge=CFG.model_copy(update={"agent_gate": False}))
+    res = executor.execute(ctx, dec, date=D, market="KR", price=Decimal("70000"), dry_run=True)
+    assert not next(r for r in res if r["account_id"] == "paper-main")["approved"]

@@ -315,3 +315,9 @@
 - [ ] 실기(사용자 확인 대기): 첫 운영일 16:40 KST 뒤 `[대조 불일치]` 알림이 없거나(정상) 있으면 그 내용이 KIS 앱 잔고와 맞는지; `/api/today` 의 '오늘 스캔'·'시장 단계' 블록; 텔레그램 `/run scan_analyze KR` 이 대기열에 들고 데몬이 실행하는지; 아침 scan 뒤 10분 넘게 지난 종목의 `40_risk_check` note 에 "재시세" 가 붙는지
 - [ ] 결정 대기(사용자): 2~4주 데이터 뒤 `hedge.flow_signal`(외인 수급 지표)·`hedge.switch_instruments`(상품 교체)를 켤지, `jobs.PRIORITY` 에 다른 kind 를 올릴지
 - [ ] 미구현(근거 부족): 국면 지표에 신용잔고 — KIS 공식 API 에서 일별 신용잔고 조회 경로를 확인한 뒤 `regime.flow_weak` 옆에 추가
+
+## Phase 22 전략가 기울기 게이트 — 에이전트 몫 확대 (사용자 요청 2026-10-25)
+- [x] `hedge.agent_gate`(기본 켬)·`stance.tilt_of/limits_for_regime(tilt)`·`rules.evaluate(agent_tilt=)`·`executor._agent_tilt`: neutral+RISK_ON 20%·4, neutral+RISK_OFF 10%·2, bull+RISK_OFF neutral 한도, bear+RISK_ON 신규 매수 10%·2 조건부 허용(헤지·손절 무관, 설정 한도 초과 없음), trader.md 갱신 (2026-10-25)
+- [x] 완료 기준(코드): `uv run pytest`·`ruff`·웹 검증 통과 (2026-10-25)
+- [ ] 결정 대기(사용자): 2~4주 뒤 `regime.summary.scorecard`(전략가 적중률)이 50% 아래면 `hedge.agent_gate: false`; 반대로 좋으면 `TILT_UP` 을 25%·5(= bull) 까지 넓힐지
+- [ ] 이연: RL 사이저 `mode: apply`(비중 결정 모델 위임)는 `rl promote` 뒤 `ml.yaml` 수동 전환 그대로 — 자동 승격 없음 원칙 유지

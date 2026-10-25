@@ -86,6 +86,10 @@ class HedgeCfg(BaseModel):
     # RISK_ON 은 지표가 bear_min_signals 와 같을 때 하루 진입 보류. 둘 다 confidence 기준 이상만
     agent_signal: bool = True
     agent_min_confidence: float = Field(default=0.7, ge=0, le=1)
+    # Phase 22: 전략가 제안(확신 ≥ agent_min_confidence)이 국면 한도를 한 칸 옮긴다 —
+    # neutral+RISK_ON 20%·4, neutral+RISK_OFF 10%·2, bull+RISK_OFF → neutral 한도, bear+RISK_ON →
+    # 신규 매수를 10%·2 한도로 조건부 허용. 헤지·손절은 무관. 끄면 Phase 17 국면 한도 그대로
+    agent_gate: bool = True
     # Phase 21: KR 외인 수급(지수 proxy 20일·5일 순매수 합 모두 음수) 을 보조 지표로 센다. 기본 끔
     flow_signal: bool = False
     # Phase 21: bear 유지 중 보유 상품(−1x/−2x)이 판정과 다른 날이 switch_streak_days 연속이면 전량
