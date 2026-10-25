@@ -27,7 +27,8 @@ AGENTS: tuple[str, ...] = (
     "trader",
 )
 ORCHESTRATOR = "orchestrator"
-SCREEN_AGENTS: tuple[str, ...] = ("screener",)
+# Phase 19: scout(뉴스 발굴) → screener(선정) — 같은 screen 세션 안의 두 단계
+SCREEN_AGENTS: tuple[str, ...] = ("scout", "screener")
 REFLECT_AGENTS: tuple[str, ...] = ("reflector",)
 # Phase 18 시장 세션: 거시 애널리스트 1 + 리서처 토론 + 전략가(헤지 비중 제안)
 MARKET_AGENTS: tuple[str, ...] = (
@@ -94,6 +95,7 @@ def schema_model_for(name: str) -> type | None:
     return {
         "trader": schemas.Decision,
         "screener": schemas.Screened,
+        "scout": schemas.Discovered,
         "reflector": schemas.Reflection,
         "strategist": schemas.HedgeProposal,
     }.get(name)

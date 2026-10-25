@@ -605,8 +605,10 @@ def _tool_ctx():
     # dry_run 도 잔고로 판정은 한다(주문·승인 요청만 생략). 브로커 생성은 네트워크를 쓰지 않는다.
     brokers = {b.account.id: b for b in _build_brokers(secrets, accounts)}
     try:
-        holiday_fn = _build_market(secrets).is_holiday  # 7일 캐시, 보유 거래일 계산용
+        market_client = _build_market(secrets)
+        holiday_fn = market_client.is_holiday  # 7일 캐시, 보유 거래일 계산용
     except Exception:  # noqa: BLE001 - 실전 앱키가 없으면 휴장일 없이 평일 수로 계산
+        market_client = None
         holiday_fn = None
     return ToolContext(
         settings=config.load_settings(),
@@ -616,6 +618,7 @@ def _tool_ctx():
         notifier=make_notifier(secrets),
         dry_run=dry_run,
         holiday_fn=holiday_fn,
+        market_client=market_client,
     )
 
 
@@ -1487,6 +1490,31 @@ def tool_submit_market_view(
     _tool_run(tools.submit_market_view, market=market, date=date, payload=_payload_arg(json_text))
 
 
+scan_tool_app = typer.Typer(help="scan 세션 도구 (Phase 19 발굴)", no_args_is_help=True)
+tool_app.add_typer(scan_tool_app, name="scan")
+
+
+@scan_tool_app.command("discovery-inputs")
+def tool_scan_discovery_inputs(
+    market: str = typer.Option(..., "--market"),
+    date: str = typer.Option(..., "--date"),
+) -> None:
+    from trader.orchestrator import tools
+
+    _tool_run(tools.discovery_inputs, market=market, date=date)
+
+
+@tool_app.command("submit-discovery")
+def tool_submit_discovery(
+    market: str = typer.Option(..., "--market"),
+    date: str = typer.Option(..., "--date"),
+    json_text: str | None = typer.Option(None, "--json", help="Discovered JSON (없으면 stdin)"),
+) -> None:
+    from trader.orchestrator import tools
+
+    _tool_run(tools.submit_discovery, market=market, date=date, payload=_payload_arg(json_text))
+
+
 @tool_app.command("submit-screen")
 def tool_submit_screen(
     market: str = typer.Option(..., "--market"),
@@ -1552,6 +1580,7 @@ def scan(
                 watch=watch,
                 asof=when,
                 universe=universe,
+                discovery=True,
             )
         finally:
             conn.close()
@@ -1562,6 +1591,7 @@ def scan(
             "picks": r["picks"],
             "analyze_targets": r["analyze_targets"],
             "session": r["session"],
+            "discovery": r.get("discovery"),
             "cap_hit": cap_hit,
             "ml_model": ml[1] if ml else None,
         }

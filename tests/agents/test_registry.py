@@ -95,7 +95,7 @@ def test_agents_json_appends_schema_when_md_lacks_it():
 
 
 def test_common_rules_identical_prefix_across_all_agents():
-    """공통 규칙 6문장은 괄호 보충 전까지 모든 md(12개)에서 같아야 한다."""
+    """공통 규칙 6문장은 괄호 보충 전까지 모든 md(13개)에서 같아야 한다."""
     import re
 
     names = list(
@@ -109,7 +109,7 @@ def test_common_rules_identical_prefix_across_all_agents():
             ]
         )
     )
-    assert len(names) == 12
+    assert len(names) == 13
     canon = None
     for name in names:
         body = load_agent(name, REPO_AGENTS).prompt
@@ -138,3 +138,15 @@ def test_market_agents_and_hedge_proposal_schema():
     p = orchestrator_prompt(Settings(), REPO_AGENTS)
     assert "## market 모드" in p and "HedgeProposal 스키마" in p
     assert "submit-market-view" in p
+
+
+def test_scout_agent_and_discovered_schema():
+    """Phase 19 발굴: screen 세션은 scout → screener 두 단계, scout 에 Discovered 스키마 부착."""
+    assert registry.SCREEN_AGENTS == ("scout", "screener")
+    j = agents_json(registry.SCREEN_AGENTS, Settings(), REPO_AGENTS)
+    assert '"candidates"' in j["scout"]["prompt"] and '"tier"' in j["scout"]["prompt"]
+    assert j["scout"]["prompt"].count("스키마:") == 1
+    assert "유니버스" in j["scout"]["prompt"] and "max_listed" in j["scout"]["prompt"]
+    assert "discovery" in load_agent("screener", REPO_AGENTS).prompt
+    o = load_agent("orchestrator", REPO_AGENTS).prompt
+    assert "tool scan discovery-inputs" in o and "submit-discovery" in o

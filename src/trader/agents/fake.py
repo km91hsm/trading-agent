@@ -107,9 +107,57 @@ def run_fake_reflect(
 def run_fake_screen(
     ctx: tools.ToolContext, *, market: str, date: date, candidates: list[dict]
 ) -> list[str]:
-    """screen 모드: 점수 있는 후보 상위 5개를 그대로 고른다."""
-    scored = [c for c in candidates if c.get("score") is not None] or candidates
-    picks = [{"ticker": c["ticker"], "reason": "FAKE: 정량 상위"} for c in scored[:5]]
+    """screen 모드: `_discovery_inputs` 가 있으면 유니버스 첫 종목 1개를 발굴(scout 흉내)해 병합한
+    뒤, 점수 있는 후보(발굴 후보 포함) 상위 5개를 고른다."""
+    from trader.orchestrator.run_store import market_dir
+
+    di = (read_checkpoint(market_dir(date, market, ctx.state), "_discovery_inputs") or {}).get(
+        "data"
+    ) or {}
+    uni_by = {u.get("ticker"): u for u in di.get("universe") or []}
+    # 정량 점수 순으로 첫 유니버스 종목 하나만 발굴한다(거른 종목을 되살리지 않아 순서가 유지된다)
+    first = next(
+        (
+            uni_by[c["ticker"]]
+            for c in candidates
+            if c.get("score") is not None and c["ticker"] in uni_by
+        ),
+        None,
+    )
+    if first is not None:
+        r = tools.submit_discovery(
+            ctx,
+            market=market,
+            date=date,
+            payload={
+                "candidates": [
+                    {
+                        "name": first.get("name") or first["ticker"],
+                        "ticker": first["ticker"],
+                        "market": market,
+                        "tier": "universe",
+                        "catalyst": "FAKE 발굴: 뉴스 촉매",
+                        "source_ids": ["market_notes"],
+                        "confidence": 0.6,
+                    }
+                ],
+                "notes": ["FAKE 모드"],
+            },
+            agent="scout",
+            call_meta=_call("scout"),
+        )
+        if r["ok"]:
+            candidates = r["candidates"]
+    scored = [
+        c for c in candidates if c.get("score") is not None or c.get("discovery")
+    ] or candidates
+    picks = [
+        {
+            "ticker": c["ticker"],
+            "reason": "FAKE: 뉴스 발굴" if c.get("discovery") else "FAKE: 정량 상위",
+        }
+        for c in scored[:5]
+    ]
     r = tools.submit_screen(
         ctx,
         market=market,

@@ -14,6 +14,7 @@ from trader.control.control import split_market
 from trader.orchestrator import run_store
 from trader.orchestrator import session as session_mod
 from trader.orchestrator.run_store import read_checkpoint
+from trader.platform import paths
 
 logger = logging.getLogger("trader.scan")
 
@@ -38,11 +39,50 @@ def run_screen(
     asof: datetime | None = None,
     cancel: Any | None = None,
     universe: Any | None = None,
+    discovery: bool = False,
 ) -> dict:
-    """{picks, analyze_targets, session}. analyze_targets = picks + 보유종목 + watch (중복 제거).
-    헤지 ETF(국면 규칙이 사고판다)는 분석 대상이 아니고, US 보유의 거래소는 잔고 응답
-    (`Position.exchange`) → 후보 → universe.us 순으로 찾는다."""
+    """{picks, analyze_targets, session, discovery}. analyze_targets = picks + 보유종목 + watch
+    (중복 제거). 헤지 ETF(국면 규칙이 사고판다)는 분석 대상이 아니고, US 보유의 거래소는 잔고 응답
+    (`Position.exchange`) → 후보 → 발굴(`_discovery`) → universe.us 순으로 찾는다.
+    discovery=True 면 세션 앞에서 scout 입력(`_discovery_inputs`)을 만들어 세션 안의 발굴 단계가
+    돌 수 있게 한다(세션 수 불변). 실패는 경고만 — 발굴 없이 스크리닝한다."""
     session_result = None
+    held_tickers: list[str] = []
+    if brokers:
+        for a in accounts:
+            if market in a.markets and a.id in brokers:
+                try:
+                    held_tickers += [p.ticker for p in brokers[a.id].get_positions(market)]
+                except Exception as e:  # noqa: BLE001
+                    logger.debug("보유 조회 실패(발굴 입력) %s: %s", a.id, e)
+    mdir = run_store.market_dir(date, market, state)
+    if discovery and not cap_hit and candidates and universe is not None:
+        try:
+            from trader import names
+            from trader.config import load_sources
+            from trader.scan import discovery as discovery_mod
+
+            try:
+                news_cfg = load_sources().news
+            except Exception:  # noqa: BLE001
+                news_cfg = None
+            cache_dir = (state or paths.state_dir()) / "cache"
+            discovery_mod.build_inputs(
+                conn,
+                settings,
+                universe,
+                market=market,
+                today=date,
+                asof=asof or now(),
+                quant_candidates=candidates,
+                held=held_tickers,
+                state=state,
+                now=now,
+                news_cfg=news_cfg,
+                cache_names=names.load_cache_names(cache_dir),
+            )
+        except Exception as e:  # noqa: BLE001 - 발굴 입력 실패는 스크리닝을 막지 않는다
+            logger.warning("발굴 입력 조립 실패 %s: %s", market, e)
     if cap_hit or not candidates:
         n = PICKS_ON_CAP if candidates else 0
         scored = [c for c in candidates if c.get("score") is not None]  # 피처 없는 종목 제외
@@ -77,6 +117,9 @@ def run_screen(
                 for c in scored[:PICKS_ON_CAP]
             ]
     exch = {c["ticker"]: c.get("exchange") for c in candidates}
+    discovered = (read_checkpoint(mdir, "_discovery") or {}).get("data") if discovery else None
+    for c in (discovered or {}).get("candidates") or []:
+        exch.setdefault(c["ticker"], c.get("exchange"))
     if universe is not None and market == "US":
         for u in getattr(universe, "us", []) or []:
             exch.setdefault(u.symbol, u.exchange)
@@ -106,9 +149,12 @@ def run_screen(
         wm, wt = split_market(str(w).strip().upper())
         if wm == market:  # 다른 시장의 관심종목은 이 시장 분석 대상이 아니다
             add(wt, exch.get(wt))
+    from trader.scan import discovery as discovery_mod
+
     return {
         "picks": picks,
         "analyze_targets": targets,
+        "discovery": discovery_mod.summary(discovered) if discovery else None,
         "session": (
             {
                 "ok": session_result.ok,

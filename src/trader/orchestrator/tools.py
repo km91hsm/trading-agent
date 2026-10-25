@@ -34,6 +34,7 @@ from trader.orchestrator.run_store import (
     run_dir,
     write_checkpoint,
 )
+from trader.platform import paths
 from trader.risk import costs
 
 logger = logging.getLogger("trader.orchestrator")
@@ -106,6 +107,7 @@ class ToolContext:
     notifier: Any = None
     dry_run: bool = True
     holiday_fn: Callable[[date], bool] | None = None  # 보유 거래일 계산용 (KIS 휴장일)
+    market_client: Any | None = None  # Phase 19 발굴: 유니버스 밖 종목의 시세·거래소 확인
 
 
 def _dir(ctx: ToolContext, ticker: str, market: Market, d: date) -> Path:
@@ -1241,6 +1243,75 @@ def submit_screen(
     path = write_checkpoint(d, "_screen", _wrap(screened.model_dump(), _call(agent, call_meta)))
     logger.info("스크리닝 저장 %s: %s", market, [p.ticker for p in screened.picks])
     return {"ok": True, "path": str(path), "picks": [p.ticker for p in screened.picks]}
+
+
+# --- 뉴스 발굴 (Phase 19 scout) --------------------------------------------------
+
+
+def discovery_inputs(ctx: ToolContext, *, market: Market, date: date) -> dict:
+    """scout 입력(`_discovery_inputs`, 파이썬이 세션 앞에서 만든다). 없으면 ok=false → 발굴 생략."""
+    if market not in ("KR", "US"):
+        return {"ok": False, "error": f"market 은 KR 또는 US: {market!r}"}
+    d = market_dir(date, market, ctx.state)
+    data = (read_checkpoint(d, "_discovery_inputs") or {}).get("data") or {}
+    if not data:
+        return {"ok": False, "error": "_discovery_inputs 없음 (발굴 단계 생략)"}
+    return {"ok": True, "data": _shrink(data, BUNDLE_LIMIT_BYTES)}
+
+
+def submit_discovery(
+    ctx: ToolContext,
+    *,
+    market: Market,
+    date: date,
+    payload: dict,
+    agent: str = "scout",
+    call_meta: dict | None = None,
+) -> dict:
+    """Discovered 검증 → 파이썬이 코드·거래소·제외 확정(`discovery.resolve`) → `_discovery` 저장 →
+    정량 후보와 병합한 screener 입력(`candidates`) 반환."""
+    from trader import names
+    from trader.config import Universe, load_universe
+    from trader.scan import discovery
+
+    if market not in ("KR", "US"):
+        return {"ok": False, "error": f"market 은 KR 또는 US: {market!r}"}
+    try:
+        found = schemas.Discovered.model_validate(_unescape(payload))
+    except ValidationError as e:
+        msgs = "; ".join(
+            f"{'.'.join(str(x) for x in err['loc'])}: {err['msg']}" for err in e.errors()
+        )
+        return {"ok": False, "error": f"스키마 검증 실패(Discovered): {msgs}"}
+    d = market_dir(date, market, ctx.state, create=True)
+    inputs = (read_checkpoint(d, "_discovery_inputs") or {}).get("data") or {}
+    try:
+        universe = load_universe()
+    except Exception:  # noqa: BLE001 - 설정이 없으면 유니버스 비움(전부 listed 로 본다)
+        universe = Universe()
+    cache_dir = (ctx.state or paths.state_dir()) / "cache"
+    cache_names = names.load_cache_names(cache_dir)
+    hedge = ctx.settings.hedge
+    exclude = set(hedge.tickers(market)) if hedge.enabled else set()
+    exclude |= set(inputs.get("held") or [])
+    resolved = discovery.resolve(
+        found.model_dump(),
+        market=market,
+        universe=universe,
+        cache_names=cache_names,
+        market_client=ctx.market_client,
+        exclude=exclude,
+    )
+    path = write_checkpoint(d, "_discovery", _wrap(resolved, _call(agent, call_meta)))
+    merged = discovery.merge(list(inputs.get("quant_candidates") or []), resolved)
+    logger.info("발굴 저장 %s: %s", market, discovery.line(resolved))
+    return {
+        "ok": True,
+        "path": str(path),
+        "candidates": merged,
+        "discovered": [c["ticker"] for c in resolved["candidates"]],
+        "unresolved": resolved["unresolved"],
+    }
 
 
 # --- submit-reflection (Phase 8 reflect) ----------------------------------------

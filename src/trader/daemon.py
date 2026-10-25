@@ -461,6 +461,7 @@ def _scan_body(deps: DaemonDeps, market: str) -> dict:
             asof=deps.now(),
             cancel=deps.stop_event,
             universe=universe,
+            discovery=True,
         )
     finally:
         conn.close()
