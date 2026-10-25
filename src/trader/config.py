@@ -6,6 +6,7 @@ yaml 모델은 전부 extra="forbid" 라 yaml 키를 추가하면 모델도 같�
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 from decimal import Decimal
@@ -25,6 +26,8 @@ from pydantic import (
 )
 
 from trader.platform import paths
+
+logger = logging.getLogger("trader.config")
 
 Env = Literal["paper", "real"]
 Mode = Literal["auto", "approve", "off"]
@@ -357,6 +360,10 @@ class Secrets(BaseModel):
     KIS_PAPER_APP_SECRET: str | None = None
     KIS_REAL_APP_KEY: str | None = None
     KIS_REAL_APP_SECRET: str | None = None
+    # 계좌번호(8자리). accounts.yaml 의 cano 가 자리표시자("00000000"·빈 값)면 env 별로
+    # 여기서 읽는다 (저장소를 공개해도 커밋에 계좌번호가 남지 않도록, 2026-10-25)
+    KIS_PAPER_CANO: str | None = None
+    KIS_REAL_CANO: str | None = None
     DART_API_KEY: str | None = None
     TELEGRAM_BOT_TOKEN: str | None = None
     TELEGRAM_CHAT_ID: str | None = None
@@ -635,9 +642,32 @@ def load_settings(path: Path | None = None) -> Settings:
     return _validate(Settings, _read_yaml(p), p.name)
 
 
-def load_accounts(path: Path | None = None) -> list[AccountConfig]:
+CANO_PLACEHOLDER = "00000000"
+
+
+def _cano_from_secrets(a: AccountConfig, secrets: Secrets | None) -> AccountConfig:
+    """cano 가 자리표시자면 `KIS_<PAPER|REAL>_CANO` 로 채운다(없으면 그대로 두고 경고)."""
+    if a.cano and a.cano != CANO_PLACEHOLDER and not a.cano.startswith("${"):
+        return a
+    key = "KIS_PAPER_CANO" if a.env == "paper" else "KIS_REAL_CANO"
+    value = (getattr(secrets, key, None) or "").strip() if secrets is not None else ""
+    if not value:
+        logger.warning("계좌 %s 의 계좌번호가 자리표시자이고 secrets %s 도 비어 있음", a.id, key)
+        return a
+    return a.model_copy(update={"cano": value})
+
+
+def load_accounts(
+    path: Path | None = None, *, secrets: Secrets | None = None
+) -> list[AccountConfig]:
+    """accounts.yaml → 계좌 목록. cano 자리표시자는 secrets(.env) 의 `KIS_*_CANO` 로 채운다
+    (secrets 를 넘기지 않으면 자리표시자가 있을 때만 `load_secrets()` 를 읽는다)."""
     p = path or paths.config_dir() / "accounts.yaml"
     accounts = _validate(_AccountsFile, _read_yaml(p), p.name).accounts
+    if any(not a.cano or a.cano == CANO_PLACEHOLDER or a.cano.startswith("${") for a in accounts):
+        if secrets is None:
+            secrets = load_secrets()
+        accounts = [_cano_from_secrets(a, secrets) for a in accounts]
     seen: set[str] = set()
     for a in accounts:
         if a.id in seen:

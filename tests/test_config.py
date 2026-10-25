@@ -166,3 +166,19 @@ def test_repo_config_files_load(project, monkeypatch):
     assert config.load_sources().edgar.user_agent
     ids = [a.id for a in config.load_accounts()]
     assert len(ids) == len(set(ids))
+
+
+def test_accounts_cano_placeholder_filled_from_secrets(project):
+    """accounts.yaml 의 cano 가 "00000000" 이면 secrets 의 KIS_<ENV>_CANO 로 채운다
+    (공개 저장소 대비)."""
+    (project / "config" / "accounts.yaml").write_text(
+        'accounts:\n  - {id: p, env: paper, cano: "00000000", markets: [KR], mode: auto}\n'
+        '  - {id: r, env: real, cano: "12345678", markets: [KR], mode: "off"}\n'
+        '  - {id: r2, env: real, cano: "00000000", markets: [KR], mode: "off"}\n',
+        encoding="utf-8",
+    )
+    secrets = config.Secrets(KIS_PAPER_CANO="11112222")
+    accts = {a.id: a for a in config.load_accounts(secrets=secrets)}
+    assert accts["p"].cano == "11112222"
+    assert accts["r"].cano == "12345678"  # 실제 값은 그대로
+    assert accts["r2"].cano == "00000000"  # env 도 비면 자리표시자 유지(경고만)
