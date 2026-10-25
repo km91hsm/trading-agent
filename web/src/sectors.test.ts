@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { capLinePct, proposalText, regimeText, sectorRows, type RegimeResp } from "./sectors";
+import { capLinePct, countText, proposalText, regimeText, sectorRows, type RegimeResp } from "./sectors";
 
 describe("섹터 비중", () => {
   it("행 변환: 비중·막대·상한 초과(현금·헤지 제외)", () => {
@@ -43,5 +43,13 @@ describe("국면 칩", () => {
     expect(proposalText({ ...base, markets: [{ ...m("KR", "bear", 2), view }] })).toBe("KR 제안 12%");
     expect(proposalText({ ...base, markets: [{ ...m("KR", "bull", 0), view }] })).toBe("");
     expect(regimeText({ ...base, markets: [{ ...m("KR", "bear", 2), view }] }).title).toContain("위험 회피 12%");
+  });
+});
+
+describe("전략가 4번째 지표 (Phase 19)", () => {
+  it("countText 는 지표 n/3, 전략가가 켜지면 +전략가", () => {
+    expect(countText({ count: 2, signals: { ma_below: true, momentum_weak: true, vol_high: false } })).toBe("2/3");
+    expect(countText({ count: 2, signals: { ma_below: true, momentum_weak: false, vol_high: false, agent_risk_off: true } })).toBe("1/3+전략가");
+    expect(countText({ count: null, signals: { ma_below: null, momentum_weak: null, vol_high: null } })).toBe("-/3");
   });
 });

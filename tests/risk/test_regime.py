@@ -63,3 +63,30 @@ def test_backtest_spans():
     spans = regime.backtest(rows, CFG)
     assert len(spans) == 1 and spans[0]["max_count"] == 2 and "open" not in spans[0]
     assert spans[0]["start"] < spans[0]["end"]
+
+
+def test_agent_risk_off_is_fourth_signal_but_cannot_enter_bear_alone(conn):
+    """Phase 19: 전략가 RISK_OFF 는 count 에 1 을 더한다. 정량 지표 0개면 neutral 까지, 1개 +
+    전략가면 bear(bear_min_signals=2). reapply 는 저장된 지표에 전략가 신호만 바꿔 같은 날
+    재판정한다."""
+    flat = _series((30, 0.0))
+    s = regime.classify(flat, CFG, agent_risk_off=True)
+    assert s.count == 1 and s.indicator_count == 0 and regime.raw_state(s, CFG) == "neutral"
+    one = regime.classify(flat, CFG, vix=30.0, agent_risk_off=True)  # VIX 1개 + 전략가
+    assert one.count == 2 and regime.raw_state(one, CFG) == "bear"
+    d = date(2026, 10, 24)
+    out = regime.update(conn, "KR", closes=flat, cfg=CFG, today=d, vix=30.0)
+    assert out["state"] == "neutral" and out["count"] == 1
+    re = regime.reapply(conn, "KR", agent_risk_off=True, cfg=CFG, today=d)
+    assert re["state"] == "bear" and re["count"] == 2 and re["signals"]["agent_risk_off"] is True
+    assert re["prev_state"] is None  # 같은 날 재판정: 어제 상태 기준 (streak 겹침 없음)
+    assert regime.count_text(re) == "1/3+전략가"
+    # 신호를 끄면 되돌아온다. 오늘 판정이 없는 시장은 None
+    back = regime.reapply(conn, "KR", agent_risk_off=False, cfg=CFG, today=d)
+    assert back["state"] == "neutral" and regime.count_text(back) == "1/3"
+    assert regime.reapply(conn, "US", agent_risk_off=True, cfg=CFG, today=d) is None
+    assert (
+        regime.reapply(conn, "KR", agent_risk_off=True, cfg=CFG, today=d + timedelta(days=1))
+        is None
+    )
+    assert regime.summary(conn, ["KR"])[0]["signals"]["agent_risk_off"] is False

@@ -20,6 +20,8 @@ hedge:
   leverage: true           # 3지표 모두 켜지면 −2x, 아니면 −1x
   bear_min_signals: 2      # 3지표(200일선 아래·20일 수익률 ≤ −5%·변동성 높음) 중 n개 이상이면 bear
   exit_streak_days: 5      # bear 해제: 지표 ≤ 1개가 이 일수 연속
+  agent_signal: true       # 시장 세션 전략가 RISK_OFF 를 4번째 지표로(지표 0개면 bear 불가), RISK_ON 은 경계(지표 = bear_min_signals)에서 하루 보류 (Phase 19)
+  agent_min_confidence: 0.7  # 전략가 제안을 지표·보류로 쓸 최소 confidence
   instruments:
     KR: {inverse: "114800", inverse2x: "252670"}                       # KODEX 인버스 / KODEX 200선물인버스2X
     US: {inverse: {symbol: SH, exchange: AMS}, inverse2x: {symbol: SDS, exchange: AMS}}  # ProShares (Arca → KIS AMS, 실기 확인)

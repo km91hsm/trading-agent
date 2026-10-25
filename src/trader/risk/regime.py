@@ -34,10 +34,17 @@ class RegimeSignals:
     ma_below: bool
     momentum_weak: bool
     vol_high: bool
+    agent_risk_off: bool = False  # Phase 19: 전략가(시장 세션) RISK_OFF = 4번째 지표
+
+    @property
+    def indicator_count(self) -> int:
+        """정량 지표 3개 중 켜진 수(전략가 제외)."""
+        return int(self.ma_below) + int(self.momentum_weak) + int(self.vol_high)
 
     @property
     def count(self) -> int:
-        return int(self.ma_below) + int(self.momentum_weak) + int(self.vol_high)
+        """지표 3 + 전략가. 정량 지표가 0개면 전략가만으로 bear 가 되지 않게 raw_state 가 막는다."""
+        return self.indicator_count + int(self.agent_risk_off)
 
 
 def _f(v: Decimal | float | int) -> float:
@@ -45,7 +52,11 @@ def _f(v: Decimal | float | int) -> float:
 
 
 def classify(
-    closes: list[Decimal | float], cfg: HedgeCfg, *, vix: float | None = None
+    closes: list[Decimal | float],
+    cfg: HedgeCfg,
+    *,
+    vix: float | None = None,
+    agent_risk_off: bool = False,
 ) -> RegimeSignals:
     """종가는 날짜 오름차순(마지막이 최신). 봉이 부족한 지표는 False 로 둔다(보수적)."""
     xs = [_f(c) for c in closes if c is not None]
@@ -74,10 +85,15 @@ def classify(
         ma_below=bool(close is not None and ma is not None and close < ma),
         momentum_weak=bool(mom is not None and mom <= cfg.momentum_min),
         vol_high=bool(vol_high),
+        agent_risk_off=bool(agent_risk_off),
     )
 
 
 def raw_state(signals: RegimeSignals, cfg: HedgeCfg) -> State:
+    """count ≥ bear_min_signals → bear, 0 → bull, 그 외 neutral. 정량 지표가 하나도 없으면 전략가
+    RISK_OFF 만으로는 neutral 까지(bear 진입은 지표 1개 이상 + 전략가)."""
+    if signals.indicator_count == 0:
+        return "neutral" if signals.agent_risk_off else "bull"
     if signals.count >= cfg.bear_min_signals:
         return "bear"
     return "bull" if signals.count == 0 else "neutral"
@@ -110,10 +126,42 @@ def update(
     today: date,
     vix: float | None = None,
     now: datetime | None = None,
+    agent_risk_off: bool = False,
 ) -> dict:
     """하루 1회: 지표 계산 → 히스테리시스 → 플래그 저장. 같은 날 재호출은 streak 을 겹치지 않음."""
+    sig = classify(closes, cfg, vix=vix, agent_risk_off=agent_risk_off)
+    return _apply(conn, market, sig, cfg=cfg, today=today, now=now)
+
+
+def reapply(
+    conn: sqlite3.Connection,
+    market: str,
+    *,
+    agent_risk_off: bool,
+    cfg: HedgeCfg,
+    today: date,
+    now: datetime | None = None,
+) -> dict | None:
+    """저장된 오늘 지표에 전략가 신호만 바꿔 다시 판정한다(네트워크 없음). 오늘 판정이 없으면 None.
+    데몬이 시장 세션 뒤에 부른다 — 같은 운영일 재판정이라 streak 이 겹치지 않는다."""
     prev = load(conn, market) or {}
-    sig = classify(closes, cfg, vix=vix)
+    if prev.get("asof") != today.isoformat() or not prev.get("signals"):
+        return None
+    raw = {k: v for k, v in (prev.get("signals") or {}).items() if k != "agent_risk_off"}
+    sig = RegimeSignals(**raw, agent_risk_off=agent_risk_off)
+    return _apply(conn, market, sig, cfg=cfg, today=today, now=now)
+
+
+def _apply(
+    conn: sqlite3.Connection,
+    market: str,
+    sig: RegimeSignals,
+    *,
+    cfg: HedgeCfg,
+    today: date,
+    now: datetime | None,
+) -> dict:
+    prev = load(conn, market) or {}
     if prev.get("asof") == today.isoformat() and prev.get("state"):
         # 같은 운영일 재계산: 어제 상태·streak 에서 다시 판정 (중복 누적 방지)
         base_state, base_streak = prev.get("prev_state"), int(prev.get("prev_streak") or 0)
@@ -204,7 +252,10 @@ def summary(
                 "count": r.get("count"),
                 "since": r.get("since"),
                 "asof": r.get("asof"),
-                "signals": {k: sig.get(k) for k in ("ma_below", "momentum_weak", "vol_high")},
+                "signals": {
+                    k: sig.get(k)
+                    for k in ("ma_below", "momentum_weak", "vol_high", "agent_risk_off")
+                },
                 "values": {
                     k: sig.get(k) for k in ("close", "ma", "momentum", "realized_vol", "vix")
                 },
@@ -223,5 +274,14 @@ def line(conn: sqlite3.Connection, markets: list[str], *, today: date | None = N
             since = f" {r['since'][5:]}~" if r.get("since") else ""
             v = r.get("view")
             prop = f" 제안 {float(v['hedge_weight'] or 0):.0%}" if v else ""
-            parts.append(f"{r['market']} {r['state']}({r['count']}/3){since}{prop}")
+            parts.append(f"{r['market']} {r['state']}({count_text(r)}){since}{prop}")
     return " · ".join(parts)
+
+
+def count_text(r: dict) -> str:
+    """'2/3' 또는 전략가 지표가 켜졌으면 '1/3+전략가'."""
+    sig = r.get("signals") or {}
+    n = sum(int(bool(sig.get(k))) for k in ("ma_below", "momentum_weak", "vol_high"))
+    if r.get("count") is None:
+        return "-/3"
+    return f"{n}/3+전략가" if sig.get("agent_risk_off") else f"{n}/3"

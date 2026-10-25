@@ -688,9 +688,44 @@ def _regime_body(deps: DaemonDeps, market: str) -> dict:
     if out.get("state") != out.get("prev_state"):
         deps.notifier.send(
             f"[국면 전환] {market} {out.get('prev_state') or '-'} → {out['state']} "
-            f"({out['count']}/3)"
+            f"({regime_mod.count_text(out)})"
         )
     return out
+
+
+def _regime_apply_view(deps: DaemonDeps, market: str) -> dict:
+    """시장 세션 뒤: 오늘 제안이 RISK_OFF(확신 ≥ hedge.agent_min_confidence)면 전략가 신호를 4번째
+    지표로 켜고 국면을 다시 판정한다(같은 운영일 재판정, streak 겹침 없음). 전환이면 알림 1건.
+    RISK_OFF 가 아니면 신호를 끈 채 재판정(어제 켜진 신호가 남지 않게)."""
+    from trader.orchestrator import market_view as mv
+    from trader.orchestrator.run_store import run_date_for
+    from trader.risk import regime as regime_mod
+
+    cfg = deps.settings.hedge
+    if not cfg.enabled or not cfg.agent_signal:
+        return {"skipped": "hedge.agent_signal=false"}
+    today = run_date_for(market, deps.now())
+    conn = deps.conn_factory()
+    try:
+        view = mv.load_view(conn, market, today)
+        on = bool(
+            view
+            and view.get("stance") == "RISK_OFF"
+            and float(view.get("confidence") or 0) >= cfg.agent_min_confidence
+        )
+        before = (regime_mod.load(conn, market) or {}).get("state")
+        out = regime_mod.reapply(
+            conn, market, agent_risk_off=on, cfg=cfg, today=today, now=deps.now()
+        )
+    finally:
+        conn.close()
+    if out is None:
+        return {"skipped": "오늘 국면 판정 없음"}
+    if out.get("state") != before:
+        deps.notifier.send(
+            f"[국면 전환] {market} {before or '-'} → {out['state']} ({regime_mod.count_text(out)})"
+        )
+    return {**out, "agent_risk_off": on}
 
 
 def _market_view_body(deps: DaemonDeps, market: str) -> dict:
@@ -1112,6 +1147,11 @@ def _scan_analyze_body(deps: DaemonDeps, market: str) -> dict:
     except Exception as e:  # noqa: BLE001 - 시장 세션 실패가 스캔을 막지 않는다
         logger.exception("시장 세션 실패 %s", market)
         deps.notifier.send(f"[시장 세션 실패] {market}: {type(e).__name__}: {e}")
+    try:
+        _regime_apply_view(deps, market)  # Phase 19: 전략가 RISK_OFF 를 4번째 지표로 재판정
+    except Exception as e:  # noqa: BLE001
+        logger.exception("전략가 지표 반영 실패 %s", market)
+        deps.notifier.send(f"[국면 재판정 실패] {market}: {type(e).__name__}: {e}")
     scan_error: str | None = None
     try:
         _scan_body(deps, market)

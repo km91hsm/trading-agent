@@ -49,7 +49,7 @@ export type RegimeMarket = {
   count: number | null;
   since: string | null;
   asof: string | null;
-  signals: { ma_below: boolean | null; momentum_weak: boolean | null; vol_high: boolean | null };
+  signals: { ma_below: boolean | null; momentum_weak: boolean | null; vol_high: boolean | null; agent_risk_off?: boolean | null };
   /** 오늘 시장 세션(거시 애널리스트·토론·전략가)의 헤지 제안. 없으면 null (Phase 18). */
   view?: { stance: "RISK_ON" | "NEUTRAL" | "RISK_OFF"; hedge_weight: number; leveraged: boolean; confidence: number } | null;
   /** 제안 적중률(만기 지난 제안의 지수 proxy 방향 일치). 제안 기록이 없으면 null. */
@@ -76,7 +76,15 @@ export function proposalText(r: RegimeResp | null): string {
 }
 
 export const REGIME_LABEL: Record<string, string> = { bull: "상승", neutral: "중립", bear: "하락" };
-const SIGNAL_LABEL: Record<string, string> = { ma_below: "200일선 아래", momentum_weak: "20일 수익률 약세", vol_high: "변동성 높음" };
+const SIGNAL_LABEL: Record<string, string> = { ma_below: "200일선 아래", momentum_weak: "20일 수익률 약세", vol_high: "변동성 높음", agent_risk_off: "전략가 위험 회피" };
+
+/** "2/3" 또는 전략가 지표가 켜졌으면 "1/3+전략가" (서버 regime.count_text 와 같은 규칙). */
+export function countText(m: Pick<RegimeMarket, "count" | "signals">): string {
+  if (m.count === null || m.count === undefined) return "-/3";
+  const s = m.signals ?? ({} as RegimeMarket["signals"]);
+  const n = [s.ma_below, s.momentum_weak, s.vol_high].filter(Boolean).length;
+  return s.agent_risk_off ? `${n}/3+전략가` : `${n}/3`;
+}
 
 /** 상태줄 칩: "KR 하락 2/3 · US 상승 0/3". 기록 없으면 "판정 전". level 은 bear → err, neutral → warn. */
 export function regimeText(r: RegimeResp | null): { text: string; level: "ok" | "warn" | "err" | "none"; title: string } {
@@ -84,7 +92,7 @@ export function regimeText(r: RegimeResp | null): { text: string; level: "ok" | 
   if (!r.enabled) return { text: "헤지 꺼짐", level: "none", title: "settings.yaml hedge.enabled=false" };
   const known = r.markets.filter((m) => m.state);
   if (!known.length) return { text: "판정 전", level: "none", title: "scan 앞에서 매일 판정해요" };
-  const text = known.map((m) => `${m.market} ${REGIME_LABEL[m.state!] ?? m.state} ${m.count ?? 0}/3`).join(" · ");
+  const text = known.map((m) => `${m.market} ${REGIME_LABEL[m.state!] ?? m.state} ${countText(m)}`).join(" · ");
   const level = known.some((m) => m.state === "bear") ? "err" : known.some((m) => m.state === "neutral") ? "warn" : "ok";
   const title = known
     .map((m) => {

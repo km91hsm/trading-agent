@@ -50,7 +50,7 @@ def hedge_decision(
 ) -> Decision:
     """파이썬이 만든 헤지 결정. KR 은 시장가, US 는 현재가 지정가(모의 서버 제약)."""
     sig = state.get("signals") or {}
-    on = [k for k in ("ma_below", "momentum_weak", "vol_high") if sig.get(k)]
+    on = [k for k in ("ma_below", "momentum_weak", "vol_high", "agent_risk_off") if sig.get(k)]
     note = ""
     if view and action == "BUY":
         pct = float(view.get("hedge_weight") or 0) * 100
@@ -152,6 +152,17 @@ def rebalance(
             {k: view.get(k) for k in ("stance", "hedge_weight", "leveraged")} if view else None
         ),
     }
+    deferred = _risk_on_deferral(state, view, cfg)
+    if st == "bear" and not held and deferred:
+        # 전략가 RISK_ON(확신 ≥ 기준)이고 지표가 경계값(bear_min_signals)이면 오늘 진입을 보류한다.
+        # 3/3 은 보류 불가. 해제 규칙은 그대로(제안이 팔게 하지 않는다)
+        out.update(action="deferred", reason=deferred)
+        if not dry_run:
+            control.set_flag(
+                ctx.conn, key, {"state": st, "action": "deferred", "done": [], "pending": []}
+            )
+            executor._notify_quietly(ctx, f"[헤지 보류] {market} {deferred}")
+        return out
     if st == "bear" and not held:
         leveraged = int(state.get("count") or 0) >= 3 and (
             view is None or bool(view.get("leveraged", True))
@@ -243,6 +254,23 @@ def rebalance(
             )
         out["pending_accounts"] = sorted(failed)
     return out
+
+
+def _risk_on_deferral(state: dict, view: dict | None, cfg: HedgeCfg) -> str | None:
+    """bear 진입 보류 사유(Phase 19). 조건: agent_signal ∧ 오늘 제안 RISK_ON ∧ confidence ≥ 기준 ∧
+    정량 지표 수 == bear_min_signals(경계) ∧ 3/3 아님. 아니면 None."""
+    if not getattr(cfg, "agent_signal", False) or not view:
+        return None
+    if view.get("stance") != "RISK_ON":
+        return None
+    conf = float(view.get("confidence") or 0)
+    if conf < float(getattr(cfg, "agent_min_confidence", 1.0)):
+        return None
+    sig = state.get("signals") or {}
+    n = sum(int(bool(sig.get(k))) for k in ("ma_below", "momentum_weak", "vol_high"))
+    if n >= 3 or n != cfg.bear_min_signals:
+        return None
+    return f"전략가 RISK_ON(확신 {conf:.2f}) · 지표 {n}/3 경계 — 오늘 진입 보류"
 
 
 def _execute(

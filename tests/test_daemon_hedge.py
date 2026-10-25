@@ -218,3 +218,45 @@ def test_proxy_candles_drop_pre_open_stub(conn):
     )
     deps.market_client = SimpleNamespace(get_daily_kr=lambda *a, **k: [good, stub])
     assert daemon._proxy_candles(deps, "KR") == [good]
+
+
+def test_regime_apply_view_turns_strategist_risk_off_into_fourth_signal(conn, monkeypatch):
+    """Phase 19: 시장 세션 제안이 RISK_OFF(확신 ≥ 기준)면 전략가 신호로 재판정해 1/3 → bear 전환,
+    같은 날 재호출 안전, RISK_ON 이면 신호를 끈다."""
+    from trader.orchestrator import market_view as mv
+
+    deps = _hedge_deps(conn, closes=[100] * 30 + [99.5, 99, 98.5, 98, 97.5, 97])  # 20일선 아래 1개
+    out = daemon._regime_body(deps, "KR")
+    assert out["state"] == "neutral" and out["count"] == 1
+    monkeypatch.setattr(
+        mv,
+        "load_view",
+        lambda conn_, m, d: {"stance": "RISK_OFF", "confidence": 0.8, "hedge_weight": 0.1},
+    )
+    r = daemon._regime_apply_view(deps, "KR")
+    assert r["state"] == "bear" and r["agent_risk_off"] is True
+    assert any("[국면 전환] KR neutral → bear (1/3+전략가)" in m for m in deps.notifier.msgs)
+    n = len(deps.notifier.msgs)
+    assert daemon._regime_apply_view(deps, "KR")["state"] == "bear" and len(deps.notifier.msgs) == n
+    assert regime.load(conn, "KR")["streak"] == 0
+    # 확신이 낮으면 지표로 쓰지 않는다 → 다시 neutral
+    monkeypatch.setattr(
+        mv,
+        "load_view",
+        lambda conn_, m, d: {"stance": "RISK_OFF", "confidence": 0.5, "hedge_weight": 0.1},
+    )
+    assert daemon._regime_apply_view(deps, "KR")["state"] == "neutral"
+    deps.settings = Settings(hedge=HedgeCfg(agent_signal=False))
+    assert "agent_signal" in daemon._regime_apply_view(deps, "KR")["skipped"]
+
+
+def test_scan_analyze_body_applies_view_after_market_session(conn, monkeypatch):
+    deps = _hedge_deps(conn, closes=[100] * 36)
+    order = []
+    monkeypatch.setattr(daemon, "_regime_body", lambda d, m: order.append("regime"))
+    monkeypatch.setattr(daemon, "_market_view_body", lambda d, m: order.append("view"))
+    monkeypatch.setattr(daemon, "_regime_apply_view", lambda d, m: order.append("apply"))
+    monkeypatch.setattr(daemon, "_scan_body", lambda d, m: order.append("scan"))
+    monkeypatch.setattr(daemon, "_analyze_body", lambda d, m, scan_error=None: {"ok": True})
+    daemon._scan_analyze_body(deps, "KR")
+    assert order == ["regime", "view", "apply", "scan"]

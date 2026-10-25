@@ -82,6 +82,10 @@ class HedgeCfg(BaseModel):
     leverage: bool = True  # 3지표 모두 켜지면 −2x, 아니면 −1x
     bear_min_signals: int = Field(default=2, ge=1, le=3)
     exit_streak_days: int = Field(default=5, ge=1, le=30)
+    # Phase 19: 전략가(시장 세션) RISK_OFF 를 4번째 국면 지표로 센다(지표 0개면 bear 진입 불가),
+    # RISK_ON 은 지표가 bear_min_signals 와 같을 때 하루 진입 보류. 둘 다 confidence 기준 이상만
+    agent_signal: bool = True
+    agent_min_confidence: float = Field(default=0.7, ge=0, le=1)
     ma_days: int = Field(default=200, ge=20, le=400)
     momentum_days: int = Field(default=20, ge=5, le=120)
     momentum_min: float = -0.05
