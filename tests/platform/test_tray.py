@@ -176,7 +176,9 @@ def test_pause_action_toggles_on_worker_and_refreshes_title():
     assert icon.menu_updates >= 1
 
 
-def test_on_main_falls_back_to_direct_call_without_appkit():
+def test_on_main_falls_back_to_direct_call_without_appkit(monkeypatch):
+    # macOS 엔 pyobjc 가 있어 callAfter 로 런루프에 넘어간다(테스트엔 런루프 없음) → import 차단
+    monkeypatch.setitem(sys.modules, "PyObjCTools", None)
     done = []
     tray.on_main(lambda: done.append(1))
     assert done == [1]
