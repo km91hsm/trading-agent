@@ -27,6 +27,11 @@ logger = logging.getLogger("trader.market_view")
 
 INDEX_CANDLES = 60
 MACRO_NEWS_ITEMS = 10
+STORE_HOURS = 48  # 시장 세션이 읽는 저장소 뉴스 창(시간)
+
+
+class _StoreHit(Exception):
+    """저장소에서 뉴스를 얻어 구글 질의를 건너뛴다(흐름 제어용)."""
 
 
 def _f(v: Any) -> float | None:
@@ -98,6 +103,24 @@ def build_inputs(
         errors["macro"] = f"{type(e).__name__}: {e}"
     macro_news: list[dict] = []
     try:
+        from trader.sources import news_store
+
+        # 시장 전체 뉴스 저장소(Phase 19)가 있으면 그것(태그 종목 포함), 없으면 구글 질의 1회
+        macro_news = [
+            {
+                k: v
+                for k, v in i.items()
+                if k in ("title", "source", "published_at", "url", "tickers")
+            }
+            for i in news_store.recent(
+                conn, market, asof=asof, hours=STORE_HOURS, limit=MACRO_NEWS_ITEMS
+            )
+        ]
+    except Exception as e:  # noqa: BLE001
+        errors["news_store"] = f"{type(e).__name__}: {e}"
+    try:
+        if macro_news:
+            raise _StoreHit()
         from trader.sources.base import owned_client
         from trader.sources.news import MACRO_QUERIES, GoogleNewsRss
 
@@ -111,6 +134,8 @@ def build_inputs(
         macro_news = [
             i for i in items if not (i.get("published_at") and str(i["published_at"]) > cutoff_iso)
         ][:MACRO_NEWS_ITEMS]
+    except _StoreHit:
+        pass
     except Exception as e:  # noqa: BLE001
         errors["macro_news"] = f"{type(e).__name__}: {e}"
     notes: list[dict] = []

@@ -25,7 +25,7 @@ from zoneinfo import ZoneInfo
 from trader import heartbeat as heartbeat_mod
 from trader import jobs as jobq
 from trader import names
-from trader.config import KST, MARKET_TZ, AccountConfig, ScheduleConfig, Settings
+from trader.config import KST, MARKET_TZ, AccountConfig, ScheduleConfig, Secrets, Settings
 from trader.control import control
 from trader.heartbeat import Heartbeat
 from trader.ledger import db
@@ -284,6 +284,7 @@ def build_jobs(schedule: ScheduleConfig, settings: Settings, *, markets: list[st
     )
     jobs.append(Job("telegram_poll", "telegram_poll", interval_s=TELEGRAM_POLL_S))
     jobs.append(Job(QUEUE_JOB_ID, "job_queue", interval_s=QUEUE_INTERVAL_S))
+    jobs.append(Job("news_collect", "news_collect", interval_s=schedule.news_collect.interval_s))
     for i, (h, mi) in enumerate(FILLS_SYNC_TIMES):
         jobs.append(
             Job(
@@ -942,6 +943,43 @@ def _fills_body(deps: DaemonDeps) -> dict:
     return out
 
 
+def _news_body(deps: DaemonDeps) -> dict:
+    """시장 전체 뉴스 저장소 수집(Phase 19): 시장마다 질의 묶음을 돌려 news_items 에 쌓고 보존
+    기간을 넘긴 행을 지운다. 한 시장의 실패가 다른 시장을 막지 않는다. 가벼운 잡(heavy 락 밖)."""
+    from trader.config import load_universe
+    from trader.sources import news_store
+
+    if deps.sources_cfg is None or not deps.sources_cfg.news.enabled:
+        return {"skipped": "news.enabled=false"}
+    cfg = deps.sources_cfg.news
+    universe = deps.universe or load_universe()
+    cache_names = names.load_cache_names(_cache_dir(deps))
+    out: dict[str, Any] = {}
+    conn = deps.conn_factory()
+    try:
+        for market in deps.settings.markets:
+            if deps.stop_event.is_set():
+                break
+            try:
+                out[market] = news_store.collect(
+                    conn,
+                    cfg,
+                    deps.secrets or Secrets(),
+                    market=market,
+                    names=news_store.universe_names(universe, cache_names, market),
+                    now=deps.now,
+                )
+            except Exception as e:  # noqa: BLE001 - 시장 단위 격리
+                logger.warning("뉴스 수집 실패 %s: %s", market, e)
+                out[market] = {"error": f"{type(e).__name__}: {e}"}
+        out["pruned"] = news_store.prune(
+            conn, before=deps.now() - timedelta(days=cfg.store_retention_days)
+        )
+    finally:
+        conn.close()
+    return out
+
+
 def _reflect_body(deps: DaemonDeps) -> dict:
     """장 마감 후: 만기 결정 결과 채우기 → 반성 대기가 있는 시장만 세션 → 메모리 정리."""
     from trader.memory import outcomes, store
@@ -1150,6 +1188,8 @@ def job_body(
         return lambda: _telegram_body(deps)
     if job.kind == "fills_sync":
         return lambda: _fills_body(deps)
+    if job.kind == "news_collect":
+        return lambda: _news_body(deps)
     if job.kind == "reflect":
         return lambda: _heavy(deps, lambda: _reflect_body(deps))
     if job.kind == "ml_train":
@@ -1240,6 +1280,8 @@ def queued_job_body(
         return lambda: _reflect_body(deps)
     if kind == "fills_sync":
         return lambda: _fills_body(deps)
+    if kind == "news_collect":
+        return lambda: _news_body(deps)
     raise ValueError(f"알 수 없는 작업: {kind}")
 
 

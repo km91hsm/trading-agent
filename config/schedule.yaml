@@ -9,3 +9,4 @@ us:
   monitor: {start: "09:30", end: "16:00", interval_s: 60}
 reflect: "16:30"
 ml_train: {weekday: "sat", time: "10:00"}
+news_collect: {interval_s: 1800}   # 시장 전체 뉴스 저장소 수집 주기 (Phase 19)

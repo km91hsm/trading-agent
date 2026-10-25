@@ -103,10 +103,12 @@ PARAMS: dict[str, type[BaseModel]] = {
     "analyze_ticker": AnalyzeTickerParams,
     "reflect": ReflectParams,
     "fills_sync": EmptyParams,
+    "news_collect": EmptyParams,
 }
 KINDS: tuple[str, ...] = tuple(PARAMS)
-# 가벼운 kind(체결 동기화)만 heavy 락 밖. 나머지는 세션·KIS·CPU 를 오래 쓴다.
-HEAVY_KINDS: frozenset[str] = frozenset(k for k in KINDS if k != "fills_sync")
+# 가벼운 kind(체결 동기화·뉴스 수집)만 heavy 락 밖. 나머지는 세션·KIS·CPU 를 오래 쓴다.
+LIGHT_KINDS: frozenset[str] = frozenset({"fills_sync", "news_collect"})
+HEAVY_KINDS: frozenset[str] = frozenset(k for k in KINDS if k not in LIGHT_KINDS)
 _KIND_LABEL = {
     "features_backfill": "피처 백필",
     "features_snapshot": "피처 스냅샷",
@@ -119,6 +121,7 @@ _KIND_LABEL = {
     "analyze_ticker": "종목 분석",
     "reflect": "복기",
     "fills_sync": "체결 동기화",
+    "news_collect": "뉴스 수집",
 }
 
 

@@ -214,6 +214,26 @@ class _AccountsFile(BaseModel):
 # --- sources.yaml ----------------------------------------------------------
 
 
+DEFAULT_MARKET_QUERIES: dict[str, list[str]] = {
+    "KR": [
+        "증시",
+        "코스피 OR 코스닥",
+        "실적 발표",
+        "수주 OR 계약",
+        "신약 OR 임상",
+        "반도체 OR 2차전지 OR 자동차",
+        "금리 OR 환율",
+    ],
+    "US": [
+        "stock market",
+        "earnings",
+        "Fed OR Treasury yields",
+        "guidance OR upgrade",
+        "semiconductor OR AI OR biotech",
+    ],
+}
+
+
 class NewsCfg(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -222,6 +242,13 @@ class NewsCfg(BaseModel):
     naver: bool = True
     max_items: int = 20
     macro_items: int = 10
+    # 시장 전체 뉴스 저장소(Phase 19): 데몬이 질의 묶음을 돌려 원장 news_items 에 쌓는다
+    market_queries: dict[str, list[str]] = Field(
+        default_factory=lambda: {k: list(v) for k, v in DEFAULT_MARKET_QUERIES.items()}
+    )
+    store_retention_days: int = Field(default=14, ge=1, le=365)
+    store_hours: int = Field(default=48, ge=1, le=24 * 14)  # 세션·발굴 입력의 최근 창
+    store_items: int = Field(default=60, ge=1, le=500)  # 발굴 입력 건수 상한
 
 
 class MacroCfg(BaseModel):
@@ -500,6 +527,12 @@ class WeeklyJob(BaseModel):
         return _check_hm(v)
 
 
+class IntervalJob(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    interval_s: int = Field(default=1800, ge=60, le=86400)
+
+
 class ScheduleConfig(BaseModel):
     """config/schedule.yaml (KST). 데몬이 잡을 등록할 때 읽는다."""
 
@@ -509,6 +542,7 @@ class ScheduleConfig(BaseModel):
     us: MarketSchedule
     reflect: str
     ml_train: WeeklyJob
+    news_collect: IntervalJob = Field(default_factory=IntervalJob)  # 시장 전체 뉴스 수집 주기
 
     @field_validator("reflect")
     @classmethod

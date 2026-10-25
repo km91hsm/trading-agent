@@ -329,8 +329,10 @@ def _build_input_deps(secrets: config.Secrets, cfg: config.SourcesConfig) -> Inp
     except Exception as e:  # noqa: BLE001
         logging.getLogger("trader.sources").warning("시세 클라이언트 생성 실패: %s", e)
         market = None
+    from trader.ledger import db
+
     dart = DartClient(secrets.DART_API_KEY, cache) if secrets.DART_API_KEY else None
-    return InputDeps(market=market, dart=dart, edgar=_build_edgar(cfg))
+    return InputDeps(market=market, dart=dart, edgar=_build_edgar(cfg), conn_factory=db.connect)
 
 
 @app.command("collect")

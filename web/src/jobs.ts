@@ -42,6 +42,7 @@ const KIND_LABEL: Record<string, string> = {
   analyze_ticker: "종목 분석",
   market_view: "시장 세션",
   reevaluate: "재평가",
+  news_collect: "뉴스 수집",
 };
 
 export function jobLabel(j: Pick<JobRow, "id" | "kind" | "market">): string {

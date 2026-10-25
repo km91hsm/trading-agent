@@ -11,6 +11,14 @@ news:
   naver: true          # NAVER_CLIENT_ID/SECRET 필요, 없으면 건너뜀
   max_items: 20
   macro_items: 10
+  # 시장 전체 뉴스 저장소(Phase 19): 데몬 news_collect 잡이 질의 묶음을 돌려 원장 news_items 에 쌓고
+  # 발굴(scout)·시장 세션·종목 세션이 읽는다. 질의는 사용자가 고친다.
+  market_queries:
+    KR: ["증시", "코스피 OR 코스닥", "실적 발표", "수주 OR 계약", "신약 OR 임상", "반도체 OR 2차전지 OR 자동차", "금리 OR 환율"]
+    US: ["stock market", "earnings", "Fed OR Treasury yields", "guidance OR upgrade", "semiconductor OR AI OR biotech"]
+  store_retention_days: 14
+  store_hours: 48
+  store_items: 60
 
 macro:
   enabled: true

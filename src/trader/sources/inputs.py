@@ -65,6 +65,8 @@ class InputDeps:
     edgar: Any | None
     http: httpx.Client | None = None
     now: Callable[[], datetime] = field(default=lambda: datetime.now(UTC))
+    # 시장 전체 뉴스 저장소(원장 news_items) 읽기용. None 이면 종목별 수집만
+    conn_factory: Callable[[], Any] | None = None
 
 
 def _jsonable(obj: Any) -> Any:
@@ -286,15 +288,22 @@ def _fundamental(ticker, market, asof, cfg, deps, technical) -> dict[str, Sectio
 def _news_macro(ticker, market, name, asof, cfg, secrets, deps) -> dict[str, Any]:
     now = deps.now
     news = run_section(
-        lambda: collect_news(
-            cfg.news,
-            secrets,
-            ticker=ticker,
-            name=name,
-            market=market,
-            asof=asof,
-            http=deps.http,
-            now=now,
+        lambda: _with_store_news(
+            collect_news(
+                cfg.news,
+                secrets,
+                ticker=ticker,
+                name=name,
+                market=market,
+                asof=asof,
+                http=deps.http,
+                now=now,
+            ),
+            ticker,
+            market,
+            asof,
+            cfg,
+            deps,
         ),
         enabled=cfg.news.enabled,
         now=now,
@@ -305,6 +314,52 @@ def _news_macro(ticker, market, name, asof, cfg, secrets, deps) -> dict[str, Any
     else:
         macro = skipped_section("disabled", now=now)
     return {"news": news, "macro": macro}
+
+
+def _with_store_news(news: dict, ticker: str, market: str, asof, cfg, deps) -> dict:
+    """저장소(news_items)에서 이 종목으로 태그된 최근 뉴스를 종목 뉴스에 합친다(URL 중복 제거).
+    저장소가 없거나 읽기에 실패하면 수집 결과 그대로."""
+    if deps.conn_factory is None:
+        return news
+    try:
+        from trader.sources import news_store
+
+        conn = deps.conn_factory()
+        try:
+            items = news_store.recent(
+                conn,
+                market,
+                asof=asof,
+                hours=cfg.news.store_hours,
+                limit=cfg.news.max_items,
+                ticker=ticker,
+            )
+        finally:
+            conn.close()
+    except Exception as e:  # noqa: BLE001 - 저장소는 보조 입력
+        logger.debug("뉴스 저장소 읽기 실패 %s %s: %s", market, ticker, e)
+        return news
+    if not items:
+        return news
+    seen = {i.get("url") for i in news.get("stock") or []}
+    extra = [
+        {
+            "title": i["title"],
+            "summary": i.get("summary") or "",
+            "source": f"store:{i.get('source')}",
+            "published_at": i.get("published_at"),
+            "url": i["url"],
+            "received_at": i.get("received_at"),
+        }
+        for i in items
+        if i.get("url") not in seen
+    ]
+    out = dict(news)
+    merged = [*(news.get("stock") or []), *extra]
+    merged.sort(key=lambda i: i.get("published_at") or "", reverse=True)
+    out["stock"] = merged[: cfg.news.max_items]
+    out["sources"] = {**(news.get("sources") or {}), "store": f"{len(extra)}건 합침"}
+    return out
 
 
 MACRO_MEMO_TTL = timedelta(minutes=15)
