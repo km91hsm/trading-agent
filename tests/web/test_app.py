@@ -98,7 +98,7 @@ def test_usage_endpoint_reports_windows_and_observed_limits(client, deps, conn, 
 
     deps.settings.llm.usage_file = None  # 개발 머신의 ~/.claude/rate_limits.json 에 기대지 않는다
     r = client.get("/api/system/usage").json()
-    assert r["rate_limits"] is None and r["windows"]["today"] == {"sessions": 0, "cap": 14}
+    assert r["rate_limits"] is None and r["windows"]["today"] == {"sessions": 0, "cap": 40}
     p = tmp_path / "rl.json"
     p.write_text(
         json.dumps({"at": 0, "rate_limits": {"five_hour": {"used_percentage": 3}}}),
@@ -199,3 +199,46 @@ def test_today_lists_market_files_and_market_checkpoint_endpoint(client, deps):
         client.get("/api/market-checkpoint", params={"market": "KR", "stage": "../x"}).status_code
         == 400
     )
+
+
+def test_today_lists_news_jobs_for_market_and_day(client, deps, conn):
+    """Phase 23: /api/today.news_jobs 는 그 운영일·시장의 source='news' 요청만."""
+    from trader import jobs as jobq
+
+    now = deps.now()
+    jobq.enqueue(conn, "discover", {"market": "KR"}, source="news", now=now)
+    jobq.enqueue(
+        conn, "analyze_ticker", {"market": "KR", "ticker": "005930"}, source="news", now=now
+    )
+    jobq.enqueue(conn, "discover", {"market": "US"}, source="news", now=now)
+    jobq.enqueue(conn, "news_collect", {}, source="web", now=now)
+    rows = client.get("/api/today", params={"market": "KR"}).json()["news_jobs"]
+    assert [(r["kind"], r["ticker"], r["status"]) for r in rows] == [
+        ("analyze_ticker", "005930", "queued"),
+        ("discover", None, "queued"),
+    ]
+    assert client.get("/api/today", params={"market": "US"}).json()["news_jobs"][0]["kind"] == (
+        "discover"
+    )
+
+
+def test_portfolio_positions_carry_horizon_profile(client, deps, conn):
+    """Phase 23 T: 보유 행에 최근 결정의 보유기간 프로필."""
+    conn.execute(
+        "INSERT INTO positions_snapshot(account_id, market, date, ticker, qty, avg_price, "
+        "current_price, eval_amount, nav, cash, created_at) VALUES "
+        "('paper-main','KR','2026-10-24','005930',1,'70000','71000','71000','1000000','900000',"
+        "'2026-10-24T07:00:00+00:00'),"
+        "('paper-main','KR','2026-10-24','000660',1,'100000','100000','100000','1000000',"
+        "'900000','2026-10-24T07:00:00+00:00')"
+    )
+    conn.execute(
+        "INSERT INTO decisions(date, market, ticker, action, json, created_at) "
+        "VALUES ('2026-10-24','KR','005930','BUY','{\"horizon_days\": 5}',"
+        "'2026-10-24T00:00:00+00:00')"
+    )
+    conn.commit()
+    r = client.get("/api/portfolio", params={"account_id": "paper-main", "market": "KR"}).json()
+    by = {p["ticker"]: p for p in r["snapshot"]["positions"]}
+    assert by["005930"]["horizon"] == "short" and by["005930"]["horizon_days"] == 5
+    assert by["000660"]["horizon"] is None

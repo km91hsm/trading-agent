@@ -18,6 +18,7 @@ import re
 import sqlite3
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
+from difflib import SequenceMatcher
 from typing import Any
 
 import httpx
@@ -199,6 +200,116 @@ def recent(
     sql += " ORDER BY COALESCE(published_at, received_at) DESC, id DESC LIMIT ?"
     args.append(limit)
     return [_row(r) for r in conn.execute(sql, args).fetchall()]
+
+
+# --- 유사 뉴스 판정 (Phase 23) --------------------------------------------------------
+_TITLE_TAIL = re.compile(r"\s*[-–—|│]\s*[^-–—|│]{1,20}$")  # 제목 끝 ' - 매체명'
+_TITLE_NOISE = re.compile(r"[\[\(【][^\]\)】]*[\]\)】]")  # [단독]·(종합)·【속보】
+_TOKEN = re.compile(r"[0-9a-z가-힣]+")
+_STOP = {
+    "속보",
+    "단독",
+    "종합",
+    "기자",
+    "뉴스",
+    "및",
+    "the",
+    "a",
+    "an",
+    "to",
+    "of",
+    "in",
+    "on",
+    "for",
+}
+
+
+def normalize_title(title: str) -> str:
+    """유사 판정용 제목 정규화: 소문자, 괄호 머리말·끝 매체명 제거, 기호 제거. 숫자는 남긴다
+    (가격·분기가 다르면 다른 사건)."""
+    t = _TITLE_NOISE.sub(" ", title or "")
+    t = _TITLE_TAIL.sub("", t)
+    return " ".join(_TOKEN.findall(t.lower()))
+
+
+def title_tokens(title: str) -> set[str]:
+    return {w for w in normalize_title(title).split() if w not in _STOP and len(w) > 1}
+
+
+def is_similar(a: str, b: str, *, jaccard: float = 0.6, ratio: float = 0.8) -> bool:
+    """두 제목이 같은 내용인가: 토큰 Jaccard ≥ jaccard 또는 문자열 유사도 ≥ ratio. 숫자 토큰
+    (분기·금액·가격)이 다르면 다른 사건으로 본다."""
+    ta, tb = title_tokens(a), title_tokens(b)
+    if {t for t in ta if t[0].isdigit()} != {t for t in tb if t[0].isdigit()}:
+        return False
+    if ta and tb:
+        j = len(ta & tb) / len(ta | tb)
+        if j >= jaccard:
+            return True
+    na, nb = normalize_title(a), normalize_title(b)
+    if not na or not nb:
+        return False
+    return SequenceMatcher(None, na, nb).ratio() >= ratio
+
+
+def novel_items(
+    conn: sqlite3.Connection,
+    market: str,
+    *,
+    since: datetime,
+    lookback_days: int = 3,
+    jaccard: float = 0.6,
+    ratio: float = 0.8,
+) -> list[dict]:
+    """`since` 이후 받은 미판정 항목을 앞선 항목(최근 lookback_days, 같은 시장)과 비교해
+    `novel`(1 새 내용 / 0 유사)을 저장하고 **새 내용인 항목**만 돌려준다. 비교 풀은 같은 태그
+    종목끼리(태그 없는 뉴스는 태그 없는 풀), 표준 라이브러리만 쓴다(LLM 없음)."""
+    lo = (since.astimezone(UTC) - timedelta(days=lookback_days)).isoformat()
+    rows = conn.execute(
+        "SELECT id, title, tickers_json, received_at, novel FROM news_items "
+        "WHERE market=? AND received_at >= ? ORDER BY received_at, id",
+        (market, lo),
+    ).fetchall()
+    since_iso = since.astimezone(UTC).isoformat()
+    # 풀: 태그 종목(또는 '' = 태그 없음) → 이미 판정된(또는 since 이전) 제목 목록
+    pools: dict[str, list[str]] = {}
+    pending: list[sqlite3.Row] = []
+    for r in rows:
+        if r["received_at"] >= since_iso and r["novel"] is None:
+            pending.append(r)
+            continue
+        if r["novel"] == 0:
+            continue  # 유사 기사로 판정된 것은 대표가 아니다(대표 제목만 풀에)
+        for key in _pool_keys(r["tickers_json"]):
+            pools.setdefault(key, []).append(r["title"])
+    out: list[dict] = []
+    for r in pending:
+        keys = _pool_keys(r["tickers_json"])
+        dup = any(
+            is_similar(r["title"], prev, jaccard=jaccard, ratio=ratio)
+            for key in keys
+            for prev in pools.get(key, ())
+        )
+        conn.execute("UPDATE news_items SET novel=? WHERE id=?", (0 if dup else 1, r["id"]))
+        if not dup:
+            for key in keys:
+                pools.setdefault(key, []).append(r["title"])
+            row = conn.execute(
+                "SELECT id, market, source, query, title, url, url_hash, published_at, "
+                "received_at, summary, tickers_json, lang FROM news_items WHERE id=?",
+                (r["id"],),
+            ).fetchone()
+            out.append(_row(row))
+    conn.commit()
+    return out
+
+
+def _pool_keys(tickers_json: str | None) -> list[str]:
+    try:
+        tickers = json.loads(tickers_json or "[]")
+    except ValueError:
+        tickers = []
+    return [str(t) for t in tickers] or [""]
 
 
 def prune(conn: sqlite3.Connection, *, before: datetime) -> int:

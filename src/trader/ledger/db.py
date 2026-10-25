@@ -279,6 +279,10 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
             "CREATE INDEX IF NOT EXISTS ix_job_requests_prio ON job_requests(status, priority, id)",
         ],
     ),
+    (
+        16,  # Phase 23: 유사 뉴스 판정(1 새 내용 / 0 유사 / NULL 미판정) — news_store.novel_items
+        ["ALTER TABLE news_items ADD COLUMN novel INTEGER"],
+    ),
 ]
 
 

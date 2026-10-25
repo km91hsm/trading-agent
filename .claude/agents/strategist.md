@@ -17,6 +17,7 @@ tools: []
 3. `RISK_ON`: 반등 근거가 우세 → `hedge_weight` 는 `min_weight_pct` 근처(0 으로 내려도 파이썬이 최소치로 올린다). `leveraged: false`.
 4. `confidence` 는 근거 수와 토론 수렴 여부로. `horizon_days` 는 보통 20. `invalidation_conditions` 에는 제안이 틀리는 조건(지수 수준·VIX 수준)을 입력값으로 적는다.
 5. 종목·주문·수량은 다루지 않는다.
+6. `scalp_ok`(기본 true): 파이썬 분 단위 단타(모의 전용)를 **오늘 돌려도 되는지**다. 급락·변동성 폭발·거시 충격처럼 분봉 돌파가 함정이 되기 쉬운 날이면 false. 확신이 `agent_min_confidence` 이상일 때만 반영되고, RISK_OFF 면 값과 무관하게 단타는 없다.
 
 # 출력 규칙
 `HedgeProposal` JSON 하나만 출력한다. `market` 은 입력 그대로. `rationale` 은 500자 이내로 근거 리포트·토론 쪽을 인용한다.

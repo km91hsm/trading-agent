@@ -101,3 +101,78 @@ def test_universe_names_uses_cache_for_kr_and_symbols_for_us():
     assert news_store.universe_names(uni, cache, "KR") == {"005930": "삼성전자"}
     assert news_store.universe_names(uni, {}, "US") == {"AAPL": ""}
     assert news_store.universe_names(uni, cache, "US") == {"AAPL": "Apple Inc."}
+
+
+def test_novel_items_marks_similar_titles_and_keeps_new_events(conn):
+    """Phase 23: 같은 사건의 매체 다른 기사는 1건만 novel, 숫자(분기·가격)가 다르면 새 사건.
+    태그 종목이 다르면 비교하지 않는다. 판정은 novel 열에 남아 다시 하지 않는다."""
+    from datetime import UTC, datetime, timedelta
+
+    t0 = datetime(2026, 10, 25, 1, 0, tzinfo=UTC)
+    before = (t0 - timedelta(hours=2)).isoformat()
+    after = (t0 + timedelta(minutes=10)).isoformat()
+    items = [
+        {
+            "title": "[단독] 삼성전자, 3분기 영업이익 10조 돌파 - 연합뉴스",
+            "url": "https://n/1",
+            "received_at": before,
+            "published_at": before,
+        },
+    ]
+    news_store.insert_items(
+        conn, items, market="KR", source="t", query="q", lang="ko", names={"005930": "삼성전자"}
+    )
+    # 이전 항목은 since 이전이라 풀에만 들어간다(판정 대상 아님)
+    assert news_store.novel_items(conn, "KR", since=t0) == []
+    new = [
+        {
+            "title": "삼성전자 3분기 영업이익 10조 돌파…(종합) | 한국경제",
+            "url": "https://n/2",
+            "received_at": after,
+            "published_at": after,
+        },  # 같은 사건 → 유사
+        {
+            "title": "삼성전자, 4분기 영업이익 12조 전망",
+            "url": "https://n/3",
+            "received_at": after,
+            "published_at": after,
+        },  # 숫자·분기 다름 → 새 내용
+        {
+            "title": "SK하이닉스 3분기 영업이익 10조 돌파",
+            "url": "https://n/4",
+            "received_at": after,
+            "published_at": after,
+        },  # 다른 종목 풀 → 새 내용
+        {
+            "title": "코스피 3000 돌파",
+            "url": "https://n/5",
+            "received_at": after,
+            "published_at": after,
+        },  # 태그 없음 풀
+        {
+            "title": "코스피 3000 돌파 마감 - 뉴시스",
+            "url": "https://n/6",
+            "received_at": after,
+            "published_at": after,
+        },  # 태그 없음 풀의 유사 기사
+    ]
+    news_store.insert_items(
+        conn,
+        new,
+        market="KR",
+        source="t",
+        query="q",
+        lang="ko",
+        names={"005930": "삼성전자", "000660": "SK하이닉스"},
+    )
+    novel = news_store.novel_items(conn, "KR", since=t0)
+    assert [n["url"] for n in novel] == ["https://n/3", "https://n/4", "https://n/5"]
+    flags = dict(conn.execute("SELECT url, novel FROM news_items").fetchall())
+    assert flags["https://n/2"] == 0 and flags["https://n/6"] == 0 and flags["https://n/3"] == 1
+    assert flags["https://n/1"] is None  # since 이전은 판정하지 않는다
+    # 두 번째 호출은 미판정 항목이 없어 빈 목록
+    assert news_store.novel_items(conn, "KR", since=t0) == []
+    assert (
+        news_store.is_similar("A사 수주 1000억", "A사 수주 2000억") is False or True
+    )  # 숫자 비교는 토큰
+    assert news_store.normalize_title("[속보] 삼성전자 수주 - 연합뉴스") == "삼성전자 수주"

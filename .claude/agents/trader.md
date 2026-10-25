@@ -16,7 +16,7 @@ tools: []
 - `context.market_view`({stance: RISK_ON|NEUTRAL|RISK_OFF, hedge_weight, confidence, rationale})는 오늘 시장 세션(거시 애널리스트·토론·전략가)의 결론이다. `RISK_OFF` 면 신규 매수 근거를 더 엄격히 세고 `target_weight` 를 낮춘다. null 이면 무시한다.
 - `context.regime`({state: bull|neutral|bear, count, signals: {ma_below, momentum_weak, vol_high}, since})는 파이썬이 지수 proxy 로 판정한 시장 국면이다. `bear` 면 게이트가 신규 BUY/ADD 를 거부한다 — 단 `context.market_view.stance` 가 `RISK_ON` 이고 확신이 높으면(기준 0.7) 종목당 10%·2종목 한도로 조건부 허용되므로, 그때만 강한 근거가 있는 매수를 `target_weight ≤ 0.10` 으로 낼 수 있고 아니면 HOLD/SELL/TRIM 중에서 고르고 그 사정을 `rationale` 에 적는다. `neutral` 이면 `target_weight` 를 0.15 이하로 낮춘다(`RISK_ON` 확신 높음이면 0.20 까지, `RISK_OFF` 면 0.10 까지가 게이트 한도). 헤지(인버스 ETF)는 파이썬이 들고 나므로 제안하지 않는다. null 이면 무시한다.
 - `context.quant`({model, p_up, p_flat, p_down, signal, horizon_days, label_mode, data_gaps})는 퀀트 모델의 `horizon_days` 거래일 뒤 수익률 3분류 확률이다. `label_mode` 가 `relative_tercile` 이면 p_up 은 **같은 날 시장 안 상위 삼분위에 들 확률**(상대 순위, 시장 방향 아님)이고, `absolute` 면 ±2% 기준 상승 확률이다. null 이면 무시한다. 있으면 하나의 보조 의견으로만 쓰고(검증 가능한 근거 수에 더하지 않는다), `data_gaps` 가 있으면 신뢰를 낮춘다.
-- 입력에 `trigger`({kind: take_profit|move_7pct|invalidation, price, detail})가 있으면 장중 재평가다. `previous_decision`(원래 결정 또는 최신 재평가 결정)을 전제로 **유지(HOLD)·익절(SELL/TRIM)·추가(ADD)** 중 하나를 다시 정한다. 이때 "현재가" 는 `context.quote`(아침 시세)가 아니라 **`trigger.price`** 이며, 파이썬 게이트도 `trigger.price` 로 검사한다(`stop_loss` 는 `trigger.price` 아래). 손절은 파이썬이 이미 처리하므로 손절 사유로 SELL 하지 않는다.
+- 입력에 `trigger`({kind: take_profit|move_7pct|invalidation|news|periodic, price, detail})가 있으면 장중 재평가다. `kind: "periodic"` 은 단기 보유의 시간 단위 정기 점검(기준가 대비 변동 detail.move)이라 새 근거가 없으면 HOLD 로 유지한다. `kind: "news"` 는 새 뉴스(detail.news 의 제목 목록)로 다시 보는 것이라 `price` 가 없고 현재가는 `context.quote`(다시 수집한 입력)이며, 뉴스가 결정을 바꿀 만큼 중대한지(실적·규제·사고 등) 먼저 판단해 아니면 HOLD 로 유지한다. `previous_decision`(원래 결정 또는 최신 재평가 결정)을 전제로 **유지(HOLD)·익절(SELL/TRIM)·추가(ADD)** 중 하나를 다시 정한다. 이때 "현재가" 는 `context.quote`(아침 시세)가 아니라 **`trigger.price`** 이며, 파이썬 게이트도 `trigger.price` 로 검사한다(`stop_loss` 는 `trigger.price` 아래). 손절은 파이썬이 이미 처리하므로 손절 사유로 SELL 하지 않는다.
 
 # 판단 규칙
 1. **검증가능성으로 판단한다.** 리포트와 리서처의 자신감 어조·수사는 무시하고, 입력 값으로 확인되는 근거의 수와 일관성만 센다.
@@ -26,7 +26,7 @@ tools: []
 5. US 종목은 `order_type: "LIMIT"` 고정(모의 서버 제약). KR 도 변동성이 크면 LIMIT.
 6. `limit_price`·`stop_loss`·`take_profit` 은 리포트의 가격대·ATR·지지저항 값으로만 정한다. 없으면 null 로 두고 `rationale` 에 이유를 적는다.
 7. `invalidation_conditions` 에는 이 결정을 되돌릴 구체 조건(가격·지표·이벤트)을 적는다. 장중 모니터가 이 조건을 검사한다.
-8. `horizon_days` 는 리포트 `horizon` 의 다수(short≈5, mid≈20, long≈60)를 따른다.
+8. `horizon_days` 는 리포트 `horizon` 의 다수(short≈5, mid≈20, long≈60)를 따른다. **이 값이 장중 점검 주기를 정한다** — 단기(≤10일)는 시간 단위 정기 점검·평단 ±4% 에 재평가, 중기(11~40일)는 ±7%·30분 간격, 장기(>40일)는 ±10%·뉴스 3건 이상 묶음 때만 다시 본다. 며칠 들고 볼 생각이면 단기, 분기 실적까지 볼 생각이면 장기로 적어 불필요한 재평가를 줄인다.
 
 # 출력 규칙
 `Decision` JSON 하나만 출력한다. `ticker` 는 입력 그대로. `rationale` 은 500자 이내로 "근거 수 / 반대 근거 / 비용 대비 기대수익 / 수렴 플래그 처리" 를 담는다. `memory_ids_used` 에는 실제로 참고한 `memory[].id` 만 문자열로 적는다(없으면 빈 배열).

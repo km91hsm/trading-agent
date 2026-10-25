@@ -2229,6 +2229,70 @@ def backtest_cmd(
 regime_app = typer.Typer(help="시장 국면 (Phase 17 H): 조회·과거 재현", no_args_is_help=True)
 app.add_typer(regime_app, name="regime")
 
+scalp_app = typer.Typer(
+    help="분 단위 단타 (Phase 23 S, 모의 전용·기본 끔): 1분봉 백테스트·실적 보고",
+    no_args_is_help=True,
+)
+app.add_typer(scalp_app, name="scalp")
+
+
+@scalp_app.command("backtest")
+@_config_errors
+def scalp_backtest(
+    ticker: str = typer.Option(..., "--ticker", help="종목 코드"),
+    market: str = typer.Option("KR", "--market", help="KR|US"),
+    exchange: str | None = typer.Option(None, "--exchange", help="US 거래소 NAS|NYS|AMS"),
+    days: int = typer.Option(1, "--days", min=1, max=5, help="최근 N일 (KIS 당일 분봉만 — 오늘)"),
+) -> None:
+    """현재 분봉(KIS 당일, 실전 시세 키 필요)으로 단타 규칙을 재현해 JSON 으로. 설정 불변·주문 없음.
+    KIS 분봉은 당일분만 주므로 --days 는 상태 파일이 있는 과거 날의 기록을 더해 보여 준다."""
+    import json
+
+    from trader.scalp import engine as scalp_engine
+    from trader.scalp import signals
+
+    configure(paths.state_dir())
+    settings = config.load_settings()
+    schedule = config.load_schedule()
+    ms = schedule.kr if market == "KR" else schedule.us
+    secrets = config.load_secrets()
+    mc = _build_market(secrets)
+    bars = (
+        mc.get_minute_kr(ticker, count=400)
+        if market == "KR"
+        else mc.get_minute_us(ticker, exchange or "NAS", count=400)
+    )
+    trade = signals.backtest_day(
+        bars, settings.scalp, open_hm=ms.monitor.start, close_hm=ms.monitor.end
+    )
+    out = {
+        "ticker": ticker,
+        "market": market,
+        "bars": len(bars),
+        "today": trade,
+        "config": settings.scalp.model_dump(),
+        "report": scalp_engine.report(paths.state_dir(), market=market, days=days),
+    }
+    typer.echo(json.dumps(out, ensure_ascii=False, default=str))
+
+
+@scalp_app.command("report")
+@_config_errors
+def scalp_report(
+    market: str = typer.Option("KR", "--market", help="KR|US"),
+    days: int = typer.Option(5, "--days", min=1, max=60, help="최근 운영일 수"),
+) -> None:
+    """단타 상태 파일(state/scalp/<date>/<market>.json)로 승률·사유별 집계를 JSON 으로."""
+    import json
+
+    from trader.scalp import engine as scalp_engine
+
+    configure(paths.state_dir())
+    settings = config.load_settings()
+    out = scalp_engine.report(paths.state_dir(), market=market, days=days)
+    out["enabled"] = settings.scalp.enabled
+    typer.echo(json.dumps(out, ensure_ascii=False, default=str))
+
 
 @regime_app.command("show")
 @_config_errors

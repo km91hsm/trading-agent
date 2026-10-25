@@ -824,6 +824,8 @@ def submit_decision(
         trig = repo.latest_trigger_price(ctx.conn, market, ticker, date)
         if trig is not None:
             price = trig
+        elif price is not None:  # 뉴스 재평가(가격 없는 트리거)는 재수집 입력 + 재시세
+            price, requote = _requote(ctx, inputs, market, ticker, price)
     elif price is not None:
         price, requote = _requote(ctx, inputs, market, ticker, price)
     if price is None:
@@ -1360,6 +1362,12 @@ def submit_discovery(
         exclude=exclude,
     )
     path = write_checkpoint(d, "_discovery", _wrap(resolved, _call(agent, call_meta)))
+    if inputs.get("intraday_round"):  # 장중 발굴(Phase 23)은 회차 사본도 남긴다
+        write_checkpoint(
+            d,
+            f"_discovery_r{int(inputs['intraday_round'])}",
+            _wrap(resolved, _call(agent, call_meta)),
+        )
     merged = discovery.merge(list(inputs.get("quant_candidates") or []), resolved)
     logger.info("발굴 저장 %s: %s", market, discovery.line(resolved))
     return {

@@ -98,19 +98,22 @@ def evaluate(
     is_hedge: bool = False,
     hedge_max_weight: float | None = None,
     agent_tilt: int = 0,
+    is_scalp: bool = False,
 ) -> RiskVerdict:
     """regime(bull|neutral|bear)·is_hedge 는 Phase 17 H: neutral 은 신규 매수 한도 축소, bear 는
     일반 BUY/ADD 거부(SELL·TRIM·손절·헤지만 통과). 헤지 주문은 비용·보유기간·주 2회·중복·종목 수·
     섹터·일일손실 규칙을 면제하고 비중 상한만 hedge_max_weight 로 바꾼다.
     agent_tilt(Phase 22)는 전략가 제안의 기울기(+1 RISK_ON / −1 RISK_OFF): 국면 한도를 한 칸
-    옮기고, bear 에서 +1 이면 신규 매수를 10%·2종목 한도로 조건부 허용한다."""
+    옮기고, bear 에서 +1 이면 신규 매수를 10%·2종목 한도로 조건부 허용한다.
+    is_scalp(Phase 23)는 분 단위 단타: 최소 보유·주 2회·기대수익 규칙을 면제하고(당일 청산 전제)
+    비중·현금·중복·종목 수·섹터·일일손실·bear 거부는 그대로 본다."""
     acct = portfolio.account_id
     if decision.action == "HOLD":
         return RiskVerdict(
             account_id=acct, approved=False, adjusted_qty=0, reasons=["HOLD: 주문 없음"]
         )
 
-    tilt = 0 if is_hedge or is_stop_loss else int(agent_tilt)
+    tilt = 0 if is_hedge or is_stop_loss or is_scalp else int(agent_tilt)
     lim = limits_for_regime(regime, limits_for(stance, limits), tilt)
     if is_hedge and hedge_max_weight is not None:
         lim = lim.model_copy(update={"max_position_pct": hedge_max_weight})
@@ -238,7 +241,7 @@ def evaluate(
             )
         if ticker in portfolio.today_buy_tickers:
             rejected.append("당일 이미 매수 주문이 있는 종목: 중복 매수 거부")
-        er = costs.expected_return(decision, price)
+        er = None if is_scalp else costs.expected_return(decision, price)
         if er is not None:
             threshold = costs.round_trip_bp(market) * COST_MULTIPLE / 10_000
             if er < threshold:
@@ -249,7 +252,7 @@ def evaluate(
             rejected.append("가능금액 부족으로 주문 수량 0")
     else:
         since = portfolio.held_since.get(ticker)
-        if since is not None and not is_stop_loss and not is_hedge:
+        if since is not None and not is_stop_loss and not is_hedge and not is_scalp:
             days = _trading_days_between(since, today, holidays)
             if days < MIN_HOLD_TRADING_DAYS:
                 rejected.append(
@@ -260,6 +263,7 @@ def evaluate(
     if (
         not is_stop_loss
         and not is_hedge
+        and not is_scalp
         and portfolio.trades_this_week.get(ticker, 0) >= MAX_TRADES_PER_WEEK
     ):
         rejected.append(f"종목당 주 {MAX_TRADES_PER_WEEK}회 거래 한도 초과")

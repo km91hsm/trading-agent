@@ -72,3 +72,47 @@ describe("scan summary", () => {
     ).toBe("picks 1 · 분석 대상 3 · 뉴스 발굴 없음 · 세션 상한");
   });
 });
+
+describe("newsJobRows (Phase 23 장중 발굴)", () => {
+  it("kind·status 를 한국어 라벨로, 대기·오류를 센다", async () => {
+    const { newsJobRows, newsJobsHeadline } = await import("./pipeline");
+    const jobs = [
+      { id: 3, kind: "discover", ticker: null, status: "queued", requested_at: "2026-10-24T01:00:00+00:00", finished_at: null, error: null },
+      { id: 2, kind: "reevaluate", ticker: "005930", status: "ok", requested_at: "2026-10-24T00:50:00+00:00", finished_at: "2026-10-24T00:55:00+00:00", error: null },
+      { id: 1, kind: "analyze_ticker", ticker: "000660", status: "error", requested_at: "2026-10-24T00:40:00+00:00", finished_at: "2026-10-24T00:41:00+00:00", error: "세션 실패" },
+    ];
+    const rows = newsJobRows(jobs);
+    expect(rows.map((r) => r.kindLabel)).toEqual(["유니버스 밖 발굴", "재평가(새 뉴스)", "종목 분석(새 뉴스)"]);
+    expect(rows[0].pending && !rows[1].pending && rows[2].failed).toBe(true);
+    expect(rows[1].at).toBe("2026-10-24T00:55:00+00:00");
+    expect(newsJobsHeadline(jobs)).toBe("요청 3 · 대기 1 · 오류 1");
+  });
+});
+
+describe("scalp (Phase 23 단타)", () => {
+  it("칩 문구와 표 행", async () => {
+    const { scalpChip, scalpRows } = await import("./pipeline");
+    expect(scalpChip(null, "KR").text).toBe("—");
+    expect(scalpChip({ enabled: false, max_weight_pct: 0.05, max_positions: 2, markets: {} }, "KR")).toEqual({ text: "끔", level: "none" });
+    const r = {
+      enabled: true,
+      max_weight_pct: 0.05,
+      max_positions: 2,
+      markets: {
+        KR: {
+          date: "2026-10-24",
+          open: [{ ticker: "005930", entry_price: "10100", entry_time: "092400", dry_run: true }],
+          closed: [{ ticker: "000660", entry_price: "100", entry_time: "100000", exit_price: "101.5", exit_time: "101500", reason: "take_profit", ret: 0.015 }],
+          halted: "실현 -1.2%",
+        },
+      },
+    };
+    expect(scalpChip(r, "KR")).toEqual({ text: "켬 · 보유 1 · 청산 1 · 중단", level: "warn" });
+    const rows = scalpRows(r, "KR");
+    expect(rows.map((x) => x.state)).toEqual(["보유 중", "청산"]);
+    expect(rows[0].entry).toBe("10100 @ 09:24");
+    expect(rows[0].dry).toBe(true);
+    expect(rows[1]).toMatchObject({ exit: "101.5 @ 10:15", ret: "+1.50%", reason: "익절" });
+    expect(scalpRows(r, "US")).toEqual([]);
+  });
+});

@@ -44,6 +44,7 @@ const KIND_LABEL: Record<string, string> = {
   reevaluate: "재평가",
   news_collect: "뉴스 수집",
   reconcile: "KIS 대조",
+  discover: "장중 발굴",
 };
 
 export function jobLabel(j: Pick<JobRow, "id" | "kind" | "market">): string {

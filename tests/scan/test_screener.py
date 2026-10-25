@@ -52,7 +52,7 @@ def test_fake_screen_session_writes_screen_json(project, conn, monkeypatch):
     f = project / "state" / "runs" / "2026-10-09" / "KR" / "_screen.json"
     data = json.loads(f.read_text(encoding="utf-8"))
     assert len(data["data"]["picks"]) == 5 and data["call"]["agent"] == "screener"
-    assert r["analyze_targets"][0] == {"ticker": "000000", "exchange": None}
+    assert r["analyze_targets"][0] == {"ticker": "000000", "exchange": None, "source": "pick"}
     assert r["session"]["fake"] is True
 
 
@@ -210,8 +210,8 @@ def test_targets_skip_hedge_etf_and_take_exchange_from_position(project, conn):
         universe=uni,
     )
     assert us["analyze_targets"] == [
-        {"ticker": "AAPL", "exchange": "NAS"},
-        {"ticker": "SPY", "exchange": "AMS"},
+        {"ticker": "AAPL", "exchange": "NAS", "source": "held"},
+        {"ticker": "SPY", "exchange": "AMS", "source": "held"},
     ]
 
 

@@ -216,6 +216,7 @@ class HedgeProposal(BaseModel):
     stance: MarketStance
     hedge_weight: float = Field(ge=0, le=0.25)
     leveraged: bool = False
+    scalp_ok: bool = True  # Phase 23: false(확신 ≥ 기준)면 그날 분 단위 단타 금지
     confidence: float = Field(ge=0, le=1)
     horizon_days: int = Field(ge=1)
     rationale: str = Field(max_length=500)

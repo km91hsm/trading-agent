@@ -19,6 +19,15 @@ export function ErrorBox({ error }: { error: string | null }) {
   );
 }
 
+const HORIZON_LABEL: Record<string, string> = { short: "단기", mid: "중기", long: "장기" };
+
+/** 보유기간 프로필 표기: "단기 5일" / 결정 없는 보유분은 "—". */
+export function horizonText(p: Pick<Position, "horizon" | "horizon_days">): string {
+  if (!p.horizon) return "—";
+  const label = HORIZON_LABEL[p.horizon] ?? p.horizon;
+  return p.horizon_days ? `${label} ${p.horizon_days}일` : label;
+}
+
 export function PositionsTable({ rows, nav }: { rows: Position[]; nav?: string | null }) {
   if (!rows.length) return <EmptyState title="보유 종목이 없어요" hint="매수가 체결되면 다음 판정 때 스냅샷에 잡혀요." />;
   const navN = nav ? Number(nav) : NaN;
@@ -27,6 +36,7 @@ export function PositionsTable({ rows, nav }: { rows: Position[]; nav?: string |
       <thead>
         <tr>
           <Th>종목</Th>
+          <Th>보유기간</Th>
           <Th num>수량</Th>
           <Th num>평균단가</Th>
           <Th num>현재가</Th>
@@ -44,6 +54,7 @@ export function PositionsTable({ rows, nav }: { rows: Position[]; nav?: string |
               <Td>
                 <Ticker market={p.market} ticker={p.ticker} />
               </Td>
+              <Td>{horizonText(p)}</Td>
               <Td num>{p.qty}</Td>
               <Td num>
                 <Num value={p.avg_price} market={p.market} />

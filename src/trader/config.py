@@ -44,6 +44,69 @@ class ConfigError(Exception):
 # --- settings.yaml ---------------------------------------------------------
 
 
+class HorizonProfile(BaseModel):
+    """보유기간 프로필(Phase 23 T): 결정의 `horizon_days` 가 정하는 장중 점검 주기·임계.
+    단기 결정은 자주·작은 변동에, 장기 결정은 큰 변동·뉴스 묶음에만 다시 본다."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    move_pct: float = Field(gt=0, le=0.5)  # 급등락 재평가 트리거(평단 대비)
+    reeval_interval_min: int = Field(ge=1)  # 같은 종목 재평가 세션 최소 간격(분)
+    periodic_check_min: int = Field(ge=0)  # 시간 단위 정기 재평가 간격(분), 0 = 없음
+    news_min_novel: int = Field(ge=1)  # 뉴스 재분석에 필요한 새 뉴스 건수
+    daily_reanalyze_every: int = Field(ge=1)  # 보유 종목 아침 재분석 주기(운영일)
+
+
+def _default_profiles() -> dict[str, HorizonProfile]:
+    return {
+        "short": HorizonProfile(
+            move_pct=0.04,
+            reeval_interval_min=15,
+            periodic_check_min=60,
+            news_min_novel=1,
+            daily_reanalyze_every=1,
+        ),
+        "mid": HorizonProfile(
+            move_pct=0.07,
+            reeval_interval_min=30,
+            periodic_check_min=0,
+            news_min_novel=1,
+            daily_reanalyze_every=2,
+        ),
+        "long": HorizonProfile(
+            move_pct=0.10,
+            reeval_interval_min=60,
+            periodic_check_min=0,
+            news_min_novel=3,
+            daily_reanalyze_every=5,
+        ),
+    }
+
+
+class ScalpCfg(BaseModel):
+    """분 단위 단타 층(Phase 23 S). **모의 계좌 전용·기본 끔.** 1분봉 신호는 파이썬 순수 함수
+    (`scalp/signals.py`)이고 에이전트는 후보(picks·뉴스·watch)와 허용 여부(strategist `scalp_ok`)만
+    정한다. 실전 계좌는 설정이 켜져 있어도 기록만 한다."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    max_weight_pct: float = Field(default=0.05, gt=0, le=0.25)  # 계좌 NAV 대비 진입 비중
+    max_positions: int = Field(default=2, ge=1, le=10)  # 동시 보유 단타 종목 수
+    max_universe: int = Field(default=10, ge=1, le=30)  # 틱마다 분봉을 받는 종목 수 상한
+    volume_mult: float = Field(default=3.0, gt=1)  # 최근 5분 거래량 ≥ 직전 20분 평균 × 배수
+    take_profit_pct: float = Field(default=0.015, gt=0, le=0.2)
+    stop_pct: float = Field(default=0.01, gt=0, le=0.2)
+    max_hold_min: int = Field(default=60, ge=5, le=390)
+    warmup_min: int = Field(default=15, ge=1, le=120)  # 개장 뒤 이 시간은 진입 없음
+    close_before_min: int = Field(
+        default=20, ge=1, le=120
+    )  # 마감 전 이 시간부터 신규 금지·전량 청산
+    daily_stop_pct: float = Field(
+        default=0.01, gt=0, le=0.2
+    )  # 단타 일일 실현손실(NAV 비중 합) 한도
+
+
 class RiskLimits(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -53,6 +116,16 @@ class RiskLimits(BaseModel):
     stop_loss_pct: float = -0.15
     min_cash_pct: float = 0.0
     max_sector_pct: float = Field(default=0.40, gt=0, le=1)  # 같은 섹터 합계 상한 (BUY/ADD 뒤)
+    # 보유기간 프로필(Phase 23 T): short(≤10일)·mid(11~40)·long(>40) 셋이 전부 있어야 한다
+    horizon_profiles: dict[str, HorizonProfile] = Field(default_factory=_default_profiles)
+
+    @field_validator("horizon_profiles")
+    @classmethod
+    def _profiles_complete(cls, v: dict[str, HorizonProfile]) -> dict[str, HorizonProfile]:
+        missing = {"short", "mid", "long"} - set(v)
+        if missing:
+            raise ValueError(f"horizon_profiles 에 빠진 프로필: {sorted(missing)}")
+        return v
 
 
 class HedgeInstrument(BaseModel):
@@ -156,7 +229,7 @@ class LlmSettings(BaseModel):
 
     budget_usd: float = 5.0
     timeout_s: int = 600
-    daily_session_cap: int = 14  # 종목 analyze + 시장 세션(시장당 1) 합계
+    daily_session_cap: int = 40  # 종목 analyze + 시장 세션 + 장중 발굴·재분석(Phase 23) 합계
     market_session_cap: int = 2  # 하루 시장 세션(kind=market) 상한 (종목 분석 예산 보호)
     # 대화형 Claude Code 상태줄이 남기는 구독 사용률 관측 파일 (usage.py). 비우면 표시 안 함
     usage_file: str | None = "~/.claude/rate_limits.json"
@@ -175,6 +248,35 @@ class HalfLives(BaseModel):
     short: int = 14
     mid: int = 90
     long: int = 365
+
+
+class SimilarityCfg(BaseModel):
+    """유사 뉴스 판정(Phase 23, `news_store.is_similar`): 토큰 Jaccard 또는 문자열 유사도."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    jaccard: float = Field(default=0.6, ge=0, le=1)
+    ratio: float = Field(default=0.8, ge=0, le=1)
+    lookback_days: int = Field(default=3, ge=1, le=30)
+
+
+class IntradayDiscoveryCfg(BaseModel):
+    """장중 뉴스 발굴(Phase 23): 뉴스 수집(30분)마다 **새 내용** 뉴스가 있으면 같은 종목이라도
+    재분석(오늘 결정이 있으면 재평가)하고 유니버스 밖은 scout 세션(kind=discover)으로 발굴한다.
+    유사 기사만 들어오면 세션을 띄우지 않는다. 장중 창 안에서만."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    min_items: int = Field(default=1, ge=1, le=20)  # 종목 재분석에 필요한 새 뉴스 건수
+    discover_cap: int = Field(default=20, ge=0, le=100)  # 시장별 하루 discover 세션 상한
+    similarity: SimilarityCfg = Field(default_factory=SimilarityCfg)
+
+
+class DiscoveryCfg(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    intraday: IntradayDiscoveryCfg = Field(default_factory=IntradayDiscoveryCfg)
 
 
 class MemorySettings(BaseModel):
@@ -202,6 +304,8 @@ class Settings(BaseModel):
     llm: LlmSettings = Field(default_factory=LlmSettings)
     web: WebSettings = Field(default_factory=WebSettings)
     memory: MemorySettings = Field(default_factory=MemorySettings)
+    discovery: DiscoveryCfg = Field(default_factory=DiscoveryCfg)  # Phase 23 장중 뉴스 발굴
+    scalp: ScalpCfg = Field(default_factory=ScalpCfg)  # Phase 23 분 단위 단타(모의 전용, 기본 끔)
 
 
 # --- accounts.yaml ---------------------------------------------------------

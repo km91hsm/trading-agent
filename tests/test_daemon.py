@@ -949,3 +949,44 @@ def test_scan_line_and_listed_discovery_snapshot(conn, monkeypatch):
         deps, "KR", [{"ticker": "247540", "discovery": "listed"}], today=date(2026, 10, 8)
     )
     assert calls == []
+
+
+def test_analyze_body_skips_held_only_targets_by_horizon_profile(project, conn):
+    """Phase 23 T: 보유 종목(source=held)은 최근 결정의 프로필 주기(장기 5운영일)마다만 아침 재분석.
+    picks·결정 없는 보유분은 그대로."""
+    from trader.orchestrator.run_store import write_checkpoint
+    from trader.orchestrator.session import SessionResult
+
+    today = datetime(2026, 10, 27, 0, 0, tzinfo=UTC)  # 월요일
+    deps = _deps(conn, FakeMarket(), now=lambda: today)
+    for ticker, hd in (("L", 60), ("S", 5), ("P", 60)):
+        conn.execute(
+            "INSERT INTO decisions(date, market, ticker, action, json, created_at) "
+            "VALUES ('2026-10-24','KR',?,'BUY',?,'2026-10-24T00:00:00+00:00')",
+            (ticker, json.dumps({"horizon_days": hd})),
+        )
+    conn.commit()
+    write_checkpoint(
+        run_store.market_dir(date(2026, 10, 27), "KR", create=True),
+        "_scan",
+        {
+            "analyze_targets": [
+                {"ticker": "P", "exchange": None, "source": "pick"},  # pick 은 항상
+                {"ticker": "L", "exchange": None, "source": "held"},  # 장기, 1 평일 뒤 → 건너뜀
+                {"ticker": "S", "exchange": None, "source": "held"},  # 단기(매일) → 분석
+                {"ticker": "N", "exchange": None, "source": "held"},  # 결정 없음 → 분석
+            ]
+        },
+    )
+    seen = []
+
+    def runner(spec, settings, conn_, accounts_, **kw):
+        seen.append(spec.tickers[0]["ticker"])
+        return SessionResult(ok=True, session_id=f"s-{spec.tickers[0]['ticker']}", cost_usd=1.0)
+
+    deps.session_runner = runner
+    r = daemon._analyze_body(deps, "KR")
+    assert seen == ["P", "S", "N"]
+    assert r["skipped_held"] == [
+        {"ticker": "L", "profile": "long", "last": "2026-10-24", "every": 5}
+    ]

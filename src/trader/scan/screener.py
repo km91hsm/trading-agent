@@ -168,10 +168,10 @@ def run_screen(
     targets: list[dict] = []
     seen: set[str] = set()
 
-    def add(ticker: str, exchange: str | None) -> None:
+    def add(ticker: str, exchange: str | None, source: str = "pick") -> None:
         if ticker not in seen:
             seen.add(ticker)
-            t: dict = {"ticker": ticker, "exchange": exchange}
+            t: dict = {"ticker": ticker, "exchange": exchange, "source": source}
             if ticker in listed_tier:
                 t["discovery"] = "listed"  # 유니버스 밖: 피처 스토어에 행이 없다
             targets.append(t)
@@ -185,13 +185,13 @@ def run_screen(
             for pos in brokers[a.id].get_positions(market):
                 if pos.ticker in hedge_tickers:
                     continue  # 헤지 ETF 는 국면 규칙만 사고판다
-                add(pos.ticker, getattr(pos, "exchange", None) or exch.get(pos.ticker))
+                add(pos.ticker, getattr(pos, "exchange", None) or exch.get(pos.ticker), "held")
         except Exception as e:  # noqa: BLE001 - 보유 조회 실패는 후보만으로 진행
             logger.warning("보유종목 조회 실패 %s: %s", a.id, e)
     for w in watch or []:
         wm, wt = split_market(str(w).strip().upper())
         if wm == market:  # 다른 시장의 관심종목은 이 시장 분석 대상이 아니다
-            add(wt, exch.get(wt))
+            add(wt, exch.get(wt), "watch")
     from trader.scan import discovery as discovery_mod
 
     return {

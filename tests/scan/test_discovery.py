@@ -439,3 +439,63 @@ def test_build_inputs_includes_naver_blog_posts_for_kr_only(project, conn):
         sources_cfg=cfg,
     )
     assert data["blog_posts"] == []
+
+
+def test_news_burst_counts_novel_news_per_universe_or_held_ticker():
+    novel = [
+        {"id": 1, "title": "a", "tickers": ["005930"]},
+        {"id": 2, "title": "b", "tickers": ["005930", "000660"]},
+        {"id": 3, "title": "c", "tickers": []},
+        {"id": 4, "title": "d", "tickers": ["999999"]},  # 유니버스·보유 밖
+    ]
+    out = discovery.news_burst(novel, universe_tickers={"005930"}, held={"000660"}, min_items=1)
+    assert set(out["tickers"]) == {"005930", "000660"}
+    assert len(out["tickers"]["005930"]) == 2 and out["untagged"] == 2 and out["total"] == 4
+    out2 = discovery.news_burst(novel, universe_tickers={"005930"}, held=set(), min_items=2)
+    assert set(out2["tickers"]) == {"005930"}
+
+
+def test_build_inputs_intraday_uses_novel_news_only_and_writes_round_copy(project, conn):
+    from datetime import timedelta
+
+    news_store.insert_items(
+        conn,
+        [
+            {
+                "title": "저장소 48시간 뉴스(싣지 않음)",
+                "url": "https://n/old",
+                "published_at": (T0 - timedelta(hours=2)).isoformat(),
+                "received_at": (T0 - timedelta(hours=2)).isoformat(),
+            }
+        ],
+        market="KR",
+        source="google_rss",
+        query="q",
+        lang="ko",
+        names={},
+    )
+    novel = [{"id": 9, "title": "삼성전자 신규 수주", "tickers": ["005930"], "source": "t"}]
+    kw = dict(
+        market="KR",
+        today=D,
+        asof=T0,
+        quant_candidates=[],
+        held=[],
+        now=lambda: T0,
+        cache_names=CACHE,
+        intraday_news=novel,
+        analyzed_today=["000660"],
+    )
+    data = discovery.build_inputs(conn, Settings(), UNI_KR, **kw)
+    assert [n["title"] for n in data["news"]] == ["삼성전자 신규 수주"]
+    assert data["intraday_round"] == 1
+    assert data["recent_picks"][0] == {"date": D.isoformat(), "picks": ["000660"], "discovered": []}
+    d = market_dir(D, "KR")
+    assert read_checkpoint(d, "_discovery_inputs_r1")["data"]["intraday_round"] == 1
+    data2 = discovery.build_inputs(conn, Settings(), UNI_KR, **kw)
+    assert data2["intraday_round"] == 2 and read_checkpoint(d, "_discovery_inputs_r2")
+    # 평소(아침) 조립은 저장소 뉴스 그대로, 회차 없음
+    kw.pop("intraday_news")
+    kw.pop("analyzed_today")
+    plain = discovery.build_inputs(conn, Settings(), UNI_KR, **kw)
+    assert plain["intraday_round"] is None and plain["news"][0]["title"].startswith("저장소")

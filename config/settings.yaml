@@ -9,6 +9,14 @@ risk:
   stop_loss_pct: -0.15
   min_cash_pct: 0.0
   max_sector_pct: 0.40     # 같은 섹터(config/sectors.yaml) 합계 상한. BUY/ADD 뒤 초과면 거부. 헤지 ETF 는 제외
+  # 보유기간 프로필(Phase 23). 결정의 horizon_days 로 short(≤10 거래일)·mid(11~40)·long(>40) 을 고른다.
+  #   move_pct: 평단 대비 이만큼 움직이면 재평가 트리거 / reeval_interval_min: 같은 종목 재평가 최소 간격
+  #   periodic_check_min: 시간 단위 정기 재평가(단기만, 0 = 없음; 변동이 move_pct/2 이상일 때만, 운영일 ≤ 6회)
+  #   news_min_novel: 뉴스 재분석에 필요한 새 뉴스 건수 / daily_reanalyze_every: 보유 종목 아침 재분석 주기(운영일)
+  horizon_profiles:
+    short: { move_pct: 0.04, reeval_interval_min: 15, periodic_check_min: 60, news_min_novel: 1, daily_reanalyze_every: 1 }
+    mid:   { move_pct: 0.07, reeval_interval_min: 30, periodic_check_min: 0,  news_min_novel: 1, daily_reanalyze_every: 2 }
+    long:  { move_pct: 0.10, reeval_interval_min: 60, periodic_check_min: 0,  news_min_novel: 3, daily_reanalyze_every: 5 }
 
 # 하락장 대응 (Phase 17). 국면 판정·인버스 ETF 헤지는 전부 파이썬 규칙이고 LLM 은 regime 값만 입력으로 받는다.
 # 공매도는 KIS 개인 API 가 지원하지 않아 제외. 레버리지 인버스는 변동성 끌림이 있어 3지표 모두일 때만.
@@ -52,7 +60,7 @@ claude_bin: null      # null 이면 PATH 에서 claude 탐색
 llm:
   budget_usd: 5.0        # 세션당 --max-budget-usd (전문 전달 세션은 $2~3, 실기 확인)
   timeout_s: 600         # 세션 타임아웃
-  daily_session_cap: 14  # 하루 세션 수 상한 (종목 analyze + 시장 세션 KR·US 2회 포함, 초과 시 데몬이 띄우지 않고 알림)
+  daily_session_cap: 40  # 하루 세션 수 상한 (종목 analyze + 시장 세션 KR·US 2회 + 장중 뉴스 발굴·재분석 포함, 초과 시 데몬이 띄우지 않고 알림)
   market_session_cap: 2  # 시장 세션(거시·토론·전략가) 하루 상한. 큐로 다시 눌러도 이 수를 넘지 않는다
   usage_file: ~/.claude/rate_limits.json  # 대화형 claude 상태줄이 남기는 구독 사용률 관측 파일 (웹 대시보드)
 
@@ -67,3 +75,29 @@ memory:
   drawdown_stop_pct: -0.10
   vix_spike_pct: 0.30
   top_k: 5
+
+# 장중 뉴스 발굴 (Phase 23). 뉴스 수집(30분)마다 **새 내용** 뉴스가 있으면 같은 종목도 재분석(오늘 결정이
+# 있으면 재평가 세션), 유니버스 밖은 scout 세션(discover)으로 발굴. 유사 기사(같은 사건의 다른 매체 기사)는
+# 파이썬이 걸러 세션을 띄우지 않는다. 장중 창(monitor 시간) 안에서만.
+discovery:
+  intraday:
+    enabled: true
+    min_items: 1          # 종목 재분석에 필요한 새 뉴스 건수
+    discover_cap: 20      # 시장별 하루 discover(scout) 세션 상한
+    similarity: {jaccard: 0.6, ratio: 0.8, lookback_days: 3}   # 유사 판정: 토큰 Jaccard / 문자열 유사도 / 비교 기간
+
+# 분 단위 단타 층 (Phase 23). **모의 계좌 전용, 기본 끔.** 1분봉 신호(거래량 급증 ∧ 당일 고가·VWAP 동시 돌파)는
+# 파이썬이 감지·집행하고, 에이전트는 후보(오늘 picks·새 뉴스 종목·관심종목)와 허용 여부(strategist scalp_ok)만
+# 정한다. bear 국면·RISK_OFF 제안(확신 기준 이상)이면 그날 단타 없음. 켜기 전에 `trader scalp backtest` 로 본다.
+scalp:
+  enabled: false
+  max_weight_pct: 0.05       # 계좌 NAV 대비 진입 비중
+  max_positions: 2           # 동시 보유 단타 종목 수
+  max_universe: 10           # 틱마다 분봉을 받는 종목 수 상한 (KIS 20/s 안)
+  volume_mult: 3.0           # 최근 5분 거래량 ≥ 직전 20분 평균 × 배수
+  take_profit_pct: 0.015
+  stop_pct: 0.01
+  max_hold_min: 60
+  warmup_min: 15             # 개장 뒤 이 시간은 진입 없음
+  close_before_min: 20       # 마감 전 이 시간부터 신규 금지·전량 청산
+  daily_stop_pct: 0.01       # 단타 일일 실현손실(NAV 비중 합) 한도 — 닿으면 그날 중단

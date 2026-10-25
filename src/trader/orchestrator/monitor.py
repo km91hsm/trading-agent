@@ -21,16 +21,17 @@ from trader import names
 from trader.agents.schemas import Decision
 from trader.broker.errors import KisApiError
 from trader.broker.models import Position
-from trader.config import KST, MARKET_TZ, AccountConfig, Settings
+from trader.config import KST, MARKET_TZ, AccountConfig, HorizonProfile, Settings
 from trader.control import control
 from trader.ledger import repo
 from trader.notify.telegram import Notifier, NullNotifier
 from trader.orchestrator import executor, resume, tools
 from trader.platform import paths
+from trader.risk import horizon
 
 logger = logging.getLogger("trader.monitor")
 
-MOVE_PCT = Decimal("0.07")
+MOVE_PCT = Decimal("0.07")  # 프로필이 없을 때(mid) 기본 — 정본은 risk.horizon_profiles
 REEVAL_INTERVAL = timedelta(minutes=30)
 _NUM_RE = re.compile(r"(\d[\d,]*(?:\.\d+)?)")
 
@@ -83,9 +84,12 @@ def check_position(
     *,
     stop_loss_pct: float,
     now: datetime,
+    move_pct: Decimal | None = None,
 ) -> list[Signal]:
-    """순수 함수. 손절이면 손절 신호만, 아니면 take_profit → move_7pct → invalidation 순."""
+    """순수 함수. 손절이면 손절 신호만, 아니면 take_profit → move_7pct → invalidation 순.
+    `move_pct` 는 보유기간 프로필의 급등락 임계(Phase 23 T, 없으면 7%)."""
     dec = decision or {}
+    threshold = move_pct if move_pct is not None else MOVE_PCT
     stop = dec.get("stop_loss")
     level = Decimal(str(stop)) if stop else pos.avg_price * (1 + Decimal(str(stop_loss_pct)))
     if quote <= level:
@@ -96,8 +100,14 @@ def check_position(
         out.append(Signal("take_profit", quote, {"level": str(tp)}))
     if pos.avg_price > 0:
         move = quote / pos.avg_price - 1
-        if abs(move) >= MOVE_PCT:
-            out.append(Signal("move_7pct", quote, {"move": _q2(move * 100) + "%"}))
+        if abs(move) >= threshold:
+            out.append(
+                Signal(
+                    "move_7pct",
+                    quote,
+                    {"move": _q2(move * 100) + "%", "threshold": _q2(threshold * 100) + "%"},
+                )
+            )
     for op, px in parse_price_conditions(dec.get("invalidation_conditions") or []):
         if (op == "<" and quote < px) or (op == ">=" and quote >= px):
             out.append(Signal("invalidation", quote, {"condition": f"{op} {px}"}))
@@ -162,7 +172,43 @@ def _stop_loss_decision(ticker: str, market: str, quote: Decimal, sig: Signal) -
     )
 
 
-def _can_reevaluate(ctx: MonitorContext, market: str, ticker: str, today: date) -> str | None:
+def periodic_signal(
+    quote: Decimal,
+    ref_price: Decimal,
+    *,
+    profile: HorizonProfile,
+    last_periodic_at: datetime | None,
+    count_today: int,
+    now: datetime,
+) -> Signal | None:
+    """단기 보유의 시간 단위 정기 재평가(Phase 23 T, 순수 함수). `periodic_check_min` 이 0 이면
+    없음. 직전 정기 점검(없으면 결정 시각 기준 — 호출자가 None 을 넘기면 바로 가능)에서 간격이
+    지났고, 기준가 대비 변동이 `move_pct/2` 이상이며, 운영일 상한 안일 때만."""
+    if profile.periodic_check_min <= 0 or count_today >= horizon.PERIODIC_DAILY_CAP:
+        return None
+    if last_periodic_at is not None and now - last_periodic_at < timedelta(
+        minutes=profile.periodic_check_min
+    ):
+        return None
+    if ref_price <= 0:
+        return None
+    move = quote / ref_price - 1
+    if abs(move) < Decimal(str(profile.move_pct)) / 2:
+        return None
+    return Signal(
+        "periodic",
+        quote,
+        {"move": _q2(move * 100) + "%", "ref_price": str(ref_price), "profile": "short"},
+    )
+
+
+def _can_reevaluate(
+    ctx: MonitorContext,
+    market: str,
+    ticker: str,
+    today: date,
+    interval: timedelta = REEVAL_INTERVAL,
+) -> str | None:
     if ctx.session_runner is None:
         return "session_runner 없음"
     if control.is_paused(ctx.conn):
@@ -174,8 +220,8 @@ def _can_reevaluate(ctx: MonitorContext, market: str, ticker: str, today: date) 
     if tools.sessions_today(ctx.conn, ctx.now()) >= ctx.settings.llm.daily_session_cap:
         return "세션 상한"
     last = repo.last_trigger_handled_at(ctx.conn, market, ticker)
-    if last is not None and ctx.now() - last < REEVAL_INTERVAL:
-        return "30분 내 재평가 있음"
+    if last is not None and ctx.now() - last < interval:
+        return f"{int(interval.total_seconds() // 60)}분 내 재평가 있음"
     return None
 
 
@@ -206,9 +252,19 @@ def monitor_once(ctx: MonitorContext, *, market: str, today: date) -> dict:
             result["checked"] += 1
             latest = repo.latest_decision(ctx.conn, market, pos.ticker)
             dec_data = (latest or {}).get("data")
+            pname, profile = horizon.of_decision(ctx.settings.risk, dec_data)
             signals = check_position(
-                pos, dec_data, quote, stop_loss_pct=ctx.settings.risk.stop_loss_pct, now=ctx.now()
+                pos,
+                dec_data,
+                quote,
+                stop_loss_pct=ctx.settings.risk.stop_loss_pct,
+                now=ctx.now(),
+                move_pct=Decimal(str(profile.move_pct)),
             )
+            if not signals or signals[0].kind != "stop_loss":
+                per = _periodic(ctx, market, pos, quote, profile, today)
+                if per is not None:
+                    signals.append(per)
             if not signals:
                 continue
             if signals[0].kind == "stop_loss":
@@ -247,7 +303,10 @@ def monitor_once(ctx: MonitorContext, *, market: str, today: date) -> dict:
             continue
         handled.add(pos.ticker)
         first_id = tids[0]
-        why = _can_reevaluate(ctx, market, pos.ticker, today)
+        _, profile = horizon.of_decision(ctx.settings.risk, (latest or {}).get("data"))
+        why = _can_reevaluate(
+            ctx, market, pos.ticker, today, timedelta(minutes=profile.reeval_interval_min)
+        )
         if why:
             logger.info("재평가 생략 %s %s: %s", market, pos.ticker, why)
             continue
@@ -307,6 +366,36 @@ def monitor_once(ctx: MonitorContext, *, market: str, today: date) -> dict:
         if res.ok:
             result["reevaluated"] += 1
     return result
+
+
+def _periodic(
+    ctx: MonitorContext,
+    market: str,
+    pos: Position,
+    quote: Decimal,
+    profile: HorizonProfile,
+    today: date,
+) -> Signal | None:
+    """정기 재평가 신호: 기준가는 오늘 마지막 트리거 가격(없으면 평단). 운영일 횟수·직전 시각은
+    triggers 표의 kind='periodic' 행에서 센다."""
+    if profile.periodic_check_min <= 0:
+        return None
+    lo, hi = repo.day_bounds(today, market)
+    row = ctx.conn.execute(
+        "SELECT COUNT(*) AS n, MAX(created_at) AS t FROM triggers WHERE market=? AND ticker=? "
+        "AND kind='periodic' AND created_at >= ? AND created_at < ?",
+        (market, pos.ticker, lo, hi),
+    ).fetchone()
+    last = datetime.fromisoformat(row["t"]) if row and row["t"] else None
+    ref = repo.latest_trigger_price(ctx.conn, market, pos.ticker, today) or pos.avg_price
+    return periodic_signal(
+        quote,
+        ref,
+        profile=profile,
+        last_periodic_at=last,
+        count_today=int(row["n"] if row else 0),
+        now=ctx.now(),
+    )
 
 
 def _cached_quote(

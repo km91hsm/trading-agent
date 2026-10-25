@@ -90,6 +90,33 @@ def regime_status(request: Request) -> dict:
     }
 
 
+@router.get("/scalp")
+def scalp_status(request: Request, market: str | None = None) -> dict:
+    """분 단위 단타(Phase 23 S) 상태: 설정·오늘 진입/청산·중단 사유. 토큰 없음."""
+    from trader.orchestrator.run_store import run_date_for
+    from trader.scalp import engine as scalp_engine
+
+    deps = request.app.state.deps
+    cfg = deps.settings.scalp
+    markets = [market] if market else list(deps.settings.markets)
+    today_by = {}
+    for m in markets:
+        d = run_date_for(m, deps.now())
+        st = scalp_engine.load_state(deps.state, d, m)
+        today_by[m] = {
+            "date": d.isoformat(),
+            "open": st.get("open") or [],
+            "closed": st.get("closed") or [],
+            "halted": st.get("halted"),
+        }
+    return {
+        "enabled": cfg.enabled,
+        "max_weight_pct": cfg.max_weight_pct,
+        "max_positions": cfg.max_positions,
+        "markets": today_by,
+    }
+
+
 @router.get("/daemon")
 def daemon_status(request: Request) -> dict:
     """데몬 생존(daemon.lock pid)·하트비트(잡별 마지막 실행·다음 예정)·잡 예정표."""

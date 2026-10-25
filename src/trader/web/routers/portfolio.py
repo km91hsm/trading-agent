@@ -22,6 +22,7 @@ def portfolio(request: Request, account_id: str | None = None, market: str | Non
     deps = deps_of(request)
     with closing(deps.conn_factory()) as conn:
         snap = views.latest_positions(conn, acct.id, m)
+        _attach_horizon(conn, deps, m, snap)
         return {
             "account_id": acct.id,
             "market": m,
@@ -31,6 +32,19 @@ def portfolio(request: Request, account_id: str | None = None, market: str | Non
             "orders": views.list_orders(conn, acct.id, limit=20),
             "approvals": views.list_approvals(conn, acct.id, status="pending"),
         }
+
+
+def _attach_horizon(conn, deps, market: str, snap: dict | None) -> None:
+    """보유 행에 최근 결정의 보유기간 프로필(Phase 23 T)을 붙인다: `horizon` = short|mid|long|None,
+    `horizon_days`. 결정이 없는 보유분(수동 매수·헤지)은 None."""
+    from trader.ledger import repo
+    from trader.risk import horizon
+
+    for p in (snap or {}).get("positions") or []:
+        latest = repo.latest_decision(conn, market, p["ticker"])
+        data = (latest or {}).get("data") or {}
+        p["horizon_days"] = data.get("horizon_days")
+        p["horizon"] = horizon.name_of(data.get("horizon_days")) if latest else None
 
 
 def _sectors(deps, market: str, snap: dict | None) -> list[dict]:
