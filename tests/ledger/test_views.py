@@ -224,3 +224,88 @@ def test_sector_weights_groups_unknown_hedge_and_cash():
     assert (
         views.sector_weights([{"ticker": "X", "eval_amount": "1"}], "0", None)[0]["weight"] is None
     )
+
+
+def test_decision_trace_bundles_checkpoints(conn, project):
+    """Phase 23 E: 결정 하나의 애널리스트·토론·요약·게이트·주문을 한 묶음으로."""
+    from trader.orchestrator.run_store import run_dir, write_checkpoint
+
+    did = _decision(conn)
+    d = run_dir(D, "KR", "005930")
+
+    def w(stage, data):
+        write_checkpoint(d, stage, {"schema_version": 1, "data": data, "call": None})
+
+    w("00_inputs", {"technical": {"quote": {"price": "70000"}}})
+    w(
+        "10_analyst_technical",
+        {
+            "role": "technical",
+            "signal": "BULLISH",
+            "confidence": 0.7,
+            "summary": "s",
+            "evidence": [
+                {"claim": "a", "source_id": "x"},
+                {"claim": "b", "source_id": "x"},
+                {"claim": "c", "source_id": "x"},
+            ],
+        },
+    )
+    w(
+        "20_debate_r0_bull",
+        {"round": 0, "side": "bull", "stance": "BULLISH", "conviction": 0.8, "timing": "NOW"},
+    )
+    w(
+        "20_debate_r0_bear",
+        {"round": 0, "side": "bear", "stance": "BEARISH", "conviction": 0.4, "timing": "WAIT"},
+    )
+    w(
+        "25_research_summary",
+        {
+            "rounds": 1,
+            "gap_round0": 0.4,
+            "gap_final": 0.1,
+            "sycophantic": True,
+            "preferred": "round0",
+        },
+    )
+    w(
+        "40_risk_check_paper-main",
+        {"approved": True, "adjusted_qty": 3, "reasons": ["r"], "note": "n", "mode": "auto"},
+    )
+    w(
+        "50_order_paper-main",
+        {
+            "request": {"side": "BUY", "qty": 3, "price": "70000"},
+            "result": {"order_no": "1", "message": "ok"},
+            "status": "accepted",
+            "mode": "auto",
+        },
+    )
+    w("31_decision_r1", {"action": "HOLD"})
+    w(
+        "41_risk_check_r1_paper-main",
+        {"approved": False, "adjusted_qty": 0, "reasons": ["HOLD"], "mode": "auto"},
+    )
+    tr = views.decision_trace(conn, did)
+    assert tr["decision"]["id"] == did and tr["quote"] == "70000"
+    assert tr["analysts"][0]["label"] == "차트" and tr["analysts"][0]["evidence"] == ["a", "b"]
+    assert [x["side"] for x in tr["debate"]] == ["bear", "bull"] and tr["research"][
+        "sycophantic"
+    ] is True
+    assert tr["gate"][0] == {
+        "stage": "40_risk_check_paper-main",
+        "account_id": "paper-main",
+        "approved": True,
+        "qty": 3,
+        "reasons": ["r"],
+        "note": "n",
+        "mode": "auto",
+        "dry_run": None,
+    }
+    assert tr["orders"][0]["status"] == "accepted" and tr["orders"][0]["order_no"] == "1"
+    assert (
+        tr["reevaluations"][0]["round"] == "r1"
+        and tr["reevaluations"][0]["gate"][0]["approved"] is False
+    )
+    assert views.decision_trace(conn, 999) is None

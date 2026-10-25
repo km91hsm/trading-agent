@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import contextlib
+import csv
+import io
 
 from fastapi import HTTPException, Request
+from fastapi.responses import Response
 
 from trader.config import KST, AccountConfig
 
@@ -55,3 +58,18 @@ def kis_wait(market_or_broker):
             yield
     except RateLimitBusy as e:
         raise HTTPException(status_code=503, detail=f"{e} — 잠시 뒤 다시 시도") from None
+
+
+def csv_response(rows: list[dict], filename: str, *, columns: list[str] | None = None) -> Response:
+    """표 → CSV(UTF-8 BOM, 엑셀 한글 호환). 열 순서는 columns(없으면 첫 행 키 순)."""
+    cols = columns or (list(rows[0].keys()) if rows else [])
+    buf = io.StringIO()
+    w = csv.DictWriter(buf, fieldnames=cols, extrasaction="ignore")
+    w.writeheader()
+    for r in rows:
+        w.writerow({k: ("" if r.get(k) is None else r.get(k)) for k in cols})
+    return Response(
+        "\ufeff" + buf.getvalue(),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )

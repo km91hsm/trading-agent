@@ -1739,14 +1739,26 @@ def monitor_cmd(
 def install_cmd(
     dry_run: bool = typer.Option(False, "--dry-run", help="파일을 쓰지 않고 내용·명령만 출력"),
     uninstall: bool = typer.Option(False, "--uninstall", help="등록 해제"),
+    watchdog: bool = typer.Option(
+        False, "--watchdog", help="데몬 대신 외부 감시(trader watchdog, 5분 간격)를 등록·해제"
+    ),
 ) -> None:
-    """로그온 시 데몬 자동 시작 등록 (macOS launchd / Windows 작업 스케줄러)."""
+    """로그온 시 데몬 자동 시작 등록 (macOS launchd / Windows 작업 스케줄러).
+    --watchdog 이면 데몬 밖 감시 프로세스를 5분 간격 1회 실행으로 등록한다(Phase 23 C)."""
     from trader.platform import installer
 
+    kind = "watchdog" if watchdog else "daemon"
     try:
         if uninstall:
-            r = installer.uninstall()
+            r = installer.uninstall(kind=kind)
             typer.echo(f"해제: {r['path']} ({' '.join(r['command'])})")
+            return
+        if watchdog:
+            r = installer.install(dry_run=dry_run, kind="watchdog")
+            typer.echo(("[dry-run] " if dry_run else "") + f"파일: {r['path']}")
+            typer.echo("명령: " + " ".join(r["command"]))
+            if dry_run:
+                typer.echo(r["content"])
             return
         from trader.platform.claude_bin import find_claude
 
@@ -1768,6 +1780,32 @@ def install_cmd(
     typer.echo("명령: " + " ".join(r["command"]))
     if dry_run:
         typer.echo(r["content"])
+
+
+@app.command("watchdog")
+@_config_errors
+def watchdog_cmd(
+    quiet: bool = typer.Option(False, "--quiet", help="알림 없이 판정만 출력(점검용)"),
+) -> None:
+    """외부 감시 1회(Phase 23 C): 데몬 생존·하트비트·운영 점검을 지금 판정해 주의 이상이면 텔레그램.
+    `trader install --watchdog` 가 5분 간격으로 등록한다. 상태를 바꾸지 않는다."""
+    import json
+
+    from trader.ops import watchdog as watchdog_mod
+
+    b = _boot(settings=True, accounts=True, secrets=True, conn=True, log_name="watchdog")
+    try:
+        notifier = None if quiet else make_notifier(b.secrets)
+        try:
+            from trader.daemon import build_jobs
+
+            jobs = build_jobs(config.load_schedule(), b.settings, markets=list(b.settings.markets))
+        except config.ConfigError:
+            jobs = []
+        out = watchdog_mod.run_once(b.conn, b.settings, b.accounts, notifier, schedule_jobs=jobs)
+    finally:
+        b.conn.close()
+    typer.echo(json.dumps(out, ensure_ascii=False))
 
 
 # --- ML (Phase 7) ----------------------------------------------------------------
@@ -2228,6 +2266,70 @@ def backtest_cmd(
 
 regime_app = typer.Typer(help="시장 국면 (Phase 17 H): 조회·과거 재현", no_args_is_help=True)
 app.add_typer(regime_app, name="regime")
+
+scalp_app = typer.Typer(
+    help="분 단위 단타 (Phase 23 S, 모의 전용·기본 끔): 1분봉 백테스트·실적 보고",
+    no_args_is_help=True,
+)
+app.add_typer(scalp_app, name="scalp")
+
+
+@scalp_app.command("backtest")
+@_config_errors
+def scalp_backtest(
+    ticker: str = typer.Option(..., "--ticker", help="종목 코드"),
+    market: str = typer.Option("KR", "--market", help="KR|US"),
+    exchange: str | None = typer.Option(None, "--exchange", help="US 거래소 NAS|NYS|AMS"),
+    days: int = typer.Option(1, "--days", min=1, max=5, help="최근 N일 (KIS 당일 분봉만 — 오늘)"),
+) -> None:
+    """현재 분봉(KIS 당일, 실전 시세 키 필요)으로 단타 규칙을 재현해 JSON 으로. 설정 불변·주문 없음.
+    KIS 분봉은 당일분만 주므로 --days 는 상태 파일이 있는 과거 날의 기록을 더해 보여 준다."""
+    import json
+
+    from trader.scalp import engine as scalp_engine
+    from trader.scalp import signals
+
+    configure(paths.state_dir())
+    settings = config.load_settings()
+    schedule = config.load_schedule()
+    ms = schedule.kr if market == "KR" else schedule.us
+    secrets = config.load_secrets()
+    mc = _build_market(secrets)
+    bars = (
+        mc.get_minute_kr(ticker, count=400)
+        if market == "KR"
+        else mc.get_minute_us(ticker, exchange or "NAS", count=400)
+    )
+    trade = signals.backtest_day(
+        bars, settings.scalp, open_hm=ms.monitor.start, close_hm=ms.monitor.end
+    )
+    out = {
+        "ticker": ticker,
+        "market": market,
+        "bars": len(bars),
+        "today": trade,
+        "config": settings.scalp.model_dump(),
+        "report": scalp_engine.report(paths.state_dir(), market=market, days=days),
+    }
+    typer.echo(json.dumps(out, ensure_ascii=False, default=str))
+
+
+@scalp_app.command("report")
+@_config_errors
+def scalp_report(
+    market: str = typer.Option("KR", "--market", help="KR|US"),
+    days: int = typer.Option(5, "--days", min=1, max=60, help="최근 운영일 수"),
+) -> None:
+    """단타 상태 파일(state/scalp/<date>/<market>.json)로 승률·사유별 집계를 JSON 으로."""
+    import json
+
+    from trader.scalp import engine as scalp_engine
+
+    configure(paths.state_dir())
+    settings = config.load_settings()
+    out = scalp_engine.report(paths.state_dir(), market=market, days=days)
+    out["enabled"] = settings.scalp.enabled
+    typer.echo(json.dumps(out, ensure_ascii=False, default=str))
 
 
 @regime_app.command("show")

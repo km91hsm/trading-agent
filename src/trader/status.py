@@ -106,6 +106,35 @@ def _perf_lines(conn: sqlite3.Connection, accounts: list[AccountConfig]) -> list
     return out or ["- 스냅샷 없음"]
 
 
+def _ops_line(conn: sqlite3.Connection) -> str:
+    """운영 점검(Phase 23 A) 머리 한 줄 + 항목 요약."""
+    from trader.control import control
+    from trader.ops import health
+
+    r = control.get_flag(conn, health.RESULT_FLAG)
+    head = health.headline(r)
+    if not r or not r.get("items"):
+        return head
+    return head + " — " + "; ".join(i["text"] for i in r["items"][:3])
+
+
+def _scalp_lines(settings: Settings, now: datetime) -> list[str]:
+    """분 단위 단타(Phase 23 S) 한 줄: 켬/끔 + 오늘 진입·청산 수."""
+    from trader.orchestrator.run_store import run_date_for
+    from trader.scalp import engine as scalp_engine
+
+    if not settings.scalp.enabled:
+        return ["- 끔 (scalp.enabled=false)"]
+    out = []
+    for m in settings.markets:
+        st = scalp_engine.load_state(None, run_date_for(m, now), m)
+        halted = f", 중단: {st['halted']}" if st.get("halted") else ""
+        out.append(
+            f"- {m}: 보유 {len(st.get('open') or [])}·청산 {len(st.get('closed') or [])}{halted}"
+        )
+    return out
+
+
 def _regime_lines(conn: sqlite3.Connection, settings: Settings) -> list[str]:
     """시장별 국면(bull|neutral|bear, n/3)과 헤지 설정 한 줄. 헤지가 꺼져 있으면 그 사실만."""
     h = settings.hedge
@@ -212,6 +241,7 @@ def build_status(
         f"# 시스템 상태 (생성: {stamp})",
         "",
         "## 실행 제어",
+        f"- 운영 점검: {_ops_line(conn)}",
         f"- 일시정지: {'예' if is_paused(conn) else '아니오'}",
         f"- 토론 라운드: {settings.debate_rounds}",
         f"- 하루 세션 상한: {settings.llm.daily_session_cap}",
@@ -245,6 +275,7 @@ def build_status(
         lines += [f"- {d}" for d in decisions]
     lines += ["", "## 오늘 스캔", *scan_lines(settings, now)]
     lines += ["", "## 국면·헤지", *_regime_lines(conn, settings)]
+    lines += ["", "## 단타(모의 전용)", *_scalp_lines(settings, now)]
     lines += ["", "## 성과(30일)", *_perf_lines(conn, accounts)]
     lines += ["", "## ML 모델", *_ml_lines()]
     dist = metrics.decision_distribution(conn, days=30, now=now)

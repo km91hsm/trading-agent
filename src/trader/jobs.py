@@ -97,6 +97,12 @@ class ReconcileParams(_P):
     market: Market | None = None
 
 
+class DiscoverParams(_P):
+    """장중 뉴스 발굴(Phase 23): scout 1단계 세션(kind=discover)."""
+
+    market: Market
+
+
 PARAMS: dict[str, type[BaseModel]] = {
     "features_backfill": FeaturesBackfillParams,
     "features_snapshot": FeaturesSnapshotParams,
@@ -111,6 +117,7 @@ PARAMS: dict[str, type[BaseModel]] = {
     "fills_sync": EmptyParams,
     "news_collect": EmptyParams,
     "reconcile": ReconcileParams,
+    "discover": DiscoverParams,
 }
 KINDS: tuple[str, ...] = tuple(PARAMS)
 # kind 기본 우선순위. 손절 뒤 재평가는 시간이 생명이라 앞으로, 나머지는 요청 순서.
@@ -132,6 +139,7 @@ _KIND_LABEL = {
     "fills_sync": "체결 동기화",
     "news_collect": "뉴스 수집",
     "reconcile": "KIS 대조",
+    "discover": "장중 발굴",
 }
 
 

@@ -362,7 +362,7 @@ def test_fills_body_isolates_account_failure(conn, monkeypatch):
     )
     import trader.orchestrator.fills as fills_mod
 
-    def fake_sync(conn_, b, a, d):
+    def fake_sync(conn_, b, a, d, notifier=None):
         if a.id == "real-main":
             raise RuntimeError("db locked")
         return {"inserted": 0}

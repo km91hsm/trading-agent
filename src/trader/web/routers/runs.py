@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import re
+import sqlite3
 from contextlib import closing
 from datetime import date as _date
 
@@ -12,7 +14,7 @@ from trader.ledger import views
 from trader.orchestrator import run_store, tools
 from trader.orchestrator.run_store import list_checkpoints, read_checkpoint
 from trader.platform import paths
-from trader.web.routers._common import deps_of, require_market, today_kst
+from trader.web.routers._common import csv_response, deps_of, require_market, today_kst
 
 router = APIRouter(tags=["runs"])
 
@@ -83,7 +85,45 @@ def today(request: Request, market: str | None = None, date: str | None = None) 
         "tickers": tickers,
         "scan": scan_summary(mdir),
         "market_files": market_files(mdir),
+        "news_jobs": news_jobs(deps.conn_factory, m, d),
     }
+
+
+def news_jobs(conn_factory, market: str, d) -> list[dict]:
+    """장중 뉴스 발굴(Phase 23)이 낸 요청(`job_requests.source='news'`) — 그 운영일의 시장분.
+    종목 재분석(analyze_ticker·reevaluate)과 발굴 세션(discover)이 함께 나온다."""
+    from trader.ledger import repo
+
+    lo, hi = repo.day_bounds(d, market)
+    conn = conn_factory()
+    try:
+        rows = conn.execute(
+            "SELECT id, kind, params, status, requested_at, finished_at, error FROM job_requests "
+            "WHERE source='news' AND requested_at >= ? AND requested_at < ? "
+            "ORDER BY id DESC LIMIT 200",
+            (lo, hi),
+        ).fetchall()
+    except sqlite3.OperationalError:  # 스키마가 아직 없는 빈 원장(테스트 픽스처·첫 실행)
+        rows = []
+    finally:
+        conn.close()
+    out = []
+    for r in rows:
+        params = json.loads(r["params"]) if r["params"] else {}
+        if params.get("market") != market:
+            continue
+        out.append(
+            {
+                "id": r["id"],
+                "kind": r["kind"],
+                "ticker": params.get("ticker"),
+                "status": r["status"],
+                "requested_at": r["requested_at"],
+                "finished_at": r["finished_at"],
+                "error": r["error"],
+            }
+        )
+    return out
 
 
 _MARKET_STAGE_RE = re.compile(r"^_[a-z0-9_]{1,40}$")
@@ -174,13 +214,30 @@ def checkpoint(
 
 @router.get("/decisions")
 def decisions(
-    request: Request, days: int = Query(30, ge=1, le=3650), market: str | None = None
-) -> list[dict]:
+    request: Request,
+    days: int = Query(30, ge=1, le=3650),
+    market: str | None = None,
+    format: str | None = None,
+):
     deps = deps_of(request)
     if market is not None:
         require_market(market)
     with closing(deps.conn_factory()) as conn:
-        return views.list_decisions(conn, days=days, market=market, now=deps.now())
+        rows = views.list_decisions(conn, days=days, market=market, now=deps.now())
+    if format == "csv":  # Phase 23 G
+        return csv_response(rows, f"decisions_{days}d.csv")
+    return rows
+
+
+@router.get("/decisions/{decision_id}/trace")
+def decision_trace(request: Request, decision_id: int) -> dict:
+    """결정의 판단 과정 한 묶음(Phase 23 E): 애널리스트 → 토론 → 결정 → 게이트 → 주문."""
+    deps = deps_of(request)
+    with closing(deps.conn_factory()) as conn:
+        tr = views.decision_trace(conn, decision_id, deps.state)
+    if tr is None:
+        raise HTTPException(status_code=404, detail=f"결정 없음: {decision_id}")
+    return tr
 
 
 @router.get("/decisions/{decision_id}/outcomes")

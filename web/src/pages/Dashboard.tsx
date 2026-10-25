@@ -16,6 +16,9 @@ import { labelOf } from "../names";
 import type { UsageResp } from "../usage";
 import { daemonText, type DaemonStatus } from "../jobs";
 import { proposalText, regimeText, type RegimeResp } from "../sectors";
+import { type ScalpResp, scalpChip } from "../pipeline";
+import type { OpsResp } from "../ops";
+import { Advisory } from "../components/Advisory";
 import { buildTape, gateFor, marketPhase, type TapeRow } from "../tape";
 import type {
   Approval,
@@ -102,6 +105,8 @@ export function Dashboard() {
   const usage = useLoad(() => getJson<UsageResp>("/api/system/usage"), [tRuns, minute]);
   const daemon = useLoad(() => getJson<DaemonStatus>("/api/system/daemon"), [tick, minute]);
   const regime = useLoad(() => getJson<RegimeResp>("/api/system/regime"), [tRuns]);
+  const scalp = useLoad(() => getJson<ScalpResp>("/api/system/scalp"), [tRuns]);
+  const ops = useLoad(() => getJson<OpsResp>("/api/system/ops"), [tRuns, tOrders]);
   const models = useLoad(() => getJson<ModelsResp>("/api/ml/models"), [tJobs]);
   const rl = useLoad(() => getJson<RlResp>("/api/rl/experiments"), [tJobs]);
   const perfKR = useLoad(
@@ -241,6 +246,7 @@ export function Dashboard() {
           {fmtDate(now.toISOString())} · {phase.label} · {fmtTime(now.toISOString(), "KR")} KST
         </p>
       </header>
+      <Advisory ops={ops.data} />
 
       <div className="statusline" role="status">
         <span className={signal.level === "none" ? "" : signal.level} title="daemon.lock 의 pid 생존 + 하트비트 파일(잡마다 갱신)">
@@ -271,6 +277,15 @@ export function Dashboard() {
           <Term k="regime" /> <b>{regimeChip.text}</b>
           {regime.data?.enabled && regime.data.markets.some((m) => m.state === "bear") ? <span className="muted"> · 헤지 {Math.round(regime.data.max_weight_pct * 100)}%{proposalText(regime.data) ? ` (${proposalText(regime.data)})` : ""}</span> : null}
         </span>
+        {scalp.data?.enabled &&
+          markets.map((m) => {
+            const chip = scalpChip(scalp.data, m);
+            return (
+              <span key={m} className={chip.level === "warn" ? "pend" : ""} title="분 단위 단타(모의 전용): 1분봉 거래량 급증 ∧ 당일 고가·VWAP 돌파 → 파이썬이 진입·청산">
+                {m} 단타 <b>{chip.text}</b>
+              </span>
+            );
+          })}
       </div>
 
       <div className="cols">

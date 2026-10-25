@@ -35,6 +35,8 @@ from trader.platform import paths
 from trader.platform.procs import process_start, same_process
 
 logger = logging.getLogger("trader.daemon")
+SCALP_INTERVAL_S = 60  # 분 단위 단타 틱 (Phase 23 S)
+OPS_CHECK_S = 1800  # 운영 점검 주기 (Phase 23 A)
 TELEGRAM_POLL_S = 30
 QUEUE_JOB_ID = "job_queue"  # 작업 대기열 소비 잡 (jobs.py)
 QUEUE_INTERVAL_S = 10
@@ -272,6 +274,8 @@ def build_jobs(schedule: ScheduleConfig, settings: Settings, *, markets: list[st
             )
         )
         jobs.append(Job(f"{lo}_monitor", "monitor", m, interval_s=ms.monitor.interval_s))
+        # 분 단위 단타(Phase 23 S): monitor 와 별도 60초 잡, 장중 창·모의 전용·기본 끔(body 가 판단)
+        jobs.append(Job(f"{lo}_scalp", "scalp", m, interval_s=SCALP_INTERVAL_S))
         # 야간 KIS 대조(Phase 21): 체결 동기화 뒤, 시장 현지 시각. 가벼운 잡(heavy 락 밖)
         rt = _hm(getattr(schedule.reconcile, lo))
         jobs.append(
@@ -300,6 +304,7 @@ def build_jobs(schedule: ScheduleConfig, settings: Settings, *, markets: list[st
     jobs.append(Job("telegram_poll", "telegram_poll", interval_s=TELEGRAM_POLL_S))
     jobs.append(Job(QUEUE_JOB_ID, "job_queue", interval_s=QUEUE_INTERVAL_S))
     jobs.append(Job("news_collect", "news_collect", interval_s=schedule.news_collect.interval_s))
+    jobs.append(Job("ops_check", "ops_check", interval_s=OPS_CHECK_S))  # 운영 점검(Phase 23 A)
     for i, (h, mi) in enumerate(FILLS_SYNC_TIMES):
         jobs.append(
             Job(
@@ -550,7 +555,51 @@ def _analyze_body(deps: DaemonDeps, market: str, *, scan_error: str | None = Non
     if not targets:
         logger.info("%s 분석 대상 없음 (빈 picks·보유·관심종목)", market)
         return {"targets": 0}
-    return _analyze_targets(deps, market, targets, today=today)
+    targets, skipped = _skip_held_by_profile(deps, market, targets, today)
+    out = _analyze_targets(deps, market, targets, today=today) if targets else {"targets": 0}
+    if skipped:
+        out["skipped_held"] = skipped
+    return out
+
+
+def _skip_held_by_profile(
+    deps: DaemonDeps, market: str, targets: list[dict], today: date
+) -> tuple[list[dict], list[dict]]:
+    """보유 종목(`source == "held"`, picks·watch 에 없는 것)은 최근 결정의 보유기간 프로필
+    `daily_reanalyze_every` 운영일마다만 아침 재분석한다(Phase 23 T). 그 사이 날은 monitor 손절·
+    트리거·뉴스 재평가가 본다. 결정이 없는 보유분은 항상 분석."""
+    from trader.ledger import repo
+    from trader.risk import horizon
+
+    keep, skipped = [], []
+    conn = deps.conn_factory()
+    try:
+        for t in targets:
+            if t.get("source") != "held":
+                keep.append(t)
+                continue
+            latest = repo.latest_decision(conn, market, t["ticker"])
+            if latest is None:
+                keep.append(t)
+                continue
+            name, prof = horizon.of_decision(deps.settings.risk, latest.get("data"))
+            last_d = date.fromisoformat(str(latest["date"]))
+            if horizon.reanalyze_due(prof, last_d, today):
+                keep.append(t)
+            else:
+                skipped.append(
+                    {
+                        "ticker": t["ticker"],
+                        "profile": name,
+                        "last": last_d.isoformat(),
+                        "every": prof.daily_reanalyze_every,
+                    }
+                )
+    finally:
+        conn.close()
+    if skipped:
+        logger.info("%s 보유 재분석 건너뜀(프로필 주기): %s", market, skipped)
+    return keep, skipped
 
 
 def _snapshot_listed(deps: DaemonDeps, market: str, t: dict) -> None:
@@ -912,6 +961,59 @@ def _hedge_body(deps: DaemonDeps, market: str) -> dict:
         conn.close()
 
 
+def _reprice_body(deps: DaemonDeps, market: str) -> dict:
+    """아침 미체결 재호가(Phase 23 B): monitor 틱에서 개장 + after_min 뒤 운영일 1회."""
+    from trader.orchestrator import reprice as reprice_mod
+    from trader.orchestrator.executor import ExecContext
+    from trader.orchestrator.run_store import run_date_for
+
+    cfg = deps.settings.risk.reprice
+    if not cfg.enabled or deps.market_client is None or deps.dry_run:
+        return {"skipped": "비활성"}
+    ms = deps.schedule.kr if market == "KR" else deps.schedule.us
+    local = deps.now().astimezone(ZoneInfo(ms.tz))
+    oh, om = ms.monitor.start_hm()
+    since_open = (local.hour * 60 + local.minute) - (oh * 60 + om)
+    if since_open < cfg.after_min:
+        return {"skipped": "개장 뒤 대기"}
+    today = run_date_for(market, deps.now())
+    conn = deps.conn_factory()
+    try:
+        if control.get_flag(conn, reprice_mod.done_key(market, today)):
+            return {"skipped": "오늘 이미 실행"}
+        ectx = ExecContext(
+            settings=deps.settings,
+            accounts=deps.accounts,
+            conn=conn,
+            brokers=deps.brokers,
+            notifier=deps.notifier,
+            state=deps.state,
+            now=deps.now,
+        )
+        mc = deps.market_client
+
+        def quote(ticker: str, exchange: str | None):
+            if market == "US":
+                if not exchange:
+                    raise ValueError(f"US 거래소 코드 없음: {ticker}")
+                return mc.get_price_us(ticker, exchange).price
+            return mc.get_price_kr(ticker).price
+
+        cache = _cache_dir(deps)
+        return reprice_mod.reprice(
+            ectx,
+            market=market,
+            today=today,
+            cfg=cfg,
+            quote_fn=quote,
+            exchanges={u.symbol: u.exchange for u in (deps.universe.us if deps.universe else [])},
+            dry_run=deps.dry_run,
+            label=lambda t: names.display(conn, cache, market, t),
+        )
+    finally:
+        conn.close()
+
+
 def _enqueue_reevaluate(deps: DaemonDeps, params: dict) -> int | None:
     """monitor → 큐. 같은 종목 요청이 대기·실행 중이면 None(중복)."""
     conn = deps.conn_factory()
@@ -921,6 +1023,27 @@ def _enqueue_reevaluate(deps: DaemonDeps, params: dict) -> int | None:
         return None
     finally:
         conn.close()
+
+
+def _recollect(deps: DaemonDeps, market: str, ticker: str, exchange: str | None) -> None:
+    from trader.sources.inputs import collect_and_save
+
+    if deps.input_deps is None or deps.sources_cfg is None:
+        return
+    try:
+        collect_and_save(
+            ticker=ticker,
+            market=market,
+            exchange=exchange,
+            asof=deps.now(),
+            cfg=deps.sources_cfg,
+            secrets=deps.secrets,
+            deps=deps.input_deps,
+            state=deps.state,
+            force=True,
+        )
+    except Exception as e:  # noqa: BLE001 - 재수집 실패면 기존 입력으로 재평가
+        logger.warning("뉴스 재평가 재수집 실패 %s %s: %s", market, ticker, e)
 
 
 def _reevaluate_request(deps: DaemonDeps, p: dict) -> dict:
@@ -940,6 +1063,9 @@ def _reevaluate_request(deps: DaemonDeps, p: dict) -> dict:
         if trig.get("handled_at"):
             return {"skipped": "이미 처리된 트리거"}
         today = run_date_for(market, deps.now())
+        if trig["kind"] == "news":
+            # 뉴스 재평가(Phase 23): 트레이더가 새 뉴스를 보도록 00_inputs 를 다시 수집한다
+            _recollect(deps, market, p["ticker"], p.get("exchange"))
         res = resume.reevaluate(
             deps.settings,
             conn,
@@ -987,6 +1113,13 @@ def _monitor_body(deps: DaemonDeps, market: str) -> dict:
         logger.exception("헤지 실행 실패 %s", market)
         deps.notifier.send(f"[헤지 실패] {market}: {type(e).__name__}: {e}")
         hedge = {"error": f"{type(e).__name__}: {e}"}
+    rep: dict | None = None
+    try:
+        rep = _reprice_body(deps, market)
+    except Exception as e:  # noqa: BLE001 - 재호가 실패가 손절 점검을 막지 않는다
+        logger.exception("재호가 실행 실패 %s", market)
+        deps.notifier.send(f"[재호가 실패] {market}: {type(e).__name__}: {e}")
+        rep = {"error": f"{type(e).__name__}: {e}"}
     conn = deps.conn_factory()
     try:
         ctx = monitor_mod.MonitorContext(
@@ -1006,7 +1139,67 @@ def _monitor_body(deps: DaemonDeps, market: str) -> dict:
         out = monitor_mod.monitor_once(ctx, market=market, today=run_date_for(market, deps.now()))
         if hedge and "skipped" not in hedge:
             out["hedge"] = hedge
+        if rep and "skipped" not in rep:
+            out["reprice"] = rep
         return out
+    finally:
+        conn.close()
+
+
+def _scalp_body(deps: DaemonDeps, market: str) -> dict:
+    """분 단위 단타 1틱(Phase 23 S). 꺼져 있으면 skipped(잡 표에는 보인다). 창·paused 는 engine 이
+    다시 보고, 세션·heavy 락과 무관하다."""
+    from trader.orchestrator.run_store import run_date_for
+    from trader.scalp import engine as scalp_engine
+
+    if not deps.settings.scalp.enabled:
+        return {"skipped": "scalp.enabled=false"}
+    if deps.market_client is None:
+        return {"skipped": "시세 클라이언트 없음"}
+    ms = deps.schedule.kr if market == "KR" else deps.schedule.us
+    conn = deps.conn_factory()
+    try:
+        ctx = scalp_engine.ScalpContext(
+            settings=deps.settings,
+            accounts=deps.accounts,
+            conn=conn,
+            brokers=deps.brokers,
+            market_client=deps.market_client,
+            open_hm=ms.monitor.start,
+            close_hm=ms.monitor.end,
+            notifier=deps.notifier,
+            now=deps.now,
+            state=deps.state,
+            dry_run=deps.dry_run,
+            exchanges={u.symbol: u.exchange for u in (deps.universe.us if deps.universe else [])},
+        )
+        return scalp_engine.tick(ctx, market=market, today=run_date_for(market, deps.now()))
+    finally:
+        conn.close()
+
+
+def _ops_body(deps: DaemonDeps) -> dict:
+    """운영 점검(Phase 23 A): 다섯 영역 판정 → 직전보다 나빠졌으면 알림 1건. 결과는
+    `control.ops_result` 에 남겨 웹·텔레그램·STATUS 가 같은 것을 본다. 가벼운 잡(heavy 밖)."""
+    from trader.ops import health
+
+    conn = deps.conn_factory()
+    try:
+        result = health.check(
+            conn,
+            deps.settings,
+            deps.accounts,
+            now=deps.now(),
+            state=deps.state,
+            schedule_jobs=build_jobs(
+                deps.schedule, deps.settings, markets=list(deps.settings.markets)
+            ),
+        )
+        control.set_flag(conn, health.RESULT_FLAG, result)
+        msg = health.escalate(conn, result)
+        if msg:
+            deps.notifier.send(msg)
+        return {"level": result["level"], "items": len(result["items"]), "notified": bool(msg)}
     finally:
         conn.close()
 
@@ -1045,7 +1238,7 @@ def _fills_body(deps: DaemonDeps) -> dict:
                 continue
             try:
                 # US 체결은 ET 날짜로 조회해야 한다 (07:10 KST 는 전날 ET) → 시장별 현지 날짜
-                out[a.id] = sync_fills(conn, b, a, deps.now())
+                out[a.id] = sync_fills(conn, b, a, deps.now(), notifier=deps.notifier)
             except Exception as e:  # noqa: BLE001 - 한 계좌의 실패가 다른 계좌 동기화를 막지 않는다
                 logger.warning("체결 동기화 실패 %s: %s", a.id, e)
                 out[a.id] = {"error": f"{type(e).__name__}: {e}"}
@@ -1128,9 +1321,299 @@ def _news_body(deps: DaemonDeps) -> dict:
         out["pruned"] = news_store.prune(
             conn, before=deps.now() - timedelta(days=cfg.store_retention_days)
         )
+        for market in deps.settings.markets:
+            try:
+                out[f"trigger:{market}"] = _news_trigger(deps, conn, market, universe)
+            except Exception as e:  # noqa: BLE001 - 트리거 실패가 수집 결과를 바꾸지 않는다
+                logger.warning("뉴스 트리거 실패 %s: %s", market, e)
+                out[f"trigger:{market}"] = {"error": f"{type(e).__name__}: {e}"}
     finally:
         conn.close()
     return out
+
+
+def _in_market_window(deps: DaemonDeps, market: str) -> bool:
+    ms = deps.schedule.kr if market == "KR" else deps.schedule.us
+    now_local = deps.now().astimezone(ZoneInfo(ms.tz))
+    return in_window(
+        now_local.time().replace(second=0, microsecond=0), ms.monitor.start, ms.monitor.end
+    )
+
+
+def _news_trigger(deps: DaemonDeps, conn: sqlite3.Connection, market: str, universe) -> dict:
+    """장중 뉴스 발굴(Phase 23). 수집 뒤 새 내용 뉴스(`novel_items`)를 판정해 ① 유니버스·보유 종목에
+    붙은 새 뉴스 → 그 종목 재분석(오늘 결정 있으면 재평가 트리거 kind `news`, 없으면
+    analyze_ticker),
+    ② 새 뉴스가 1건 이상이면 scout 세션(큐 kind `discover`)으로 유니버스 밖 발굴. 유사 기사만이면
+    아무 세션도 띄우지 않는다. 장중 창·paused·설정이 조건."""
+    from trader.orchestrator.run_store import run_date_for
+    from trader.scan import discovery as discovery_mod
+    from trader.sources import news_store
+
+    cfg = deps.settings.discovery.intraday
+    key = f"news_trigger_at:{market}"
+    since_raw = control.get_flag(conn, key)
+    since = datetime.fromisoformat(since_raw) if since_raw else deps.now() - timedelta(hours=1)
+    novel = news_store.novel_items(
+        conn,
+        market,
+        since=since,
+        lookback_days=cfg.similarity.lookback_days,
+        jaccard=cfg.similarity.jaccard,
+        ratio=cfg.similarity.ratio,
+    )
+    control.set_flag(conn, key, deps.now().isoformat())
+    out: dict[str, Any] = {"novel": len(novel), "queued": [], "discover": None}
+    if not novel:
+        return out
+    if not cfg.enabled:
+        return out | {"skipped": "discovery.intraday.enabled=false"}
+    if control.is_paused(conn):
+        return out | {"skipped": "일시정지"}
+    if not _in_market_window(deps, market):
+        return out | {"skipped": "장중 창 밖 (아침 scan 이 48시간 뉴스를 본다)"}
+    today = run_date_for(market, deps.now())
+    uni = set(universe.kr) if market == "KR" else {u.symbol for u in universe.us}
+    held: set[str] = set()
+    for a in deps.accounts:
+        b = deps.brokers.get(a.id)
+        if market in a.markets and b is not None:
+            try:
+                held |= {p.ticker for p in b.get_positions(market)}
+            except Exception as e:  # noqa: BLE001
+                logger.debug("보유 조회 실패(뉴스 트리거) %s: %s", a.id, e)
+    burst = discovery_mod.news_burst(
+        novel, universe_tickers=uni, held=held, min_items=cfg.min_items
+    )
+    hedge = set(deps.settings.hedge.tickers(market)) if deps.settings.hedge.enabled else set()
+    for ticker, items in burst["tickers"].items():
+        if ticker in hedge:
+            continue
+        if ticker in held:  # 보유 종목은 보유기간 프로필의 news_min_novel 을 본다(Phase 23 T)
+            from trader.ledger import repo
+            from trader.risk import horizon
+
+            latest = repo.latest_decision(conn, market, ticker)
+            _, prof = horizon.of_decision(deps.settings.risk, (latest or {}).get("data"))
+            if len(items) < prof.news_min_novel:
+                out.setdefault("below_profile", []).append(
+                    {"ticker": ticker, "news": len(items), "need": prof.news_min_novel}
+                )
+                continue
+        rid = _news_reanalyze(deps, conn, market, ticker, items, today, universe)
+        if rid is not None:
+            out["queued"].append({"ticker": ticker, "request_id": rid, "news": len(items)})
+    cap_key = f"discover_count:{market}:{today.isoformat()}"
+    n_disc = int(control.get_flag(conn, cap_key) or 0)
+    if n_disc < cfg.discover_cap:
+        try:
+            rid = jobq.enqueue(conn, "discover", {"market": market}, source="news", now=deps.now())
+            control.set_flag(conn, cap_key, n_disc + 1)
+            out["discover"] = rid
+        except jobq.DuplicateRequest:
+            out["discover"] = "pending"
+    else:
+        out["discover"] = f"상한 {cfg.discover_cap}"
+    if out["queued"] or isinstance(out["discover"], int):
+        cache = _cache_dir(deps)
+        parts = [
+            f"{names.display(conn, cache, market, q['ticker'])} 새 뉴스 {q['news']}건"
+            f" → #{q['request_id']}"
+            for q in out["queued"]
+        ]
+        if isinstance(out["discover"], int):
+            parts.append(f"유니버스 밖 발굴 세션 #{out['discover']}")
+        try:
+            deps.notifier.send(
+                f"[뉴스 발굴] {market}: 새 뉴스 {len(novel)}건 — " + "; ".join(parts)
+            )
+        except Exception:  # noqa: BLE001
+            logger.debug("뉴스 발굴 알림 실패", exc_info=True)
+    return out
+
+
+def _exchange_of(deps: DaemonDeps, market: str, ticker: str, universe) -> str | None:
+    if market != "US":
+        return None
+    for u in getattr(universe, "us", []) or []:
+        if u.symbol == ticker:
+            return u.exchange
+    for a in deps.accounts:
+        b = deps.brokers.get(a.id)
+        if b is None or market not in a.markets:
+            continue
+        try:
+            for p in b.get_positions(market):
+                if p.ticker == ticker and getattr(p, "exchange", None):
+                    return p.exchange
+        except Exception:  # noqa: BLE001
+            continue
+    return None
+
+
+def _news_reanalyze(
+    deps: DaemonDeps,
+    conn: sqlite3.Connection,
+    market: str,
+    ticker: str,
+    items: list[dict],
+    today: date,
+    universe,
+    *,
+    exchange: str | None = None,
+) -> int | None:
+    """새 뉴스가 붙은 종목의 재분석 요청: 오늘 `30_decision` 이 있으면 트리거 kind `news` + 큐
+    `reevaluate`(31_decision_r<n>), 없으면 큐 `analyze_ticker`. 중복 요청은 None."""
+    from trader.ledger import repo
+
+    exchange = exchange or _exchange_of(deps, market, ticker, universe)
+    if market == "US" and not exchange:
+        logger.warning("뉴스 재분석 생략 %s %s: 거래소 코드 없음", market, ticker)
+        return None
+    detail = {
+        "news": [
+            {"id": n.get("id"), "title": n.get("title"), "source": n.get("source")}
+            for n in items[:10]
+        ],
+        "count": len(items),
+    }
+    try:
+        if repo.decision_id(conn, today, market, ticker) is not None:
+            tid = repo.insert_trigger(
+                conn,
+                market=market,
+                ticker=ticker,
+                kind="news",
+                detail=detail,
+                price=None,
+                decision_id=repo.decision_id(conn, today, market, ticker),
+                created_at=deps.now().isoformat(),
+            )
+            return jobq.enqueue(
+                conn,
+                "reevaluate",
+                {"market": market, "ticker": ticker, "exchange": exchange, "trigger_id": tid},
+                source="news",
+                now=deps.now(),
+            )
+        params: dict[str, Any] = {"market": market, "ticker": ticker, "dry_run": deps.dry_run}
+        if exchange:
+            params["exchange"] = exchange
+        return jobq.enqueue(
+            conn, "analyze_ticker", params, source="news", now=deps.now(), priority=5
+        )
+    except jobq.DuplicateRequest:
+        return None
+
+
+def _discover_body(deps: DaemonDeps, market: str) -> dict:
+    """장중 발굴 세션(Phase 23): 새 내용 뉴스만 실은 `_discovery_inputs` → scout 1단계 세션
+    (kind=discover) → `_discovery` 후보를 재분석 큐로(오늘 결정 있으면 재평가). 세션 상한은
+    `run_session` 이 본다."""
+    from trader.config import load_sources, load_universe
+    from trader.orchestrator.run_store import read_checkpoint, run_date_for
+    from trader.orchestrator.session import SessionSpec, run_session
+    from trader.scan import discovery as discovery_mod
+    from trader.sources import news_store
+
+    _close_stale_sessions(deps)
+    universe = deps.universe or load_universe()
+    today = run_date_for(market, deps.now())
+    conn = deps.conn_factory()
+    try:
+        lo = (deps.now() - timedelta(hours=6)).astimezone(UTC).isoformat()
+        rows = conn.execute(
+            "SELECT id, market, source, query, title, url, url_hash, published_at, received_at, "
+            "summary, tickers_json, lang FROM news_items WHERE market=? AND novel=1 "
+            "AND received_at >= ? ORDER BY received_at DESC LIMIT ?",
+            (market, lo, 60),
+        ).fetchall()
+        novel = [news_store._row(r) for r in rows]
+        if not novel:
+            return {"skipped": "새 뉴스 없음"}
+        analyzed = [
+            r["ticker"]
+            for r in conn.execute(
+                "SELECT ticker FROM decisions WHERE date=? AND market=?",
+                (today.isoformat(), market),
+            ).fetchall()
+        ]
+        held: list[str] = []
+        for a in deps.accounts:
+            b = deps.brokers.get(a.id)
+            if market in a.markets and b is not None:
+                try:
+                    held += [p.ticker for p in b.get_positions(market)]
+                except Exception:  # noqa: BLE001
+                    pass
+        try:
+            news_cfg = load_sources().news
+        except Exception:  # noqa: BLE001
+            news_cfg = None
+        discovery_mod.build_inputs(
+            conn,
+            deps.settings,
+            universe,
+            market=market,
+            today=today,
+            asof=deps.now(),
+            quant_candidates=[],
+            held=held,
+            state=deps.state,
+            now=deps.now,
+            news_cfg=news_cfg,
+            cache_names=names.load_cache_names(_cache_dir(deps)),
+            sources_cfg=deps.sources_cfg,
+            http=getattr(deps.input_deps, "http", None),
+            intraday_news=novel,
+            analyzed_today=analyzed,
+        )
+        runner = deps.session_runner or run_session
+        res = runner(
+            SessionSpec(
+                market=market,
+                date=today,
+                tickers=[],
+                dry_run=True,
+                asof=deps.now(),
+                kind="discover",
+            ),
+            deps.settings,
+            conn,
+            deps.accounts,
+            state=deps.state,
+            now=deps.now,
+            brokers=deps.brokers,
+            notifier=deps.notifier,
+            cancel=deps.stop_event,
+        )
+        if not res.ok:
+            return {"error": f"discover 세션 실패: {res.error}", "novel": len(novel)}
+        found = (
+            read_checkpoint(run_store.market_dir(today, market, deps.state), "_discovery") or {}
+        ).get("data") or {}
+        queued = []
+        for c in found.get("candidates") or []:
+            t = c.get("ticker")
+            if not t or t in set(deps.settings.hedge.tickers(market)):
+                continue
+            rid = _news_reanalyze(
+                deps, conn, market, t, [], today, universe, exchange=c.get("exchange")
+            )
+            if rid is not None:
+                queued.append({"ticker": t, "request_id": rid, "tier": c.get("tier")})
+        if queued:
+            deps.notifier.send(
+                f"[장중 발굴] {market}: "
+                + ", ".join(f"{q['ticker']}({q['tier']}) → #{q['request_id']}" for q in queued)
+            )
+        return {
+            "novel": len(novel),
+            "candidates": len(found.get("candidates") or []),
+            "queued": queued,
+        }
+    finally:
+        conn.close()
 
 
 def _reflect_body(deps: DaemonDeps) -> dict:
@@ -1342,12 +1825,18 @@ def job_body(
         return lambda: monitor_job(
             deps, job.market or "KR", lambda: _monitor_body(deps, job.market or "KR")
         )
+    if job.kind == "scalp":
+        return lambda: monitor_job(
+            deps, job.market or "KR", lambda: _scalp_body(deps, job.market or "KR")
+        )
     if job.kind == "telegram_poll":
         return lambda: _telegram_body(deps)
     if job.kind == "fills_sync":
         return lambda: _fills_body(deps)
     if job.kind == "news_collect":
         return lambda: _news_body(deps)
+    if job.kind == "ops_check":
+        return lambda: _ops_body(deps)
     if job.kind == "reconcile":
         return lambda: market_job(
             deps, job.market or "KR", "reconcile", lambda: _reconcile_body(deps, job.market)
@@ -1446,6 +1935,8 @@ def queued_job_body(
         return lambda: _news_body(deps)
     if kind == "reconcile":
         return lambda: _reconcile_body(deps, p.get("market"))
+    if kind == "discover":
+        return lambda: _discover_body(deps, p["market"])
     raise ValueError(f"알 수 없는 작업: {kind}")
 
 

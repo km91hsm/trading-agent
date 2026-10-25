@@ -35,10 +35,13 @@ def market_close(market: str, day: date) -> time:
     return MARKET_CLOSE.get(market, time(23, 59))
 
 
-def _order_id_for(conn: sqlite3.Connection, account_id: str, f: Fill) -> int:
+def _order_id_for(
+    conn: sqlite3.Connection, account_id: str, f: Fill, *, notifier: Any | None = None
+) -> int:
     # KIS 주문번호(ODNO)는 날마다 다시 시작하므로 종목·방향이 같고 **같은 현지 날짜**에 낸 주문만
     # 같은 주문으로 본다 (옛 주문에 붙이면 그 주문의 기존 체결을 지워 버린다)
-    lo, hi = repo.day_bounds(_day_for(f.market, f.filled_at), f.market)
+    local_day = _day_for(f.market, f.filled_at)
+    lo, hi = repo.day_bounds(local_day, f.market)
     row = conn.execute(
         "SELECT id FROM orders WHERE account_id=? AND order_no=? AND ticker=? AND side=? "
         "AND created_at >= ? AND created_at < ? ORDER BY id DESC LIMIT 1",
@@ -46,12 +49,17 @@ def _order_id_for(conn: sqlite3.Connection, account_id: str, f: Fill) -> int:
     ).fetchone()
     if row:
         return int(row["id"])
-    # 응답을 못 받아 unknown(주문번호 없음)으로 남은 주문은 같은 날·종목·방향 체결로 확정한다
-    row = conn.execute(
+    # 응답을 못 받아 unknown(주문번호 없음)으로 남은 주문은 같은 날·종목·방향 체결로 확정한다 —
+    # 단 **후보가 정확히 1건**일 때만(Phase 23 B). 둘 이상이면 어느 주문의 체결인지 알 수 없어
+    # 붙이지 않고 알림 1회 + control 플래그(특보 orders 영역)로 사용자 확인에 맡긴다.
+    rows = conn.execute(
         "SELECT id FROM orders WHERE account_id=? AND ticker=? AND side=? AND status='unknown' "
-        "AND order_no IS NULL AND created_at >= ? AND created_at < ? ORDER BY id LIMIT 1",
+        "AND order_no IS NULL AND created_at >= ? AND created_at < ? ORDER BY id",
         (account_id, f.ticker, f.side, lo, hi),
-    ).fetchone()
+    ).fetchall()
+    if len(rows) > 1:
+        _flag_ambiguous(conn, account_id, f, local_day, [int(r["id"]) for r in rows], notifier)
+    row = rows[0] if len(rows) == 1 else None
     if row:
         conn.execute(
             "UPDATE orders SET order_no=?, status='accepted' WHERE id=?", (f.order_no, row["id"])
@@ -127,6 +135,38 @@ def expire_unfilled(conn: sqlite3.Connection, account_id: str, market: str, day:
     return cur.rowcount
 
 
+def _flag_ambiguous(
+    conn: sqlite3.Connection,
+    account_id: str,
+    f: Fill,
+    local_day: date,
+    order_ids: list[int],
+    notifier: Any | None,
+) -> None:
+    from trader.control import control
+
+    key = f"fill_ambiguous:{f.market}:{local_day.isoformat()}"
+    cur = control.get_flag(conn, key) or {}
+    cases = cur.get("cases") or []
+    case = {"account_id": account_id, "ticker": f.ticker, "side": f.side, "order_ids": order_ids}
+    if case in cases:
+        return
+    cases.append(case)
+    control.set_flag(conn, key, {"cases": cases, "candidates": len(order_ids)})
+    logger.warning(
+        "체결 매칭 모호 %s %s %s: unknown 후보 %s", account_id, f.ticker, f.side, order_ids
+    )
+    if notifier is not None:
+        try:
+            notifier.send(
+                f"[체결 매칭 모호] {account_id} {f.market} {f.ticker} {f.side}: 응답 없는 주문 "
+                f"{len(order_ids)}건(#{', #'.join(str(i) for i in order_ids)}) 중 어느 것의 "
+                "체결인지 알 수 없어 붙이지 않음 — KIS 앱에서 확인 뒤 정리"
+            )
+        except Exception:  # noqa: BLE001
+            logger.debug("체결 매칭 모호 알림 실패", exc_info=True)
+
+
 def sync_fills(
     conn: sqlite3.Connection,
     broker: Any,
@@ -134,6 +174,7 @@ def sync_fills(
     d: date | datetime,
     *,
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
+    notifier: Any | None = None,
 ) -> dict:
     """계좌의 시장별 체결을 적재한다. 같은 체결은 두 번 들어가지 않는다 (fills 유니크 인덱스).
 
@@ -152,7 +193,7 @@ def sync_fills(
             logger.warning("체결 조회 실패 %s %s: %s", account.id, market, e)
             continue
         for f in fills:
-            oid = _order_id_for(conn, account.id, f)
+            oid = _order_id_for(conn, account.id, f, notifier=notifier)
             # KIS 체결 조회는 주문당 누적 체결수량을 주므로 기존 행이 있으면 누적값으로 바꾼다
             existing = conn.execute(
                 "SELECT COALESCE(SUM(qty), 0) AS q FROM fills WHERE order_id=?", (oid,)

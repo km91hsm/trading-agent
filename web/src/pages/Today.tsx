@@ -12,13 +12,13 @@ import { useApp, useLoad } from "../hooks";
 import { Link } from "react-router-dom";
 import { labelOf } from "../names";
 import { sectionForStage } from "../how";
-import { pickReason, pipelineStages, scanHeadline, stageSummary, type ScanSummary, type Stage } from "../pipeline";
+import { type NewsJob, newsJobRows, newsJobsHeadline, pickReason, pipelineStages, scanHeadline, type ScalpResp, scalpChip, scalpRows, stageSummary, type ScanSummary, type Stage } from "../pipeline";
 import { Table, Td, Th } from "../components/Table";
 import type { Checkpoint, Market } from "../types";
 import { Ticker } from "../components/Ticker";
 import { RunJobButton, useCanRun } from "../components/RunJob";
 
-type TodayResp = { date: string; market: string; tickers: Record<string, string[]>; scan?: ScanSummary | null; market_files?: string[] };
+type TodayResp = { date: string; market: string; tickers: Record<string, string[]>; scan?: ScanSummary | null; market_files?: string[]; news_jobs?: NewsJob[] };
 type MarketCp = { stage: string; schema_version: number | null; data: unknown };
 
 const MARKET_FILE_LABEL: Record<string, string> = {
@@ -35,6 +35,8 @@ const MARKET_FILE_LABEL: Record<string, string> = {
 
 function marketFileLabel(f: string): string {
   if (MARKET_FILE_LABEL[f]) return MARKET_FILE_LABEL[f];
+  const m = /^_discovery(_inputs)?_r(\d+)$/.exec(f);
+  if (m) return `장중 발굴 ${m[2]}회차${m[1] ? " 입력" : ""}`;
   if (f.startsWith("_market_analyst_")) return `거시 애널리스트 ${f.slice("_market_analyst_".length)}`;
   return f;
 }
@@ -61,6 +63,91 @@ function MarketFiles({ files, market, date }: { files: string[]; market: Market;
           <summary>{marketFileLabel(stage)} · {stage}.json</summary>
           <JsonView value={cp.data.data as Record<string, unknown>} depth={1} />
         </details>
+      )}
+    </Section>
+  );
+}
+
+/** 장중 뉴스 발굴(Phase 23): 새 뉴스가 낸 재분석·발굴 요청 — 아침 스캔과 별개로 하루 동안 쌓인다. */
+function NewsJobsBlock({ jobs, market, onPick }: { jobs: NewsJob[]; market: Market; onPick: (t: string) => void }) {
+  const rows = newsJobRows(jobs);
+  return (
+    <Section title="장중 발굴" aside={newsJobsHeadline(jobs)}>
+      <Table>
+        <thead>
+          <tr>
+            <Th>시각</Th>
+            <Th>요청</Th>
+            <Th>종목</Th>
+            <Th>상태</Th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr key={r.id}>
+              <Td className="mono">{r.at.slice(11, 16)}</Td>
+              <Td>{r.kindLabel}</Td>
+              <Td>
+                {r.ticker ? (
+                  <button type="button" className="btn btn-sm btn-ghost" onClick={() => onPick(r.ticker as string)}>
+                    <Ticker market={market} ticker={r.ticker} showMarket={false} />
+                  </button>
+                ) : (
+                  <span className="muted">—</span>
+                )}
+              </Td>
+              <Td>
+                <Badge kind={r.failed ? "pending" : r.pending ? "pending" : "neutral"} value={r.stateLabel} title={r.error ?? undefined} />
+                {r.error && <span className="muted"> {r.error}</span>}
+              </Td>
+            </tr>
+          ))}
+        </tbody>
+      </Table>
+    </Section>
+  );
+}
+
+/** 분 단위 단타(Phase 23 S, 모의 전용): 오늘 진입·청산. 꺼져 있으면 판을 그리지 않는다. */
+function ScalpBlock({ scalp, market, onPick }: { scalp: ScalpResp; market: Market; onPick: (t: string) => void }) {
+  const rows = scalpRows(scalp, market);
+  const chip = scalpChip(scalp, market);
+  const halted = scalp.markets[market]?.halted;
+  return (
+    <Section title="단타 (모의 전용)" aside={chip.text}>
+      {halted && <p className="muted">오늘 중단: {halted}</p>}
+      {rows.length === 0 ? (
+        <p className="muted">오늘 진입 없음 — 후보(picks·새 뉴스·관심종목)의 1분봉에서 거래량 급증 ∧ 당일 고가·VWAP 동시 돌파가 나오면 진입한다.</p>
+      ) : (
+        <Table>
+          <thead>
+            <tr>
+              <Th>종목</Th>
+              <Th>상태</Th>
+              <Th>진입</Th>
+              <Th>청산</Th>
+              <Th num>수익률</Th>
+              <Th>사유</Th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.key}>
+                <Td>
+                  <button type="button" className="btn btn-sm btn-ghost" onClick={() => onPick(r.ticker)}>
+                    <Ticker market={market} ticker={r.ticker} showMarket={false} />
+                  </button>
+                  {r.dry && <Badge kind="pending" value="dry-run" title="주문 없이 기록만" />}
+                </Td>
+                <Td>{r.state}</Td>
+                <Td className="mono">{r.entry}</Td>
+                <Td className="mono">{r.exit}</Td>
+                <Td num className="mono">{r.ret}</Td>
+                <Td>{r.reason}</Td>
+              </tr>
+            ))}
+          </tbody>
+        </Table>
       )}
     </Section>
   );
@@ -181,6 +268,7 @@ export function TodayPage({ title = "오늘의 실행", inputsOnly = false }: { 
   const [ticker, setTicker] = useState("");
   const [stage, setStage] = useState("");
   const today = useLoad(() => getJson<TodayResp>("/api/today", date ? { market, date } : { market }), [market, date, tick]);
+  const scalp = useLoad(() => getJson<ScalpResp>("/api/system/scalp", { market }), [market, tick]);
   const files = today.data?.tickers[ticker] ?? [];
   const stages = pipelineStages(files);
   const runDate = today.data?.date;
@@ -251,6 +339,26 @@ export function TodayPage({ title = "오늘의 실행", inputsOnly = false }: { 
       {!inputsOnly && today.data?.scan && (
         <ScanBlock
           scan={today.data.scan}
+          market={market}
+          onPick={(t) => {
+            setTicker(t);
+            setStage("");
+          }}
+        />
+      )}
+      {!inputsOnly && scalp.data?.enabled && (
+        <ScalpBlock
+          scalp={scalp.data}
+          market={market}
+          onPick={(t) => {
+            setTicker(t);
+            setStage("");
+          }}
+        />
+      )}
+      {!inputsOnly && (today.data?.news_jobs?.length ?? 0) > 0 && (
+        <NewsJobsBlock
+          jobs={today.data?.news_jobs ?? []}
           market={market}
           onPick={(t) => {
             setTicker(t);

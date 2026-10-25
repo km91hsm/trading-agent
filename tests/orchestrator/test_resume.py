@@ -216,3 +216,36 @@ def test_trader_bundle_carries_previous_decision_in_resume(conn):
     b2 = tools.checkpoint_bundle(ctx, ticker="005930", market="KR", date=D, kind="trader")
     assert b2["data"]["previous_decision"]["action"] == "TRIM"
     assert b2["data"]["previous_decision_stage"] == "31_decision_r1"
+
+
+def test_reevaluate_news_trigger_without_price_uses_inputs_quote(conn, monkeypatch):
+    """Phase 23: 뉴스 트리거(kind=news, price 없음)도 재평가 세션이 돌고 31_decision_r1 을 남긴다.
+    현재가는 트리거 가격이 아니라 00_inputs 시세다."""
+    ctx, accounts, brokers = _prepare(conn)
+    monkeypatch.setenv("FAKE_CLAUDE", "1")
+    tid = repo.insert_trigger(
+        conn,
+        market="KR",
+        ticker="005930",
+        kind="news",
+        detail={"news": [{"id": 1, "title": "삼성전자 수주"}], "count": 1},
+        price=None,
+        decision_id=1,
+    )
+    assert repo.latest_trigger_price(conn, "KR", "005930", D) is None
+    res = resume.reevaluate(
+        Settings(),
+        conn,
+        accounts,
+        market="KR",
+        date=D,
+        ticker="005930",
+        exchange=None,
+        trigger_id=tid,
+        trigger={"kind": "news", "price": None, "detail": {"count": 1}},
+        brokers=brokers,
+        now=lambda: NOW,
+        dry_run=False,
+    )
+    assert res.ok and "31_decision_r1" in list_checkpoints(run_dir(D, "KR", "005930"))
+    assert conn.execute("SELECT handled_at FROM triggers WHERE id=?", (tid,)).fetchone()[0]

@@ -18,6 +18,8 @@ export type Position = {
   avg_price: string | null;
   current_price: string | null;
   eval_amount: string | null;
+  horizon?: "short" | "mid" | "long" | null; // 최근 결정의 보유기간 프로필 (Phase 23)
+  horizon_days?: number | null;
 };
 
 export type Snapshot = { date: string; nav: string; cash: string; positions: Position[] } | null;

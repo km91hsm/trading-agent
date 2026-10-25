@@ -114,6 +114,8 @@ uv run trader calibration build
 uv run trader backtest --since YYYY-MM-DD
 uv run trader readiness                  # 실전 전환 준비도 (읽기 전용)
 uv run trader regime show | backtest --market KR   # 시장 국면(bull|neutral|bear)·헤지 설정 / 과거 bear 구간 재현
+uv run trader scalp backtest --ticker 005930 | report  # 분 단위 단타(모의 전용·기본 끔) 규칙 재현 / 실적 집계 (Phase 23)
+uv run trader watchdog [--quiet]                   # 데몬 밖 감시 1회(데몬 생존·운영 점검 → 텔레그램). install --watchdog 로 5분 간격 등록
 uv run trader universe check|sectors --market KR|US [--write]
 ```
 

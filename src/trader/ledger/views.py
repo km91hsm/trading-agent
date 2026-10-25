@@ -10,6 +10,7 @@ import sqlite3
 from collections.abc import Callable
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from pathlib import Path
 
 from trader.config import KST
 from trader.ledger import metrics, repo
@@ -170,6 +171,135 @@ def decision_outcomes(conn: sqlite3.Connection, decision_id: int) -> list[dict]:
             }
         )
     return out
+
+
+_ROLE_LABEL = {
+    "technical": "차트",
+    "fundamental": "회사가치",
+    "news_macro": "뉴스·거시",
+    "sentiment": "투자자 분위기",
+}
+
+
+def decision_trace(
+    conn: sqlite3.Connection, decision_id: int, state: Path | None = None
+) -> dict | None:
+    """결정 하나의 판단 과정(Phase 23 E): 그 종목 run 디렉터리의 체크포인트를 한 번에 요약한다 —
+    애널리스트 4(역할·신호·확신·근거 2개) → 토론(라운드별 stance·conviction) → 수렴 요약 →
+    결정 → 게이트(계좌별 승인·사유·note) → 주문(계좌별 상태) + 재평가·손절·재호가 라운드.
+    체크포인트 읽기는 run_store 함수로만 한다."""
+    from trader.orchestrator.run_store import list_checkpoints, read_checkpoint, run_dir
+
+    dec = repo.get_decision(conn, decision_id, hydrate=True)
+    if dec is None:
+        return None
+    d = date.fromisoformat(str(dec["date"]))
+    rd = run_dir(d, dec["market"], dec["ticker"], state)
+    names = list_checkpoints(rd)
+
+    def data(stage: str) -> dict:
+        cp = read_checkpoint(rd, stage) or {}
+        return cp.get("data") if isinstance(cp.get("data"), dict) else {}
+
+    analysts = []
+    for n in names:
+        if not n.startswith("10_analyst_"):
+            continue
+        a = data(n)
+        role = str(a.get("role") or n[len("10_analyst_") :])
+        analysts.append(
+            {
+                "role": role,
+                "label": _ROLE_LABEL.get(role, role),
+                "signal": a.get("signal"),
+                "confidence": a.get("confidence"),
+                "summary": a.get("summary"),
+                "evidence": [
+                    e.get("claim") for e in (a.get("evidence") or [])[:2] if isinstance(e, dict)
+                ],
+            }
+        )
+    debate = []
+    for n in names:
+        if not n.startswith("20_debate_"):
+            continue
+        t = data(n)
+        debate.append(
+            {
+                "round": t.get("round"),
+                "side": t.get("side"),
+                "stance": t.get("stance"),
+                "conviction": t.get("conviction"),
+                "timing": t.get("timing"),
+            }
+        )
+    debate.sort(key=lambda x: (int(x.get("round") or 0), str(x.get("side"))))
+    rs = data("25_research_summary")
+    research = (
+        {k: rs.get(k) for k in ("rounds", "gap_round0", "gap_final", "sycophantic", "preferred")}
+        if rs
+        else None
+    )
+    inputs = data("00_inputs")
+    quote = ((inputs.get("technical") or {}).get("quote") or {}).get("price")
+
+    def by_account(prefix: str) -> list[dict]:
+        out = []
+        for n in names:
+            if not n.startswith(prefix + "_"):
+                continue
+            acct = n[len(prefix) + 1 :]
+            v = data(n)
+            out.append({"stage": n, "account_id": acct, **_gate_or_order(v)})
+        return out
+
+    rounds = sorted(
+        {n.split("_")[2] for n in names if n.startswith("31_decision_r")}, key=lambda r: int(r[1:])
+    )
+    return {
+        "decision": dec,
+        "quote": quote,
+        "analysts": analysts,
+        "debate": debate,
+        "research": research,
+        "gate": by_account("40_risk_check"),
+        "orders": by_account("50_order"),
+        "reevaluations": [
+            {
+                "round": r,
+                "decision": data(f"31_decision_{r}"),
+                "gate": by_account(f"41_risk_check_{r}"),
+                "orders": by_account(f"51_order_{r}"),
+            }
+            for r in rounds
+        ],
+        "stop_loss": {"gate": by_account("45_stop_loss"), "orders": by_account("55_order_sl")},
+        "reprice": {"gate": by_account("42_reprice"), "orders": by_account("52_order_reprice")},
+        "stages": names,
+    }
+
+
+def _gate_or_order(v: dict) -> dict:
+    if "approved" in v:
+        return {
+            "approved": bool(v.get("approved")),
+            "qty": v.get("adjusted_qty"),
+            "reasons": v.get("reasons") or [],
+            "note": v.get("note"),
+            "mode": v.get("mode"),
+            "dry_run": v.get("dry_run"),
+        }
+    res = v.get("result") or {}
+    req = v.get("request") or {}
+    return {
+        "status": v.get("status"),
+        "order_no": res.get("order_no"),
+        "message": res.get("message"),
+        "side": req.get("side"),
+        "qty": req.get("qty"),
+        "price": req.get("price"),
+        "mode": v.get("mode"),
+    }
 
 
 def list_runs(conn: sqlite3.Connection, *, limit: int = 20) -> list[dict]:

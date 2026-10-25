@@ -104,6 +104,48 @@ def run_fake_reflect(
     return ["_reflect"]
 
 
+def run_fake_discover(ctx: tools.ToolContext, *, market: str, date: date) -> list[str]:
+    """discover 모드(Phase 23): `_discovery_inputs` 의 news 에 태그된 첫 유니버스 종목을 발굴로
+    흉내 낸다(없으면 빈 발굴). screener 는 없다."""
+    from trader.orchestrator.run_store import market_dir
+
+    di = (read_checkpoint(market_dir(date, market, ctx.state), "_discovery_inputs") or {}).get(
+        "data"
+    ) or {}
+    uni_by = {u.get("ticker"): u for u in di.get("universe") or []}
+    pick = None
+    for n in di.get("news") or []:
+        for t in n.get("tickers") or []:
+            if t in uni_by:
+                pick = (uni_by[t], n)
+                break
+        if pick:
+            break
+    cands = []
+    if pick:
+        u, n = pick
+        cands.append(
+            {
+                "name": u.get("name") or u["ticker"],
+                "ticker": u["ticker"],
+                "market": market,
+                "tier": "universe",
+                "catalyst": f"FAKE 장중 발굴: {str(n.get('title'))[:80]}",
+                "source_ids": [f"news:{n.get('id')}"],
+                "confidence": 0.6,
+            }
+        )
+    tools.submit_discovery(
+        ctx,
+        market=market,
+        date=date,
+        payload={"candidates": cands, "notes": ["FAKE 모드"]},
+        agent="scout",
+        call_meta=_call("scout"),
+    )
+    return ["_discovery"]
+
+
 def run_fake_screen(
     ctx: tools.ToolContext, *, market: str, date: date, candidates: list[dict]
 ) -> list[str]:

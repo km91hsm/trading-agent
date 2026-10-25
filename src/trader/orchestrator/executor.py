@@ -338,8 +338,12 @@ def execute(
     is_hedge: bool = False,
     skip_accounts: frozenset[str] = frozenset(),
     extra_note: str | None = None,
+    scalp_leg: str | None = None,
+    is_reprice: bool = False,
 ) -> list[dict]:
     """계좌마다 판정·기록·(모드별) 주문. 계좌 하나의 실패가 다른 계좌를 막지 않는다.
+    scalp_leg(Phase 23 S, "entry"|"exit")는 분 단위 단타: 결정 행 없이(decision_id None 유지 —
+    오늘 LLM 결정과 섞지 않는다) 체크포인트 47_/57_ 에 남기고 게이트는 단타 면제 규칙을 쓴다.
     extra_note 는 판정 note 에 덧붙이는 호출자 문구(재시세 등, Phase 21).
 
     skip_accounts 는 건너뛸 계좌(이미 판정이 있는 계좌의 실행 재개, 헤지의 계좌별 보유 판단).
@@ -351,11 +355,16 @@ def execute(
     is_hedge 는 국면 헤지(인버스 ETF, Phase 17 H): 체크포인트 46_/56_, 게이트 면제, RL 비대상.
     """
     d = run_dir(date, market, decision.ticker, ctx.state)
-    if decision_id is None:
+    is_scalp = scalp_leg is not None
+    if decision_id is None and not is_scalp:
         decision_id = repo.decision_id(ctx.conn, date, market, decision.ticker)
     # 손절·재평가는 오늘 분석의 40_/50_ 체크포인트를 덮어쓰지 않도록 별도 이름을 쓴다
     if is_stop_loss:
         risk_stage, order_stage = "45_stop_loss", "55_order_sl"
+    elif is_scalp:
+        risk_stage, order_stage = f"47_scalp_{scalp_leg}", f"57_order_scalp_{scalp_leg}"
+    elif is_reprice:  # 아침 미체결 재호가(Phase 23 B): 오늘 분석의 40_/50_ 을 덮지 않는다
+        risk_stage, order_stage = "42_reprice", "52_order_reprice"
     elif is_hedge:
         risk_stage, order_stage = "46_hedge", "56_order_hedge"
     elif resume_round is not None:
@@ -371,6 +380,7 @@ def execute(
         and decision_id is not None
         and not is_stop_loss
         and not is_hedge
+        and not is_scalp
         and not dry_run  # dry-run·FAKE 세션의 제안은 실험 집계를 오염시킨다
         and decision.action in ("BUY", "ADD")
     )
@@ -408,6 +418,7 @@ def execute(
                     rl_base=rl_base,
                     extra_note=extra_note,
                     agent_tilt=agent_tilt,
+                    is_scalp=is_scalp,
                 )
             )
         except OrderBookkeepingError as e:  # 접수 뒤 기록 실패: 다른 계좌를 마친 뒤 올린다
@@ -458,6 +469,7 @@ def _execute_account(
     rl_base: _RlBase,
     extra_note: str | None = None,
     agent_tilt: int = 0,
+    is_scalp: bool = False,
 ) -> dict:
     """계좌 하나의 판정·기록·(모드별) 주문. 반환은 results 항목 하나."""
     if True:  # 들여쓰기 유지(execute 루프 본문을 그대로 옮김)
@@ -499,6 +511,7 @@ def _execute_account(
                 is_hedge=is_hedge,
                 hedge_max_weight=hedge_cfg.max_weight_pct if is_hedge else None,
                 agent_tilt=agent_tilt,
+                is_scalp=is_scalp,
             )
         except (KisApiError, ValueError) as e:
             verdict = rules.RiskVerdict(
@@ -530,6 +543,8 @@ def _execute_account(
             note = (note + "; " if note else "") + "일시정지 중: 판정만 기록, 주문·승인 요청 없음"
         if regime != "bull" and not is_hedge:
             note = (note + "; " if note else "") + f"국면 {regime}"
+        if is_scalp:
+            note = (note + "; " if note else "") + "분 단위 단타(모의 전용)"
         if extra_note:
             note = (note + "; " if note else "") + extra_note
         verdict = verdict.model_copy(

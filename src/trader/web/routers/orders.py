@@ -7,18 +7,24 @@ from contextlib import closing
 from fastapi import APIRouter, Query, Request
 
 from trader.ledger import views
-from trader.web.routers._common import deps_of, require_account
+from trader.web.routers._common import csv_response, deps_of, require_account
 
 router = APIRouter(tags=["orders"])
 
 
 @router.get("/orders")
 def orders(
-    request: Request, account_id: str | None = None, limit: int = Query(100, ge=1, le=500)
-) -> list[dict]:
+    request: Request,
+    account_id: str | None = None,
+    limit: int = Query(100, ge=1, le=500),
+    format: str | None = None,
+):
     acct = require_account(request, account_id)
     with closing(deps_of(request).conn_factory()) as conn:
-        return views.list_orders(conn, acct.id, limit=limit)
+        rows = views.list_orders(conn, acct.id, limit=limit)
+    if format == "csv":  # Phase 23 G
+        return csv_response(rows, f"orders_{acct.id}.csv")
+    return rows
 
 
 @router.get("/approvals")

@@ -50,7 +50,7 @@ class SessionSpec:
     tickers: list[dict[str, Any]]  # [{"ticker": str, "exchange": str | None}]
     dry_run: bool = True
     asof: datetime | None = None  # tool collect 에 넘길 기준 시각 (없으면 세션 시작 시각)
-    kind: str = "analyze"  # analyze | screen | resume | reflect | market
+    kind: str = "analyze"  # analyze | screen | resume | reflect | market | discover
     candidates: list[dict[str, Any]] = field(default_factory=list)  # screen 모드 입력
     # screen 모드 보조 입력(Phase 21): {regime, market_view} — 국면·시장 세션 제안을 스크리너도 본다
     context: dict[str, Any] | None = None
@@ -333,6 +333,7 @@ def run_session(
         )
     run_kind = {
         "screen": "scan",
+        "discover": "scan",
         "resume": "monitor",
         "reflect": "reflect",
         "market": "market",
@@ -351,6 +352,8 @@ def run_session(
                 written += fake.run_fake_screen(
                     ctx, market=spec.market, date=spec.date, candidates=spec.candidates
                 )
+            if spec.kind == "discover":
+                written += fake.run_fake_discover(ctx, market=spec.market, date=spec.date)
             if spec.kind == "reflect":
                 written += fake.run_fake_reflect(
                     ctx, market=spec.market, date=spec.date, entries=spec.entries
@@ -408,6 +411,7 @@ def run_session(
         agents_file = cwd / "agents.json"
         names = {
             "screen": registry.SCREEN_AGENTS,
+            "discover": registry.DISCOVER_AGENTS,
             "reflect": registry.REFLECT_AGENTS,
             "market": registry.MARKET_AGENTS,
         }.get(spec.kind, registry.AGENTS)

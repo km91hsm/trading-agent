@@ -139,3 +139,113 @@ export function scanHeadline(s: ScanSummary): string {
   if (s.cap_hit) parts.push("세션 상한");
   return parts.join(" · ");
 }
+
+/** 장중 뉴스 발굴(Phase 23)이 낸 요청 한 행 — /api/today.news_jobs. */
+export type NewsJob = {
+  id: number;
+  kind: string;
+  ticker: string | null;
+  status: string;
+  requested_at: string;
+  finished_at: string | null;
+  error: string | null;
+};
+
+const NEWS_JOB_KIND: Record<string, string> = {
+  analyze_ticker: "종목 분석(새 뉴스)",
+  reevaluate: "재평가(새 뉴스)",
+  discover: "유니버스 밖 발굴",
+};
+
+const NEWS_JOB_STATUS: Record<string, string> = {
+  queued: "대기",
+  running: "실행 중",
+  ok: "완료",
+  error: "오류",
+  skipped: "건너뜀",
+};
+
+export type NewsJobRow = { id: number; kindLabel: string; ticker: string | null; stateLabel: string; pending: boolean; failed: boolean; at: string; error: string | null };
+
+/** 뉴스 발굴 요청 → 표 행(최신 먼저, 서버 순서 유지). */
+export function newsJobRows(jobs: NewsJob[]): NewsJobRow[] {
+  return jobs.map((j) => ({
+    id: j.id,
+    kindLabel: NEWS_JOB_KIND[j.kind] ?? j.kind,
+    ticker: j.ticker,
+    stateLabel: NEWS_JOB_STATUS[j.status] ?? j.status,
+    pending: j.status === "queued" || j.status === "running",
+    failed: j.status === "error",
+    at: j.finished_at ?? j.requested_at,
+    error: j.error,
+  }));
+}
+
+/** '장중 발굴' 머리말: "요청 5 · 대기 1 · 오류 0". */
+export function newsJobsHeadline(jobs: NewsJob[]): string {
+  const rows = newsJobRows(jobs);
+  return `요청 ${rows.length} · 대기 ${rows.filter((r) => r.pending).length} · 오류 ${rows.filter((r) => r.failed).length}`;
+}
+
+/** 분 단위 단타(Phase 23 S) — /api/system/scalp. */
+export type ScalpTrade = {
+  ticker: string;
+  entry_price: string;
+  entry_time: string;
+  exit_price?: string;
+  exit_time?: string;
+  reason?: string;
+  ret?: number;
+  qty?: Record<string, number>;
+  dry_run?: boolean;
+};
+export type ScalpResp = {
+  enabled: boolean;
+  max_weight_pct: number;
+  max_positions: number;
+  markets: Record<string, { date: string; open: ScalpTrade[]; closed: ScalpTrade[]; halted: string | null }>;
+};
+
+const SCALP_REASON: Record<string, string> = { take_profit: "익절", stop: "손절", max_hold: "보유 시간", close: "마감 전", eod: "장 마감" };
+
+export type ScalpRow = { key: string; ticker: string; state: string; entry: string; exit: string; ret: string; reason: string; dry: boolean };
+
+/** 상태 칩 문구: 끔 / 켬 · 보유 n · 청산 n (· 중단). */
+export function scalpChip(r: ScalpResp | null, market: string): { text: string; level: "none" | "ok" | "warn" } {
+  if (!r) return { text: "—", level: "none" };
+  if (!r.enabled) return { text: "끔", level: "none" };
+  const m = r.markets[market];
+  if (!m) return { text: "켬", level: "ok" };
+  const parts = [`켬 · 보유 ${m.open.length} · 청산 ${m.closed.length}`];
+  if (m.halted) parts.push("중단");
+  return { text: parts.join(" · "), level: m.halted ? "warn" : "ok" };
+}
+
+const hhmm = (t?: string) => (t && t.length >= 4 ? `${t.slice(0, 2)}:${t.slice(2, 4)}` : "—");
+
+/** 오늘 단타 표 행: 보유 중 먼저, 그 다음 청산(최신 먼저). */
+export function scalpRows(r: ScalpResp | null, market: string): ScalpRow[] {
+  const m = r?.markets[market];
+  if (!m) return [];
+  const open = m.open.map((t) => ({
+    key: `o:${t.ticker}:${t.entry_time}`,
+    ticker: t.ticker,
+    state: "보유 중",
+    entry: `${t.entry_price} @ ${hhmm(t.entry_time)}`,
+    exit: "—",
+    ret: "—",
+    reason: "",
+    dry: !!t.dry_run,
+  }));
+  const closed = [...m.closed].reverse().map((t) => ({
+    key: `c:${t.ticker}:${t.entry_time}`,
+    ticker: t.ticker,
+    state: "청산",
+    entry: `${t.entry_price} @ ${hhmm(t.entry_time)}`,
+    exit: `${t.exit_price ?? "—"} @ ${hhmm(t.exit_time)}`,
+    ret: t.ret === undefined ? "—" : `${t.ret >= 0 ? "+" : ""}${(t.ret * 100).toFixed(2)}%`,
+    reason: SCALP_REASON[t.reason ?? ""] ?? t.reason ?? "",
+    dry: !!t.dry_run,
+  }));
+  return [...open, ...closed];
+}

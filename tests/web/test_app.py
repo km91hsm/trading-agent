@@ -98,7 +98,7 @@ def test_usage_endpoint_reports_windows_and_observed_limits(client, deps, conn, 
 
     deps.settings.llm.usage_file = None  # 개발 머신의 ~/.claude/rate_limits.json 에 기대지 않는다
     r = client.get("/api/system/usage").json()
-    assert r["rate_limits"] is None and r["windows"]["today"] == {"sessions": 0, "cap": 14}
+    assert r["rate_limits"] is None and r["windows"]["today"] == {"sessions": 0, "cap": 40}
     p = tmp_path / "rl.json"
     p.write_text(
         json.dumps({"at": 0, "rate_limits": {"five_hour": {"used_percentage": 3}}}),
@@ -199,3 +199,115 @@ def test_today_lists_market_files_and_market_checkpoint_endpoint(client, deps):
         client.get("/api/market-checkpoint", params={"market": "KR", "stage": "../x"}).status_code
         == 400
     )
+
+
+def test_today_lists_news_jobs_for_market_and_day(client, deps, conn):
+    """Phase 23: /api/today.news_jobs 는 그 운영일·시장의 source='news' 요청만."""
+    from trader import jobs as jobq
+
+    now = deps.now()
+    jobq.enqueue(conn, "discover", {"market": "KR"}, source="news", now=now)
+    jobq.enqueue(
+        conn, "analyze_ticker", {"market": "KR", "ticker": "005930"}, source="news", now=now
+    )
+    jobq.enqueue(conn, "discover", {"market": "US"}, source="news", now=now)
+    jobq.enqueue(conn, "news_collect", {}, source="web", now=now)
+    rows = client.get("/api/today", params={"market": "KR"}).json()["news_jobs"]
+    assert [(r["kind"], r["ticker"], r["status"]) for r in rows] == [
+        ("analyze_ticker", "005930", "queued"),
+        ("discover", None, "queued"),
+    ]
+    assert client.get("/api/today", params={"market": "US"}).json()["news_jobs"][0]["kind"] == (
+        "discover"
+    )
+
+
+def test_portfolio_positions_carry_horizon_profile(client, deps, conn):
+    """Phase 23 T: 보유 행에 최근 결정의 보유기간 프로필."""
+    conn.execute(
+        "INSERT INTO positions_snapshot(account_id, market, date, ticker, qty, avg_price, "
+        "current_price, eval_amount, nav, cash, created_at) VALUES "
+        "('paper-main','KR','2026-10-24','005930',1,'70000','71000','71000','1000000','900000',"
+        "'2026-10-24T07:00:00+00:00'),"
+        "('paper-main','KR','2026-10-24','000660',1,'100000','100000','100000','1000000',"
+        "'900000','2026-10-24T07:00:00+00:00')"
+    )
+    conn.execute(
+        "INSERT INTO decisions(date, market, ticker, action, json, created_at) "
+        "VALUES ('2026-10-24','KR','005930','BUY','{\"horizon_days\": 5}',"
+        "'2026-10-24T00:00:00+00:00')"
+    )
+    conn.commit()
+    r = client.get("/api/portfolio", params={"account_id": "paper-main", "market": "KR"}).json()
+    by = {p["ticker"]: p for p in r["snapshot"]["positions"]}
+    assert by["005930"]["horizon"] == "short" and by["005930"]["horizon_days"] == 5
+    assert by["000660"]["horizon"] is None
+
+
+def test_system_ops_endpoint_live_and_cached(client, conn):
+    """Phase 23 A: /api/system/ops 는 데몬 결과가 없으면 지금 판정, 있으면 그것을 돌려준다."""
+    from trader.control import control
+    from trader.ops import health
+
+    r = client.get("/api/system/ops").json()
+    assert r["source"] == "live" and r["level"] in health.LEVELS and "headline" in r
+    control.set_flag(
+        conn,
+        health.RESULT_FLAG,
+        {
+            "level": "ok",
+            "label": "정상",
+            "at": "2026-10-24T01:00:00+00:00",
+            "items": [],
+            "actions": [],
+            "areas": {},
+        },
+    )
+    conn.commit()
+    r2 = client.get("/api/system/ops").json()
+    assert r2["source"] == "daemon" and r2["headline"].startswith("점검 정상")
+    assert client.get("/api/system/ops", params={"live": "true"}).json()["source"] == "live"
+
+
+def test_decision_trace_endpoint(client, conn):
+    """Phase 23 E: /api/decisions/{id}/trace, 없으면 404."""
+    from datetime import date
+
+    from helpers_agents import ok_decision
+
+    from trader.ledger import repo
+
+    did = repo.ingest_checkpoint(
+        conn, date(2026, 10, 9), "KR", "005930", "30_decision", {"data": ok_decision()}
+    )
+    conn.commit()
+    r = client.get(f"/api/decisions/{did}/trace")
+    assert r.status_code == 200 and r.json()["decision"]["id"] == did
+    assert r.json()["analysts"] == [] and "stages" in r.json()
+    assert client.get("/api/decisions/999/trace").status_code == 404
+
+
+def test_csv_format_for_orders_decisions_positions(client, conn):
+    """Phase 23 G: ?format=csv 는 같은 표를 CSV(BOM) 로."""
+    from datetime import date
+
+    from helpers_agents import ok_decision
+
+    from trader.ledger import repo
+
+    repo.ingest_checkpoint(
+        conn, date(2026, 10, 9), "KR", "005930", "30_decision", {"data": ok_decision()}
+    )
+    conn.commit()
+    r = client.get("/api/orders", params={"account_id": "paper-main", "format": "csv"})
+    assert r.status_code == 200 and r.headers["content-type"].startswith("text/csv")
+    assert r.text.startswith("﻿") and "attachment" in r.headers["content-disposition"]
+    r2 = client.get("/api/decisions", params={"format": "csv"})
+    lines = r2.text.lstrip("﻿").splitlines()
+    assert lines[0].startswith("id,date,market,ticker,action") and "005930" in lines[1]
+    r3 = client.get(
+        "/api/portfolio", params={"account_id": "paper-main", "market": "KR", "format": "csv"}
+    )
+    assert r3.status_code == 200 and r3.headers["content-type"].startswith("text/csv")
+    # 기본은 그대로 JSON
+    assert isinstance(client.get("/api/decisions").json(), list)

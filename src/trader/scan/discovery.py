@@ -86,10 +86,17 @@ def build_inputs(
     cache_names: dict[tuple[str, str], str] | None = None,
     sources_cfg: Any | None = None,
     http: Any | None = None,
+    intraday_news: list[dict] | None = None,
+    analyzed_today: list[str] | None = None,
 ) -> dict:
     """scout 입력을 조립해 `_discovery_inputs` 로 저장하고 돌려준다. 뉴스가 비어도 파일은 만든다
     (scout 이 '발굴 없음' 을 낼 수 있게). `sources_cfg.channels.naver_blog` + `http` 가 있으면
-    블로그 최근 글(`blog_posts`)도 싣는다(KR 만, 실패는 빈 목록)."""
+    블로그 최근 글(`blog_posts`)도 싣는다(KR 만, 실패는 빈 목록).
+
+    `intraday_news` 가 있으면 장중 발굴(Phase 23): 저장소 48h 대신 **새 내용으로 판정된 뉴스만**
+    싣고 `intraday_round`(오늘 n번째) 를 붙이며 `recent_picks` 맨 앞에 오늘 이미 분석·발굴한
+    종목(`analyzed_today`)을 넣는다. 파일은 `_discovery_inputs`(도구가 읽는 자리)와 사본
+    `_discovery_inputs_r<n>` 둘."""
     from trader.config import load_sectors
     from trader.risk import regime as regime_mod
     from trader.sources import manual_inputs, news_store
@@ -114,7 +121,12 @@ def build_inputs(
         for t, e in members
         if t not in set(universe.exclude)
     ]
-    news = news_store.recent(conn, market, asof=asof, hours=cfg.store_hours, limit=cfg.store_items)
+    if intraday_news is not None:
+        news = intraday_news
+    else:
+        news = news_store.recent(
+            conn, market, asof=asof, hours=cfg.store_hours, limit=cfg.store_items
+        )
     news_rows = [
         {
             "id": n["id"],
@@ -146,6 +158,19 @@ def build_inputs(
     except Exception as e:  # noqa: BLE001 - 선택 입력
         logger.debug("세이브티커 발굴 입력 실패 %s: %s", market, e)
     blog_posts = _blog_posts(sources_cfg, http, market=market, asof=asof, now=now)
+    d = market_dir(today, market, state, create=True)
+    recent = _recent_picks(market, today, state)
+    rnd = None
+    if intraday_news is not None:
+        rnd = 1 + sum(1 for p in d.glob("_discovery_inputs_r*.json"))
+        recent = [
+            {
+                "date": today.isoformat(),
+                "picks": sorted(set(analyzed_today or [])),
+                "discovered": [],
+            },
+            *recent,
+        ]
     data = {
         "scope": "discovery",
         "market": market,
@@ -156,7 +181,8 @@ def build_inputs(
         "market_notes": notes,
         "regime": {"state": reg.get("state") or "bull", "count": reg.get("count") or 0},
         "held": sorted(set(held or [])),
-        "recent_picks": _recent_picks(market, today, state),
+        "recent_picks": recent,
+        "intraday_round": rnd,
         "saveticker": saveticker_snap,
         "blog_posts": blog_posts,
         "quant_candidates": [
@@ -165,9 +191,33 @@ def build_inputs(
         ],
         "max_listed": MAX_LISTED,
     }
-    d = market_dir(today, market, state, create=True)
     write_checkpoint(d, "_discovery_inputs", {"schema_version": 1, "data": data, "call": None})
+    if rnd is not None:
+        write_checkpoint(
+            d, f"_discovery_inputs_r{rnd}", {"schema_version": 1, "data": data, "call": None}
+        )
     return data
+
+
+def news_burst(
+    novel: list[dict], *, universe_tickers: set[str], held: set[str], min_items: int = 1
+) -> dict:
+    """새 내용 뉴스(novel_items 결과)를 태그 종목별로 센다. 반환
+    {"tickers": {코드: [뉴스]} (유니버스·보유 종목이고 ≥ min_items), "untagged": 태그 없는 건수,
+    "total": 전체}. 유니버스 밖 태그는 없다(태깅이 유니버스만 하므로)."""
+    by: dict[str, list[dict]] = {}
+    untagged = 0
+    for n in novel:
+        tickers = [t for t in (n.get("tickers") or []) if t in universe_tickers or t in held]
+        if not tickers:
+            untagged += 1
+        for t in tickers:
+            by.setdefault(t, []).append(n)
+    return {
+        "tickers": {t: items for t, items in by.items() if len(items) >= min_items},
+        "untagged": untagged,
+        "total": len(novel),
+    }
 
 
 def _blog_posts(

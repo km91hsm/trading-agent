@@ -9,13 +9,15 @@ export function Table({
   dense,
   className,
   caption,
+  responsive,
 }: {
   children: ReactNode;
   dense?: boolean;
   className?: string;
   caption?: string;
+  responsive?: boolean; // 좁은 화면에서 core 가 아닌 열을 숨긴다(가로 스크롤 대신, Phase 23 G)
 }) {
-  const cls = ["tape", dense ? "dense" : "", className ?? ""].filter(Boolean).join(" ");
+  const cls = ["tape", dense ? "dense" : "", responsive ? "responsive" : "", className ?? ""].filter(Boolean).join(" ");
   return (
     <div className="table-wrap">
       <table className={cls}>
@@ -32,12 +34,14 @@ export function Th({
   onSort,
   sorted,
   colSpan,
+  core,
 }: {
   children?: ReactNode;
   num?: boolean;
   onSort?: () => void;
   sorted?: "asc" | "desc" | null;
   colSpan?: number;
+  core?: boolean; // responsive 표에서 좁은 화면에도 남는 열
 }) {
   const inner = onSort ? (
     <button type="button" className="th-sort" onClick={onSort}>
@@ -48,8 +52,9 @@ export function Th({
     children
   );
   const ariaSort = sorted === "asc" ? "ascending" : sorted === "desc" ? "descending" : undefined;
+  const cls = [num ? "num" : "", core ? "core" : ""].filter(Boolean).join(" ") || undefined;
   return (
-    <th scope="col" className={num ? "num" : undefined} colSpan={colSpan} aria-sort={ariaSort}>
+    <th scope="col" className={cls} colSpan={colSpan} aria-sort={ariaSort}>
       {inner}
     </th>
   );
@@ -60,13 +65,15 @@ export function Td({
   num,
   className,
   colSpan,
+  core,
 }: {
   children?: ReactNode;
   num?: boolean;
   className?: string;
   colSpan?: number;
+  core?: boolean;
 }) {
-  const cls = [num ? "num" : "", className ?? ""].filter(Boolean).join(" ") || undefined;
+  const cls = [num ? "num" : "", core ? "core" : "", className ?? ""].filter(Boolean).join(" ") || undefined;
   return (
     <td className={cls} colSpan={colSpan}>
       {children}

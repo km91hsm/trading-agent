@@ -29,6 +29,8 @@ AGENTS: tuple[str, ...] = (
 ORCHESTRATOR = "orchestrator"
 # Phase 19: scout(뉴스 발굴) → screener(선정) — 같은 screen 세션 안의 두 단계
 SCREEN_AGENTS: tuple[str, ...] = ("scout", "screener")
+# Phase 23 장중 발굴: 뉴스 수집 뒤 scout 만 (screener 없음, 후보는 파이썬이 분석 큐로)
+DISCOVER_AGENTS: tuple[str, ...] = ("scout",)
 REFLECT_AGENTS: tuple[str, ...] = ("reflector",)
 # Phase 18 시장 세션: 거시 애널리스트 1 + 리서처 토론 + 전략가(헤지 비중 제안)
 MARKET_AGENTS: tuple[str, ...] = (

@@ -130,12 +130,12 @@ export function useAppState(): AppState {
     );
   }, [reloadAccounts]);
 
-  // SSE 가 끊긴 동안은 60초마다 /api/health 로 서버 생존을 확인하고, 살아 있으면 tick 을 올려
+  // SSE 가 끊긴 동안은 60초마다 /api/system/health 로 서버 생존을 확인하고, 살아 있으면 tick 을 올려
   // 페이지가 다시 읽게 한다(폴링으로 강등). 연결이 돌아오면 멈춘다.
   useEffect(() => {
     if (connected) return;
     const id = window.setInterval(() => {
-      getJson<{ ok: boolean }>("/api/health")
+      getJson<{ ok: boolean }>("/api/system/health")
         .then(() => setTick((t) => t + 1))
         .catch(() => {
           /* 서버가 없으면 끊김 표시 유지 */
@@ -175,7 +175,28 @@ export function useLoad<T>(fn: () => Promise<T> | null, deps: unknown[]): Loaded
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [n, setN] = useState(0);
+  const stale = useRef(false);
+  // 가려진 탭은 다시 읽지 않고(탭이 돌아오면 즉시), 전역 'trader:refresh' 이벤트로도 다시 읽는다 (Phase 23 G)
   useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState === "visible" && stale.current) {
+        stale.current = false;
+        setN((x) => x + 1);
+      }
+    };
+    const onRefresh = () => setN((x) => x + 1);
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("trader:refresh", onRefresh);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("trader:refresh", onRefresh);
+    };
+  }, []);
+  useEffect(() => {
+    if (typeof document !== "undefined" && document.visibilityState === "hidden" && n > 0) {
+      stale.current = true; // 돌아오면 한 번에 읽는다
+      return;
+    }
     const p = fn();
     if (!p) {
       // 호출 조건이 빠지면(계좌 미선택 등) 이전 결과·오류를 모두 지운다

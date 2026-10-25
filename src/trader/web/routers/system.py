@@ -8,6 +8,7 @@ from importlib.metadata import PackageNotFoundError, version
 from fastapi import APIRouter, Request
 
 from trader import heartbeat, usage
+from trader.control import control
 from trader.platform import paths
 
 router = APIRouter(prefix="/system", tags=["system"])
@@ -87,6 +88,62 @@ def regime_status(request: Request) -> dict:
             m: {k: v.model_dump() for k, v in d.items()} for m, d in h.instruments.items()
         },
         "markets": markets,
+    }
+
+
+@router.get("/ops")
+def ops_status(request: Request, live: bool = False) -> dict:
+    """운영 점검(Phase 23 A). 기본은 데몬 `ops_check` 의 마지막 결과(`control.ops_result`),
+    `live=true` 면 지금 다시 판정(읽기 전용, 기록 없음). 토큰 없음."""
+    from trader.daemon import build_jobs
+    from trader.ops import health
+
+    deps = request.app.state.deps
+    with closing(deps.conn_factory()) as conn:
+        if not live:
+            cached = control.get_flag(conn, health.RESULT_FLAG)
+            if cached:
+                return cached | {"headline": health.headline(cached), "source": "daemon"}
+        jobs = (
+            build_jobs(deps.schedule, deps.settings, markets=list(deps.settings.markets))
+            if deps.schedule is not None
+            else []
+        )
+        result = health.check(
+            conn,
+            deps.settings,
+            deps.accounts,
+            now=deps.now(),
+            state=deps.state,
+            schedule_jobs=jobs,
+        )
+    return result | {"headline": health.headline(result), "source": "live"}
+
+
+@router.get("/scalp")
+def scalp_status(request: Request, market: str | None = None) -> dict:
+    """분 단위 단타(Phase 23 S) 상태: 설정·오늘 진입/청산·중단 사유. 토큰 없음."""
+    from trader.orchestrator.run_store import run_date_for
+    from trader.scalp import engine as scalp_engine
+
+    deps = request.app.state.deps
+    cfg = deps.settings.scalp
+    markets = [market] if market else list(deps.settings.markets)
+    today_by = {}
+    for m in markets:
+        d = run_date_for(m, deps.now())
+        st = scalp_engine.load_state(deps.state, d, m)
+        today_by[m] = {
+            "date": d.isoformat(),
+            "open": st.get("open") or [],
+            "closed": st.get("closed") or [],
+            "halted": st.get("halted"),
+        }
+    return {
+        "enabled": cfg.enabled,
+        "max_weight_pct": cfg.max_weight_pct,
+        "max_positions": cfg.max_positions,
+        "markets": today_by,
     }
 
 

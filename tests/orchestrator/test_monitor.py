@@ -186,8 +186,8 @@ def test_trigger_reevaluation_rate_limited(conn):
     # (지속 조건이 30분마다 유료 세션을 재생성해 일일 상한을 소진하던 문제)
     assert r3["reevaluated"] == 0 and r3["triggers"] == 0 and len(ctx.calls) == 1
     rows = conn.execute("SELECT kind, handled_at FROM triggers ORDER BY id").fetchall()
-    # 같은 틱의 트리거(take_profit + move_7pct)는 세션 1회가 모두 처리한 것으로 표시된다
-    assert {r["kind"] for r in rows} == {"take_profit", "move_7pct"}
+    # 같은 틱의 트리거(take_profit + move_7pct + 단기 프로필의 periodic)는 세션 1회가 모두 처리
+    assert {r["kind"] for r in rows} == {"take_profit", "move_7pct", "periodic"}
     assert all(r["handled_at"] is not None for r in rows)
     # 다음 운영일에는 (그날 결정이 있으면) 다시 1회
     dec = Decision(**ok_decision(take_profit=80000.0))
@@ -664,3 +664,70 @@ def test_old_unhandled_trigger_is_not_reused_today(conn):
         "SELECT id, created_at FROM triggers WHERE kind='take_profit' ORDER BY id"
     ).fetchall()
     assert len(rows) == 2 and rows[1]["created_at"].startswith("2026-10-09")
+
+
+# --- 보유기간 프로필(Phase 23 T) ------------------------------------------------------
+
+
+def test_check_position_move_threshold_follows_profile():
+    pos = _pos(avg="70000", cur="73000")
+    # mid(7%) 기본: +4.3% 는 신호 없음, 단기 임계 4% 를 넘기면 move_7pct(임계 표기 포함)
+    assert monitor.check_position(pos, None, Decimal("73000"), stop_loss_pct=-0.15, now=NOW) == []
+    sig = monitor.check_position(
+        pos, None, Decimal("73000"), stop_loss_pct=-0.15, now=NOW, move_pct=Decimal("0.04")
+    )
+    assert [s.kind for s in sig] == ["move_7pct"] and sig[0].detail["threshold"] == "4.00%"
+    # 장기 임계 10%: +9% 도 조용
+    assert (
+        monitor.check_position(
+            pos, None, Decimal("76300"), stop_loss_pct=-0.15, now=NOW, move_pct=Decimal("0.10")
+        )
+        == []
+    )
+
+
+def test_periodic_signal_rules():
+    from trader.risk import horizon
+
+    prof = Settings().risk.horizon_profiles["short"]
+    kw = dict(profile=prof, last_periodic_at=None, count_today=0, now=NOW)
+    # 변동 2%(= move_pct/2) 이상이어야 한다
+    assert monitor.periodic_signal(Decimal("70700"), Decimal("70000"), **kw) is None
+    sig = monitor.periodic_signal(Decimal("71500"), Decimal("70000"), **kw)
+    assert sig is not None and sig.kind == "periodic" and sig.detail["ref_price"] == "70000"
+    # 간격(60분) 안이면 없음, 지나면 다시
+    kw2 = kw | {"last_periodic_at": NOW - timedelta(minutes=30)}
+    assert monitor.periodic_signal(Decimal("71500"), Decimal("70000"), **kw2) is None
+    kw3 = kw | {"last_periodic_at": NOW - timedelta(minutes=61)}
+    assert monitor.periodic_signal(Decimal("71500"), Decimal("70000"), **kw3) is not None
+    # 운영일 상한, mid/long 프로필(periodic_check_min=0)은 없음
+    assert (
+        monitor.periodic_signal(
+            Decimal("71500"), Decimal("70000"), **(kw | {"count_today": horizon.PERIODIC_DAILY_CAP})
+        )
+        is None
+    )
+    mid = Settings().risk.horizon_profiles["mid"]
+    assert (
+        monitor.periodic_signal(Decimal("80000"), Decimal("70000"), **(kw | {"profile": mid}))
+        is None
+    )
+
+
+def test_long_horizon_holding_uses_wider_threshold_and_longer_interval(conn):
+    _decision(conn, horizon_days=60, take_profit=None, invalidation_conditions=[])
+    ctx = _ctx(conn, positions=[_pos(avg="70000", cur="76000")], price="76000")
+    r1 = monitor.monitor_once(ctx, market="KR", today=D)  # +8.6%: 장기 임계 10% 미달
+    assert r1["triggers"] == 0 and len(ctx.calls) == 0
+    ctx.market_client.prices["005930"] = Decimal("77500")  # +10.7%
+    r2 = monitor.monitor_once(ctx, market="KR", today=D)
+    assert r2["triggers"] == 1 and r2["reevaluated"] == 1
+    # 장기 간격 60분: 45분 뒤 다른 종류(무효화)가 와도 재평가는 보류된다
+    conn.execute(
+        "UPDATE decisions SET json=json_set(json, '$.invalidation_conditions', json(?))",
+        ('["종가 < 60000"]',),
+    )
+    ctx.market_client.prices["005930"] = Decimal("59000")
+    ctx.now = lambda: NOW + timedelta(minutes=45)
+    r3 = monitor.monitor_once(ctx, market="KR", today=D)
+    assert r3["reevaluated"] == 0 and len(ctx.calls) == 1

@@ -200,3 +200,85 @@ main {
 .statusline .warn b {
   color: var(--pending);
 }
+
+/* 메뉴 묶음·하단 탭·팔레트 (Phase 23 G) */
+.nav-group-title {
+  font-size: 0.75em;
+  letter-spacing: 0.04em;
+  padding: var(--s-3) var(--s-3) 2px;
+  text-transform: uppercase;
+}
+.nav-hint {
+  font-size: 0.75em;
+  padding: var(--s-3);
+}
+.tabbar {
+  display: none;
+}
+@media (max-width: 599px) {
+  .tabbar {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    background: var(--paper);
+    border-top: 2px solid var(--rule-strong);
+    z-index: 14;
+  }
+  .tabbar a,
+  .tabbar button {
+    padding: 10px 4px;
+    text-align: center;
+    font-size: 0.8em;
+    color: inherit;
+    text-decoration: none;
+    background: none;
+    border: 0;
+  }
+  .tabbar a.active {
+    font-weight: 700;
+    box-shadow: inset 0 2px 0 var(--rule-strong);
+  }
+  main {
+    padding-bottom: 64px;
+  }
+  .tape.responsive th:not(.core),
+  .tape.responsive td:not(.core) {
+    display: none;
+  }
+}
+.palette {
+  width: min(560px, 92vw);
+  padding: var(--s-3);
+}
+.palette input {
+  width: 100%;
+  font: inherit;
+  padding: 8px;
+  border: 1px solid var(--rule);
+  background: var(--paper);
+  color: inherit;
+}
+.palette-list {
+  list-style: none;
+  margin: var(--s-3) 0 0;
+  padding: 0;
+  max-height: 50vh;
+  overflow: auto;
+}
+.palette-list li {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--s-3);
+  padding: 6px 8px;
+  cursor: pointer;
+}
+.palette-list li.sel {
+  background: var(--rule);
+}
+.palette-help {
+  font-size: 0.8em;
+  margin: var(--s-3) 0 0;
+}
