@@ -729,3 +729,55 @@ def test_market_manual_notes_merge_into_manual_inputs(project):
     mi = d["sentiment"]["manual_inputs"]
     assert mi["error"] is None and mi["data"]["format"] == "market"
     assert [n["title"] for n in mi["data"]["market_notes"]] == ["시장 메모"]
+
+
+def test_macro_is_memoized_per_market_and_day(project, monkeypatch):
+    """거시 지표는 종목과 무관하다 — 같은 시장·운영일의 수집은 15분 동안 한 번만 외부를 부른다."""
+    from trader.sources.base import Section
+
+    calls = []
+
+    def fake_macro(cfg_, secrets, *, market_client, asof, http, now):
+        calls.append(asof)
+        return {"kospi": Section(data={"value": 1.0}, received_at=T0.isoformat(), error=None)}
+
+    monkeypatch.setattr(inputs, "collect_macro", fake_macro)
+    c = SourcesConfig.model_validate(
+        {
+            "edgar": {"user_agent": "t t@e.com"},
+            "news": {"enabled": False},
+            "macro": {"enabled": True},
+            "community": {"enabled": False},
+        }
+    )
+    for ticker in ("005930", "000660"):
+        build_inputs(
+            ticker=ticker,
+            market="KR",
+            exchange=None,
+            asof=T0,
+            cfg=c,
+            secrets=Secrets(),
+            deps=deps(),
+        )
+    assert len(calls) == 1
+    later = deps(now=lambda: T0 + timedelta(minutes=16))
+    build_inputs(
+        ticker="005930", market="KR", exchange=None, asof=T0, cfg=c, secrets=Secrets(), deps=later
+    )
+    assert len(calls) == 2  # TTL 지남
+    # 전부 실패한 결과는 메모하지 않는다
+    monkeypatch.setattr(
+        inputs,
+        "collect_macro",
+        lambda *a, **k: (
+            calls.append("err")
+            or {"kospi": Section(data=None, received_at=T0.isoformat(), error="boom")}
+        ),
+    )
+    us = deps()
+    for _ in range(2):
+        build_inputs(
+            ticker="AAPL", market="US", exchange="NAS", asof=T0, cfg=c, secrets=Secrets(), deps=us
+        )
+    assert calls.count("err") == 2

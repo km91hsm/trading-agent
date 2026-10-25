@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import { getJson, subscribeEvents, tokenStore, type EventSnapshot } from "./api";
+import { changedKeys } from "./events";
 import { groupByMarket, missingKeys, type NameMap } from "./names";
 import { applyTheme, themeStore, watchSystemTheme, type Theme } from "./theme";
 import type { Account } from "./types";
@@ -12,6 +13,8 @@ export type AppState = {
   setToken: (t: string) => void;
   events: EventSnapshot | null;
   tick: number; // 이벤트가 올 때마다 증가 → 페이지가 다시 읽는다
+  ticks: Record<string, number>; // 스냅샷 키별 변경 횟수 → 바뀐 표만 다시 읽는다 (tickOf)
+  tickOf: (...keys: string[]) => number;
   reloadAccounts: () => void;
   theme: Theme;
   setTheme: (t: Theme) => void;
@@ -41,6 +44,12 @@ export function useAppState(): AppState {
   const [token, setTokenRaw] = useState<string | null>(() => tokenStore.get());
   const [events, setEvents] = useState<EventSnapshot | null>(null);
   const [tick, setTick] = useState(0);
+  const [ticks, setTicks] = useState<Record<string, number>>({});
+  const prevSnap = useRef<EventSnapshot | null>(null);
+  const tickOf = useCallback(
+    (...keys: string[]) => keys.reduce((s, k) => s + (ticks[k] ?? 0), 0),
+    [ticks],
+  );
   const [theme, setThemeRaw] = useState<Theme>(() => themeStore.get());
   const [names, setNames] = useState<NameMap>({});
   const namesRef = useRef<NameMap>({});
@@ -100,9 +109,17 @@ export function useAppState(): AppState {
 
   useEffect(() => {
     return subscribeEvents((snap) => {
+      const changed = changedKeys(prevSnap.current, snap);
+      prevSnap.current = snap;
       setEvents(snap);
       setTick((t) => t + 1);
-      reloadAccounts();
+      if (changed.length)
+        setTicks((cur) => {
+          const next = { ...cur };
+          for (const k of changed) next[k] = (next[k] ?? 0) + 1;
+          return next;
+        });
+      if (changed.includes("paused") || changed.includes("runs")) reloadAccounts();
     });
   }, [reloadAccounts]);
 
@@ -123,7 +140,10 @@ export function useAppState(): AppState {
     setThemeRaw(t);
     applyTheme(document, t);
   };
-  return { accounts, accountId, setAccountId, token, setToken, events, tick, reloadAccounts, theme, setTheme, names, ensureNames };
+  return {
+    ticks,
+    tickOf,
+    accounts, accountId, setAccountId, token, setToken, events, tick, reloadAccounts, theme, setTheme, names, ensureNames };
 }
 
 export type Loaded<T> = { data: T | null; error: string | null; loading: boolean; reload: () => void };

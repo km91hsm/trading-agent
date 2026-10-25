@@ -46,7 +46,14 @@ function runDates(now: Date): Record<string, string> {
 const str = (v: unknown): string | null => (v === null || v === undefined || v === "" ? null : String(v));
 
 export function Dashboard() {
-  const { accounts, accountId, events, tick, names } = useApp();
+  const { accounts, accountId, events, tick, names, tickOf } = useApp();
+  // 바뀐 스냅샷 키에 맞는 표만 다시 읽는다 (runs 는 판정·스냅샷·세션, 나머지는 해당 표)
+  const tRuns = tickOf("runs");
+  const tOrders = tickOf("orders");
+  const tDecisions = tickOf("decisions");
+  const tApprovals = tickOf("approvals", "approvals_pending");
+  const tWatch = tickOf("watchlist");
+  const tJobs = tickOf("jobs_done", "runs");
   const acct = accounts.find((a) => a.id === accountId);
   const markets = acct?.markets ?? [];
   const otherAccounts = accounts.filter((a) => a.id !== accountId);
@@ -65,16 +72,16 @@ export function Dashboard() {
 
   const pfKR = useLoad(
     () => (accountId && markets.includes("KR") ? getJson<Portfolio>(withAccount("/api/portfolio?market=KR", accountId)) : null),
-    [accountId, markets.join(), tick],
+    [accountId, markets.join(), tRuns, tOrders],
   );
   const pfUS = useLoad(
     () => (accountId && markets.includes("US") ? getJson<Portfolio>(withAccount("/api/portfolio?market=US", accountId)) : null),
-    [accountId, markets.join(), tick],
+    [accountId, markets.join(), tRuns, tOrders],
   );
-  const decisions = useLoad(() => getJson<Decision[]>("/api/decisions", { days: "2" }), [tick]);
-  const checks = useLoad(() => (accountId ? getJson<RiskCheck[]>(withAccount("/api/risk-checks", accountId)) : null), [accountId, tick]);
-  const orders = useLoad(() => (accountId ? getJson<Order[]>(withAccount("/api/orders", accountId)) : null), [accountId, tick]);
-  const approvals = useLoad(() => (accountId ? getJson<Approval[]>(withAccount("/api/approvals", accountId)) : null), [accountId, tick]);
+  const decisions = useLoad(() => getJson<Decision[]>("/api/decisions", { days: "2" }), [tDecisions]);
+  const checks = useLoad(() => (accountId ? getJson<RiskCheck[]>(withAccount("/api/risk-checks", accountId)) : null), [accountId, tRuns, tDecisions]);
+  const orders = useLoad(() => (accountId ? getJson<Order[]>(withAccount("/api/orders", accountId)) : null), [accountId, tOrders]);
+  const approvals = useLoad(() => (accountId ? getJson<Approval[]>(withAccount("/api/approvals", accountId)) : null), [accountId, tApprovals]);
   const otherChecks = useLoad(
     () =>
       otherAccounts.length
@@ -86,24 +93,24 @@ export function Dashboard() {
             ),
           ).then((pairs) => Object.fromEntries(pairs) as Record<string, RiskCheck[]>)
         : null,
-    [otherAccounts.map((a) => a.id).join(), tick],
+    [otherAccounts.map((a) => a.id).join(), tRuns, tDecisions],
   );
-  const watch = useLoad(() => getJson<{ tickers: string[] }>("/api/control/watchlist"), [tick]);
-  const calls = useLoad(() => getJson<CallsResp>("/api/calls", { days: "1" }), [tick]);
-  const runs = useLoad(() => getJson<Run[]>("/api/runs", { limit: "30" }), [tick]);
+  const watch = useLoad(() => getJson<{ tickers: string[] }>("/api/control/watchlist"), [tWatch]);
+  const calls = useLoad(() => getJson<CallsResp>("/api/calls", { days: "1" }), [tRuns]);
+  const runs = useLoad(() => getJson<Run[]>("/api/runs", { limit: "30" }), [tRuns]);
   const settings = useLoad(() => getJson<SystemSettings>("/api/system/settings"), []);
-  const usage = useLoad(() => getJson<UsageResp>("/api/system/usage"), [tick, minute]);
+  const usage = useLoad(() => getJson<UsageResp>("/api/system/usage"), [tRuns, minute]);
   const daemon = useLoad(() => getJson<DaemonStatus>("/api/system/daemon"), [tick, minute]);
-  const regime = useLoad(() => getJson<RegimeResp>("/api/system/regime"), [tick]);
-  const models = useLoad(() => getJson<ModelsResp>("/api/ml/models"), [tick]);
-  const rl = useLoad(() => getJson<RlResp>("/api/rl/experiments"), [tick]);
+  const regime = useLoad(() => getJson<RegimeResp>("/api/system/regime"), [tRuns]);
+  const models = useLoad(() => getJson<ModelsResp>("/api/ml/models"), [tJobs]);
+  const rl = useLoad(() => getJson<RlResp>("/api/rl/experiments"), [tJobs]);
   const perfKR = useLoad(
     () => (accountId && markets.includes("KR") ? getJson<PerformanceReport>(withAccount("/api/performance?market=KR&days=30", accountId)) : null),
-    [accountId, markets.join(), tick],
+    [accountId, markets.join(), tRuns],
   );
   const perfUS = useLoad(
     () => (accountId && markets.includes("US") ? getJson<PerformanceReport>(withAccount("/api/performance?market=US&days=30", accountId)) : null),
-    [accountId, markets.join(), tick],
+    [accountId, markets.join(), tRuns],
   );
 
   const positions = [...(pfKR.data?.snapshot?.positions ?? []), ...(pfUS.data?.snapshot?.positions ?? [])];

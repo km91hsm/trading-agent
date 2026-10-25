@@ -849,3 +849,31 @@ def test_heartbeat_status_not_alive_when_lock_pid_is_another_process(project):
     )
     st = heartbeat.read_status(project / "state", datetime.now(UTC), [])
     assert st["alive"] is False
+
+
+def test_analyze_targets_collect_right_before_each_session(conn, monkeypatch):
+    """수집은 종목 세션 **직전**에 — 전 종목을 먼저 모으면 마지막 종목 입력이 늙는다(리뷰 F26)."""
+    from types import SimpleNamespace as NS
+
+    from trader.orchestrator.session import SessionResult
+
+    order: list[str] = []
+    deps = _deps(conn, FakeMarket(), now=lambda: datetime(2026, 10, 8, 0, 0, tzinfo=UTC))
+    deps.input_deps = NS()
+    deps.sources_cfg = NS()
+    monkeypatch.setattr(
+        "trader.sources.inputs.collect_and_save",
+        lambda **kw: order.append(f"collect:{kw['ticker']}"),
+    )
+    monkeypatch.setattr(daemon, "_ensure_quant", lambda *a, **k: None)
+
+    def runner(spec, *a, **kw):
+        order.append(f"session:{spec.tickers[0]['ticker']}")
+        return SessionResult(ok=True, session_id="s", fake=True)
+
+    deps.session_runner = runner
+    r = daemon._analyze_targets(
+        deps, "KR", [{"ticker": "A"}, {"ticker": "B"}], today=date(2026, 10, 8)
+    )
+    assert r["ok"] == 2
+    assert order == ["collect:A", "session:A", "collect:B", "session:B"]

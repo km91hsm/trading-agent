@@ -992,7 +992,15 @@ def _daemon_deps(*, dry_run: bool = False):
     def web_app():
         from trader.web.app import create_app
 
-        return create_app(_web_deps())
+        wd = _web_deps()
+        extra = _hosts_for_bind(wd.settings.web.bind)  # 단독 `trader web` 과 같은 규칙
+        if extra:
+            logging.getLogger("trader.web").warning(
+                "루프백이 아닌 주소(%s)에 바인드: 조회 API 가 토큰 없이 열리고 Host 제한이 꺼짐",
+                wd.settings.web.bind,
+            )
+            wd.extra_hosts.extend(extra)
+        return create_app(wd)
 
     return daemon_mod.DaemonDeps(
         settings=settings,
@@ -1541,6 +1549,7 @@ def scan(
                 brokers=brokers,
                 watch=watch,
                 asof=when,
+                universe=universe,
             )
         finally:
             conn.close()

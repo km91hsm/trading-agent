@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { EventSnapshot } from "./api";
-import { canLead, createEventsClient, HEARTBEAT_MS, LEADER_KEY, parseLeader, STALE_MS, type EventsDeps } from "./events";
+import { canLead, changedKeys, createEventsClient, HEARTBEAT_MS, LEADER_KEY, parseLeader, STALE_MS, type EventsDeps } from "./events";
 
 const snap = (n: number): EventSnapshot =>
   ({ orders: n, approvals_pending: 0, approvals: 0, runs: 0, decisions: 0, triggers: 0, watchlist: "", paused: false }) as EventSnapshot;
@@ -63,6 +63,16 @@ function harness() {
   };
   return { mk, opened, timers, advance: (ms: number) => (now += ms), store, bus };
 }
+
+describe("changedKeys", () => {
+  it("첫 스냅샷은 전부, 그 뒤엔 값이 바뀐 키만", () => {
+    const a = snap(1);
+    expect(changedKeys(null, a)).toEqual(Object.keys(a).sort());
+    expect(changedKeys(a, { ...a })).toEqual([]);
+    expect(changedKeys(a, { ...a, orders: 2, paused: true })).toEqual(["orders", "paused"]);
+    expect(changedKeys(a, { ...a, jobs_done: 3 })).toEqual(["jobs_done"]);
+  });
+});
 
 describe("SSE 리더 탭", () => {
   it("리더 판정: 기록 없음·자기 것·오래된 하트비트만 리더 가능", () => {

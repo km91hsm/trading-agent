@@ -459,6 +459,7 @@ def _scan_body(deps: DaemonDeps, market: str) -> dict:
             watch=[*universe.watch, *runtime_watch],
             asof=deps.now(),
             cancel=deps.stop_event,
+            universe=universe,
         )
     finally:
         conn.close()
@@ -529,25 +530,26 @@ def _analyze_targets(
     from trader.sources.inputs import collect_and_save
 
     dry = deps.dry_run if dry_run is None else (deps.dry_run or dry_run)
-    if deps.input_deps is not None and deps.sources_cfg is not None:
-        for t in targets:
-            if deps.stop_event.is_set():
-                logger.warning("종료 중: 남은 수집 생략 %s", market)
-                break
-            try:
-                collect_and_save(
-                    ticker=t["ticker"],
-                    market=market,
-                    exchange=t.get("exchange"),
-                    asof=deps.now(),
-                    cfg=deps.sources_cfg,
-                    secrets=deps.secrets,
-                    deps=deps.input_deps,
-                    state=deps.state,
-                )
-            except Exception as e:  # noqa: BLE001 - 한 종목 수집 실패는 세션이 다시 시도한다
-                logger.warning("수집 실패 %s %s: %s", market, t["ticker"], e)
-            _ensure_quant(deps, t["ticker"], market, today)
+
+    def collect(t: dict) -> None:
+        # 종목 **직전**에 수집한다: 전 종목을 먼저 모으면 마지막 종목 입력이 세션 때 수십 분 늙는다
+        if deps.input_deps is None or deps.sources_cfg is None:
+            return
+        try:
+            collect_and_save(
+                ticker=t["ticker"],
+                market=market,
+                exchange=t.get("exchange"),
+                asof=deps.now(),
+                cfg=deps.sources_cfg,
+                secrets=deps.secrets,
+                deps=deps.input_deps,
+                state=deps.state,
+            )
+        except Exception as e:  # noqa: BLE001 - 한 종목 수집 실패는 세션이 다시 시도한다
+            logger.warning("수집 실패 %s %s: %s", market, t["ticker"], e)
+        _ensure_quant(deps, t["ticker"], market, today)
+
     # 종목당 세션 1회(--max-budget-usd 는 세션 단위). 실패한 종목은 기록하고 다음 종목으로.
     runner = deps.session_runner or run_session
     ok, failed, sessions = 0, [], []
@@ -560,6 +562,7 @@ def _analyze_targets(
             logger.warning("종료 중: 남은 analyze 세션 %d건 생략 %s", left, market)
             stopped = True
             break
+        collect(t)
         conn = deps.conn_factory()
         shown = names.display(conn, _cache_dir(deps), market, t["ticker"])
         try:

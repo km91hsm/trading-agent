@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeout
@@ -300,12 +301,36 @@ def _news_macro(ticker, market, name, asof, cfg, secrets, deps) -> dict[str, Any
     )
     macro: Any
     if cfg.macro.enabled:
-        macro = collect_macro(
-            cfg.macro, secrets, market_client=deps.market, asof=asof, http=deps.http, now=now
-        )
+        macro = _macro_memoized(cfg, secrets, market, asof, deps, now)
     else:
         macro = skipped_section("disabled", now=now)
     return {"news": news, "macro": macro}
+
+
+MACRO_MEMO_TTL = timedelta(minutes=15)
+_MACRO_MEMO: dict[tuple[str, str], tuple[datetime, dict[str, Any]]] = {}
+_MACRO_MEMO_LOCK = threading.Lock()
+
+
+def _macro_memoized(cfg, secrets, market: str, asof: datetime, deps, now) -> dict[str, Any]:
+    """거시 지표(FRED·ECOS·지수)는 종목과 무관하다 — 같은 시장·운영일의 수집은 15분 동안 재사용해
+    종목마다 8회씩 외부 API 를 다시 부르지 않는다. 전부 실패한 결과는 메모하지 않는다."""
+    key = (market, asof.astimezone(UTC).date().isoformat())
+    t = now()
+    with _MACRO_MEMO_LOCK:
+        hit = _MACRO_MEMO.get(key)
+        if hit is not None and t - hit[0] < MACRO_MEMO_TTL:
+            return hit[1]
+    macro = collect_macro(
+        cfg.macro, secrets, market_client=deps.market, asof=asof, http=deps.http, now=now
+    )
+    if isinstance(macro, dict) and any(
+        (s.get("error") if isinstance(s, dict) else getattr(s, "error", None)) is None
+        for s in macro.values()
+    ):
+        with _MACRO_MEMO_LOCK:
+            _MACRO_MEMO[key] = (t, macro)
+    return macro
 
 
 _EVENT_KINDS = (

@@ -120,3 +120,19 @@ def test_status_includes_daemon_line(conn, project):
     commands.poll_once(ctx, Recv(["/status"]))
     assert "최근 잡: kr_monitor ok" in sent.msgs[-1]
     assert "국면: KR -" in sent.msgs[-1]
+
+
+def test_command_failure_does_not_block_others_or_offset(conn, monkeypatch):
+    """명령 하나가 예외로 죽어도 다음 명령은 처리되고 오프셋은 전진한다(영원한 재시도 방지)."""
+    sent = Sent()
+    ctx = _ctx(conn, sent)
+
+    def boom(*a, **kw):
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(commands.executor, "approve", boom)
+    r = commands.poll_once(ctx, Recv(["/approve 7", "/pause"]))
+    assert r["handled"] == 2 and r["failed"] == 1
+    assert control.is_paused(conn)  # 두 번째 명령은 처리됐다
+    assert control.get_flag(conn, "telegram_offset") == 3
+    assert any("[명령 실패]" in m and "/approve 7" in m for m in sent.msgs)

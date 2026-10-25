@@ -6,6 +6,7 @@ US 는 America/New_York 현지 시각(`xhms`)을 변환한다.
 
 from __future__ import annotations
 
+import threading
 import time
 from contextlib import closing
 from datetime import date, datetime
@@ -27,6 +28,7 @@ _candle_cache: dict[
     tuple, tuple[float, list[dict]]
 ] = {}  # (market, ticker, exchange, days, kst일) → (저장 시각, 봉)
 _minute_cache: dict[tuple, tuple[float, list[dict]]] = {}  # (market, ticker, exchange, count)
+_cache_lock = threading.Lock()  # 요청 스레드가 여럿이라 dict 순회·삭제가 겹친다
 
 
 def _remember(
@@ -39,9 +41,10 @@ def _remember(
 ) -> None:
     """저장하면서 만료된 항목을 지운다 (일봉 캐시 키에 KST 날짜가 들어가 날마다 늘어난다)."""
     t = time.monotonic() if now is None else now
-    for k in [k for k, (saved, _) in cache.items() if t - saved >= ttl]:
-        del cache[k]
-    cache[key] = (t, value)
+    with _cache_lock:
+        for k in [k for k, (saved, _) in cache.items() if t - saved >= ttl]:
+            del cache[k]
+        cache[key] = (t, value)
 
 
 def _validate(
@@ -83,7 +86,8 @@ def charts(
 ) -> dict:
     m, deps = _validate(request, ticker, market, exchange, account_id)
     key = (m, ticker, exchange, days, deps.now().astimezone(KST).date().isoformat())
-    hit = _candle_cache.get(key)
+    with _cache_lock:
+        hit = _candle_cache.get(key)
     if hit and time.monotonic() - hit[0] < CACHE_TTL_S:
         out_candles = hit[1]
     else:
@@ -157,7 +161,8 @@ def minute_chart(
     m, deps = _validate(request, ticker, market, exchange, account_id)
     tz = MARKET_TZ[m]
     key = (m, ticker, exchange, count)
-    hit = _minute_cache.get(key)
+    with _cache_lock:
+        hit = _minute_cache.get(key)
     if hit and time.monotonic() - hit[0] < MINUTE_CACHE_TTL_S:
         out_candles = hit[1]
     else:

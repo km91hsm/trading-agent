@@ -37,8 +37,11 @@ def run_screen(
     watch: list[str] | None = None,
     asof: datetime | None = None,
     cancel: Any | None = None,
+    universe: Any | None = None,
 ) -> dict:
-    """{picks, analyze_targets, session}. analyze_targets = picks + 보유종목 + watch (중복 제거)."""
+    """{picks, analyze_targets, session}. analyze_targets = picks + 보유종목 + watch (중복 제거).
+    헤지 ETF(국면 규칙이 사고판다)는 분석 대상이 아니고, US 보유의 거래소는 잔고 응답
+    (`Position.exchange`) → 후보 → universe.us 순으로 찾는다."""
     session_result = None
     if cap_hit or not candidates:
         n = PICKS_ON_CAP if candidates else 0
@@ -74,6 +77,11 @@ def run_screen(
                 for c in scored[:PICKS_ON_CAP]
             ]
     exch = {c["ticker"]: c.get("exchange") for c in candidates}
+    if universe is not None and market == "US":
+        for u in getattr(universe, "us", []) or []:
+            exch.setdefault(u.symbol, u.exchange)
+    hedge_cfg = settings.hedge
+    hedge_tickers = set(hedge_cfg.tickers(market)) if hedge_cfg.enabled else set()
     targets: list[dict] = []
     seen: set[str] = set()
 
@@ -89,7 +97,9 @@ def run_screen(
             continue
         try:
             for pos in brokers[a.id].get_positions(market):
-                add(pos.ticker, exch.get(pos.ticker))
+                if pos.ticker in hedge_tickers:
+                    continue  # 헤지 ETF 는 국면 규칙만 사고판다
+                add(pos.ticker, getattr(pos, "exchange", None) or exch.get(pos.ticker))
         except Exception as e:  # noqa: BLE001 - 보유 조회 실패는 후보만으로 진행
             logger.warning("보유종목 조회 실패 %s: %s", a.id, e)
     for w in watch or []:

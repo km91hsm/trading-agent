@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from typing import Any
 
@@ -13,6 +14,8 @@ from trader.ledger import repo
 from trader.notify.telegram import parse_command
 from trader.orchestrator import executor
 from trader.platform import paths
+
+logger = logging.getLogger("trader.telegram")
 
 
 def _mode_label(conn, account) -> str:
@@ -102,12 +105,37 @@ def poll_once(ectx: Any, receiver: Any, *, echo: Callable[[str], None] = lambda 
     updates = receiver.poll(offset)
     executor.expire_approvals(ectx)
     handled = 0
+    failed = 0
     for u in updates:
         cmd = parse_command(u.text)
         if cmd is None:
             continue
-        name, arg = cmd
         handled += 1
+        try:
+            _handle_command(ectx, conn, cmd, echo)
+        except Exception as e:  # noqa: BLE001 - 명령 하나의 실패가 나머지·오프셋을 막지 않는다
+            failed += 1
+            logger.exception("텔레그램 명령 처리 실패: %s", u.text)
+            try:
+                ectx.notifier.send(f"[명령 실패] {u.text}: {type(e).__name__}: {e}")
+            except Exception:  # noqa: BLE001
+                logger.debug("명령 실패 알림 실패", exc_info=True)
+        # 업데이트마다 오프셋을 바로 전진시킨다 — 뒤 명령이 예외로 끊겨도 같은 명령을 다시 받지 않음
+        control.set_flag(conn, "telegram_offset", int(u.update_id) + 1)
+    # 걸러진(다른 채팅) 업데이트까지 포함한 최대 id 로 오프셋을 전진시킨다
+    ids = [u.update_id for u in updates]
+    last_raw = getattr(receiver, "last_update_id", None)
+    if last_raw is not None:
+        ids.append(int(last_raw))
+    if ids:
+        control.set_flag(conn, "telegram_offset", max(ids) + 1)
+    echo(f"수신 {len(updates)}건, 명령 {handled}건" + (f", 실패 {failed}건" if failed else ""))
+    return {"received": len(updates), "handled": handled, "failed": failed}
+
+
+def _handle_command(ectx: Any, conn: Any, cmd: tuple[str, str | None], echo: Callable) -> None:
+    name, arg = cmd
+    if True:
         if name == "status":
             pending = repo.pending_approvals(conn)
             modes = ", ".join(_mode_label(conn, a) for a in ectx.accounts)
@@ -121,14 +149,14 @@ def poll_once(ectx: Any, receiver: Any, *, echo: Callable[[str], None] = lambda 
                 f"국면: {regime_line}\n미승인 주문:\n{body}"
             )
             echo(f"status → 미승인 {len(pending)}건")
-            continue
+            return
         if name in ("pause", "resume", "mode", "watch"):
             ectx.notifier.send(_control_command(ectx, name, arg))
             echo(f"{name} {arg or ''}".strip())
-            continue
+            return
         if arg is None or not arg.isdigit():
             ectx.notifier.send(f"사용법: /{name} <승인 id>")
-            continue
+            return
         r = (
             executor.approve(ectx, int(arg))
             if name == "approve"
@@ -137,12 +165,3 @@ def poll_once(ectx: Any, receiver: Any, *, echo: Callable[[str], None] = lambda 
         echo(f"{name} #{arg} → {'ok' if r['ok'] else r.get('error') or '실패'}")
         if not r["ok"]:
             ectx.notifier.send(f"[{name} 실패] {r.get('error') or r.get('order')}")
-    # 걸러진(다른 채팅) 업데이트까지 포함한 최대 id 로 오프셋을 전진시킨다
-    ids = [u.update_id for u in updates]
-    last_raw = getattr(receiver, "last_update_id", None)
-    if last_raw is not None:
-        ids.append(int(last_raw))
-    if ids:
-        control.set_flag(conn, "telegram_offset", max(ids) + 1)
-    echo(f"수신 {len(updates)}건, 명령 {handled}건")
-    return {"received": len(updates), "handled": handled}

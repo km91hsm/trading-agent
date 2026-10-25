@@ -83,4 +83,9 @@ def label(ticker: str, name: str | None) -> str:
 
 
 def display(conn: sqlite3.Connection | None, cache_dir: Path, market: str, ticker: str) -> str:
-    return label(ticker, resolve(conn, cache_dir, market, ticker))
+    """표시용 라벨. 이름은 보조 정보라 원장 잠금·캐시 오류가 호출자(알림·로그)를 막지 않는다."""
+    try:
+        return label(ticker, resolve(conn, cache_dir, market, ticker))
+    except Exception as e:  # noqa: BLE001
+        logger.debug("종목명 조회 실패 %s %s: %s", market, ticker, e)
+        return label(ticker, None)

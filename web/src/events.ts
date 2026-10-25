@@ -30,6 +30,19 @@ export function canLead(record: LeaderRecord | null, selfId: string, now: number
   return now - record.ts > staleMs;
 }
 
+/** 스냅샷에서 값이 바뀐 키. prev 가 없으면 전부. 대시보드는 이것으로 바뀐 표만 다시 읽는다
+ * (change 마다 19개 조회를 다시 하면 성과 리포트 2건이 모델·parquet 을 다시 읽는다). */
+export function changedKeys(prev: EventSnapshot | null, next: EventSnapshot): string[] {
+  const keys = new Set<string>([...Object.keys(next), ...(prev ? Object.keys(prev) : [])]);
+  const out: string[] = [];
+  for (const k of keys) {
+    const a = prev ? (prev as Record<string, unknown>)[k] : undefined;
+    const b = (next as Record<string, unknown>)[k];
+    if (!prev || a !== b) out.push(k);
+  }
+  return out.sort();
+}
+
 type Message = { type: "change"; snap: EventSnapshot } | { type: "hello" } | { type: "leader-gone"; id: string };
 
 type ChannelLike = {

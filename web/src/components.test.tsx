@@ -99,6 +99,8 @@ function fakeState(over: Partial<AppState> = {}): AppState {
     setToken: () => {},
     events: { orders: 0, approvals_pending: 2, approvals: 0, runs: 0, decisions: 0, triggers: 0, watchlist: "", paused: true },
     tick: 0,
+    ticks: {},
+    tickOf: () => 0,
     reloadAccounts: () => {},
     theme: "system",
     setTheme: () => {},
