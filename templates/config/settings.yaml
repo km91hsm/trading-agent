@@ -22,6 +22,9 @@ hedge:
   exit_streak_days: 5      # bear 해제: 지표 ≤ 1개가 이 일수 연속
   agent_signal: true       # 시장 세션 전략가 RISK_OFF 를 4번째 지표로(지표 0개면 bear 불가), RISK_ON 은 경계(지표 = bear_min_signals)에서 하루 보류 (Phase 19)
   agent_min_confidence: 0.7  # 전략가 제안을 지표·보류로 쓸 최소 confidence
+  flow_signal: false       # KR 외인 수급(KODEX 200 20일·5일 순매수 합 모두 음수)을 보조 국면 지표로 (Phase 21, 데이터 확인 뒤 켬)
+  switch_instruments: false  # bear 유지 중 −1x↔−2x 판정이 switch_streak_days 연속 어긋나면 교체(전량 매도 → 다음 날 재진입) (Phase 21)
+  switch_streak_days: 3
   instruments:
     KR: {inverse: "114800", inverse2x: "252670"}                       # KODEX 인버스 / KODEX 200선물인버스2X
     US: {inverse: {symbol: SH, exchange: AMS}, inverse2x: {symbol: SDS, exchange: AMS}}  # ProShares (Arca → KIS AMS, 실기 확인)

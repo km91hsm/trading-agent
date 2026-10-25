@@ -103,3 +103,28 @@ def test_for_ticker_mentions_and_market_context(tmp_path):
     none = saveticker.for_ticker(snap, "005930")
     assert none["mentions"] == {} and none["index"]
     assert saveticker.for_ticker(None, "QQQ") is None
+
+
+def test_upcoming_calendar_within_seven_days_and_schema_warning(tmp_path, caplog):
+    """Phase 21: `upcoming` 은 asof ~ +7일의 경제 일정만(KST 표기), 폴더 없으면 빈 목록.
+    schema_version 이 리더 기준과 다르면 경고 1회."""
+    import json
+    import logging
+
+    root = _root(tmp_path)
+    assert saveticker.upcoming(root, asof=T_AFTER) == []  # 샘플 10월 파일엔 10/1 일정만
+    up = saveticker.upcoming(root, asof=T_AFTER, days=9)  # 11/2 일정이 창에 든다
+    assert up and all(u["kind"] == "macro" and u["source"] == "saveticker" for u in up)
+    assert all("2026-10-25" <= u["date"][:10] <= "2026-11-03" for u in up)
+    assert up[0]["date"] == "2026-11-02 23:00"  # 14:00 UTC → KST
+    assert saveticker.upcoming(None, asof=T_AFTER) == []
+    # schema_version 2 파일 → 경고 1회(같은 버전은 반복하지 않음)
+    p = root / "data" / "latest" / "community_trends.json"
+    data = json.loads(p.read_text(encoding="utf-8"))
+    data["schema_version"] = 2
+    p.write_text(json.dumps(data), encoding="utf-8")
+    saveticker._schema_warned.clear()
+    with caplog.at_level(logging.WARNING, logger="trader.sources"):
+        saveticker.snapshot(root, asof=T_AFTER)
+        saveticker.snapshot(root, asof=T_AFTER)
+    assert sum("schema_version 2" in r.message for r in caplog.records) == 1

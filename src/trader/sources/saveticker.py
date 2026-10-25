@@ -243,15 +243,85 @@ def ingest_news(
 # --- 스냅샷(세션 입력) -------------------------------------------------------------------
 
 
+SCHEMA_VERSION = (
+    1  # 사용자 수집기의 파일 schema_version. 다르면 경고 1회(프로세스) 뒤 그대로 읽는다
+)
+_schema_warned: set[int] = set()
+
+
+def _check_schema(snap: dict | None, where: str) -> None:
+    v = (snap or {}).get("schema_version")
+    if v is None or v == SCHEMA_VERSION or v in _schema_warned:
+        return
+    _schema_warned.add(v)
+    logger.warning(
+        "세이브티커 schema_version %s (리더는 %s 기준) %s — 필드가 달라졌을 수 있어 리더를 맞춘다",
+        v,
+        SCHEMA_VERSION,
+        where,
+    )
+
+
 def _load_latest(root: Path, stream: str) -> dict | None:
     p = root / "data" / "latest" / f"{stream}.json"
     if not p.is_file():
         return None
     try:
-        return json.loads(p.read_text(encoding="utf-8"))
+        snap = json.loads(p.read_text(encoding="utf-8"))
     except (OSError, ValueError) as e:
         logger.warning("세이브티커 latest 읽기 실패 %s: %s", p.name, e)
         return None
+    _check_schema(snap, p.name)
+    return snap
+
+
+def _calendar(root: Path, cutoff: datetime, *, back_days: int, ahead_days: int) -> list[dict]:
+    """경제 일정(월 파일 여러 개) 중 cutoff-back ~ cutoff+ahead 창, scheduled_at 오름차순."""
+    lo = cutoff - timedelta(days=back_days)
+    hi = cutoff + timedelta(days=ahead_days)
+    span = (hi - lo).days + 2
+    months = sorted({(lo + timedelta(days=i)).strftime("%Y-%m") for i in range(0, span)})
+    out: list[dict] = []
+    for ym in months:
+        for it in _items(_load_latest(root, f"calendar_{ym}"), cutoff):
+            when = _parse_dt(it.get("scheduled_at"))
+            if when is None or not (lo <= when <= hi):
+                continue
+            out.append(
+                {
+                    "scheduled_at": when.isoformat(),
+                    "title": it.get("title"),
+                    "actual": it.get("actual"),
+                    "forecast": it.get("forecast"),
+                    "previous": it.get("previous"),
+                }
+            )
+    out.sort(key=lambda r: r["scheduled_at"])
+    return out
+
+
+def upcoming(root: Path | None, *, asof: datetime, days: int = 7) -> list[dict]:
+    """종목 세션 `news_macro.events.upcoming` 용: asof ~ +days 의 경제 일정(세이브티커 캘린더).
+    폴더가 없으면 빈 목록. 항목은 {date(KST), kind: "macro", title, forecast, previous, source}."""
+    if root is None or not available(root):
+        return []
+    cutoff = asof.astimezone(UTC)
+    out = []
+    for c in _calendar(root, cutoff, back_days=0, ahead_days=days):
+        when = _parse_dt(c["scheduled_at"])
+        if when is None or when < cutoff:
+            continue
+        out.append(
+            {
+                "date": when.astimezone(KST).strftime("%Y-%m-%d %H:%M"),
+                "kind": "macro",
+                "title": c.get("title"),
+                "forecast": c.get("forecast"),
+                "previous": c.get("previous"),
+                "source": "saveticker",
+            }
+        )
+    return out
 
 
 def _items(snap: dict | None, asof: datetime) -> list[dict]:
@@ -304,25 +374,7 @@ def snapshot(root: Path | None, *, asof: datetime) -> dict | None:
         for key in ("gain", "loss")
     }
     # 캘린더: asof 기준 -1일 ~ +7일 일정 (월 파일 여러 개)
-    lo = cutoff - timedelta(days=CALENDAR_BACK_DAYS)
-    hi = cutoff + timedelta(days=CALENDAR_AHEAD_DAYS)
-    months = sorted({(lo + timedelta(days=i)).strftime("%Y-%m") for i in range(0, 10)})
-    calendar: list[dict] = []
-    for ym in months:
-        for it in _items(_load_latest(root, f"calendar_{ym}"), cutoff):
-            when = _parse_dt(it.get("scheduled_at"))
-            if when is None or not (lo <= when <= hi):
-                continue
-            calendar.append(
-                {
-                    "scheduled_at": when.isoformat(),
-                    "title": it.get("title"),
-                    "actual": it.get("actual"),
-                    "forecast": it.get("forecast"),
-                    "previous": it.get("previous"),
-                }
-            )
-    calendar.sort(key=lambda r: r["scheduled_at"])
+    calendar = _calendar(root, cutoff, back_days=CALENDAR_BACK_DAYS, ahead_days=CALENDAR_AHEAD_DAYS)
     report = None
     reports = _items(_load_latest(root, "news_reports"), cutoff)
     if reports:

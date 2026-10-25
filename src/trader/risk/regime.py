@@ -35,11 +35,14 @@ class RegimeSignals:
     momentum_weak: bool
     vol_high: bool
     agent_risk_off: bool = False  # Phase 19: 전략가(시장 세션) RISK_OFF = 4번째 지표
+    flow_weak: bool = False  # Phase 21: KR 외인 수급 약세(보조 정량 지표, hedge.flow_signal)
 
     @property
     def indicator_count(self) -> int:
-        """정량 지표 3개 중 켜진 수(전략가 제외)."""
-        return int(self.ma_below) + int(self.momentum_weak) + int(self.vol_high)
+        """정량 지표 중 켜진 수(전략가 제외). 수급 지표는 켜져 있을 때만 더해진다."""
+        return (
+            int(self.ma_below) + int(self.momentum_weak) + int(self.vol_high) + int(self.flow_weak)
+        )
 
     @property
     def count(self) -> int:
@@ -51,12 +54,24 @@ def _f(v: Decimal | float | int) -> float:
     return float(v)
 
 
+def flow_weak(flows: list) -> bool:
+    """외인 순매수(InvestorFlow.foreign_net, 날짜 오름차순) 20일 합 < 0 ∧ 최근 5일 합 < 0.
+    봉이 5개 미만이면 False(보수적)."""
+    nets = [
+        int(f.foreign_net if hasattr(f, "foreign_net") else f.get("foreign_net", 0)) for f in flows
+    ]
+    if len(nets) < 5:
+        return False
+    return sum(nets[-20:]) < 0 and sum(nets[-5:]) < 0
+
+
 def classify(
     closes: list[Decimal | float],
     cfg: HedgeCfg,
     *,
     vix: float | None = None,
     agent_risk_off: bool = False,
+    flow_weak: bool = False,
 ) -> RegimeSignals:
     """종가는 날짜 오름차순(마지막이 최신). 봉이 부족한 지표는 False 로 둔다(보수적)."""
     xs = [_f(c) for c in closes if c is not None]
@@ -86,6 +101,7 @@ def classify(
         momentum_weak=bool(mom is not None and mom <= cfg.momentum_min),
         vol_high=bool(vol_high),
         agent_risk_off=bool(agent_risk_off),
+        flow_weak=bool(flow_weak),
     )
 
 
@@ -127,9 +143,10 @@ def update(
     vix: float | None = None,
     now: datetime | None = None,
     agent_risk_off: bool = False,
+    flow_weak: bool = False,
 ) -> dict:
     """하루 1회: 지표 계산 → 히스테리시스 → 플래그 저장. 같은 날 재호출은 streak 을 겹치지 않음."""
-    sig = classify(closes, cfg, vix=vix, agent_risk_off=agent_risk_off)
+    sig = classify(closes, cfg, vix=vix, agent_risk_off=agent_risk_off, flow_weak=flow_weak)
     return _apply(conn, market, sig, cfg=cfg, today=today, now=now)
 
 
@@ -254,7 +271,13 @@ def summary(
                 "asof": r.get("asof"),
                 "signals": {
                     k: sig.get(k)
-                    for k in ("ma_below", "momentum_weak", "vol_high", "agent_risk_off")
+                    for k in (
+                        "ma_below",
+                        "momentum_weak",
+                        "vol_high",
+                        "agent_risk_off",
+                        "flow_weak",
+                    )
                 },
                 "values": {
                     k: sig.get(k) for k in ("close", "ma", "momentum", "realized_vol", "vix")
@@ -279,9 +302,14 @@ def line(conn: sqlite3.Connection, markets: list[str], *, today: date | None = N
 
 
 def count_text(r: dict) -> str:
-    """'2/3' 또는 전략가 지표가 켜졌으면 '1/3+전략가'."""
+    """'2/3', 전략가 지표가 켜졌으면 '1/3+전략가', 수급 지표가 켜졌으면 '+수급'."""
     sig = r.get("signals") or {}
     n = sum(int(bool(sig.get(k))) for k in ("ma_below", "momentum_weak", "vol_high"))
     if r.get("count") is None:
         return "-/3"
-    return f"{n}/3+전략가" if sig.get("agent_risk_off") else f"{n}/3"
+    out = f"{n}/3"
+    if sig.get("flow_weak"):
+        out += "+수급"
+    if sig.get("agent_risk_off"):
+        out += "+전략가"
+    return out

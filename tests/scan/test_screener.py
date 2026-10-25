@@ -213,3 +213,34 @@ def test_targets_skip_hedge_etf_and_take_exchange_from_position(project, conn):
         {"ticker": "AAPL", "exchange": "NAS"},
         {"ticker": "SPY", "exchange": "AMS"},
     ]
+
+
+def test_screen_context_has_regime_and_todays_market_view(conn):
+    """Phase 21: 스크리너 보조 입력 — 국면·오늘 시장 세션 제안. 없으면 None."""
+    from trader.control import control
+    from trader.scan.screener import screen_context
+
+    assert screen_context(conn, "KR", D) == {"regime": None, "market_view": None}
+    control.set_flag(conn, "regime:KR", {"state": "bear", "count": 2, "signals": {}})
+    control.set_flag(
+        conn,
+        "market_view:KR",
+        {
+            "date": D.isoformat(),
+            "stance": "RISK_OFF",
+            "confidence": 0.8,
+            "hedge_weight": 0.1,
+            "rationale": "r",
+            "invalidation_conditions": ["x"],
+            "leveraged": False,
+        },
+    )
+    ctx = screen_context(conn, "KR", D)
+    assert ctx["regime"] == {"state": "bear", "count": 2}
+    assert ctx["market_view"] == {
+        "stance": "RISK_OFF",
+        "confidence": 0.8,
+        "hedge_weight": 0.1,
+        "rationale": "r",
+        "invalidation_conditions": ["x"],
+    }

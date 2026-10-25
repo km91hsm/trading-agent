@@ -43,6 +43,7 @@ const KIND_LABEL: Record<string, string> = {
   market_view: "시장 세션",
   reevaluate: "재평가",
   news_collect: "뉴스 수집",
+  reconcile: "KIS 대조",
 };
 
 export function jobLabel(j: Pick<JobRow, "id" | "kind" | "market">): string {
@@ -108,6 +109,7 @@ export type JobRequest = {
   progress: string | null;
   error: string | null;
   label?: string;
+  priority?: number;
 };
 export type JobsResp = { alive: boolean; active: number; requests: JobRequest[] };
 
@@ -153,6 +155,7 @@ export type RequestRowView = {
   when: string | null; // 대기면 요청 시각, 아니면 종료(없으면 시작) 시각
   detail: string | null; // 실행 중이면 진행 문구, 오류·건너뜀이면 사유
   cancellable: boolean;
+  priority: boolean; // 우선 실행(재평가 등 priority > 0) — 대기 중일 때만 뜻이 있다
 };
 
 export function requestRows(reqs: JobRequest[]): RequestRowView[] {
@@ -166,5 +169,6 @@ export function requestRows(reqs: JobRequest[]): RequestRowView[] {
     when: r.status === "queued" ? r.requested_at : (r.finished_at ?? r.started_at ?? r.requested_at),
     detail: r.status === "running" ? r.progress : r.status === "error" || r.status === "skipped" ? r.error : null,
     cancellable: r.status === "queued",
+    priority: (r.priority ?? 0) > 0,
   }));
 }

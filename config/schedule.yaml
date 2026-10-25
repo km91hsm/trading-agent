@@ -10,3 +10,4 @@ us:
 reflect: "16:30"
 ml_train: {weekday: "sat", time: "10:00"}
 news_collect: {interval_s: 1800}   # 시장 전체 뉴스 저장소 수집 주기 (Phase 19)
+reconcile: {kr: "16:40", us: "16:40"}  # 야간 KIS 대조(보유 수량·미정리 주문), 시장별 현지 시각 (Phase 21)

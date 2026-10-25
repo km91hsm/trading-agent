@@ -272,6 +272,13 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
             "CREATE INDEX IF NOT EXISTS idx_news_market_pub ON news_items(market, published_at)",
         ],
     ),
+    (
+        15,  # Phase 21: 대기열 우선순위(재평가 10 > 나머지 0). claim 은 priority DESC, id
+        [
+            "ALTER TABLE job_requests ADD COLUMN priority INTEGER NOT NULL DEFAULT 0",
+            "CREATE INDEX IF NOT EXISTS ix_job_requests_prio ON job_requests(status, priority, id)",
+        ],
+    ),
 ]
 
 

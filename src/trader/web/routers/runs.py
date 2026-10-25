@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from contextlib import closing
 from datetime import date as _date
 
@@ -76,7 +77,74 @@ def today(request: Request, market: str | None = None, date: str | None = None) 
         for p in sorted(mdir.iterdir()):
             if p.is_dir() and (stages := list_checkpoints(p)):  # 빈 디렉터리는 숨긴다
                 tickers[p.name] = stages
-    return {"date": d.isoformat(), "market": m, "tickers": tickers}
+    return {
+        "date": d.isoformat(),
+        "market": m,
+        "tickers": tickers,
+        "scan": scan_summary(mdir),
+        "market_files": market_files(mdir),
+    }
+
+
+_MARKET_STAGE_RE = re.compile(r"^_[a-z0-9_]{1,40}$")
+
+
+def market_files(mdir) -> list[str]:
+    """시장 단위 단계 파일(`_market_*`·`_scan`·`_screen`·`_discovery*`) 이름 목록(정렬)."""
+    if not mdir.exists():
+        return []
+    return sorted(
+        p.stem for p in mdir.glob("_*.json") if p.is_file() and _MARKET_STAGE_RE.match(p.stem)
+    )
+
+
+@router.get("/market-checkpoint")
+def market_checkpoint(
+    request: Request, market: str | None = None, date: str | None = None, stage: str | None = None
+) -> dict:
+    """시장 단위 단계 파일 하나(`_market_inputs`·`_market_view`·`_scan` …). 오늘의 실행 페이지가
+    시장 세션 결과를 보여 줄 때 쓴다(Phase 21)."""
+    m = require_market(market)
+    if not stage or not _MARKET_STAGE_RE.match(stage):
+        raise HTTPException(status_code=400, detail=f"시장 단계 이름 형식 오류: {stage!r}")
+    d = _date_arg(request, date, m)
+    mdir = run_store.market_dir(d, m, deps_of(request).state)
+    cp = read_checkpoint(mdir, stage) if mdir.is_dir() else None
+    if cp is None:
+        raise HTTPException(status_code=404, detail=f"시장 단계 파일 없음: {stage}")
+    if isinstance(cp, dict) and "data" in cp:
+        return {"stage": stage, "schema_version": cp.get("schema_version"), "data": cp["data"]}
+    return {"stage": stage, "schema_version": None, "data": cp}
+
+
+def scan_summary(mdir) -> dict | None:
+    """`_scan.json` 의 picks(사유·뉴스 발굴 촉매)와 발굴 요약. 없으면 None."""
+    scan = read_checkpoint(mdir, "_scan") if mdir.exists() else None
+    if not scan:
+        return None
+    disc = scan.get("discovery") or {}
+    by_ticker = {c.get("ticker"): c for c in disc.get("candidates") or []}
+    picks = []
+    for p in scan.get("picks") or []:
+        c = by_ticker.get(p.get("ticker"))
+        picks.append(
+            {
+                "ticker": p.get("ticker"),
+                "reason": p.get("reason"),
+                "discovery": (
+                    {"tier": c.get("tier"), "catalyst": c.get("catalyst")} if c else None
+                ),
+            }
+        )
+    from trader.scan import discovery as discovery_mod
+
+    return {
+        "picks": picks,
+        "targets": len(scan.get("analyze_targets") or []),
+        "cap_hit": bool(scan.get("cap_hit")),
+        "discovery": disc or None,
+        "discovery_line": discovery_mod.line(disc or None),
+    }
 
 
 @router.get("/checkpoint")

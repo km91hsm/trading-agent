@@ -84,9 +84,12 @@ def build_inputs(
     now: Callable[[], datetime] = lambda: datetime.now(),  # noqa: DTZ005 - 호출자가 UTC 를 넘긴다
     news_cfg: NewsCfg | None = None,
     cache_names: dict[tuple[str, str], str] | None = None,
+    sources_cfg: Any | None = None,
+    http: Any | None = None,
 ) -> dict:
     """scout 입력을 조립해 `_discovery_inputs` 로 저장하고 돌려준다. 뉴스가 비어도 파일은 만든다
-    (scout 이 '발굴 없음' 을 낼 수 있게)."""
+    (scout 이 '발굴 없음' 을 낼 수 있게). `sources_cfg.channels.naver_blog` + `http` 가 있으면
+    블로그 최근 글(`blog_posts`)도 싣는다(KR 만, 실패는 빈 목록)."""
     from trader.config import load_sectors
     from trader.risk import regime as regime_mod
     from trader.sources import manual_inputs, news_store
@@ -142,6 +145,7 @@ def build_inputs(
             }
     except Exception as e:  # noqa: BLE001 - 선택 입력
         logger.debug("세이브티커 발굴 입력 실패 %s: %s", market, e)
+    blog_posts = _blog_posts(sources_cfg, http, market=market, asof=asof, now=now)
     data = {
         "scope": "discovery",
         "market": market,
@@ -154,6 +158,7 @@ def build_inputs(
         "held": sorted(set(held or [])),
         "recent_picks": _recent_picks(market, today, state),
         "saveticker": saveticker_snap,
+        "blog_posts": blog_posts,
         "quant_candidates": [
             {k: c.get(k) for k in ("ticker", "exchange", "score", "reasons")}
             for c in quant_candidates[:30]
@@ -163,6 +168,37 @@ def build_inputs(
     d = market_dir(today, market, state, create=True)
     write_checkpoint(d, "_discovery_inputs", {"schema_version": 1, "data": data, "call": None})
     return data
+
+
+def _blog_posts(
+    sources_cfg: Any, http: Any, *, market: str, asof: datetime, now: Callable[[], datetime]
+) -> list[dict]:
+    """네이버 블로그 최근 글(제목·발췌 400자·게시 시각). 한국어 블로그라 KR 발굴에만 싣는다."""
+    channels = getattr(sources_cfg, "channels", None)
+    blogs = list(getattr(channels, "naver_blog", None) or [])
+    if market != "KR" or http is None or not blogs:
+        return []
+    try:
+        from trader.sources.naver_blog import NaverBlogSource
+
+        r = NaverBlogSource(
+            blogs, http=http, max_posts=getattr(channels, "naver_blog_posts", 5), now=now
+        ).fetch(asof=asof)
+    except Exception as e:  # noqa: BLE001 - 선택 입력
+        logger.debug("블로그 발굴 입력 실패: %s", e)
+        return []
+    out: list[dict] = []
+    for label, items in (r.get("sources") or {}).items():
+        for it in items:
+            out.append(
+                {
+                    "source": label,
+                    "title": it.get("title"),
+                    "excerpt": (it.get("body") or "")[:400],
+                    "posted_at": it.get("posted_at"),
+                }
+            )
+    return out
 
 
 def _check_us(market_client: Any, symbol: str) -> str | None:

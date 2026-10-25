@@ -120,6 +120,7 @@ def test_status_includes_daemon_line(conn, project):
     commands.poll_once(ctx, Recv(["/status"]))
     assert "최근 잡: kr_monitor ok" in sent.msgs[-1]
     assert "국면: KR -" in sent.msgs[-1]
+    assert "오늘 스캔:\n- KR " in sent.msgs[-1] and "아직 없음" in sent.msgs[-1]
 
 
 def test_command_failure_does_not_block_others_or_offset(conn, monkeypatch):
@@ -136,3 +137,34 @@ def test_command_failure_does_not_block_others_or_offset(conn, monkeypatch):
     assert control.is_paused(conn)  # 두 번째 명령은 처리됐다
     assert control.get_flag(conn, "telegram_offset") == 3
     assert any("[명령 실패]" in m and "/approve 7" in m for m in sent.msgs)
+
+
+def test_telegram_run_enqueues_when_daemon_alive(conn, project):
+    """Phase 21: `/run <kind> [market]` 는 데몬이 살아 있을 때만 대기열에 넣는다."""
+    import json
+    import os
+    from datetime import UTC, datetime
+
+    from trader import heartbeat, jobs
+
+    sent = Sent()
+    ctx = _ctx(conn, sent)
+    commands.poll_once(ctx, Recv(["/run"]))
+    assert "사용법" in sent.msgs[-1] and "scan_analyze" in sent.msgs[-1]
+    commands.poll_once(ctx, Recv(["/run scan_analyze KR"]))
+    assert "데몬이 꺼져" in sent.msgs[-1] and jobs.active_count(conn) == 0
+    # 데몬 살아 있음: lock(pid) + heartbeat
+    (project / "state" / heartbeat.LOCK_NAME).write_text(
+        json.dumps({"pid": os.getpid()}), encoding="utf-8"
+    )
+    hb = heartbeat.Heartbeat(project / "state" / heartbeat.FILE_NAME)
+    hb.start(pid=os.getpid(), started_at=datetime.now(UTC), jobs=[])
+    commands.poll_once(ctx, Recv(["/run scan_analyze KR"]))
+    assert sent.msgs[-1].startswith("[요청 #") and "KR 스캔 → 분석" in sent.msgs[-1]
+    assert jobs.active_count(conn) == 1
+    commands.poll_once(ctx, Recv(["/run scan_analyze KR"]))
+    assert "이미 대기" in sent.msgs[-1]
+    commands.poll_once(ctx, Recv(["/run nope", "/run analyze_ticker 005930"]))
+    assert "알 수 없는 작업" in sent.msgs[-2] and "파라미터 오류" in sent.msgs[-1]
+    commands.poll_once(ctx, Recv(["/run analyze_ticker KR 005930"]))
+    assert "종목 분석 005930 (모의)" in sent.msgs[-1]

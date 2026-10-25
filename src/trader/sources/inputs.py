@@ -39,6 +39,7 @@ from trader.config import (
 )
 from trader.orchestrator.run_store import read_checkpoint, run_date_for, run_dir, write_checkpoint
 from trader.sources import indicators, manual_inputs
+from trader.sources.base import MAX_PAST as _MAX_PAST
 from trader.sources.base import SKIP_REASONS, Section, run_section, skipped_section
 from trader.sources.community import collect_channels, collect_community  # noqa: F401
 from trader.sources.dart import ratios_kr
@@ -52,7 +53,7 @@ logger = logging.getLogger("trader.sources")
 
 # v2: fundamental.history (3개년 + 최근 분기), v3: fundamental.peer (동종업 중앙값)
 SCHEMA_VERSION = 3
-MAX_PAST = timedelta(hours=24)
+MAX_PAST = _MAX_PAST  # 정본은 sources/base (ml/features 와 공유)
 MAX_FUTURE = timedelta(hours=24)  # 과거와 대칭. 연도 오타 같은 먼 미래만 거부
 
 
@@ -400,8 +401,9 @@ _EVENT_KINDS = (
 )
 
 
-def _events(fundamental: dict, asof: datetime, now) -> Section:
-    """최근 7일 공시를 이벤트 종류로 분류한다. 예정 이벤트 소스는 아직 없어 upcoming 은 빈 목록."""
+def _events(fundamental: dict, asof: datetime, now, upcoming: list[dict] | None = None) -> Section:
+    """최근 7일 공시를 이벤트 종류로 분류한다. `upcoming` 은 세이브티커 캘린더(asof ~ +7일 경제
+    일정, Phase 21)이고 폴더가 없으면 빈 목록(종목 실적일·배당락 소스는 아직 없다)."""
 
     def build() -> dict:
         disc = fundamental.get("disclosures") or {}
@@ -416,7 +418,12 @@ def _events(fundamental: dict, asof: datetime, now) -> Section:
             title = str(it.get("title") or "")
             kind = next((k for word, k in _EVENT_KINDS if word in title), "other")
             recent.append({"date": d, "kind": kind, "title": title, "source": it.get("source")})
-        return {"recent": recent, "upcoming": [], "note": "예정 이벤트(실적일·배당락) 소스 미확정"}
+        note = (
+            "upcoming 은 세이브티커 경제 일정(7일); 종목 실적일·배당락 소스는 미확정"
+            if upcoming
+            else "예정 이벤트(실적일·배당락) 소스 미확정"
+        )
+        return {"recent": recent, "upcoming": list(upcoming or []), "note": note}
 
     return run_section(build, now=now)
 
@@ -461,6 +468,18 @@ def _sentiment(ticker, market, name, asof, cfg, deps, secrets=None) -> dict[str,
         "manual_inputs": _manual(ticker, market, asof, now),
         "saveticker": _saveticker_section(ticker, asof, cfg, now),
     }
+
+
+def _upcoming(asof: datetime, cfg) -> list[dict]:
+    """세이브티커 캘린더의 7일 경제 일정(없으면 빈 목록, 실패도 빈 목록 — 보조 입력)."""
+    from trader.sources import saveticker
+
+    try:
+        root = saveticker.resolve_dir(getattr(cfg.news, "saveticker_dir", None))
+        return saveticker.upcoming(root, asof=asof)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("세이브티커 일정 읽기 실패: %s", e)
+        return []
 
 
 def _saveticker_section(ticker: str, asof: datetime, cfg, now) -> Section:
@@ -569,7 +588,9 @@ def build_inputs(
                     received_at=deps.now().isoformat(),
                     error=f"timeout after {SECTION_TIMEOUT_S}s",
                 )
-    result["news_macro"]["events"] = _events(result["fundamental"], asof, deps.now)
+    result["news_macro"]["events"] = _events(
+        result["fundamental"], asof, deps.now, upcoming=_upcoming(asof, cfg)
+    )
     result = _jsonable(result)
     result["errors"] = _collect_errors(result)
     return result

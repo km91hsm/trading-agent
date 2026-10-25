@@ -90,3 +90,27 @@ def test_agent_risk_off_is_fourth_signal_but_cannot_enter_bear_alone(conn):
         is None
     )
     assert regime.summary(conn, ["KR"])[0]["signals"]["agent_risk_off"] is False
+
+
+def test_flow_weak_is_optional_quant_signal(conn):
+    """Phase 21: 외인 수급 약세(20일·5일 순매수 합 모두 음수)는 켜졌을 때만 지표 수에 더해진다."""
+    from types import SimpleNamespace as NS
+
+    neg = [NS(foreign_net=-10)] * 20
+    mixed = [NS(foreign_net=100)] * 15 + [NS(foreign_net=-1)] * 5  # 20일 합 양수
+    assert regime.flow_weak(neg) is True and regime.flow_weak(mixed) is False
+    assert regime.flow_weak([{"foreign_net": -1}] * 5) is True
+    assert regime.flow_weak(neg[:4]) is False  # 봉 부족
+    flat = _series((30, 0.0))
+    s = regime.classify(flat, CFG, flow_weak=True)
+    assert s.indicator_count == 1 and s.count == 1 and regime.raw_state(s, CFG) == "neutral"
+    s2 = regime.classify(flat, CFG, vix=30.0, flow_weak=True)
+    assert s2.count == 2 and regime.raw_state(s2, CFG) == "bear"
+    d = date(2026, 10, 24)
+    out = regime.update(conn, "KR", closes=flat, cfg=CFG, today=d, vix=30.0, flow_weak=True)
+    assert out["state"] == "bear" and out["signals"]["flow_weak"] is True
+    assert regime.count_text(out) == "1/3+수급"
+    assert regime.summary(conn, ["KR"])[0]["signals"]["flow_weak"] is True
+    # reapply(전략가 신호만 바꿈)는 저장된 수급 지표를 유지한다
+    re = regime.reapply(conn, "KR", agent_risk_off=True, cfg=CFG, today=d)
+    assert re["signals"]["flow_weak"] is True and regime.count_text(re) == "1/3+수급+전략가"

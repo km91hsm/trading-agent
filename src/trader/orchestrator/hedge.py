@@ -4,8 +4,10 @@
 LLM 은 관여하지 않는다. 결정은 파이썬이 `Decision` 으로 만들고(`decisions.source='hedge'`), 주문은
 `executor.execute(is_hedge=True)` 로 계좌마다 모드(off/approve/auto·LIVE 확인·paused·dry_run)를
 그대로 지킨다. 운영일에 1회(`control.hedge_done:<market>:<date>`)만 돌며 monitor 잡의 첫 창 안
-틱이 부른다(개장 뒤 실시간 시세). 보유 중 상품(−1x/−2x) 교체는 하지 않는다 — 진입 때 고른 것을
-해제까지 든다.
+틱이 부른다(개장 뒤 실시간 시세). 보유 중 상품(−1x/−2x) 교체는 기본으로 하지 않는다 — 진입 때
+고른 것을 해제까지 든다. Phase 21 `switch_instruments=true` 면 bear 유지 중 판정(count≥3 ∧ leverage)
+과 보유 상품이 `switch_streak_days` 연속 어긋날 때 전량 매도하고(action `switch`) 다음 운영일 진입
+규칙이 새 상품을 산다(같은 날 매도·매수를 함께 내지 않는다 — 매도 현금을 확인할 수 없다).
 
 Phase 18: 시장 세션의 제안(`market_view`, HedgeProposal)이 오늘 것으로 있으면 **bear 진입 비중**을
 `[min_weight_pct, max_weight_pct]` 안에서 조절하고 레버리지를 거부(`leveraged=false`)할 수 있다.
@@ -38,6 +40,30 @@ def done_key(market: str, today: date) -> str:
     return f"hedge_done:{market}:{today.isoformat()}"
 
 
+def switch_key(market: str) -> str:
+    return f"hedge_switch_streak:{market}"
+
+
+def _switch_due(
+    conn, market: str, today: date, cfg: HedgeCfg, *, held: set[str], want: HedgeInstrument | None
+) -> HedgeInstrument | None:
+    """보유 상품이 원하는 상품과 다른 날을 센다(운영일마다 1). streak ≥ switch_streak_days 면 원하는
+    상품을 돌려주고(교체 매도 실행), 일치하면 플래그를 지운다."""
+    key = switch_key(market)
+    if want is None or held == {want.symbol}:
+        if control.get_flag(conn, key) is not None:
+            control.set_flag(conn, key, None)
+        return None
+    prev = control.get_flag(conn, key) or {}
+    days = int(prev.get("days") or 0)
+    if prev.get("want") != want.symbol:
+        days = 0
+    if prev.get("date") != today.isoformat():
+        days += 1
+    control.set_flag(conn, key, {"days": days, "want": want.symbol, "date": today.isoformat()})
+    return want if days >= cfg.switch_streak_days else None
+
+
 def hedge_decision(
     action: str,
     ticker: str,
@@ -50,7 +76,8 @@ def hedge_decision(
 ) -> Decision:
     """파이썬이 만든 헤지 결정. KR 은 시장가, US 는 현재가 지정가(모의 서버 제약)."""
     sig = state.get("signals") or {}
-    on = [k for k in ("ma_below", "momentum_weak", "vol_high", "agent_risk_off") if sig.get(k)]
+    keys = ("ma_below", "momentum_weak", "vol_high", "flow_weak", "agent_risk_off")
+    on = [k for k in keys if sig.get(k)]
     note = ""
     if view and action == "BUY":
         pct = float(view.get("hedge_weight") or 0) * 100
@@ -211,6 +238,52 @@ def rebalance(
                 weight,
                 view,
                 skip_accounts=skip_enter,
+            )
+    elif (
+        st == "bear"
+        and held
+        and getattr(cfg, "switch_instruments", False)
+        and (
+            want := _switch_due(
+                ctx.conn,
+                market,
+                today,
+                cfg,
+                held=held,
+                want=cfg.instrument(
+                    market,
+                    leveraged=int(state.get("count") or 0) >= 3
+                    and (view is None or bool(view.get("leveraged", True))),
+                ),
+            )
+        )
+        is not None
+    ):
+        # 상품 교체: 오늘은 보유분 전량 매도만, 진입은 다음 운영일(bear 유지 시) 규칙이 want 를 산다
+        out.update(action="switch", ticker=want.symbol)
+        out["results"] = []
+        for t in sorted(held):
+            known = cfg.instruments.get(market, {})  # type: ignore[arg-type]
+            inst = next((i for i in known.values() if i.symbol == t), HedgeInstrument(symbol=t))
+            holders = {a for a, h in held_by.items() if t in h} - done_accounts
+            skip_exit = frozenset({a.id for a in ctx.accounts} - holders)
+            out["results"] += _execute(
+                ctx,
+                "SELL",
+                inst,
+                market,
+                today,
+                cfg,
+                state,
+                quote_fn,
+                dry_run,
+                skip_accounts=skip_exit,
+            )
+        if not dry_run:
+            control.set_flag(ctx.conn, switch_key(market), None)
+            sold = ", ".join(sorted(held))
+            executor._notify_quietly(
+                ctx, f"[헤지 교체] {market} {sold} 매도 → 다음 운영일 {want.symbol} 진입"
             )
     elif st != "bear" and held:
         out["action"] = "exit"

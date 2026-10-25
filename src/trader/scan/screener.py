@@ -23,6 +23,36 @@ PICKS_ON_CAP = 3
 PICKS_ON_HARD_CAP = 1
 
 
+def screen_context(conn: sqlite3.Connection, market: str, date: date) -> dict:
+    """스크리너 보조 입력(Phase 21): 국면(state·count) + 오늘 시장 세션 제안(stance·확신·요약).
+    없으면 None 값. 피처·뉴스처럼 '사실' 이 아니라 '시장 톤' 이라 screener.md 가 가중만 한다."""
+    from trader.orchestrator.tools import market_view_today
+    from trader.risk import regime as regime_mod
+
+    reg = regime_mod.load(conn, market) or {}
+    view = market_view_today(conn, market, date)
+    return {
+        "regime": (
+            {"state": reg.get("state"), "count": reg.get("count")} if reg.get("state") else None
+        ),
+        "market_view": (
+            {
+                k: view.get(k)
+                for k in (
+                    "stance",
+                    "confidence",
+                    "hedge_weight",
+                    "rationale",
+                    "invalidation_conditions",
+                )
+                if k in view
+            }
+            if view
+            else None
+        ),
+    }
+
+
 def run_screen(
     settings: Settings,
     conn: sqlite3.Connection,
@@ -40,12 +70,16 @@ def run_screen(
     cancel: Any | None = None,
     universe: Any | None = None,
     discovery: bool = False,
+    sources_cfg: Any | None = None,
+    http: Any | None = None,
 ) -> dict:
     """{picks, analyze_targets, session, discovery}. analyze_targets = picks + 보유종목 + watch
     (중복 제거). 헤지 ETF(국면 규칙이 사고판다)는 분석 대상이 아니고, US 보유의 거래소는 잔고 응답
     (`Position.exchange`) → 후보 → 발굴(`_discovery`) → universe.us 순으로 찾는다.
     discovery=True 면 세션 앞에서 scout 입력(`_discovery_inputs`)을 만들어 세션 안의 발굴 단계가
-    돌 수 있게 한다(세션 수 불변). 실패는 경고만 — 발굴 없이 스크리닝한다."""
+    돌 수 있게 한다(세션 수 불변). 실패는 경고만 — 발굴 없이 스크리닝한다. `sources_cfg`·`http`
+    가 있으면 발굴 입력에 네이버 블로그 최근 글도 싣는다. 유니버스 밖 발굴 종목은 분석 대상에
+    `discovery: "listed"` 를 달아 데몬이 피처 스냅샷을 먼저 찍는다."""
     session_result = None
     held_tickers: list[str] = []
     if brokers:
@@ -80,6 +114,8 @@ def run_screen(
                 now=now,
                 news_cfg=news_cfg,
                 cache_names=names.load_cache_names(cache_dir),
+                sources_cfg=sources_cfg,
+                http=http,
             )
         except Exception as e:  # noqa: BLE001 - 발굴 입력 실패는 스크리닝을 막지 않는다
             logger.warning("발굴 입력 조립 실패 %s: %s", market, e)
@@ -96,6 +132,7 @@ def run_screen(
             asof=asof,
             kind="screen",
             candidates=candidates[:30],
+            context=screen_context(conn, market, date),
         )
         session_result = session_mod.run_session(
             spec,
@@ -118,8 +155,11 @@ def run_screen(
             ]
     exch = {c["ticker"]: c.get("exchange") for c in candidates}
     discovered = (read_checkpoint(mdir, "_discovery") or {}).get("data") if discovery else None
+    listed_tier: set[str] = set()
     for c in (discovered or {}).get("candidates") or []:
         exch.setdefault(c["ticker"], c.get("exchange"))
+        if c.get("tier") == "listed":
+            listed_tier.add(c["ticker"])
     if universe is not None and market == "US":
         for u in getattr(universe, "us", []) or []:
             exch.setdefault(u.symbol, u.exchange)
@@ -131,7 +171,10 @@ def run_screen(
     def add(ticker: str, exchange: str | None) -> None:
         if ticker not in seen:
             seen.add(ticker)
-            targets.append({"ticker": ticker, "exchange": exchange})
+            t: dict = {"ticker": ticker, "exchange": exchange}
+            if ticker in listed_tier:
+                t["discovery"] = "listed"  # 유니버스 밖: 피처 스토어에 행이 없다
+            targets.append(t)
 
     for p in picks:
         add(p["ticker"], exch.get(p["ticker"]))

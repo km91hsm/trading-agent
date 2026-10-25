@@ -372,3 +372,70 @@ def test_discovered_schema_limits(tier):
         schemas.Discovered(candidates=[_c(f"n{i}", tier=tier) for i in range(9)])
     ok = schemas.Discovered(candidates=[_c("n", tier=tier)])
     assert ok.candidates[0].tier == tier
+
+
+def test_build_inputs_includes_naver_blog_posts_for_kr_only(project, conn):
+    """Phase 21: `sources_cfg.channels.naver_blog` + http 가 있으면 블로그 최근 글을 발굴 입력에
+    싣는다(KR 만, 실패는 빈 목록)."""
+    import httpx
+    import respx
+
+    rss = (
+        "<rss><channel><item><title>반도체 사이클</title><description>&lt;p&gt;메모리 업황"
+        "&lt;/p&gt;</description><pubDate>Thu, 08 Oct 2026 10:00:00 +0900</pubDate>"
+        "<link>https://blog.naver.com/x/1</link></item></channel></rss>"
+    )
+    cfg = SimpleNamespace(channels=SimpleNamespace(naver_blog=["ranto28"], naver_blog_posts=5))
+    quant = [{"ticker": "005930", "exchange": None, "score": 1.0, "reasons": ["r"]}]
+    with respx.mock(assert_all_called=False) as mock:
+        mock.get("https://rss.blog.naver.com/ranto28.xml").respond(200, content=rss.encode())
+        with httpx.Client() as http:
+            data = discovery.build_inputs(
+                conn,
+                Settings(),
+                UNI_KR,
+                market="KR",
+                today=D,
+                asof=T0,
+                quant_candidates=quant,
+                now=lambda: T0,
+                cache_names=CACHE,
+                sources_cfg=cfg,
+                http=http,
+            )
+            assert data["blog_posts"] == [
+                {
+                    "source": "naver_blog/ranto28",
+                    "title": "반도체 사이클",
+                    "excerpt": "메모리 업황",
+                    "posted_at": "2026-10-08T01:00:00+00:00",
+                }
+            ]
+            us = discovery.build_inputs(
+                conn,
+                Settings(),
+                UNI_US,
+                market="US",
+                today=D,
+                asof=T0,
+                quant_candidates=[],
+                now=lambda: T0,
+                cache_names=CACHE,
+                sources_cfg=cfg,
+                http=http,
+            )
+            assert us["blog_posts"] == []
+    # http 없음 → 빈 목록, 파일은 그대로 만들어진다
+    data = discovery.build_inputs(
+        conn,
+        Settings(),
+        UNI_KR,
+        market="KR",
+        today=D,
+        asof=T0,
+        quant_candidates=quant,
+        now=lambda: T0,
+        cache_names=CACHE,
+        sources_cfg=cfg,
+    )
+    assert data["blog_posts"] == []

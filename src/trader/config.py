@@ -86,6 +86,12 @@ class HedgeCfg(BaseModel):
     # RISK_ON 은 지표가 bear_min_signals 와 같을 때 하루 진입 보류. 둘 다 confidence 기준 이상만
     agent_signal: bool = True
     agent_min_confidence: float = Field(default=0.7, ge=0, le=1)
+    # Phase 21: KR 외인 수급(지수 proxy 20일·5일 순매수 합 모두 음수) 을 보조 지표로 센다. 기본 끔
+    flow_signal: bool = False
+    # Phase 21: bear 유지 중 보유 상품(−1x/−2x)이 판정과 다른 날이 switch_streak_days 연속이면 전량
+    # 매도 뒤 다음 운영일 재진입(같은 날 둘 다 내지 않음 — 매도 현금을 확인할 수 없다). 기본 끔
+    switch_instruments: bool = False
+    switch_streak_days: int = Field(default=3, ge=1, le=30)
     ma_days: int = Field(default=200, ge=20, le=400)
     momentum_days: int = Field(default=20, ge=5, le=120)
     momentum_min: float = -0.05
@@ -539,6 +545,20 @@ class IntervalJob(BaseModel):
     interval_s: int = Field(default=1800, ge=60, le=86400)
 
 
+class ReconcileSchedule(BaseModel):
+    """야간 KIS 대조 시각(시장별 현지 시각, 그 시장 `tz`). 체결 동기화(16:10 KST·07:10 KST) 뒤."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kr: str = "16:40"
+    us: str = "16:40"
+
+    @field_validator("kr", "us")
+    @classmethod
+    def _hm_ok(cls, v: str) -> str:
+        return _check_hm(v)
+
+
 class ScheduleConfig(BaseModel):
     """config/schedule.yaml (KST). 데몬이 잡을 등록할 때 읽는다."""
 
@@ -549,6 +569,9 @@ class ScheduleConfig(BaseModel):
     reflect: str
     ml_train: WeeklyJob
     news_collect: IntervalJob = Field(default_factory=IntervalJob)  # 시장 전체 뉴스 수집 주기
+    reconcile: ReconcileSchedule = Field(
+        default_factory=ReconcileSchedule
+    )  # 야간 KIS 대조(Phase 21)
 
     @field_validator("reflect")
     @classmethod

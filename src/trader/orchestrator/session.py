@@ -52,6 +52,8 @@ class SessionSpec:
     asof: datetime | None = None  # tool collect 에 넘길 기준 시각 (없으면 세션 시작 시각)
     kind: str = "analyze"  # analyze | screen | resume | reflect | market
     candidates: list[dict[str, Any]] = field(default_factory=list)  # screen 모드 입력
+    # screen 모드 보조 입력(Phase 21): {regime, market_view} — 국면·시장 세션 제안을 스크리너도 본다
+    context: dict[str, Any] | None = None
     entries: list[dict[str, Any]] = field(default_factory=list)  # reflect 모드 입력
     trigger: dict[str, Any] | None = None  # resume 모드 입력 (Phase 6 monitor)
 
@@ -122,6 +124,8 @@ def _stdin_payload(spec: SessionSpec, asof: datetime) -> str:
     }
     if spec.kind == "screen":
         payload["candidates"] = spec.candidates
+        if spec.context:
+            payload["context"] = spec.context
     if spec.kind == "resume":
         payload["trigger"] = spec.trigger
     if spec.kind == "reflect":

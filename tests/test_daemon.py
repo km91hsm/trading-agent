@@ -681,6 +681,15 @@ def test_build_jobs_merges_scan_and_analyze_into_one_job():
     assert jobs["kr_scan_analyze"].kind == "scan_analyze"
     kr = jobs["kr_scan_analyze"].cron
     assert kr["hour"] == 7 and kr["minute"] == 30
+    # Phase 21: 시장별 야간 KIS 대조 cron(기본 16:40 현지, 시장 tz)
+    assert jobs["kr_reconcile"].kind == "reconcile" and jobs["kr_reconcile"].market == "KR"
+    assert jobs["kr_reconcile"].cron == {
+        "hour": 16,
+        "minute": 40,
+        "day_of_week": "mon-fri",
+        "timezone": "Asia/Seoul",
+    }
+    assert jobs["us_reconcile"].cron["timezone"] == "Asia/Seoul"  # SCHED 의 us.tz 기본값
 
 
 def test_scan_analyze_body_runs_scan_then_analyze(conn, monkeypatch):
@@ -877,3 +886,66 @@ def test_analyze_targets_collect_right_before_each_session(conn, monkeypatch):
     )
     assert r["ok"] == 2
     assert order == ["collect:A", "session:A", "collect:B", "session:B"]
+
+
+def test_reconcile_body_runs_all_accounts_for_market(conn, monkeypatch):
+    """Phase 21: reconcile 잡은 그 시장의 모든 계좌를 대조하고 결과를 계좌:시장 키로 돌려준다."""
+    deps = _deps(conn, FakeMarket(), now=lambda: datetime(2026, 10, 8, 7, 40, tzinfo=UTC))
+    out = daemon._reconcile_body(deps, "KR")
+    assert list(out) == ["paper-main:KR"] and out["paper-main:KR"]["ok"] is True
+    body = daemon.queued_job_body(
+        deps, {"kind": "reconcile", "params": {"market": None}, "id": 1}, lambda s: None
+    )
+    assert set(body()) == {"paper-main:KR", "paper-main:US"}
+
+
+def test_scan_line_and_listed_discovery_snapshot(conn, monkeypatch):
+    """Phase 21: scan 알림 한 줄에 picks·발굴 요약, 유니버스 밖 발굴 종목은 세션 앞에서 피처
+    스냅샷 1회(`features_fn("snapshot", tickers=)`)."""
+    from types import SimpleNamespace as NS
+
+    from trader.orchestrator.session import SessionResult
+
+    line = daemon.scan_line(
+        {
+            "market": "KR",
+            "date": "2026-10-08",
+            "picks": [{"ticker": "005930"}, {"ticker": "247540"}],
+            "analyze_targets": [{"ticker": "005930"}, {"ticker": "247540"}, {"ticker": "000660"}],
+            "discovery": {
+                "candidates": [{"ticker": "247540", "tier": "listed"}],
+                "unresolved": [{"name": "x"}],
+            },
+            "cap_hit": True,
+        }
+    )
+    assert line == (
+        "[스캔] KR 2026-10-08: picks 2(005930, 247540) · 분석 대상 3 · "
+        "뉴스 발굴 1(유니버스 0·밖 1·미해결 1) · 세션 상한"
+    )
+
+    calls: list = []
+    deps = _deps(conn, FakeMarket(), now=lambda: datetime(2026, 10, 8, 0, 0, tzinfo=UTC))
+    deps.input_deps = NS()
+    deps.sources_cfg = NS()
+    deps.features_fn = lambda action, markets, *, progress, **kw: calls.append(
+        (action, markets, kw.get("tickers"))
+    )
+    monkeypatch.setattr("trader.sources.inputs.collect_and_save", lambda **kw: None)
+    monkeypatch.setattr(daemon, "_ensure_quant", lambda *a, **k: None)
+    deps.session_runner = lambda spec, *a, **kw: SessionResult(ok=True, session_id="s", fake=True)
+    r = daemon._analyze_targets(
+        deps,
+        "KR",
+        [{"ticker": "005930"}, {"ticker": "247540", "exchange": None, "discovery": "listed"}],
+        today=date(2026, 10, 8),
+    )
+    assert r["ok"] == 2
+    assert calls == [("snapshot", ["KR"], [("247540", None)])]
+    # features_fn 이 없으면(시세 클라이언트 없음) 건너뛴다
+    deps.features_fn = None
+    calls.clear()
+    daemon._analyze_targets(
+        deps, "KR", [{"ticker": "247540", "discovery": "listed"}], today=date(2026, 10, 8)
+    )
+    assert calls == []

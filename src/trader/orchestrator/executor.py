@@ -112,12 +112,13 @@ def _update_breaker(
     nav: Decimal,
     settings: MemorySettings | None = None,
 ) -> None:
-    """모의 계좌 NAV(최근 30일 + 오늘)·최근 VIX 변화로 그 시장의 메모리 서킷브레이커를 갱신한다."""
+    """모의 계좌 NAV(최근 30일 + 오늘)·최근 VIX 변화로 그 시장의 메모리 서킷브레이커를 갱신한다.
+    모의 계좌가 둘 이상이면(Phase 21) 날짜별 NAV 를 합친 한 열로 판정한다 — 한 계좌의 드로다운이
+    다른 계좌의 판정으로 바로 풀리지(또는 켜지지) 않도록 OR 가 아니라 합산."""
     from trader.memory import store
 
     try:
-        series = repo.nav_history(conn, account.id, market, days=30)
-        series = [s for s in series if s[0] != today.isoformat()] + [(today.isoformat(), nav)]
+        series = _paper_nav_series(conn, account, market, today, nav)
         store.circuit_breaker(
             conn,
             nav_series=series,
@@ -127,6 +128,33 @@ def _update_breaker(
         )
     except Exception as e:  # noqa: BLE001 - 브레이커 갱신 실패는 판정을 막지 않는다
         logger.warning("서킷브레이커 갱신 실패 %s: %s", account.id, e)
+
+
+def _paper_nav_series(
+    conn, account: AccountConfig, market: str, today: date, nav: Decimal
+) -> list[tuple[str, Decimal]]:
+    """이 계좌의 30일 NAV(오늘은 인자 값) + 다른 모의 계좌들의 같은 시장 NAV 를 날짜별로
+    합친다. 다른 계좌는 그 날짜 이하의 마지막 스냅샷(forward-fill)이고 스냅샷이 전혀 없으면
+    더하지 않는다."""
+    mine = repo.nav_history(conn, account.id, market, days=30)
+    mine = [s for s in mine if s[0] != today.isoformat()] + [(today.isoformat(), nav)]
+    others = [
+        str(r["id"])
+        for r in conn.execute(
+            "SELECT id FROM accounts WHERE env='paper' AND id != ? ORDER BY id", (account.id,)
+        ).fetchall()
+    ]
+    if not others:
+        return mine
+    out: list[tuple[str, Decimal]] = []
+    for d, v in mine:
+        total = Decimal(str(v))
+        for o in others:
+            hist = repo.nav_history(conn, o, market, days=60, today=date.fromisoformat(d))
+            if hist:
+                total += Decimal(str(hist[-1][1]))
+        out.append((d, total))
+    return out
 
 
 def _cache_dir(ctx: ExecContext) -> Path:
@@ -297,8 +325,10 @@ def execute(
     resume_round: int | None = None,
     is_hedge: bool = False,
     skip_accounts: frozenset[str] = frozenset(),
+    extra_note: str | None = None,
 ) -> list[dict]:
     """계좌마다 판정·기록·(모드별) 주문. 계좌 하나의 실패가 다른 계좌를 막지 않는다.
+    extra_note 는 판정 note 에 덧붙이는 호출자 문구(재시세 등, Phase 21).
 
     skip_accounts 는 건너뛸 계좌(이미 판정이 있는 계좌의 실행 재개, 헤지의 계좌별 보유 판단).
     브로커·규칙 밖의 예외(원장 잠금·OSError·OrderBookkeepingError)도 그 계좌의 `error` 항목으로
@@ -363,6 +393,7 @@ def execute(
                     sector_of=sector_of,
                     rl_eligible=rl_eligible,
                     rl_base=rl_base,
+                    extra_note=extra_note,
                 )
             )
         except OrderBookkeepingError as e:  # 접수 뒤 기록 실패: 다른 계좌를 마친 뒤 올린다
@@ -411,6 +442,7 @@ def _execute_account(
     sector_of: Callable[[str], str | None] | None,
     rl_eligible: bool,
     rl_base: _RlBase,
+    extra_note: str | None = None,
 ) -> dict:
     """계좌 하나의 판정·기록·(모드별) 주문. 반환은 results 항목 하나."""
     if True:  # 들여쓰기 유지(execute 루프 본문을 그대로 옮김)
@@ -482,6 +514,8 @@ def _execute_account(
             note = (note + "; " if note else "") + "일시정지 중: 판정만 기록, 주문·승인 요청 없음"
         if regime != "bull" and not is_hedge:
             note = (note + "; " if note else "") + f"국면 {regime}"
+        if extra_note:
+            note = (note + "; " if note else "") + extra_note
         verdict = verdict.model_copy(
             update={"mode": mode, "note": note, "stance": st, "dry_run": dry_run}
         )

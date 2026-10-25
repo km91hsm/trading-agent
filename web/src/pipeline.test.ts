@@ -59,3 +59,16 @@ describe("stageSummary", () => {
     expect(stageSummary("00_inputs", [{ file: "00_inputs", data: { errors: { "a.b": "x" } } }])).toBe("오류 절 1건");
   });
 });
+
+describe("scan summary", () => {
+  const pick = (ticker: string, reason: string | null, discovery: { tier: string; catalyst: string } | null) => ({ ticker, reason, discovery });
+  it("발굴 pick 은 tier 와 촉매를 사유 앞에 붙인다", async () => {
+    const { pickReason, scanHeadline } = await import("./pipeline");
+    expect(pickReason(pick("005930", "수주 모멘텀", null))).toBe("수주 모멘텀");
+    expect(pickReason(pick("247540", "screener", { tier: "listed", catalyst: "대규모 수주" }))).toBe("뉴스 발굴(유니버스 밖) · 대규모 수주 — screener");
+    expect(pickReason(pick("000660", null, { tier: "universe", catalyst: "" }))).toBe("뉴스 발굴 — 사유 없음");
+    expect(
+      scanHeadline({ picks: [pick("a", null, null)], targets: 3, cap_hit: true, discovery: null, discovery_line: "뉴스 발굴 없음" }),
+    ).toBe("picks 1 · 분석 대상 3 · 뉴스 발굴 없음 · 세션 상한");
+  });
+});

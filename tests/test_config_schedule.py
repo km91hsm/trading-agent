@@ -89,3 +89,18 @@ def test_market_schedule_tz_optional(project):
     _write(project, data)
     with pytest.raises(config.ConfigError):
         config.load_schedule()
+
+
+def test_schedule_reconcile_defaults_and_validation(project):
+    """Phase 21: reconcile 는 기본 16:40(시장별 현지), HH:MM 검증."""
+    _write(project, BASE)
+    s = config.load_schedule()
+    assert s.reconcile.kr == "16:40" and s.reconcile.us == "16:40"
+    _write(project, dict(BASE, reconcile={"kr": "17:05", "us": "16:45"}))
+    s = config.load_schedule()
+    assert (s.reconcile.kr, s.reconcile.us) == ("17:05", "16:45")
+    _write(project, dict(BASE, reconcile={"kr": "9:99", "us": "16:45"}))
+    import pytest
+
+    with pytest.raises(config.ConfigError):
+        config.load_schedule()

@@ -260,3 +260,24 @@ def test_scan_analyze_body_applies_view_after_market_session(conn, monkeypatch):
     monkeypatch.setattr(daemon, "_analyze_body", lambda d, m, scan_error=None: {"ok": True})
     daemon._scan_analyze_body(deps, "KR")
     assert order == ["regime", "view", "apply", "scan"]
+
+
+def test_regime_body_uses_foreign_flow_only_when_enabled(conn):
+    """Phase 21: hedge.flow_signal=true ∧ KR 이면 지수 proxy 외인 수급을 보조 지표로 읽는다.
+    꺼져 있으면 KIS 수급 조회를 하지 않는다."""
+    from types import SimpleNamespace as NS
+
+    deps = _hedge_deps(conn, closes=[100] * 30 + [95, 90, 85, 80, 75, 70])
+    deps.market_client.flows = {"069500": [NS(foreign_net=-5)] * 20}
+    out = daemon._regime_body(deps, "KR")
+    assert (
+        out["signals"]["flow_weak"] is False and "get_investor_kr" not in deps.market_client.calls
+    )
+    deps.settings = Settings(hedge=CFG.model_copy(update={"flow_signal": True}))
+    out = daemon._regime_body(deps, "KR")
+    assert out["signals"]["flow_weak"] is True and out["count"] == 3
+    assert "get_investor_kr" in deps.market_client.calls
+    # 조회 실패는 False(지표 없음), 판정은 계속
+    deps.market_client.fail = {"get_investor_kr"}
+    out = daemon._regime_body(deps, "KR")
+    assert out["signals"]["flow_weak"] is False

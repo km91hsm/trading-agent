@@ -1,4 +1,4 @@
-"""텔레그램 명령 (/approve /reject /status /pause /resume /mode /watch). CLI·데몬 공용.
+"""텔레그램 명령 (/approve /reject /status /pause /resume /mode /watch /run). CLI·데몬 공용.
 
 실전 계좌 모드는 텔레그램으로 off(하향)만 바꿀 수 있다. 상향은 CLI `control mode` 만."""
 
@@ -98,6 +98,36 @@ def _control_command(ectx: Any, name: str, arg: str | None) -> str:
     return "[관심종목] " + (", ".join(current) or "없음")
 
 
+def run_command(ectx: Any, arg: str | None) -> str:
+    """`/run <kind> [KR|US] [ticker]` → 작업 대기열 enqueue(실행은 데몬 job_queue 틱). 데몬이 꺼져
+    있으면 넣지 않고 안내한다(웹의 409 와 같은 규칙)."""
+    from trader import jobs as jobq
+
+    parts = (arg or "").split()
+    if not parts:
+        kinds = ", ".join(jobq.KINDS)
+        return f"사용법: /run <작업> [KR|US] [종목]\n작업: {kinds}"
+    kind = parts[0]
+    params: dict = {}
+    for tok in parts[1:]:
+        up = tok.upper()
+        if up in ("KR", "US"):
+            params["market"] = up
+        else:
+            params["ticker"] = up
+    base = ectx.state if ectx.state is not None else paths.state_dir()
+    if not heartbeat.read_status(base, ectx.now(), [])["alive"]:
+        return "거부: 데몬이 꺼져 있어 요청을 실행할 주체가 없어요 (`uv run trader daemon`)"
+    try:
+        p = jobq.validate(kind, params)
+        rid = jobq.enqueue(ectx.conn, kind, p, source="telegram", now=ectx.now())
+    except jobq.DuplicateRequest as e:
+        return f"거부: {e}"
+    except ValueError as e:
+        return f"거부: {e}"
+    return f"[요청 #{rid}] {jobq.label(kind, p)} — 데몬이 순서대로 실행해요"
+
+
 def poll_once(ectx: Any, receiver: Any, *, echo: Callable[[str], None] = lambda s: None) -> dict:
     """getUpdates 1회: 명령을 처리하고 오프셋을 control `telegram_offset` 에 저장한다."""
     conn = ectx.conn
@@ -142,17 +172,23 @@ def _handle_command(ectx: Any, conn: Any, cmd: tuple[str, str | None], echo: Cal
             body = "\n".join(approval_line(a) for a in pending) or "없음"
             paused = "일시정지" if control.is_paused(conn) else "실행 중"
             from trader.risk import regime as regime_mod
+            from trader.status import scan_lines
 
             regime_line = regime_mod.line(conn, list(ectx.settings.markets))
+            scan = "\n".join(scan_lines(ectx.settings, ectx.now(), ectx.state))
             ectx.notifier.send(
                 f"[상태] {paused} · 계좌 모드: {modes}\n{daemon_line(ectx)}\n"
-                f"국면: {regime_line}\n미승인 주문:\n{body}"
+                f"국면: {regime_line}\n오늘 스캔:\n{scan}\n미승인 주문:\n{body}"
             )
             echo(f"status → 미승인 {len(pending)}건")
             return
         if name in ("pause", "resume", "mode", "watch"):
             ectx.notifier.send(_control_command(ectx, name, arg))
             echo(f"{name} {arg or ''}".strip())
+            return
+        if name == "run":
+            ectx.notifier.send(run_command(ectx, arg))
+            echo(f"run {arg or ''}".strip())
             return
         if arg is None or not arg.isdigit():
             ectx.notifier.send(f"사용법: /{name} <승인 id>")

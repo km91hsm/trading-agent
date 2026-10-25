@@ -43,7 +43,13 @@ export function changedKeys(prev: EventSnapshot | null, next: EventSnapshot): st
   return out.sort();
 }
 
-type Message = { type: "change"; snap: EventSnapshot } | { type: "hello" } | { type: "leader-gone"; id: string };
+type Message =
+  | { type: "change"; snap: EventSnapshot }
+  | { type: "hello" }
+  | { type: "leader-gone"; id: string }
+  | { type: "status"; connected: boolean };
+
+export type ConnStatus = { connected: boolean };
 
 type ChannelLike = {
   postMessage(msg: Message): void;
@@ -54,7 +60,8 @@ type ChannelLike = {
 type SourceLike = { close(): void };
 
 export type EventsDeps = {
-  openSource: (onSnap: (snap: EventSnapshot) => void) => SourceLike;
+  /** onStatus 는 연결이 열리거나(onopen) 끊겨 재연결 중일 때(onerror) 리더 탭이 부른다. */
+  openSource: (onSnap: (snap: EventSnapshot) => void, onStatus?: (connected: boolean) => void) => SourceLike;
   channel: ChannelLike | null; // BroadcastChannel 이 없으면 null → 탭마다 직접 연다
   storage: Pick<Storage, "getItem" | "setItem" | "removeItem"> | null;
   now: () => number;
@@ -64,16 +71,22 @@ export type EventsDeps = {
   onLeaderChange?: (leader: boolean) => void;
 };
 
-/** 리더 선출 + 중계. 반환값은 구독 해제 함수. */
-export function createEventsClient(onChange: (snap: EventSnapshot) => void, deps: EventsDeps): () => void {
+/** 리더 선출 + 중계. 반환값은 구독 해제 함수. onStatus 는 SSE 연결 상태(끊김 표시용) — 리더는
+ * EventSource 의 open/error 로, 다른 탭은 리더의 중계(status 메시지)로 안다. */
+export function createEventsClient(
+  onChange: (snap: EventSnapshot) => void,
+  deps: EventsDeps,
+  onStatus?: (connected: boolean) => void,
+): () => void {
   if (!deps.channel || !deps.storage) {
-    const src = deps.openSource(onChange);
+    const src = deps.openSource(onChange, onStatus);
     return () => src.close();
   }
   const { channel, storage } = deps;
   let source: SourceLike | null = null;
   let leader = false;
   let last: EventSnapshot | null = null;
+  let lastStatus: boolean | null = null;
 
   const write = () => {
     try {
@@ -93,11 +106,18 @@ export function createEventsClient(onChange: (snap: EventSnapshot) => void, deps
     if (leader) return;
     leader = true;
     write();
-    source = deps.openSource((snap) => {
-      last = snap;
-      onChange(snap);
-      channel.postMessage({ type: "change", snap });
-    });
+    source = deps.openSource(
+      (snap) => {
+        last = snap;
+        onChange(snap);
+        channel.postMessage({ type: "change", snap });
+      },
+      (connected) => {
+        lastStatus = connected;
+        onStatus?.(connected);
+        channel.postMessage({ type: "status", connected });
+      },
+    );
     deps.onLeaderChange?.(true);
   };
   const resign = () => {
@@ -127,6 +147,9 @@ export function createEventsClient(onChange: (snap: EventSnapshot) => void, deps
       }
     } else if (msg.type === "hello") {
       if (leader && last) channel.postMessage({ type: "change", snap: last });
+      if (leader && lastStatus !== null) channel.postMessage({ type: "status", connected: lastStatus });
+    } else if (msg.type === "status") {
+      if (!leader) onStatus?.(msg.connected);
     } else if (msg.type === "leader-gone") {
       if (!leader && canLead(read(), deps.selfId, deps.now())) becomeLeader();
     }

@@ -366,3 +366,55 @@ def test_risk_on_defers_entry_only_at_boundary(project, conn):
         )["action"]
         == "enter"
     )
+
+
+def test_switch_instruments_sells_after_streak_then_reenters_next_day(project, conn):
+    """Phase 21: switch_instruments=true 면 bear 유지 중 보유(−1x)와 판정(3/3 → −2x)이
+    switch_streak_days 연속 어긋날 때 전량 매도(action switch), 같은 날 매수는 없고 다음 운영일
+    진입 규칙이 −2x 를 산다. 기본(false)이면 교체하지 않는다."""
+    cfg = HedgeCfg(ma_days=20, momentum_days=5, exit_streak_days=1, switch_streak_days=2)
+    pos = Position(
+        ticker="114800",
+        market="KR",
+        qty=400,
+        avg_price=Decimal("5000"),
+        current_price=Decimal("5100"),
+        eval_amount=Decimal("2040000"),
+        pnl_pct=0.02,
+    )
+    # 기본: 교체 없음
+    ctx = _ctx(conn, positions=[pos])
+    _set_regime(conn, "bear", 3)
+    out = hedge.rebalance(ctx, market="KR", today=D, cfg=cfg, quote_fn=lambda i: Decimal("5000"))
+    assert out["action"] == "none" and ctx.brokers["paper-main"].orders == []
+    on = cfg.model_copy(update={"switch_instruments": True})
+    d1 = date(2026, 10, 27)
+    ctx = _ctx(conn, positions=[pos])
+    out = hedge.rebalance(ctx, market="KR", today=d1, cfg=on, quote_fn=lambda i: Decimal("5000"))
+    assert out["action"] == "none"  # 1일째: 세기만
+    assert control.get_flag(conn, hedge.switch_key("KR")) == {
+        "days": 1,
+        "want": "252670",
+        "date": d1.isoformat(),
+    }
+    d2 = date(2026, 10, 28)
+    ctx = _ctx(conn, positions=[pos])
+    out = hedge.rebalance(ctx, market="KR", today=d2, cfg=on, quote_fn=lambda i: Decimal("5000"))
+    assert out["action"] == "switch" and out["ticker"] == "252670"
+    orders = ctx.brokers["paper-main"].orders
+    assert len(orders) == 1 and orders[0].side == "SELL" and orders[0].ticker == "114800"
+    assert control.get_flag(conn, hedge.switch_key("KR")) is None
+    assert any("[헤지 교체] KR 114800 매도" in m for m in ctx.notifier.sent)
+    # 다음 운영일: 보유 없음 + bear 3/3 → −2x 진입
+    d3 = date(2026, 10, 29)
+    ctx = _ctx(conn)
+    out = hedge.rebalance(ctx, market="KR", today=d3, cfg=on, quote_fn=lambda i: Decimal("3000"))
+    assert out["action"] == "enter" and out["ticker"] == "252670"
+    # 보유가 판정과 일치하면 streak 플래그를 지운다
+    pos2 = pos.model_copy(update={"ticker": "252670"})
+    control.set_flag(conn, hedge.switch_key("KR"), {"days": 1, "want": "x", "date": "d"})
+    ctx = _ctx(conn, positions=[pos2])
+    out = hedge.rebalance(
+        ctx, market="KR", today=date(2026, 10, 30), cfg=on, quote_fn=lambda i: Decimal("3000")
+    )
+    assert out["action"] == "none" and control.get_flag(conn, hedge.switch_key("KR")) is None

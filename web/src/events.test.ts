@@ -135,3 +135,45 @@ describe("SSE 리더 탭", () => {
     stop();
   });
 });
+
+describe("SSE 연결 상태(Phase 21)", () => {
+  it("리더의 open/error 가 onStatus 로 오고 다른 탭에도 중계된다", () => {
+    const store = new Map<string, string>();
+    const storage = {
+      getItem: (k: string) => store.get(k) ?? null,
+      setItem: (k: string, v: string) => void store.set(k, v),
+      removeItem: (k: string) => void store.delete(k),
+    };
+    const bus = new FakeBus();
+    const statusFns: ((c: boolean) => void)[] = [];
+    const seen: Record<string, boolean[]> = { a: [], b: [], c: [] };
+    const mk = (id: string) =>
+      createEventsClient(
+        () => {},
+        {
+          openSource: (_onSnap, onStatus) => {
+            if (onStatus) statusFns.push(onStatus);
+            return { close: () => {} };
+          },
+          channel: bus.make() as never,
+          storage,
+          now: () => 1,
+          selfId: id,
+          setInterval: () => 0,
+          clearInterval: () => {},
+        },
+        (c) => seen[id].push(c),
+      );
+    mk("a");
+    mk("b");
+    expect(statusFns.length).toBe(1); // 리더(a)만 EventSource 를 열었다
+    statusFns[0](false);
+    statusFns[0](true);
+    expect(seen.a).toEqual([false, true]);
+    expect(seen.b).toEqual([false, true]);
+    // 늦게 온 탭은 hello 로 마지막 상태를 받는다
+    statusFns[0](false);
+    mk("c");
+    expect(seen.b.at(-1)).toBe(false);
+  });
+});

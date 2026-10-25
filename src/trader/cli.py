@@ -1277,6 +1277,81 @@ def fills_sync(
 
 control_app = typer.Typer(help="일시정지·계좌 모드 (SQLite control 테이블, yaml 보다 우선)")
 app.add_typer(control_app, name="control")
+jobs_app = typer.Typer(
+    help="작업 대기열 (요청만 넣고 실행은 데몬 job_queue 틱)", no_args_is_help=True
+)
+app.add_typer(jobs_app, name="jobs")
+
+
+@jobs_app.command("list")
+@_config_errors
+def jobs_list(limit: int = typer.Option(20, "--limit", help="표시 건수")) -> None:
+    """대기·실행 중 요청(실행 순서)과 최근 종료분을 보여준다."""
+    from trader import jobs as jobq
+
+    boot = _boot(conn=True)
+    try:
+        rows = jobq.list_recent(boot.conn, limit=limit)
+    finally:
+        boot.conn.close()
+    if not rows:
+        typer.echo("요청 없음")
+        return
+    for r in rows:
+        extra = r.get("progress") if r["status"] == "running" else r.get("error")
+        shown = jobq.label(r["kind"], r["params"])
+        typer.echo(
+            f"#{r['id']} {r['status']:7} p{r.get('priority', 0)} {shown}"
+            f" ({r['source']}, {r['requested_at']})" + (f" — {extra}" if extra else "")
+        )
+
+
+@jobs_app.command("run")
+@_config_errors
+def jobs_run(
+    kind: str = typer.Argument(..., help="작업 종류 (`trader jobs kinds`)"),
+    market: str | None = typer.Option(None, "--market", help="KR 또는 US"),
+    ticker: str | None = typer.Option(None, "--ticker", help="종목 (analyze_ticker)"),
+    exchange: str | None = typer.Option(None, "--exchange", help="US 거래소 NAS|NYS|AMS"),
+    live: bool = typer.Option(False, "--live", help="analyze_ticker 를 실제 모드로(dry_run=false)"),
+    priority: int | None = typer.Option(None, "--priority", help="우선순위(기본 kind 별)"),
+) -> None:
+    """요청을 대기열에 넣는다. 데몬이 켜져 있어야 실행된다(꺼져 있으면 거부)."""
+    from trader import heartbeat
+    from trader import jobs as jobq
+
+    params: dict = {}
+    if market:
+        params["market"] = market.upper()
+    if ticker:
+        params["ticker"] = ticker.upper()
+    if exchange:
+        params["exchange"] = exchange.upper()
+    if live:
+        params["dry_run"] = False
+    try:
+        p = jobq.validate(kind, params)
+    except ValueError as e:
+        raise config.ConfigError(str(e)) from e
+    if not heartbeat.read_status(paths.state_dir(), datetime.now(UTC), [])["alive"]:
+        raise config.ConfigError("데몬이 꺼져 있어 요청을 실행할 주체가 없습니다 (`trader daemon`)")
+    boot = _boot(conn=True)
+    try:
+        rid = jobq.enqueue(boot.conn, kind, p, source="cli", priority=priority)
+    except jobq.DuplicateRequest as e:
+        raise config.ConfigError(str(e)) from e
+    finally:
+        boot.conn.close()
+    typer.echo(f"요청 #{rid} {jobq.label(kind, p)} — 데몬이 순서대로 실행합니다")
+
+
+@jobs_app.command("kinds")
+def jobs_kinds() -> None:
+    """요청 가능한 작업 종류."""
+    from trader import jobs as jobq
+
+    for k in jobq.KINDS:
+        typer.echo(f"{k:18} {jobq.label(k, {})}" + ("  (가벼움)" if not jobq.is_heavy(k) else ""))
 
 
 def _control_conn():

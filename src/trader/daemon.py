@@ -248,7 +248,7 @@ def should_skip(
 @dataclass
 class Job:
     id: str
-    kind: str  # scan_analyze|monitor|reflect|ml_train|telegram_poll|fills_sync|job_queue
+    kind: str  # scan_analyze|monitor|reflect|ml_train|telegram_poll|fills_sync|job_queue|reconcile
     market: str | None = None
     cron: dict | None = None
     interval_s: int | None = None
@@ -272,6 +272,21 @@ def build_jobs(schedule: ScheduleConfig, settings: Settings, *, markets: list[st
             )
         )
         jobs.append(Job(f"{lo}_monitor", "monitor", m, interval_s=ms.monitor.interval_s))
+        # 야간 KIS 대조(Phase 21): 체결 동기화 뒤, 시장 현지 시각. 가벼운 잡(heavy 락 밖)
+        rt = _hm(getattr(schedule.reconcile, lo))
+        jobs.append(
+            Job(
+                f"{lo}_reconcile",
+                "reconcile",
+                m,
+                cron={
+                    "hour": rt.hour,
+                    "minute": rt.minute,
+                    "day_of_week": "mon-fri",
+                    "timezone": ms.tz,
+                },
+            )
+        )
     h, mi = _hm(schedule.reflect).hour, _hm(schedule.reflect).minute
     jobs.append(Job("reflect", "reflect", cron={"hour": h, "minute": mi, "day_of_week": "mon-fri"}))
     t = _hm(schedule.ml_train.time)
@@ -462,6 +477,8 @@ def _scan_body(deps: DaemonDeps, market: str) -> dict:
             cancel=deps.stop_event,
             universe=universe,
             discovery=True,
+            sources_cfg=deps.sources_cfg,
+            http=getattr(deps.input_deps, "http", None),
         )
     finally:
         conn.close()
@@ -474,7 +491,25 @@ def _scan_body(deps: DaemonDeps, market: str) -> dict:
         "ml_model": ml[1] if ml else None,
     }
     write_checkpoint(run_store.market_dir(today, market, deps.state, create=True), "_scan", out)
+    try:
+        deps.notifier.send(scan_line(out))
+    except Exception:  # noqa: BLE001 - 알림 실패가 scan 결과를 바꾸지 않는다
+        logger.debug("scan 알림 실패", exc_info=True)
     return out
+
+
+def scan_line(scan: dict) -> str:
+    """scan 결과 알림 한 줄: picks 와 뉴스 발굴 요약(STATUS·텔레그램 /status 와 같은 문구)."""
+    from trader.scan import discovery as discovery_mod
+
+    picks = [p.get("ticker") for p in scan.get("picks") or []]
+    n_t = len(scan.get("analyze_targets") or [])
+    cap = " · 세션 상한" if scan.get("cap_hit") else ""
+    return (
+        f"[스캔] {scan.get('market')} {scan.get('date')}: picks {len(picks)}"
+        f"({', '.join(str(p) for p in picks) or '-'}) · 분석 대상 {n_t} · "
+        f"{discovery_mod.line(scan.get('discovery'))}{cap}"
+    )
 
 
 def _ensure_quant(deps: DaemonDeps, ticker: str, market: str, today: date) -> None:
@@ -518,6 +553,24 @@ def _analyze_body(deps: DaemonDeps, market: str, *, scan_error: str | None = Non
     return _analyze_targets(deps, market, targets, today=today)
 
 
+def _snapshot_listed(deps: DaemonDeps, market: str, t: dict) -> None:
+    """유니버스 밖 발굴 종목은 피처 스토어에 행이 없어 05_quant·섹터 비교가 빈다 → 분석 직전 그
+    종목만 스냅샷 1회(`features.snapshot(tickers=)`). 시세 클라이언트가 없으면 건너뛰고 실패는
+    경고만."""
+    if deps.features_fn is None:
+        return
+    try:
+        n = deps.features_fn(
+            "snapshot",
+            [market],
+            progress=lambda s: None,
+            tickers=[(t["ticker"], t.get("exchange"))],
+        )
+        logger.info("발굴 종목 피처 스냅샷 %s %s: %s행", market, t["ticker"], n)
+    except Exception as e:  # noqa: BLE001 - 피처 없이도 세션은 돈다
+        logger.warning("발굴 종목 피처 스냅샷 실패 %s %s: %s", market, t["ticker"], e)
+
+
 def _analyze_targets(
     deps: DaemonDeps,
     market: str,
@@ -550,6 +603,8 @@ def _analyze_targets(
             )
         except Exception as e:  # noqa: BLE001 - 한 종목 수집 실패는 세션이 다시 시도한다
             logger.warning("수집 실패 %s %s: %s", market, t["ticker"], e)
+        if t.get("discovery") == "listed":
+            _snapshot_listed(deps, market, t)
         _ensure_quant(deps, t["ticker"], market, today)
 
     # 종목당 세션 1회(--max-budget-usd 는 세션 단위). 실패한 종목은 기록하고 다음 종목으로.
@@ -657,6 +712,25 @@ def _vix(deps: DaemonDeps, market: str) -> float | None:
         return None
 
 
+def _flow_weak(deps: DaemonDeps, market: str) -> bool:
+    """Phase 21 보조 지표: KR 지수 proxy 외인 순매수 20일·5일 합이 모두 음수. `hedge.flow_signal`
+    이 꺼져 있거나 KR 이 아니거나 조회에 실패하면 False(지표 없음)."""
+    from trader.risk import regime as regime_mod
+
+    cfg = deps.settings.hedge
+    if not getattr(cfg, "flow_signal", False) or market != "KR" or deps.market_client is None:
+        return False
+    inst = cfg.index_proxy.get(market)  # type: ignore[arg-type]
+    if inst is None:
+        return False
+    try:
+        flows = deps.market_client.get_investor_kr(inst.symbol, days=20)
+    except Exception as e:  # noqa: BLE001 - 보조 지표
+        logger.warning("외인 수급 조회 실패 %s: %s", market, e)
+        return False
+    return regime_mod.flow_weak(flows)
+
+
 def _regime_body(deps: DaemonDeps, market: str) -> dict:
     """국면 판정 갱신 (scan_analyze 앞, 운영일 1회). 실패하면 직전 상태 유지 + 경고."""
     from trader.orchestrator.run_store import run_date_for
@@ -678,6 +752,7 @@ def _regime_body(deps: DaemonDeps, market: str) -> dict:
                 today=run_date_for(market, deps.now()),
                 vix=_vix(deps, market),
                 now=deps.now(),
+                flow_weak=_flow_weak(deps, market),
             )
         finally:
             conn.close()
@@ -979,6 +1054,28 @@ def _fills_body(deps: DaemonDeps) -> dict:
     return out
 
 
+def _reconcile_body(deps: DaemonDeps, market: str | None) -> dict:
+    """야간 KIS 대조(Phase 21): 계좌·시장별 브로커 보유 vs 원장 스냅샷, 마감 뒤 미정리 주문.
+    불일치는 알림 + 스냅샷 보정. 가벼운 잡."""
+    from trader.orchestrator import reconcile
+    from trader.orchestrator.run_store import run_date_for
+
+    conn = deps.conn_factory()
+    try:
+        return reconcile.reconcile_all(
+            conn,
+            deps.brokers,
+            deps.accounts,
+            market=market,
+            today_for=lambda m: run_date_for(m, deps.now()),
+            now=deps.now,
+            notifier=deps.notifier,
+            label=lambda m, t: names.display(conn, _cache_dir(deps), m, t),
+        )
+    finally:
+        conn.close()
+
+
 def _news_body(deps: DaemonDeps) -> dict:
     """시장 전체 뉴스 저장소 수집(Phase 19): 시장마다 질의 묶음을 돌려 news_items 에 쌓고 보존
     기간을 넘긴 행을 지운다. 한 시장의 실패가 다른 시장을 막지 않는다. 가벼운 잡(heavy 락 밖)."""
@@ -1251,6 +1348,10 @@ def job_body(
         return lambda: _fills_body(deps)
     if job.kind == "news_collect":
         return lambda: _news_body(deps)
+    if job.kind == "reconcile":
+        return lambda: market_job(
+            deps, job.market or "KR", "reconcile", lambda: _reconcile_body(deps, job.market)
+        )
     if job.kind == "reflect":
         return lambda: _heavy(deps, lambda: _reflect_body(deps))
     if job.kind == "ml_train":
@@ -1343,6 +1444,8 @@ def queued_job_body(
         return lambda: _fills_body(deps)
     if kind == "news_collect":
         return lambda: _news_body(deps)
+    if kind == "reconcile":
+        return lambda: _reconcile_body(deps, p.get("market"))
     raise ValueError(f"알 수 없는 작업: {kind}")
 
 

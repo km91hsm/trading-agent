@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 import os
 from collections.abc import Callable
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +24,7 @@ from trader.config import ConfigError, SectorMap, Universe, load_sectors
 from trader.platform import paths
 from trader.platform.filelock import locked
 from trader.sources import indicators
+from trader.sources.base import MAX_PAST as _MAX_PAST
 from trader.sources.dart import ANNUAL, basic_ratios
 
 logger = logging.getLogger("trader.ml")
@@ -72,7 +73,7 @@ def _coerce(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-MAX_PAST = timedelta(hours=24)
+MAX_PAST = _MAX_PAST  # 정본은 sources/base (inputs.collect_and_save 와 공유)
 STORE_LOCK_TIMEOUT_S = 120.0  # 다른 프로세스의 날짜 파일 쓰기(묶음 1회) 대기 상한
 
 
@@ -557,15 +558,22 @@ def snapshot(
     state: Path | None = None,
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
     progress: Callable[[str], None] = lambda s: None,
+    tickers: list[tuple[str, str | None]] | None = None,
 ) -> int:
-    """오늘 행(종목당 1행)을 저장한다. 뉴스·커뮤니티 건수는 같은 날 00_inputs 에서 센다."""
+    """오늘 행(종목당 1행)을 저장한다. 뉴스·커뮤니티 건수는 같은 날 00_inputs 에서 센다.
+    `tickers=[(코드, 거래소)]` 를 주면 유니버스 대신 그 종목만(유니버스 밖 발굴 종목의 당일 1회
+    스냅샷, Phase 21) — 시장은 `markets[0]`."""
     asof = asof or now()
     if now() - asof > MAX_PAST:
         raise ConfigError(
             f"과거 asof 스냅샷은 Phase 7 백테스트에서 지원합니다 (asof={asof.isoformat()})"
         )
     rows: list[dict] = []
-    for ticker, market, exchange in _targets(universe, markets):
+    if tickers is not None:
+        targets = [(t, markets[0], ex) for t, ex in tickers]
+    else:
+        targets = _targets(universe, markets)
+    for ticker, market, exchange in targets:
         try:
             candles = (
                 market_client.get_daily_kr(ticker, days=260)

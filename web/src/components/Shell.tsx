@@ -26,7 +26,7 @@ const THEME_GLYPH: Record<Theme, GlyphName> = { light: "sun", dark: "moon", syst
 const THEME_LABEL: Record<Theme, string> = { light: "라이트", dark: "다크", system: "시스템" };
 
 export function Shell({ children, now }: { children: ReactNode; now?: Date }) {
-  const { accounts, accountId, setAccountId, token, events, theme, setTheme } = useApp();
+  const { accounts, accountId, setAccountId, token, events, connected, theme, setTheme } = useApp();
   const [open, setOpen] = useState(false);
   const loc = useLocation();
   // 경로가 바뀔 때마다 장 상태를 다시 계산한다 (초 단위 갱신은 필요 없다)
@@ -66,6 +66,7 @@ export function Shell({ children, now }: { children: ReactNode; now?: Date }) {
         <span className="phase muted">{phase.label}</span>
         <span className="spacer" />
         <div className="status-badges">
+          {!connected && <Badge kind="pending" value="실시간 끊김" title="서버와의 실시간 연결(SSE)이 끊겨 재연결 중 — 1분마다 서버 생존을 확인해 표를 다시 읽어요" />}
           {events?.paused && <Badge kind="pending" value="일시정지" title="거래 중단 중 — 설정/제어에서 재개" />}
           {events && events.approvals_pending > 0 && (
             <NavLink to="/orders" className="badge-link">

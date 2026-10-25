@@ -773,3 +773,39 @@ def test_reject_race_is_reported(ectx):
     repo.decide_approval(ectx.conn, aid, "rejected")  # 다른 프로세스가 먼저 처리
     r = executor.reject(ectx, aid)
     assert r["ok"] is False and "이미" in r["error"]
+
+
+def test_breaker_sums_paper_accounts_nav(ectx):
+    """Phase 21: 모의 계좌가 둘이면 서킷브레이커는 날짜별 NAV 합으로 판정한다 — 한 계좌만 보면
+    다른 계좌의 판정이 바로 되돌리거나(OR 아님) 작은 계좌의 드로다운이 과대평가된다."""
+    from trader.config import AccountConfig
+    from trader.ledger import db
+
+    second = AccountConfig(id="paper-2", env="paper", cano="9", markets=["KR"], mode="auto")
+    db.sync_accounts(ectx.conn, [*ectx.accounts, second])
+    for i in range(6):
+        d = D - timedelta(days=6 - i)
+        repo.snapshot_positions(
+            ectx.conn,
+            account_id="paper-main",
+            d=d,
+            market="KR",
+            nav=Decimal("1000000"),
+            cash=Decimal(1),
+            positions=[],
+        )
+        repo.snapshot_positions(
+            ectx.conn,
+            account_id="paper-2",
+            d=d,
+            market="KR",
+            nav=Decimal("9000000"),
+            cash=Decimal(1),
+            positions=[],
+        )
+    # paper-main 만 보면 −15%(브레이커 켜짐), 합산이면 10,000,000 → 9,850,000 = −1.5% (꺼짐)
+    series = executor._paper_nav_series(ectx.conn, ectx.accounts[0], "KR", D, Decimal("850000"))
+    assert series[-1] == (D.isoformat(), Decimal("9850000"))
+    assert series[0][1] == Decimal("10000000")
+    executor._update_breaker(ectx.conn, ectx.accounts[0], "KR", D, Decimal("850000"))
+    assert control.get_flag(ectx.conn, "memory_breaker:KR")["active"] is False

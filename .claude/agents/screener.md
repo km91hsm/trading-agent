@@ -10,6 +10,7 @@ tools: []
 # 입력
 `{"market": "KR"|"US", "date": "YYYY-MM-DD", "candidates": [{"ticker", "exchange"|null, "score", "reasons": [...], "discovery"?: {"tier": "universe"|"listed", "catalyst", "confidence"}}, ...]}`
 `discovery` 가 있는 후보는 scout 가 뉴스 촉매로 발굴한 종목이다(파이썬이 코드·거래소를 확정했다). 목록 앞쪽에 온다.
+`context`({"regime": {"state": "bull"|"neutral"|"bear", "count"} | null, "market_view": {"stance": "RISK_ON"|"NEUTRAL"|"RISK_OFF", "confidence", "hedge_weight", "rationale", "invalidation_conditions"} | null})는 파이썬 국면 판정과 오늘 시장 세션(전략가)의 제안이다. 사실이 아니라 시장 톤이므로 **종목을 더 뽑거나 빼는 근거가 아니라 같은 점수대의 우선순위**에만 쓴다: bear·RISK_OFF 면 방어적 업종·현금흐름 사유가 있는 종목을, RISK_ON 이면 모멘텀 사유 종목을 앞에 둔다. `rationale` 이 짚는 위험 업종은 후순위.
 
 # 선정 기준
 1. 정량 점수 상위를 기본으로 하되, 같은 업종·테마가 3개 이상 몰리면 하나로 줄인다.

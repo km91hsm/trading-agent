@@ -8,7 +8,7 @@ import logging
 import re
 from collections.abc import Callable
 from contextlib import AbstractContextManager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, TypedDict
 
 import httpx
@@ -16,6 +16,9 @@ import httpx
 logger = logging.getLogger("trader.sources")
 
 # 의도적으로 건너뛴 절의 error 값. 00_inputs.errors 에 집계하지 않는다.
+# 과거 asof 재수집·스냅샷 허용 한도(룩어헤드 방지). inputs.collect_and_save·features.snapshot 공용
+MAX_PAST = timedelta(hours=24)
+
 SKIP_REASONS = frozenset(
     {
         "disabled",

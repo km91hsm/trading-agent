@@ -12,6 +12,7 @@ export type AppState = {
   token: string | null;
   setToken: (t: string) => void;
   events: EventSnapshot | null;
+  connected: boolean; // SSE 가 살아 있는가. 끊기면 셸 배지 + 60초 liveness 폴링이 tick 을 올린다
   tick: number; // 이벤트가 올 때마다 증가 → 페이지가 다시 읽는다
   ticks: Record<string, number>; // 스냅샷 키별 변경 횟수 → 바뀐 표만 다시 읽는다 (tickOf)
   tickOf: (...keys: string[]) => number;
@@ -31,6 +32,7 @@ export function useApp(): AppState {
 }
 
 const ACCOUNT_KEY = "trader.accountId";
+export const LIVENESS_MS = 60_000;
 
 export function useAppState(): AppState {
   const [accounts, setAccounts] = useState<Account[]>([]);
@@ -43,6 +45,7 @@ export function useAppState(): AppState {
   });
   const [token, setTokenRaw] = useState<string | null>(() => tokenStore.get());
   const [events, setEvents] = useState<EventSnapshot | null>(null);
+  const [connected, setConnected] = useState(true);
   const [tick, setTick] = useState(0);
   const [ticks, setTicks] = useState<Record<string, number>>({});
   const prevSnap = useRef<EventSnapshot | null>(null);
@@ -108,20 +111,38 @@ export function useAppState(): AppState {
   useEffect(() => watchSystemTheme(document, () => themeStore.get()), []);
 
   useEffect(() => {
-    return subscribeEvents((snap) => {
-      const changed = changedKeys(prevSnap.current, snap);
-      prevSnap.current = snap;
-      setEvents(snap);
-      setTick((t) => t + 1);
-      if (changed.length)
-        setTicks((cur) => {
-          const next = { ...cur };
-          for (const k of changed) next[k] = (next[k] ?? 0) + 1;
-          return next;
-        });
-      if (changed.includes("paused") || changed.includes("runs")) reloadAccounts();
-    });
+    return subscribeEvents(
+      (snap) => {
+        const changed = changedKeys(prevSnap.current, snap);
+        prevSnap.current = snap;
+        setEvents(snap);
+        setConnected(true);
+        setTick((t) => t + 1);
+        if (changed.length)
+          setTicks((cur) => {
+            const next = { ...cur };
+            for (const k of changed) next[k] = (next[k] ?? 0) + 1;
+            return next;
+          });
+        if (changed.includes("paused") || changed.includes("runs")) reloadAccounts();
+      },
+      (ok) => setConnected(ok),
+    );
   }, [reloadAccounts]);
+
+  // SSE 가 끊긴 동안은 60초마다 /api/health 로 서버 생존을 확인하고, 살아 있으면 tick 을 올려
+  // 페이지가 다시 읽게 한다(폴링으로 강등). 연결이 돌아오면 멈춘다.
+  useEffect(() => {
+    if (connected) return;
+    const id = window.setInterval(() => {
+      getJson<{ ok: boolean }>("/api/health")
+        .then(() => setTick((t) => t + 1))
+        .catch(() => {
+          /* 서버가 없으면 끊김 표시 유지 */
+        });
+    }, LIVENESS_MS);
+    return () => window.clearInterval(id);
+  }, [connected]);
 
   const setAccountId = (id: string) => {
     setAccountIdRaw(id);
@@ -143,7 +164,7 @@ export function useAppState(): AppState {
   return {
     ticks,
     tickOf,
-    accounts, accountId, setAccountId, token, setToken, events, tick, reloadAccounts, theme, setTheme, names, ensureNames };
+    accounts, accountId, setAccountId, token, setToken, events, connected, tick, reloadAccounts, theme, setTheme, names, ensureNames };
 }
 
 export type Loaded<T> = { data: T | null; error: string | null; loading: boolean; reload: () => void };

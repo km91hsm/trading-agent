@@ -94,9 +94,9 @@ export type EventSnapshot = {
 
 /** 탭 하나(리더)만 EventSource 를 열고 나머지 탭에는 BroadcastChannel 로 중계한다 (events.ts).
  * 탭마다 열면 브라우저 호스트당 연결 한도(약 6개)를 다 써 모든 fetch 가 멈춘다. */
-export function subscribeEvents(onChange: (snap: EventSnapshot) => void): () => void {
+export function subscribeEvents(onChange: (snap: EventSnapshot) => void, onStatus?: (connected: boolean) => void): () => void {
   if (typeof EventSource === "undefined") return () => {};
-  const openSource = (onSnap: (snap: EventSnapshot) => void) => {
+  const openSource = (onSnap: (snap: EventSnapshot) => void, status?: (connected: boolean) => void) => {
     const es = new EventSource("/api/events");
     es.addEventListener("change", (e) => {
       try {
@@ -105,7 +105,10 @@ export function subscribeEvents(onChange: (snap: EventSnapshot) => void): () => 
         /* 잘못된 이벤트는 무시 */
       }
     });
+    // 브라우저가 자동 재연결하는 동안(onerror) 끊김으로 표시하고, 다시 열리면(onopen) 지운다
+    es.onopen = () => status?.(true);
+    es.onerror = () => status?.(false);
     return { close: () => es.close() };
   };
-  return createEventsClient(onChange, browserDeps(openSource));
+  return createEventsClient(onChange, browserDeps(openSource), onStatus);
 }

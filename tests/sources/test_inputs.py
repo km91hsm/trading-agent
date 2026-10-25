@@ -386,6 +386,30 @@ def test_events_and_channel_sections_present(project):
     assert d["errors"] == []
 
 
+def test_events_upcoming_from_saveticker_calendar(project):
+    """Phase 21: 세이브티커 폴더가 있으면 events.upcoming 에 7일 경제 일정이 들어간다."""
+    import shutil
+    from datetime import UTC, datetime
+
+    from helpers_sources import FIXTURES
+
+    dst = project / "state" / "external" / "saveticker"
+    shutil.copytree(FIXTURES / "saveticker", dst)
+    asof = datetime(2026, 10, 30, 3, 0, tzinfo=UTC)  # +7일 창에 11/2 일정이 든다
+    d = build_inputs(
+        ticker="005930",
+        market="KR",
+        exchange=None,
+        asof=asof,
+        cfg=cfg(),
+        secrets=Secrets(),
+        deps=deps(now=lambda: asof),
+    )
+    up = d["news_macro"]["events"]["data"]["upcoming"]
+    assert up and up[0]["kind"] == "macro" and up[0]["source"] == "saveticker"
+    assert "세이브티커" in d["news_macro"]["events"]["data"]["note"]
+
+
 def test_manual_inputs_section_reads_file(project):
     md = project / "state" / "manual_inputs"
     md.mkdir()

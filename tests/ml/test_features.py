@@ -599,3 +599,21 @@ def test_write_rows_takes_store_lock(project, monkeypatch):
     features.write_rows(df)
     features.rederive()
     assert seen == ["features.lock", "features.lock"]
+
+
+def test_snapshot_tickers_override_universe(project):
+    """Phase 21: `tickers=` 는 유니버스 대신 그 종목만(유니버스 밖 발굴 종목의 당일 스냅샷)."""
+    from helpers_sources import T0
+
+    n = features.snapshot(
+        market_client=FakeMarket(),
+        dart=FakeDart(),
+        universe=Universe(kr=["005930"]),
+        markets=["KR"],
+        asof=T0,
+        now=lambda: T0,
+        tickers=[("247540", None)],
+    )
+    assert n == 1
+    got = pd.read_parquet(next((project / "state" / "features").glob("*.parquet")))
+    assert list(got["ticker"]) == ["247540"]

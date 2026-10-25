@@ -48,6 +48,7 @@ export function JobRequestsTable({ rows, now, onCancel }: { rows: RequestRowView
             </Td>
             <Td className={r.state === "error" ? "gate no" : r.state === "ok" ? "gate ok" : undefined}>
               <Badge kind={BADGE[r.state]} value={r.stateLabel} />
+              {r.priority && r.state === "queued" ? <Badge kind="pending" value="우선" title="우선순위가 높아 먼저 실행돼요" /> : null}
             </Td>
             <Td num className="muted">
               {when(r.when, now)}

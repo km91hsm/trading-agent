@@ -1155,3 +1155,70 @@ def test_resume_runs_only_accounts_without_risk_check(ctx, project):
     assert r["resumed_execution"] is True
     assert [e["account_id"] for e in r["executions"]] == ["real-main"]
     assert read_checkpoint(d, "40_risk_check_paper-main")["data"] == {"approved": False, "x": 1}
+
+
+def test_submit_decision_requotes_when_inputs_are_stale(ctx, project):
+    """Phase 21: 00_inputs.meta.asof 가 10분 넘게 늙었고 시세 클라이언트가 있으면 제출 때 현재가를
+    다시 받아 게이트 수량·손절 검사에 쓴다. 신선하면 그대로, 실패하면 입력가."""
+    from datetime import timedelta
+
+    from trader.broker.fake import FakeBroker, FakeMarket
+    from trader.broker.models import Cash
+
+    _inputs(project)  # quote 71500, asof T0
+    for role in ("technical", "fundamental"):
+        tools.checkpoint_write(
+            ctx,
+            ticker="005930",
+            market="KR",
+            date=D,
+            stage=f"10_analyst_{role}",
+            payload=ok_report(role=role),
+            agent="a",
+        )
+    for side in ("bull", "bear"):
+        tools.checkpoint_write(
+            ctx,
+            ticker="005930",
+            market="KR",
+            date=D,
+            stage=f"20_debate_r0_{side}",
+            payload=ok_turn(side),
+            agent="r",
+        )
+    tools.checkpoint_summarize(ctx, ticker="005930", market="KR", date=D)
+    cash = {"KR": Cash(currency="KRW", available=Decimal("10000000"), total=Decimal("10000000"))}
+    ctx.brokers = {a.id: FakeBroker(a, cash=cash) for a in ctx.accounts}
+    ctx.dry_run = False
+    ctx.market_client = FakeMarket(prices={"005930": Decimal("80000")})
+    # 신선한 입력(T0 + 1분): 재시세 없음
+    ctx.now = lambda: T0 + timedelta(minutes=1)
+    dec = ok_decision(order_type="MARKET", limit_price=None, take_profit=95000.0)
+    assert tools._requote(
+        ctx,
+        read_checkpoint(run_dir(D, "KR", "005930"), "00_inputs"),
+        "KR",
+        "005930",
+        Decimal("71500"),
+    ) == (Decimal("71500"), None)
+    # 11분 지남 + 재시세가 손절선 아래면 저장 전에 거부(30_decision 없음)
+    ctx.now = lambda: T0 + timedelta(minutes=11)
+    ctx.market_client = FakeMarket(prices={"005930": Decimal("60000")})
+    r = tools.submit_decision(ctx, ticker="005930", market="KR", date=D, payload=dec)
+    assert not r["ok"] and "현재가 60000 이상" in r["error"]
+    assert read_checkpoint(run_dir(D, "KR", "005930"), "30_decision") is None
+    # 80000 으로 재시세 → 시장가 수량이 71500 기준 13주가 아니라 80000 기준 12주
+    ctx.market_client = FakeMarket(prices={"005930": Decimal("80000")})
+    r = tools.submit_decision(ctx, ticker="005930", market="KR", date=D, payload=dec)
+    assert r["ok"] and r["price"] == "80000" and r["requote"] == "재시세 71500→80000"
+    assert ctx.brokers["paper-main"].orders[0].qty == 12
+    rc = read_checkpoint(run_dir(D, "KR", "005930"), "40_risk_check_paper-main")["data"]
+    assert "재시세 71500→80000" in (rc.get("note") or "")
+    # 시세 실패 → 입력가 유지
+    ctx.market_client = FakeMarket(prices={}, fail={"get_price_kr"})
+    assert tools._requote(
+        ctx, {"meta": {"asof": T0.isoformat()}}, "KR", "005930", Decimal("1")
+    ) == (
+        Decimal("1"),
+        None,
+    )

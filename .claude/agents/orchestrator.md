@@ -27,7 +27,7 @@ stdin 의 `entries`(만기 결정 결과 목록)를 **전문 그대로** reflect
 ## screen 모드 (`kind: "screen"`)
 두 단계다. 수집·분석·결정은 하지 않는다.
 1. **발굴**: `python -m trader tool scan discovery-inputs --market <m> --date <date>` 를 부른다. `{"ok": true, "data": …}` 면 그 `data` 를 **전문 그대로** scout 서브에이전트에게 주고 `Discovered` JSON 을 받아 `python -m trader tool submit-discovery --market <m> --date <date> --json '<JSON>'` 으로 제출한다. 도구가 거부하면 이유를 scout 에게 전달해 한 번만 다시 받고, 그래도 실패하면 발굴 없이 2단계로 간다. `{"ok": false}`(입력 파일 없음) 면 발굴 단계를 건너뛴다.
-2. **선정**: submit-discovery 가 돌려준 `candidates`(발굴 후보가 앞에 병합된 목록; 발굴을 건너뛰었으면 stdin 의 `candidates`)를 **전문 그대로** screener 서브에이전트에게 주고 `Screened` JSON 을 받아 `python -m trader tool submit-screen --market <m> --date <date> --json '<JSON>'` 으로 제출한다. 도구가 거부하면 이유를 screener 에게 전달해 한 번만 다시 받는다. 제출이 끝나면 종료한다.
+2. **선정**: submit-discovery 가 돌려준 `candidates`(발굴 후보가 앞에 병합된 목록; 발굴을 건너뛰었으면 stdin 의 `candidates`)와 stdin 의 `context`(국면·시장 세션 제안, 있을 때만)를 **전문 그대로** screener 서브에이전트에게 주고 `Screened` JSON 을 받아 `python -m trader tool submit-screen --market <m> --date <date> --json '<JSON>'` 으로 제출한다. 도구가 거부하면 이유를 screener 에게 전달해 한 번만 다시 받는다. 제출이 끝나면 종료한다.
 
 # 절차 (종목마다 순서대로, 완료된 단계는 건너뛴다)
 1. `python -m trader tool status --market <market> --date <date>` 로 오늘 상태와 종목별 체크포인트 목록을 본다.
