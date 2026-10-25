@@ -459,7 +459,20 @@ def _sentiment(ticker, market, name, asof, cfg, deps, secrets=None) -> dict[str,
         ),
         "trends": skipped_section("phase8", now=now),
         "manual_inputs": _manual(ticker, market, asof, now),
+        "saveticker": _saveticker_section(ticker, asof, cfg, now),
     }
+
+
+def _saveticker_section(ticker: str, asof: datetime, cfg, now) -> Section:
+    """세이브티커 로컬 폴더(사용자 수집기)의 커뮤니티·시세 상위에서 이 종목 언급 + 시장 트렌드."""
+    from trader.sources import saveticker
+
+    root = saveticker.resolve_dir(getattr(cfg.news, "saveticker_dir", None))
+    if not saveticker.available(root):
+        return skipped_section("no saveticker dir", now=now)
+    return run_section(
+        lambda: saveticker.for_ticker(saveticker.snapshot(root, asof=asof), ticker), now=now
+    )
 
 
 def _reddit_auth(secrets: Secrets | None) -> tuple[str, str, str] | None:

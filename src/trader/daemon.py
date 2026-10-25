@@ -1008,6 +1008,26 @@ def _news_body(deps: DaemonDeps) -> dict:
             except Exception as e:  # noqa: BLE001 - 시장 단위 격리
                 logger.warning("뉴스 수집 실패 %s: %s", market, e)
                 out[market] = {"error": f"{type(e).__name__}: {e}"}
+        try:
+            from trader.sources import saveticker
+
+            root = saveticker.resolve_dir(cfg.saveticker_dir)
+            out["saveticker"] = (
+                saveticker.ingest_news(
+                    conn,
+                    root,  # type: ignore[arg-type]
+                    now=deps.now,
+                    names_by_market={
+                        m: news_store.universe_names(universe, cache_names, m)
+                        for m in deps.settings.markets
+                    },
+                )
+                if root is not None
+                else {"skipped": "saveticker_dir 미설정"}
+            )
+        except Exception as e:  # noqa: BLE001 - 로컬 폴더 문제가 뉴스 잡을 막지 않는다
+            logger.warning("세이브티커 적재 실패: %s", e)
+            out["saveticker"] = {"error": f"{type(e).__name__}: {e}"}
         out["pruned"] = news_store.prune(
             conn, before=deps.now() - timedelta(days=cfg.store_retention_days)
         )

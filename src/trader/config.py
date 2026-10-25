@@ -253,6 +253,8 @@ class NewsCfg(BaseModel):
     store_retention_days: int = Field(default=14, ge=1, le=365)
     store_hours: int = Field(default=48, ge=1, le=24 * 14)  # 세션·발굴 입력의 최근 창
     store_items: int = Field(default=60, ge=1, le=500)  # 발굴 입력 건수 상한
+    # 세이브티커 로컬 수집 폴더(사용자 별도 수집기). 상대 경로는 프로젝트 루트 기준, 없으면 건너뜀
+    saveticker_dir: str | None = "state/external/saveticker"
 
 
 class MacroCfg(BaseModel):

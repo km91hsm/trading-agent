@@ -75,3 +75,17 @@ def test_news_body_skipped_when_disabled(conn):
         {"edgar": {"user_agent": "t t@e.com"}, "news": {"enabled": False}}
     )
     assert daemon._news_body(deps) == {"skipped": "news.enabled=false"}
+
+
+def test_news_body_ingests_saveticker_folder(conn, monkeypatch, project):
+    import shutil
+
+    from helpers_sources import FIXTURES
+
+    shutil.copytree(FIXTURES / "saveticker", project / "state" / "external" / "saveticker")
+    deps = _deps(conn, FakeMarket(), now=lambda: NOW)
+    deps.sources_cfg = _cfg()
+    monkeypatch.setattr(news_store, "collect", lambda *a, **k: {"inserted": 0})
+    out = daemon._news_body(deps)
+    assert out["saveticker"]["inserted"] > 0 and news_store.count(conn) > 0
+    assert daemon._news_body(deps)["saveticker"]["inserted"] == 0

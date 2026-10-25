@@ -33,8 +33,9 @@ MIN_NAME_LEN = 2  # 이 길이 미만의 종목명은 태깅하지 않는다 (�
 _ASCII = re.compile(r"^[A-Za-z0-9.\-]+$")
 
 
-def url_hash(url: str) -> str:
-    return hashlib.sha1(url.strip().encode("utf-8")).hexdigest()
+def url_hash(url: str, market: str = "") -> str:
+    """시장별 멱등 키. 거시 뉴스(티커 없음)는 KR·US 두 행이 될 수 있어 시장을 섞어 센다."""
+    return hashlib.sha1(f"{market}|{url.strip()}".encode()).hexdigest()
 
 
 def tag(text: str, names: dict[str, str]) -> list[str]:
@@ -79,8 +80,10 @@ def insert_items(
     query: str,
     lang: str,
     names: dict[str, str],
+    extra_tickers: bool = False,
 ) -> int:
-    """URL 해시로 멱등 적재. 반환은 새로 들어간 행 수."""
+    """URL 해시로 멱등 적재. 반환은 새로 들어간 행 수. extra_tickers 면 항목의 `tickers` 도 합친다
+    (세이브티커처럼 수집기가 이미 티커를 붙인 소스)."""
     n = 0
     for it in items:
         url = (it.get("url") or "").strip()
@@ -88,6 +91,8 @@ def insert_items(
         if not url or not title:
             continue
         tickers = tag(f"{title} {it.get('summary') or ''}", names)
+        if extra_tickers:
+            tickers = sorted(set(tickers) | {str(t).strip() for t in it.get("tickers") or [] if t})
         cur = conn.execute(
             "INSERT OR IGNORE INTO news_items(market, source, query, title, url, url_hash, "
             "published_at, received_at, summary, tickers_json, lang) "
@@ -98,7 +103,7 @@ def insert_items(
                 query,
                 title,
                 url,
-                url_hash(url),
+                url_hash(url, market),
                 it.get("published_at"),
                 it.get("received_at") or _utc_now().isoformat(),
                 (it.get("summary") or "")[:300],

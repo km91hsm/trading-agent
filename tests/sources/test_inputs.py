@@ -839,3 +839,48 @@ def test_stock_news_merges_store_items_tagged_for_ticker(project, conn):
         ),
     )
     assert d2["news_macro"]["news"]["data"]["stock"] == []
+
+
+def test_sentiment_saveticker_section_from_local_dir(project, monkeypatch):
+    """세이브티커 로컬 폴더가 있으면 sentiment.saveticker 에 종목 언급·트렌드가 들어간다."""
+    import shutil
+
+    from helpers_sources import FIXTURES
+
+    shutil.copytree(FIXTURES / "saveticker", project / "state" / "external" / "saveticker")
+    late = T0.replace(year=2026, month=10, day=25, hour=3)
+    d = build_inputs(
+        ticker="QQQ",
+        market="US",
+        exchange="NAS",
+        asof=late,
+        cfg=cfg(),
+        secrets=Secrets(),
+        deps=deps(now=lambda: late),
+    )
+    sec = d["sentiment"]["saveticker"]
+    assert sec["error"] is None and sec["data"]["mentions"]["community_top5"][0]["tickers"] == [
+        "QQQ"
+    ]
+    assert sec["data"]["trends"][0]["keyword"] == "트럼프"
+    d2 = build_inputs(
+        ticker="005930",
+        market="KR",
+        exchange=None,
+        asof=late,
+        cfg=cfg(),
+        secrets=Secrets(),
+        deps=deps(now=lambda: late),
+    )
+    assert d2["sentiment"]["saveticker"]["data"]["mentions"] == {}
+    shutil.rmtree(project / "state" / "external")
+    d3 = build_inputs(
+        ticker="005930",
+        market="KR",
+        exchange=None,
+        asof=T0,
+        cfg=cfg(),
+        secrets=Secrets(),
+        deps=deps(),
+    )
+    assert d3["sentiment"]["saveticker"]["error"] == "no saveticker dir"

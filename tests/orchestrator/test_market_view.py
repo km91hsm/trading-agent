@@ -264,3 +264,18 @@ def test_regime_summary_and_status_include_scorecard(project, conn):
     )
     sc = regime.summary(conn, ["KR"])[0]["scorecard"]
     assert sc["hits"] == 1 and sc["matured"] == 1
+
+
+def test_build_inputs_includes_saveticker_snapshot_when_folder_exists(project, conn):
+    import shutil
+
+    from helpers_sources import FIXTURES
+
+    inp = market_view.build_inputs(conn, "US", D, settings=Settings(), asof=T0, now=lambda: T0)
+    assert inp["saveticker"] is None
+    shutil.copytree(FIXTURES / "saveticker", project / "state" / "external" / "saveticker")
+    late = T0.replace(year=2026, month=10, day=25, hour=3)
+    inp = market_view.build_inputs(conn, "US", D, settings=Settings(), asof=late, now=lambda: late)
+    assert inp["saveticker"]["trends"][0]["keyword"] == "트럼프"
+    assert inp["saveticker"]["report"]["report_date"] == "2026-10-23"
+    assert "saveticker" not in inp["errors"]

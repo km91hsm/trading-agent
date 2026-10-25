@@ -129,6 +129,19 @@ def build_inputs(
         logger.debug("시장 메모 읽기 실패 %s: %s", market, e)
         notes = []
     reg = regime_mod.load(conn, market) or {}
+    saveticker_snap: dict | None = None
+    try:
+        from trader.sources import saveticker
+
+        root = saveticker.resolve_dir(getattr(cfg, "saveticker_dir", None))
+        snap = saveticker.snapshot(root, asof=asof)
+        if snap:
+            saveticker_snap = {
+                k: snap.get(k)
+                for k in ("observed_at", "trends", "movers", "community_top5", "report")
+            }
+    except Exception as e:  # noqa: BLE001 - 선택 입력
+        logger.debug("세이브티커 발굴 입력 실패 %s: %s", market, e)
     data = {
         "scope": "discovery",
         "market": market,
@@ -140,6 +153,7 @@ def build_inputs(
         "regime": {"state": reg.get("state") or "bull", "count": reg.get("count") or 0},
         "held": sorted(set(held or [])),
         "recent_picks": _recent_picks(market, today, state),
+        "saveticker": saveticker_snap,
         "quant_candidates": [
             {k: c.get(k) for k in ("ticker", "exchange", "score", "reasons")}
             for c in quant_candidates[:30]

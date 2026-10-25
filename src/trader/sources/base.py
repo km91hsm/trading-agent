@@ -22,6 +22,7 @@ SKIP_REASONS = frozenset(
         "phase6",
         "phase7",
         "phase8",
+        "no saveticker dir",
         "not available for US",
         "no manual input",
         "no sector peers",

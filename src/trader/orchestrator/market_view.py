@@ -145,6 +145,18 @@ def build_inputs(
         notes = manual_inputs.read_market(market, asof=asof, state=state)
     except Exception as e:  # noqa: BLE001
         errors["market_notes"] = f"{type(e).__name__}: {e}"
+    saveticker_snap: dict | None = None
+    try:
+        from trader.config import NewsCfg, load_sources
+        from trader.sources import saveticker
+
+        try:
+            st_dir = load_sources().news.saveticker_dir
+        except Exception:  # noqa: BLE001 - sources.yaml 이 없으면 기본 경로
+            st_dir = NewsCfg().saveticker_dir
+        saveticker_snap = saveticker.snapshot(saveticker.resolve_dir(st_dir), asof=asof)
+    except Exception as e:  # noqa: BLE001 - 선택 입력
+        errors["saveticker"] = f"{type(e).__name__}: {e}"
     held: list[str] = []
     sectors: list[dict] = []
     hedge_tickers = cfg.tickers(market)
@@ -189,6 +201,7 @@ def build_inputs(
         "date": today.isoformat(),
         "asof": asof.isoformat(),
         "proxy": tools.MARKET_PROXY_LABEL.get(market, market),
+        "saveticker": saveticker_snap,
         "regime": {
             "state": regime.get("state"),
             "count": regime.get("count"),
