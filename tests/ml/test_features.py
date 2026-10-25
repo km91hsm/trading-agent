@@ -563,3 +563,39 @@ def test_backfill_rederives_everything_when_final_flush_fails(project, monkeypat
         progress=lambda s: None,
     )
     assert seen and seen[-1] is None  # 마지막 호출은 전체(paths=None)
+
+
+def test_broken_parquet_file_is_skipped_not_fatal(project):
+    """쓰기 중 종료로 깨진 날짜 파일 하나가 latest_rows·write_rows·load_all 을 죽이지 않는다."""
+    from trader.ml import dataset
+
+    candles = make_candles(3)
+    df = features.history_rows(ticker="005930", market="KR", candles=candles, ratios_by_year=None)
+    features.write_rows(df)
+    fdir = project / "state" / "features"
+    broken = sorted(fdir.glob("*.parquet"))[0]
+    broken.write_bytes(b"not a parquet file")
+    latest = features.latest_rows(None, "KR")
+    assert list(latest["ticker"]) == ["005930"]
+    assert len(dataset.load_all(None, market="KR")) == 2
+    features.write_rows(df)  # 깨진 파일은 새 행으로 덮인다
+    assert len(pd.read_parquet(broken)) == 1
+    assert not list(fdir.glob("*.tmp"))
+
+
+def test_write_rows_takes_store_lock(project, monkeypatch):
+    seen = []
+    from trader.ml import features as feat_mod
+
+    orig = feat_mod.locked
+
+    def spy(path, **kw):
+        seen.append(path.name)
+        return orig(path, **kw)
+
+    monkeypatch.setattr(feat_mod, "locked", spy)
+    candles = make_candles(1)
+    df = features.history_rows(ticker="005930", market="KR", candles=candles, ratios_by_year=None)
+    features.write_rows(df)
+    features.rederive()
+    assert seen == ["features.lock", "features.lock"]

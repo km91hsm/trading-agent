@@ -2,6 +2,7 @@
 
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from types import SimpleNamespace
 
 from conftest import make_account
 from test_daemon import _deps
@@ -200,3 +201,20 @@ def test_us_early_closes_rules():
     ec27 = daemon.us_early_closes(2027)
     assert date(2027, 11, 26) in ec27 and date(2027, 12, 24) not in ec27  # 금요일
     assert len(daemon.us_early_closes(2025)) == 3  # 7/3 목, 11/28, 12/24 수
+
+
+def test_proxy_candles_drop_pre_open_stub(conn):
+    """개장 전 거래량 0 스텁 봉은 국면 proxy 일봉에서 버린다 (리뷰 F15)."""
+    from decimal import Decimal as _D
+
+    from trader.broker.models import Candle
+
+    deps = _hedge_deps(conn, closes=[100] * 30)
+    good = Candle(
+        date=date(2026, 10, 23), open=_D(1), high=_D(1), low=_D(1), close=_D(100), volume=10
+    )
+    stub = Candle(
+        date=date(2026, 10, 24), open=_D(1), high=_D(1), low=_D(1), close=_D(50), volume=0
+    )
+    deps.market_client = SimpleNamespace(get_daily_kr=lambda *a, **k: [good, stub])
+    assert daemon._proxy_candles(deps, "KR") == [good]

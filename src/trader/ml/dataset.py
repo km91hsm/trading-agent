@@ -40,7 +40,10 @@ def load_all(
         files = [f for f in files if f.stem <= until.isoformat()]
     if not files:
         return pd.DataFrame(columns=features.FEATURE_COLUMNS)
-    df = pd.concat([pd.read_parquet(f) for f in files], ignore_index=True)
+    parts = [p for p in (features.read_part(f) for f in files) if p is not None]
+    if not parts:
+        return pd.DataFrame(columns=features.FEATURE_COLUMNS)
+    df = pd.concat(parts, ignore_index=True)
     if market:
         df = df[df["market"] == market]
     if df.empty:

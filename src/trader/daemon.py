@@ -384,6 +384,13 @@ class DaemonDeps:
     # 무거운 잡(scan_analyze·reflect·ml_train·대기열 요청)은 한 번에 하나. cron 은 기다리고
     # 대기열 틱은 잠겨 있으면 claim 하지 않는다
     heavy_lock: threading.Lock = field(default_factory=threading.Lock)
+    # cron 잡이 heavy 락을 기다리는 중이면 선다. 대기열의 긴 잡(백필)은 진행 콜백에서 이것을 보고
+    # 락을 잠시 내놓는다(종목 경계) — 아침 scan 이 백필 뒤로 수 시간 밀리지 않도록
+    heavy_wanted: threading.Event = field(default_factory=threading.Event)
+
+
+HEAVY_POLL_S = 30.0  # heavy 락 대기 폴링 간격
+HEAVY_WAIT_NOTIFY_S = 600.0  # cron 이 이만큼 기다리면 알림 1건
 
 
 def _today(deps: DaemonDeps) -> date:
@@ -425,7 +432,7 @@ def _scan_body(deps: DaemonDeps, market: str) -> dict:
     today = run_date_for(market, deps.now())
     from trader.ml import ranker
 
-    ml = ranker.current(deps.state)
+    ml = ranker.current(deps.state, market=market)
     conn = deps.conn_factory()
     try:
         runtime_watch = control.get_watchlist(conn, market=market)
@@ -592,12 +599,17 @@ def _analyze_targets(
 
 
 def _proxy_candles(deps: DaemonDeps, market: str, days: int = 260) -> list:
+    from trader.broker.models import drop_incomplete_tail
+
     inst = deps.settings.hedge.index_proxy.get(market)  # type: ignore[arg-type]
     if inst is None or deps.market_client is None:
         return []
     if market == "US":
-        return deps.market_client.get_daily_us(inst.symbol, inst.exchange or "AMS", days=days)
-    return deps.market_client.get_daily_kr(inst.symbol, days=days)
+        got = deps.market_client.get_daily_us(inst.symbol, inst.exchange or "AMS", days=days)
+    else:
+        got = deps.market_client.get_daily_kr(inst.symbol, days=days)
+    # 개장 전 거래량 0 스텁 봉이 들어가면 20일 수익률·변동성이 오늘의 가짜 종가로 계산된다
+    return drop_incomplete_tail(got)
 
 
 def _proxy_closes(deps: DaemonDeps, market: str, days: int = 260) -> list:
@@ -914,9 +926,14 @@ def _fills_body(deps: DaemonDeps) -> dict:
     try:
         for a in deps.accounts:
             b = deps.brokers.get(a.id)
-            if b is not None:
+            if b is None:
+                continue
+            try:
                 # US 체결은 ET 날짜로 조회해야 한다 (07:10 KST 는 전날 ET) → 시장별 현지 날짜
                 out[a.id] = sync_fills(conn, b, a, deps.now())
+            except Exception as e:  # noqa: BLE001 - 한 계좌의 실패가 다른 계좌 동기화를 막지 않는다
+                logger.warning("체결 동기화 실패 %s: %s", a.id, e)
+                out[a.id] = {"error": f"{type(e).__name__}: {e}"}
     finally:
         conn.close()
     return out
@@ -1066,10 +1083,50 @@ def _cache_dir(deps: DaemonDeps) -> Path:
     return (deps.state or paths.state_dir()) / "cache"
 
 
-def _heavy(deps: DaemonDeps, fn: Callable[[], Any]) -> Any:
-    """무거운 잡은 한 번에 하나 (cron 은 기다린다)."""
-    with deps.heavy_lock:
+def _heavy(deps: DaemonDeps, fn: Callable[[], Any], *, cron: bool = True) -> Any:
+    """무거운 잡은 한 번에 하나. cron 은 기다리되 `heavy_wanted` 를 세워 대기열 잡이 양보하게
+    하고, HEAVY_WAIT_NOTIFY_S 넘게 기다리면 알림 1건을 보낸다."""
+    if cron:
+        deps.heavy_wanted.set()
+    waited = 0.0
+    notified = False
+    try:
+        while not deps.heavy_lock.acquire(timeout=HEAVY_POLL_S):
+            waited += HEAVY_POLL_S
+            if deps.stop_event.is_set():
+                return {"skipped": "종료 중"}
+            if waited >= HEAVY_WAIT_NOTIFY_S and not notified:
+                notified = True
+                logger.warning("cron 잡이 heavy 락을 %.0f분 기다리는 중", waited / 60)
+                try:
+                    deps.notifier.send(
+                        f"[잡 대기] 예정된 잡이 다른 무거운 잡(백필·학습) 때문에 "
+                        f"{waited / 60:.0f}분 기다리는 중"
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.debug("대기 알림 실패", exc_info=True)
+    finally:
+        if cron:
+            deps.heavy_wanted.clear()
+    try:
         return fn()
+    finally:
+        deps.heavy_lock.release()
+
+
+def _yield_heavy(deps: DaemonDeps) -> None:
+    """대기열 잡(백필)이 종목 경계에서 부른다: cron 이 기다리면 heavy 락을 내놓고 cron 이 끝난 뒤
+    다시 잡는다. 락을 들고 있지 않으면 아무것도 하지 않는다."""
+    if not deps.heavy_wanted.is_set() or not deps.heavy_lock.locked():
+        return
+    logger.info("대기열 잡이 예정 잡에 양보 (heavy 락 반납)")
+    deps.heavy_lock.release()
+    try:
+        while deps.heavy_wanted.is_set() and not deps.stop_event.is_set():
+            deps.stop_event.wait(0.05)
+    finally:
+        deps.heavy_lock.acquire()
+    logger.info("대기열 잡 재개")
 
 
 def job_body(
@@ -1111,6 +1168,7 @@ def _progress_writer(deps: DaemonDeps, req_id: int) -> Callable[[str], None]:
         state["n"] += 1
         if deps.stop_event.is_set():
             raise jobq.JobCancelled("종료 중")
+        _yield_heavy(deps)  # cron 이 기다리면 종목 경계에서 양보
         now = datetime.now(UTC).timestamp()
         if now - state["last"] < 1.0:
             return
@@ -1187,8 +1245,16 @@ def _queue_tick(deps: DaemonDeps, heartbeat: Heartbeat | None) -> dict:
     스케줄 잡과 같은 이름(`jobs.job_id_for`)으로 남긴다."""
     if deps.stop_event.is_set():
         return {"skipped": "종료 중"}
-    if deps.heavy_lock.locked():
+    # 잠겨 있으면 claim 하지 않는다(non-blocking). 가벼운 잡도 잠깐 들고 돌아 cron 과 겹치지 않음
+    if not deps.heavy_lock.acquire(blocking=False):
         return {"skipped": "다른 무거운 잡 실행 중"}
+    try:
+        return _queue_tick_locked(deps, heartbeat)
+    finally:
+        deps.heavy_lock.release()
+
+
+def _queue_tick_locked(deps: DaemonDeps, heartbeat: Heartbeat | None) -> dict:
     conn = deps.conn_factory()
     try:
         row = jobq.claim_next(conn, now=deps.now())
@@ -1232,10 +1298,7 @@ def _queue_tick(deps: DaemonDeps, heartbeat: Heartbeat | None) -> dict:
             name, wrapped, conn_factory=deps.conn_factory, interval=False, heartbeat=heartbeat
         )
 
-    if jobq.is_heavy(kind):
-        _heavy(deps, run_it)
-    else:
-        run_it()
+    run_it()  # heavy 락은 _queue_tick 이 이미 들고 있다
     return {"request": req_id, "kind": kind}
 
 

@@ -298,3 +298,75 @@ def test_missed_cron_notifies_and_enqueues_catch_up(conn):
         j for j in daemon.build_jobs(SCHED, Settings(), markets=["KR"]) if j.kind == "monitor"
     )
     assert daemon.misfire_grace_for(monitor_job) == daemon.DEFAULT_MISFIRE_GRACE_S
+
+
+def test_queued_backfill_yields_heavy_lock_to_waiting_cron(conn, monkeypatch):
+    """백필(대기열)이 heavy 락을 들고 있어도 cron scan 이 기다리면 종목 경계(progress)에서
+    락을 내놓고 cron 이 끝난 뒤 이어서 돈다 (리뷰 F27)."""
+    deps = _deps(conn, FakeMarket(), now=lambda: datetime(2026, 10, 8, 3, 0, tzinfo=UTC))
+    monkeypatch.setattr(daemon, "HEAVY_POLL_S", 0.05)
+    order: list[str] = []
+    cron_started = threading.Event()
+    progress_seen = threading.Event()
+
+    def features_fn(action, markets, *, progress, **kw):
+        order.append("bf-start")
+        progress_seen.set()
+        cron_started.wait(2)  # cron 이 락을 기다리기 시작할 때까지
+        progress("KR 005930: 10행")  # 여기서 양보 → cron 이 먼저 끝난다
+        order.append("bf-end")
+        return 1
+
+    deps.features_fn = features_fn
+    monkeypatch.setattr(daemon, "_scan_analyze_body", lambda d, m: order.append("cron") or {})
+    jobq.enqueue(conn, "features_backfill", {"years": 1}, source="web", now=NOW)
+    t_q = threading.Thread(target=daemon._queue_tick, args=(deps, None))
+    t_q.start()
+    assert progress_seen.wait(2)
+    job = next(j for j in daemon.build_jobs(SCHED, Settings(), markets=["KR"]) if j.market)
+    t_c = threading.Thread(target=daemon.job_body(deps, job))
+    t_c.start()
+    t_c.join(0.2)
+    assert t_c.is_alive() and deps.heavy_wanted.is_set()
+    cron_started.set()
+    t_c.join(3)
+    t_q.join(3)
+    assert order == ["bf-start", "cron", "bf-end"]
+    assert not deps.heavy_lock.locked() and not deps.heavy_wanted.is_set()
+    assert jobq.list_recent(conn)[0]["status"] == "ok"
+
+
+def test_heavy_wait_notifies_once_after_threshold(conn, monkeypatch):
+    deps = _deps(conn, FakeMarket(), now=lambda: NOW)
+    sent: list[str] = []
+    deps.notifier = SimpleNamespace(send=lambda t, **kw: sent.append(t) or True)
+    monkeypatch.setattr(daemon, "HEAVY_POLL_S", 0.02)
+    monkeypatch.setattr(daemon, "HEAVY_WAIT_NOTIFY_S", 0.04)
+    deps.heavy_lock.acquire()
+    t = threading.Thread(target=lambda: daemon._heavy(deps, lambda: 1))
+    t.start()
+    t.join(0.3)
+    deps.heavy_lock.release()
+    t.join(2)
+    assert [m for m in sent if "[잡 대기]" in m].__len__() == 1
+
+
+def test_fills_body_isolates_account_failure(conn, monkeypatch):
+    from conftest import make_account
+
+    deps = _deps(conn, FakeMarket(), now=lambda: NOW)
+    bad = make_account("real-main", "real", "off", ["KR"])
+    deps.accounts = [bad, *deps.accounts]
+    deps.brokers["real-main"] = SimpleNamespace(
+        get_fills=lambda m, d: (_ for _ in ()).throw(RuntimeError("db locked"))
+    )
+    import trader.orchestrator.fills as fills_mod
+
+    def fake_sync(conn_, b, a, d):
+        if a.id == "real-main":
+            raise RuntimeError("db locked")
+        return {"inserted": 0}
+
+    monkeypatch.setattr(fills_mod, "sync_fills", fake_sync)
+    out = daemon._fills_body(deps)
+    assert "error" in out["real-main"] and out["paper-main"] == {"inserted": 0}

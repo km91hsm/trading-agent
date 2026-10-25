@@ -25,6 +25,7 @@ import httpx
 import pandas as pd
 from pydantic import BaseModel
 
+from trader.broker.models import drop_incomplete_tail
 from trader.config import (
     KST,
     MARKET_TZ,
@@ -144,8 +145,9 @@ def _technical(ticker, market, exchange, cfg, deps, asof: datetime) -> dict[str,
             if kr
             else m.get_daily_us(ticker, exchange, days=cfg.kis.daily_days)
         )
-        # 과거 asof 재수집(24시간 안)이면 KIS 는 현재 기준 봉을 주므로 asof 뒤 봉을 잘라 낸다
-        candles = [c for c in got if c.date <= cutoff]
+        # 과거 asof 재수집(24시간 안)이면 KIS 는 현재 기준 봉을 주므로 asof 뒤 봉을 잘라 낸다.
+        # 개장 전 거래량 0 스텁 봉은 지표(이동평균·RSI)를 가짜 종가로 틀어 놓으므로 버린다
+        candles = drop_incomplete_tail([c for c in got if c.date <= cutoff])
         if not candles:
             raise ValueError("일봉이 비어 있습니다")
         return _dump(candles)

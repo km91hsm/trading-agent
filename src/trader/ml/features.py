@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from collections.abc import Callable
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -18,8 +19,10 @@ import numpy as np
 import pandas as pd
 
 from trader.broker.models import Candle, InvestorFlow, Market
+from trader.broker.models import drop_incomplete_tail as drop_incomplete_tail  # 정본은 models
 from trader.config import ConfigError, SectorMap, Universe, load_sectors
 from trader.platform import paths
+from trader.platform.filelock import locked
 from trader.sources import indicators
 from trader.sources.dart import ANNUAL, basic_ratios
 
@@ -70,6 +73,7 @@ def _coerce(df: pd.DataFrame) -> pd.DataFrame:
 
 
 MAX_PAST = timedelta(hours=24)
+STORE_LOCK_TIMEOUT_S = 120.0  # 다른 프로세스의 날짜 파일 쓰기(묶음 1회) 대기 상한
 
 
 def zscore(s: pd.Series, *, fill: float | None = None) -> pd.Series:
@@ -151,15 +155,6 @@ def _effective_fy(d: date) -> int:
     return d.year - 1 if d.month >= 4 else d.year - 2
 
 
-def drop_incomplete_tail(candles: list[Candle]) -> list[Candle]:
-    """마지막 봉이 거래량 0 이면 버린다. KIS 일봉은 개장 전·장중 초반에 오늘 봉을 거래량 0 스텁으로
-    돌려주는데, 그 행이 스토어에 들어가면 거래대금 0 으로 scan 이 전 종목을 거른다(실기 10-20)."""
-    out = list(candles)
-    while out and int(out[-1].volume) <= 0:
-        out.pop()
-    return out
-
-
 def history_rows(
     *,
     ticker: str,
@@ -232,7 +227,10 @@ def latest_rows(
     parts: list[pd.DataFrame] = []
     for f in files[:max_files]:
         # 이전 Phase 에 쓰인 파일은 뒤에 추가된 열이 없을 수 있다 → NaN 으로 맞춘다
-        part = _coerce(pd.read_parquet(f).reindex(columns=list(FEATURE_COLUMNS)))
+        raw = read_part(f)
+        if raw is None:
+            continue
+        part = _coerce(raw.reindex(columns=list(FEATURE_COLUMNS)))
         if market:
             part = part[part["market"] == market]
         tick = part["ticker"].astype(str)
@@ -255,9 +253,25 @@ def _write_day_file(
     path: Path, part: pd.DataFrame, sectors: SectorMap, *, derive: bool = True
 ) -> None:
     part = _coerce(add_sector_relative(part, sectors) if derive else part)
-    tmp = path.with_suffix(".parquet.tmp")
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")  # 프로세스마다 다른 임시 이름
     part.reset_index(drop=True).to_parquet(tmp, index=False)
     tmp.replace(path)
+
+
+def read_part(path: Path, **kw: Any) -> pd.DataFrame | None:
+    """날짜 파일 하나를 읽는다. 깨진 파일(쓰기 중 종료 등)은 경고 후 None — 한 파일 때문에 scan 이
+    죽지 않는다. 피처 스토어 읽기는 모두 이 함수를 지난다."""
+    try:
+        return pd.read_parquet(path, **kw)
+    except Exception as e:  # noqa: BLE001 - pyarrow 오류 종류가 많다
+        logger.warning("피처 파일을 읽지 못해 건너뜀 %s: %s: %s", path.name, type(e).__name__, e)
+        return None
+
+
+def _store_lock(state: Path | None):
+    """스토어 쓰기 락(`state/features.lock`): 데몬 백필과 CLI·세션 도구 스냅샷이 같은 날짜 파일을
+    동시에 읽고-합치고-쓰면 한쪽 행이 사라진다."""
+    return locked(_features_dir(state).parent / "features.lock", timeout=STORE_LOCK_TIMEOUT_S)
 
 
 def ticker_history(
@@ -271,7 +285,9 @@ def ticker_history(
     parts: list[pd.DataFrame] = []
     got = 0
     for f in files[:max_files]:
-        raw = pd.read_parquet(f, filters=[("ticker", "==", ticker)])  # 행 필터 뒤에 변환
+        raw = read_part(f, filters=[("ticker", "==", ticker)])  # 행 필터 뒤에 변환
+        if raw is None:
+            continue
         if raw.empty:
             continue
         part = _coerce(raw.reindex(columns=list(FEATURE_COLUMNS)))
@@ -306,15 +322,18 @@ def write_rows(
         # 생산자(snapshot_row·history_rows)가 막는다
         raise ValueError(f"피처 행에 열이 없습니다: {missing}")
     df = _coerce(df)
-    for day, part in df.groupby("date", sort=True):
-        path = d / f"{pd.Timestamp(day).date().isoformat()}.parquet"
-        if path.exists():
-            # 이전 Phase 파일은 열이 적을 수 있다 (latest_rows 와 같은 reindex)
-            old = _coerce(pd.read_parquet(path).reindex(columns=FEATURE_COLUMNS))
-            old = old[~old["ticker"].isin(part["ticker"])]
-            part = pd.concat([old, part], ignore_index=True)
-        _write_day_file(path, part, sectors, derive=derive)
-        written.append(path)
+    with _store_lock(state):
+        for day, part in df.groupby("date", sort=True):
+            path = d / f"{pd.Timestamp(day).date().isoformat()}.parquet"
+            if path.exists():
+                # 이전 Phase 파일은 열이 적을 수 있다 (latest_rows 와 같은 reindex)
+                raw = read_part(path)
+                if raw is not None:  # 깨진 파일은 새 행으로 덮는다
+                    old = _coerce(raw.reindex(columns=FEATURE_COLUMNS))
+                    old = old[~old["ticker"].isin(part["ticker"])]
+                    part = pd.concat([old, part], ignore_index=True)
+            _write_day_file(path, part, sectors, derive=derive)
+            written.append(path)
     return written
 
 
@@ -331,11 +350,17 @@ def rederive(
     fdir = _features_dir(state)
     sectors = sectors if sectors is not None else load_sectors()
     files = sorted(paths) if paths is not None else sorted(fdir.glob("*.parquet"))
-    for path in files:
-        part = _coerce(pd.read_parquet(path).reindex(columns=FEATURE_COLUMNS))
-        _write_day_file(path, part, sectors)
-        progress(f"{path.stem}: {len(part)}행")
-    return len(files)
+    n = 0
+    with _store_lock(state):
+        for path in files:
+            raw = read_part(path)
+            if raw is None:
+                continue
+            part = _coerce(raw.reindex(columns=FEATURE_COLUMNS))
+            _write_day_file(path, part, sectors)
+            progress(f"{path.stem}: {len(part)}행")
+            n += 1
+    return n
 
 
 def sector_medians(

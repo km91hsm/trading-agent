@@ -219,3 +219,35 @@ def test_rate_limiter_max_wait_raises_busy_instead_of_sleeping():
     assert len(slept) == 1 and slept[0] <= 1.0
     lim.acquire()  # 상한 밖(기본)에서는 평소처럼 기다린다
     assert len(slept) == 2
+
+
+def test_get_pages_follows_tr_cont(real_client, respx_mock):
+    """응답 헤더 tr_cont 가 F/M 이면 tr_cont:N + ctx_area_* 로 다음 페이지를 받아 output1 을
+    잇는다."""
+    bal = "/uapi/domestic-stock/v1/trading/inquire-balance"
+
+    def page(rows, more, fk="", nk=""):
+        return httpx.Response(
+            200,
+            headers={"tr_cont": "M" if more else "D"},
+            json={
+                "rt_cd": "0",
+                "msg_cd": "x",
+                "msg1": "",
+                "output1": rows,
+                "output2": [{"tot": "1"}],
+                "ctx_area_fk100": fk,
+                "ctx_area_nk100": nk,
+            },
+        )
+
+    route = respx_mock.get(REAL + bal).mock(
+        side_effect=[page([{"a": 1}], True, "FK1", "NK1"), page([{"a": 2}], False)]
+    )
+    data = real_client.get_pages(bal, "DOM_BALANCE", {"CANO": "1", "CTX_AREA_FK100": ""})
+    assert [r["a"] for r in data["output1"]] == [1, 2] and data["output2"] == [{"tot": "1"}]
+    second = route.calls[1].request
+    assert second.headers["tr_cont"] == "N"
+    assert second.url.params["CTX_AREA_FK100"] == "FK1"
+    assert second.url.params["CTX_AREA_NK100"] == "NK1"
+    assert "tr_cont" not in route.calls[0].request.headers

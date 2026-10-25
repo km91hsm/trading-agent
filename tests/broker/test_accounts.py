@@ -157,3 +157,39 @@ def test_us_balance_and_fills_query_all_three_exchanges(paper_client, respx_mock
     assert bal.call_count == 3
     tickers = [p.ticker for p in positions]
     assert len(tickers) == len(set(tickers))  # 같은 응답을 세 번 받아도 종목은 한 번
+
+
+def test_kr_fills_merge_continuation_pages(paper_client, respx_mock):
+    """체결 조회가 한 페이지를 넘으면(tr_cont=M) 다음 페이지 체결도 받는다 (리뷰 F14)."""
+    from datetime import date as _date
+
+    ccld = "/uapi/domestic-stock/v1/trading/inquire-daily-ccld"
+
+    def row(odno, qty):
+        return {
+            "odno": odno,
+            "pdno": "005930",
+            "sll_buy_dvsn_cd": "02",
+            "tot_ccld_qty": str(qty),
+            "avg_prvs": "70000",
+            "ord_dt": "20261009",
+            "ord_tmd": "100000",
+        }
+
+    respx_mock.get(PAPER + ccld).mock(
+        side_effect=[
+            httpx.Response(
+                200,
+                headers={"tr_cont": "M"},
+                json={"rt_cd": "0", "msg_cd": "", "msg1": "", "output1": [row("1", 3)]},
+            ),
+            httpx.Response(
+                200,
+                headers={"tr_cont": "D"},
+                json={"rt_cd": "0", "msg_cd": "", "msg1": "", "output1": [row("2", 5)]},
+            ),
+        ]
+    )
+    broker = KisBroker(make_account("paper-main", "paper", "auto"), paper_client)
+    fills = broker.get_fills("KR", _date(2026, 10, 9))
+    assert [(f.order_no, f.qty) for f in fills] == [("1", 3), ("2", 5)]

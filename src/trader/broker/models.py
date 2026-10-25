@@ -47,6 +47,16 @@ class Candle(BaseModel):
     time: str | None = None  # 분봉 체결 시각 "HHMMSS" (일봉은 None)
 
 
+def drop_incomplete_tail(candles: list[Candle]) -> list[Candle]:
+    """마지막 봉이 거래량 0 이면 버린다. KIS 일봉은 개장 전·장중 초반에 오늘 봉을 거래량 0 스텁으로
+    돌려주는데, 그 행이 피처 스토어에 들어가면 거래대금 0 으로 scan 이 전 종목을 거르고(실기 10-20),
+    국면 proxy·종목 입력의 지표도 틀어진다. 피처·국면·수집 모두 이 함수 하나를 쓴다."""
+    out = list(candles)
+    while out and int(out[-1].volume) <= 0:
+        out.pop()
+    return out
+
+
 class InvestorFlow(BaseModel):
     """투자자별 일별 순매수 수량."""
 

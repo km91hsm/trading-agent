@@ -1517,7 +1517,7 @@ def scan(
 
         day = run_date_for(market, when)
 
-        ml = ranker.current()
+        ml = ranker.current(market=market)
         try:
             runtime_watch = control.get_watchlist(conn, market=market)
             watch = [*universe.watch, *runtime_watch]

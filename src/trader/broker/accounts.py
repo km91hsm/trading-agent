@@ -64,7 +64,7 @@ class KisBroker:
             "CTX_AREA_FK100": "",
             "CTX_AREA_NK100": "",
         }
-        return self._client.get(path("DOM_BALANCE"), "DOM_BALANCE", params)
+        return self._client.get_pages(path("DOM_BALANCE"), "DOM_BALANCE", params)
 
     def _balance_us(self) -> dict:
         """세 거래소 잔고를 합친다(output1 은 종목·거래소로 중복 제거, output2 는 첫 응답)."""
@@ -78,7 +78,12 @@ class KisBroker:
                 "CTX_AREA_FK200": "",
                 "CTX_AREA_NK200": "",
             }
-            data = self._client.get(path("OVS_BALANCE"), "OVS_BALANCE", params)
+            data = self._client.get_pages(
+                path("OVS_BALANCE"),
+                "OVS_BALANCE",
+                params,
+                ctx_keys=("CTX_AREA_FK200", "CTX_AREA_NK200"),
+            )
             for r in _rows(data.get("output1")):
                 key = (str(r.get("ovrs_pdno") or ""), str(r.get("ovrs_excg_cd") or code))
                 if key in seen:
@@ -206,7 +211,7 @@ class KisBroker:
                 "CTX_AREA_FK100": "",
                 "CTX_AREA_NK100": "",
             }
-            data = self._client.get(path("DOM_CCLD"), "DOM_CCLD", params)
+            data = self._client.get_pages(path("DOM_CCLD"), "DOM_CCLD", params)
             out: list[Fill] = []
             for r in _rows(data.get("output1")):
                 qty = _int(r.get("tot_ccld_qty"))
@@ -243,7 +248,13 @@ class KisBroker:
                 "CTX_AREA_NK200": "",
                 "CTX_AREA_FK200": "",
             }
-            data = self._client.get(path("OVS_CCLD_US"), "OVS_CCLD_US", params)
+            data = self._client.get_pages(
+                path("OVS_CCLD_US"),
+                "OVS_CCLD_US",
+                params,
+                ctx_keys=("CTX_AREA_FK200", "CTX_AREA_NK200"),
+                output_key="output",
+            )
             for r in _rows(data.get("output")):
                 key = (
                     str(r.get("odno") or ""),
