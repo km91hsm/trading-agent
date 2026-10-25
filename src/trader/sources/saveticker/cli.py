@@ -23,7 +23,11 @@ app = typer.Typer(help="SaveTicker 브라우저 수집·파일 조회", no_args_
 
 
 def root() -> Path:
-    return paths.state_dir() / "external" / "saveticker" / "v2"
+    return paths.state_dir() / "external" / "saveticker" / "data"
+
+
+def runtime() -> Path:
+    return paths.state_dir() / "external" / "saveticker" / "runtime"
 
 
 def _print(value):
@@ -38,7 +42,7 @@ def status_cmd():
     folder = root()
     p = folder / "status.json"
     data = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {"streams": {}}
-    runner = folder / "runner.json"
+    runner = runtime() / "runner.json"
     if runner.exists():
         running = json.loads(runner.read_text(encoding="utf-8"))
         running["process_alive"] = pid_alive(running.get("pid", 0))
@@ -133,7 +137,9 @@ def run_cmd(
 
     folder = root()
     folder.mkdir(parents=True, exist_ok=True)
-    lock = Lock(folder / (f"collector-{lane}.lock" if lane else "collector.lock"))
+    run_folder = runtime()
+    run_folder.mkdir(parents=True, exist_ok=True)
+    lock = Lock(run_folder / (f"collector-{lane}.lock" if lane else "collector.lock"))
     if not lock.acquire():
         typer.echo("SaveTicker 수집기가 이미 실행 중입니다", err=True)
         raise typer.Exit(1)
@@ -145,7 +151,7 @@ def run_cmd(
 
     def heartbeat(state, **kwargs):
         atomic_json(
-            folder / (f"runner-{lane}.json" if lane else "runner.json"),
+            run_folder / (f"runner-{lane}.json" if lane else "runner.json"),
             {
                 "pid": os.getpid(),
                 "state": state,
@@ -199,7 +205,7 @@ def run_cmd(
                     command.extend(["--only", only])
                 commands[group] = command
             _print({"state": "supervising", "lanes": list(commands), "root": str(folder)})
-            supervise(commands, folder, stop, worker_status)
+            supervise(commands, run_folder, stop, worker_status)
             heartbeat("stopped")
             return
         with sync_playwright() as playwright:

@@ -37,7 +37,7 @@ uv run trader saveticker export
 
 ## 파일
 
-기준 폴더는 `$TRADER_HOME/state/external/saveticker/v2/`다. TRADER_HOME이 없으면 현재 프로젝트의 platform/paths 규칙을 쓴다. 기존 폴더의 수집 이력은 보존하되, v2는 사용자 글·댓글을 포함한 이전 파일과 분리한다.
+기준 폴더는 `$TRADER_HOME/state/external/saveticker/data/`다. TRADER_HOME이 없으면 현재 프로젝트의 platform/paths 규칙을 쓴다. 수집 결과는 `data/`, 로그·실행 상태·잠금 파일은 형제 폴더 `runtime/`로 분리한다.
 
 ```text
 feed.sqlite3                  변경 이력 원본(WAL)
@@ -47,11 +47,11 @@ feed.sqlite3                  변경 이력 원본(WAL)
 2026-10-25/calendar.jsonl      일정·발표값 변경분
 latest/<stream>.json          스트림별 최근 유효 캡처
 status.json                   시도·유효 수집 시각, 상태, 처리 소요·목표 주기
-runner.json                   pid, 실행 상태, 현재 처리 스트림, 스케줄 지연
-collector.lock                감독 프로세스 잠금
-collector-<lane>.lock          작업별 중복 실행 잠금
-runner-<lane>.json             작업별 상태·JS 오류 진단
-<lane>.log                    작업별 수집 로그
+../runtime/runner.json        pid, 실행 상태, 현재 처리 스트림, 스케줄 지연
+../runtime/collector.lock      감독 프로세스 잠금
+../runtime/collector-<lane>.lock 작업별 중복 실행 잠금
+../runtime/runner-<lane>.json    작업별 상태·JS 오류 진단
+../runtime/<lane>.log          작업별 수집 로그
 attachments/<sha256>.pdf       다운로드 PDF 원본
 attachments/<sha256>.txt       PDF에서 추출한 텍스트
 attachments/report-<id>.json   다운로드 확인 시각과 파일 manifest
@@ -92,4 +92,4 @@ SQLite 커밋 후 JSONL과 최신 파일을 원자적으로 교체한다. 파일
 - SAVE 리포트 10월 23일/22일 원본을 서로 다른 SHA256 파일로 저장했다. 각각 28/33페이지이며 추출 텍스트는 12,140/16,091자다. 첫 PDF 표지를 렌더링해 SAVE 브리핑 자료임을 확인했다.
 - 실제 사이트 점검에서는 pageerror가 재현되지 않았다. 로컬 브라우저에서 TypeError를 발생시켜 오류 기록과 민감 문자열 제외 동작을 검증했다.
 - 네 작업으로 분리한 상시 실행에서 20초 목표 관측을 4~6회씩 측정했다. 뉴스 중앙값 19.6초(최대 20.0초), 커뮤니티 21.1~21.4초(최대 25.8초), 증시 20.0~22.0초(최대 25.0초)였다. 짧은 주말 표본이며 실제 사이트의 신규 데이터 도착 지연이나 장중 부하를 보장하지 않는다. 초기 뉴스 범위 수집·빈 달·본문/PDF 대기는 계속 partial로 구분한다. 과거 PDF는 순차 다운로드 중이다.
-- 운영 계정은 원래 프로젝트를 TRADER_HOME으로 지정해 읽고, 새 운영 결과는 그 아래 v2에 저장한다. 원문 고유 ID 미노출에 따른 해시 충돌 가능성, 전체 과거 뉴스, Windows 라이브 검증은 제한으로 남는다.
+- 운영 계정은 원래 프로젝트를 TRADER_HOME으로 지정해 읽고, 새 운영 결과는 그 아래 data에 저장한다. 원문 고유 ID 미노출에 따른 해시 충돌 가능성, 전체 과거 뉴스, Windows 라이브 검증은 제한으로 남는다.
