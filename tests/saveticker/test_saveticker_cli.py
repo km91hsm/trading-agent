@@ -41,7 +41,7 @@ def test_status_without_data_does_not_create_database(project):
     result = CliRunner().invoke(app, ["saveticker", "status"])
     assert result.exit_code == 0
     assert json.loads(result.output)["streams"] == {}
-    assert not (project / "state" / "external" / "saveticker" / "feed.sqlite3").exists()
+    assert not (project / "state" / "external" / "saveticker" / "v2" / "feed.sqlite3").exists()
 
 
 def test_run_rejects_invalid_month_before_browser_start(project):

@@ -96,7 +96,8 @@ def test_news_detail_retains_body_and_absolute_time():
 
     html = """<div><p>2026. 10. 25. 06:42:11</p><h2>기사 제목</h2>
       <div>본문 언어<button>번역</button><button>원문</button></div>
-      <div>실제 기사 본문</div><div>기사 원문 등록 시간 2026. 10. 25. 오전 06:42:11</div></div>"""
+      <div class="gap-6 p-6"><p class="whitespace-pre-wrap">실제 기사 본문</p></div>
+      <div>기사 원문 등록 시간 2026. 10. 25. 오전 06:42:11</div></div>"""
     result = news_detail(html, Item(id="n", title="기사 제목"))
     assert "실제 기사 본문" in result.body
     assert result.published_at == datetime(2026, 10, 24, 21, 42, 11, tzinfo=UTC)
@@ -171,3 +172,71 @@ def test_deeply_nested_market_tab_does_not_fall_back_to_whole_page():
     )
     html = "<main><section>" + tab + card + "</section></main>" + sidebar
     assert [x.tickers for x in extract(html, "market_turnover_live")] == [["MAIN"]]
+
+
+def test_news_body_ignores_controls_hidden_header_and_user_comments():
+    from trader.sources.saveticker.dom import news_detail
+    from trader.sources.saveticker.models import Item
+
+    html = """<section><header><h2>리포트 제목</h2></header>
+      <div class="hidden"><h2>리포트 제목</h2></div>
+      <div class="flex flex-col gap-6 p-6"><div role="group" aria-label="본문 언어">
+      <button>번역</button><button>원문</button></div><div class="flex flex-col">
+      <p class="whitespace-pre-wrap">시장 분석 첫 문단</p>
+      <p class="whitespace-pre-wrap">시장 분석 둘째 문단</p></div></div>
+      <div data-type="comment"><p class="whitespace-pre-wrap">개인 의견</p></div></section>"""
+    detail = news_detail(html, Item(id="n", title="리포트 제목"))
+    assert detail.body == "시장 분석 첫 문단\n시장 분석 둘째 문단"
+    assert detail.detail_status == "ok"
+
+
+def test_news_controls_before_body_ready_are_not_cached_as_success():
+    from trader.sources.saveticker.dom import news_detail
+    from trader.sources.saveticker.models import Item
+
+    html = (
+        '<section><h2>제목</h2><div role="group" aria-label="본문 언어">'
+        "<button>번역</button><button>원문</button></div></section>"
+    )
+    detail = news_detail(html, Item(id="n", title="제목"))
+    assert detail.detail_status != "ok" and not detail.body
+
+
+def test_trends_and_top5_read_only_widget_not_people_posts():
+    from trader.sources.saveticker.dom import extract
+
+    html = """<section><h3>10월 23일 트렌드</h3><p>전일 장 종료 기준 · 전체 누적</p>
+      <ul><li><button aria-label="1위 반도체 뉴스 검색">반도체</button></li></ul></section>
+      <section><h3>종목별 커뮤니티 TOP 5</h3><div data-stretched-link-card><h4>엔비디아</h4>
+      <span>NVDA · 의견 12</span><span>$200</span><span>+1%</span></div></section>
+      <div><p class="whitespace-pre-wrap">개인 글</p>
+      <button aria-label="더보기 메뉴"></button></div>"""
+    trends = extract(html, "community_trends")
+    top5 = extract(html, "community_top5")
+    assert [(r.title, r.rank, r.kind) for r in trends] == [("반도체", 1, "trend")]
+    assert "전일 장 종료 기준" in trends[0].basis
+    assert [(r.tickers, r.rank) for r in top5] == [(["NVDA"], 1)]
+    assert all(not r.body and not r.author for r in trends + top5)
+
+
+def test_news_source_classification_preserves_category_and_breaking_flag():
+    from trader.sources.saveticker.dom import extract
+
+    html = """<div id="news-tabpanel"><div role="button" data-read="false"
+      data-breaking="true" aria-label="새 뉴스"><div><div><div>SAVE PICK</div>
+      <span>·</span><span>정보</span></div><span>방금 전</span></div><p>새 뉴스</p>
+      <div><div>10</div></div></div></div>"""
+    row = extract(html, "news_all")[0]
+    assert row.source_group == "SAVE PICK"
+    assert row.publisher == "SAVE PICK" and row.categories == ["정보"]
+    assert row.is_breaking is True
+
+
+def test_client_application_error_screen_is_not_treated_as_empty_data():
+    from trader.sources.saveticker.dom import client_error_visible
+
+    assert client_error_visible(
+        "<h2>Application error: a client-side exception has occurred "
+        "while loading www.saveticker.com</h2>"
+    )
+    assert not client_error_visible("<p>기사: Application error의 원인</p>")

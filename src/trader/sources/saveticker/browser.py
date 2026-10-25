@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import re
+import tempfile
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -12,15 +14,20 @@ from dotenv import dotenv_values
 
 from trader.config import ConfigError
 from trader.sources.saveticker import dom
-from trader.sources.saveticker.models import Capture
-from trader.sources.saveticker.service import View, accumulate
+from trader.sources.saveticker.models import Attachment, Capture
+from trader.sources.saveticker.service import FatalCollectionError, View, accumulate
+from trader.sources.saveticker.store import atomic_json
 
 
-class AccessDenied(RuntimeError):
+class SiteClientError(RuntimeError):
+    """사이트가 클라이언트 자바스크립트 예외 화면을 표시한다."""
+
+
+class AccessDenied(FatalCollectionError):
     """사이트가 접근을 거부했다. 우회하거나 자동 재시도하지 않는다."""
 
 
-class LoginRequired(RuntimeError):
+class LoginRequired(FatalCollectionError):
     """인증되지 않았거나 재인증에 실패했다."""
 
 
@@ -36,19 +43,51 @@ def credentials(path: Path) -> tuple[str, str]:
 
 class Browser:
     def __init__(
-        self, page, account: tuple[str, str], *, max_scrolls: int = 20, max_details: int = 20
+        self,
+        page,
+        account: tuple[str, str],
+        *,
+        max_scrolls: int = 20,
+        max_details: int = 20,
+        artifact_root: Path | None = None,
+        max_reports: int = 2,
     ):
+        self.max_reports = max_reports
+        self.pending_reports = False
+        self.artifact_root = artifact_root
         self.page = page
         self.account = account
         self.max_scrolls = max_scrolls
         self.max_details = max_details
         self.last_action = 0.0
+        self.loaded_at = 0.0
         self.stage = "created"
-        self.diagnostics = {}
+        self.diagnostics = {"page_error_count": 0, "page_error_types": []}
         self.detail_cache = {}
         self.comment_cache = {}
+        self.report_attempts = {}
         self.seen_streams = set()
         self.detail_requested = 0
+        self.page.on("pageerror", self._page_error)
+
+    def _page_error(self, error):
+        # 오류 원문 메시지/stack에는 토큰 URL이나 계정이 포함될 수 있다.
+        name = getattr(error, "name", "Error")
+        allowed = {
+            "Error",
+            "TypeError",
+            "ReferenceError",
+            "SyntaxError",
+            "RangeError",
+            "URIError",
+            "EvalError",
+        }
+        name = name if name in allowed else "Error"
+        self.diagnostics["page_error_count"] = self.diagnostics.get("page_error_count", 0) + 1
+        self.diagnostics["page_error_types"] = sorted(
+            set(self.diagnostics.get("page_error_types", []) + [name])
+        )
+        self.diagnostics["page_error_path"] = urlsplit(self.page.url).path
 
     def pace(self):
         remaining = 2 - (time.monotonic() - self.last_action)
@@ -60,6 +99,7 @@ class Browser:
         self.pace()
         response = self.page.goto(url, wait_until="domcontentloaded", timeout=30000)
         self.page.wait_for_timeout(1000)
+        self.loaded_at = time.monotonic()
         self.diagnostics.update(
             {
                 "http_status": response.status if response else None,
@@ -111,14 +151,16 @@ class Browser:
                 if attempt == 2:
                     raise LoginRequired("email_dialog_not_ready") from None
         self.stage = "login_email_field"
-        self.diagnostics = {
-            "inputs": self.page.locator("input").evaluate_all(
-                "els=>els.map(e=>({type:e.type,autocomplete:e.autocomplete,visible:!!e.getClientRects().length}))"
-            ),
-            "email_dialog": self.page.get_by_role(
-                "heading", name="이메일로 로그인", exact=True
-            ).count(),
-        }
+        self.diagnostics.update(
+            {
+                "inputs": self.page.locator("input").evaluate_all(
+                    "els=>els.map(e=>({type:e.type,autocomplete:e.autocomplete,visible:!!e.getClientRects().length}))"
+                ),
+                "email_dialog": self.page.get_by_role(
+                    "heading", name="이메일로 로그인", exact=True
+                ).count(),
+            }
+        )
         self.page.locator(
             'input[type="email"], input[autocomplete="email"], input[type="text"]'
         ).first.fill(self.account[0])
@@ -126,13 +168,15 @@ class Browser:
         self.page.locator('input[type="password"]').fill(self.account[1])
         self.stage = "login_submit"
         submit = self.page.get_by_role("button", name="로그인", exact=True)
-        self.diagnostics = {
-            "submit_count": submit.count(),
-            "submit_enabled": submit.first.is_enabled() if submit.count() else False,
-            "inputs": self.page.locator("input").evaluate_all(
-                "els => els.map(e=>({type:e.type,valid:e.validity.valid,filled:!!e.value}))"
-            ),
-        }
+        self.diagnostics.update(
+            {
+                "submit_count": submit.count(),
+                "submit_enabled": submit.first.is_enabled() if submit.count() else False,
+                "inputs": self.page.locator("input").evaluate_all(
+                    "els => els.map(e=>({type:e.type,valid:e.validity.valid,filled:!!e.value}))"
+                ),
+            }
+        )
         self.click(submit)
         self.stage = "login_result"
         try:
@@ -145,32 +189,10 @@ class Browser:
     def discover_news(self) -> list[View]:
         self.goto("https://www.saveticker.com/news")
         self.page.locator('[role="tablist"]').first.wait_for(timeout=15000)
-        labels = dom.news_sources(self.html())
-        views = []
-        for label in labels:
-            label = label.strip()
-            if label == "관심 뉴스":
-                continue
-            self.click(self.page.get_by_role("tab", name=label, exact=True))
-            categories = self.page.locator(
-                '[aria-label="뉴스 카테고리"] button'
-            ).all_text_contents()
-            # DOM의 aria-label이 없는 구버전도 기본 전체 목록은 수집한다.
-            if not categories:
-                categories = ["전체"]
-            for category in categories:
-                slug = dom.identity(label, category)[:12]
-                views.append(
-                    View(
-                        f"news_{slug}",
-                        "news",
-                        source=label,
-                        category=category,
-                        interval_s=30 if label == "전체" and category == "전체" else 300,
-                    )
-                )
-        if not views:
-            views.append(View("news_all", "news"))
+        # 2026-10-25 UI 비교: 전체568건에 각 소스표본20건씩 모두 포함.
+        # 동일 기사를 소스/카테고리별로 재수집하지 않고 DOM의 배지로 분류한다.
+        views = [View("news_all", "news", source="전체", category="전체")]
+        views.append(View("news_reports", "news", source="SAVE 리포트", interval_s=900))
         return views
 
     def _toggle(self, name: str, value: bool):
@@ -202,6 +224,17 @@ class Browser:
 
     def _scroll(self):
         self.pace()
+        if self.page.locator("#news-tabpanel").count():
+            self.page.evaluate("""() => {
+              for (let e=document.querySelector('#news-tabpanel');e;e=e.parentElement) {
+                if(e.clientHeight > 100 && e.scrollHeight > e.clientHeight + 20 &&
+                   ['auto','scroll'].includes(getComputedStyle(e).overflowY)) {
+                  e.scrollBy(0, e.clientHeight * .8); return;
+                }
+              }
+            }""")
+            self.page.wait_for_timeout(700)
+            return
         self.page.evaluate("""() => {
           const nodes = [...document.querySelectorAll('*')].filter(e =>
             e.clientHeight > 100 && e.scrollHeight > e.clientHeight + 30 &&
@@ -226,7 +259,9 @@ class Browser:
                     )
                 )
                 continue
-            card = self.page.get_by_role("button", name=item.title, exact=True)
+            card = self.page.locator("#news-tabpanel").get_by_role(
+                "button", name=item.title, exact=True
+            )
             if self.detail_requested >= self.max_details or not card.count():
                 result.append(item.model_copy(update={"detail_status": "pending"}))
                 continue
@@ -236,12 +271,21 @@ class Browser:
                 self.page.get_by_role("heading", name=item.title, exact=True).wait_for(
                     timeout=10000
                 )
-                detail = dom.news_detail(self.html(), item)
+                detail = item.model_copy(update={"detail_status": "pending"})
+                for _ in range(20):
+                    detail = dom.news_detail(self.html(), item)
+                    if detail.detail_status == "ok":
+                        break
+                    self.page.wait_for_timeout(250)
                 result.append(detail)
-                result.extend(dom.comments(self.html(), parent_id=item.id))
                 if detail.detail_status == "ok":
                     self.detail_cache[item.id] = (time.monotonic(), detail)
-            except Exception:
+            except Exception as exc:
+                # 오류 메시지에는 민감한 URL/폼 내용이 있을 수 있어 타입만 보존한다.
+                self.diagnostics["detail_error_type"] = type(exc).__name__
+                self.diagnostics["detail_error_count"] = (
+                    self.diagnostics.get("detail_error_count", 0) + 1
+                )
                 result.append(item.model_copy(update={"detail_status": "unavailable"}))
             finally:
                 # Escape는 상세만 닫고 원래 가상 목록과 스크롤 위치를 보존한다(실기 확인).
@@ -249,6 +293,89 @@ class Browser:
                 self.page.keyboard.press("Escape")
                 self.page.locator("#news-tabpanel").wait_for(state="visible", timeout=10000)
         return result
+
+    def _reports(self, items):
+        from trader.sources.saveticker.reports import save_pdf
+
+        rows = []
+        order = {item.id: index for index, item in enumerate(items)}
+        for item in sorted(items, key=lambda row: self.report_attempts.get(row.id, 0)):
+            if self.artifact_root is None:
+                rows.append(item.model_copy(update={"detail_status": "storage_unavailable"}))
+                continue
+            manifest = self.artifact_root / "attachments" / f"report-{item.id}.json"
+            try:
+                cached = json.loads(manifest.read_text(encoding="utf-8"))
+                attachment = Attachment.model_validate(cached["attachment"])
+                path = self.artifact_root / attachment.pdf_path
+                age = time.time() - cached["fetched_at"]
+                if (
+                    0 <= age < 86400
+                    and path.is_file()
+                    and path.stat().st_size == attachment.size_bytes
+                ):
+                    import hashlib
+
+                    if hashlib.sha256(path.read_bytes()).hexdigest() == attachment.sha256:
+                        rows.append(
+                            item.model_copy(
+                                update={
+                                    "attachment": attachment,
+                                    "detail_status": "ok" if attachment.text_path else "pdf_only",
+                                }
+                            )
+                        )
+                        continue
+            except (ValueError, KeyError, OSError, TypeError):
+                pass
+            if self.detail_requested >= self.max_reports:
+                rows.append(item.model_copy(update={"detail_status": "pending"}))
+                continue
+            button = None
+            buttons = self.page.get_by_role("button", name="PDF 다운로드", exact=True)
+            for index in range(buttons.count()):
+                candidate = buttons.nth(index)
+                scope = candidate
+                for _ in range(5):
+                    scope = scope.locator("xpath=..")
+                    if scope.get_by_role("button", name="PDF 다운로드", exact=True).count() != 1:
+                        break
+                    if (
+                        scope.locator("p")
+                        .filter(has_text=re.compile("^" + re.escape(item.title) + "$"))
+                        .count()
+                    ):
+                        button = candidate
+                        break
+                if button is not None:
+                    break
+            if button is None:
+                rows.append(item.model_copy(update={"detail_status": "pending"}))
+                continue
+            self.detail_requested += 1
+            self.report_attempts[item.id] = time.monotonic()
+            try:
+                with self.page.expect_download(timeout=30000) as pending:
+                    self.click(button)
+                with tempfile.TemporaryDirectory(prefix="saveticker-report-") as temporary:
+                    path = Path(temporary) / "report.pdf"
+                    pending.value.save_as(path)
+                    attachment = save_pdf(path, self.artifact_root)
+                atomic_json(
+                    manifest, {"attachment": attachment.model_dump(), "fetched_at": time.time()}
+                )
+                rows.append(
+                    item.model_copy(
+                        update={
+                            "attachment": attachment,
+                            "detail_status": "ok" if attachment.text_path else "pdf_only",
+                        }
+                    )
+                )
+            except Exception as exc:
+                self.diagnostics["report_error_type"] = type(exc).__name__
+                rows.append(item.model_copy(update={"detail_status": "download_failed"}))
+        return sorted(rows, key=lambda row: order[row.id])
 
     def _post_details(self, items):
         result = []
@@ -306,11 +433,24 @@ class Browser:
                 result.append(item.model_copy(update={"detail_status": "pending"}))
         return result
 
+    def scroll_steps(self, view: View) -> int:
+        return (
+            min(self.max_scrolls, 2)
+            if view.stream == "news_all" and view.stream in self.seen_streams
+            else self.max_scrolls
+        )
+
     def collect(self, view: View) -> Capture:
+        if view.stream == "community_posts" or view.stream.startswith("community_ticker-"):
+            raise ValueError("user_content_collection_disabled")
         self.stage = "collect_" + view.kind
         self.detail_requested = 0
-        self.goto(view.url)
-        self.page.wait_for_timeout(1000)
+        if self.page.url != view.url or time.monotonic() - self.loaded_at >= 15:
+            self.goto(view.url)
+        self.page.wait_for_timeout(300)
+        if dom.client_error_visible(self.html()):
+            self.loaded_at = 0
+            raise SiteClientError("site_client_application_error")
         if dom.authentication_required(self.html()) or not self.authenticated():
             self.login()
             self.goto(view.url)
@@ -328,6 +468,13 @@ class Browser:
         if view.month:
             self._calendar(view)
             self._toggle("전체", True)
+        if view.kind == "news":
+            self.page.evaluate("""() => {
+              for(let e=document.querySelector('#news-tabpanel');e;e=e.parentElement) {
+                if(e.scrollHeight > e.clientHeight) e.scrollTop=0;
+              }
+            }""")
+            self.page.wait_for_timeout(300)
         # 첫 렌더링보다 데이터 응답이 늦는 경우 빈 성공으로 덮지 않도록 대기한다.
         rows = []
         for _ in range(10):
@@ -355,17 +502,23 @@ class Browser:
                 reason="empty_or_unavailable",
                 items=[],
             )
-        if view.kind in ("news", "community") and not view.tab:
+        if view.kind == "news" and not view.tab:
 
             def read_batch():
                 batch = dom.extract(self.html(), view.stream)
-                return self._details(batch) if view.kind == "news" else self._post_details(batch)
+                return (
+                    self._reports(batch) if view.stream == "news_reports" else self._details(batch)
+                )
 
-            rows, reason = accumulate(read_batch, self._scroll, max_steps=self.max_scrolls)
+            rows, reason = accumulate(read_batch, self._scroll, max_steps=self.scroll_steps(view))
         else:
             reason = None
-        if view.kind == "news" and any(x.detail_status != "ok" for x in rows if x.kind == "news"):
+        if view.kind == "news" and any(
+            x.detail_status != "ok" for x in rows if x.kind in ("news", "report")
+        ):
             reason = "details_pending;" + (reason or "")
+        if view.stream == "news_reports":
+            self.pending_reports = any(item.attachment is None for item in rows)
         self.seen_streams.add(view.stream)
         return Capture(
             stream=view.stream,

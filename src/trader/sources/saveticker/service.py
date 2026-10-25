@@ -19,6 +19,10 @@ PATHS = {
 }
 
 
+class FatalCollectionError(RuntimeError):
+    """인증·접근 실패는 자동 반복하지 않고 수집기를 중단한다."""
+
+
 @dataclass(frozen=True)
 class View:
     stream: str
@@ -28,7 +32,7 @@ class View:
     category: str | None = None
     month: str | None = None
     regular: bool = False
-    interval_s: float = 30
+    interval_s: float = 20
     ticker: str | None = None
 
     @property
@@ -36,8 +40,14 @@ class View:
         return "https://www.saveticker.com" + PATHS[self.kind]
 
 
+def lane_for(view: View) -> str:
+    if view.kind == "calendar" or view.stream == "news_reports":
+        return "background"
+    return view.kind
+
+
 def build_views(start_month: str, end_month: str) -> list[View]:
-    views = [View("community_posts", "community")]
+    views = [View("community_trends", "community"), View("community_top5", "community")]
     for kind, choices in [
         ("community", [("index", "지수"), ("gain", "상승"), ("loss", "하락")]),
         ("market", [("turnover", "거래대금"), ("gain", "상승"), ("loss", "하락")]),
@@ -51,7 +61,7 @@ def build_views(start_month: str, end_month: str) -> list[View]:
                         kind,
                         tab=label,
                         regular=regular,
-                        interval_s=300 if regular else 30,
+                        interval_s=300 if regular else 20,
                     )
                 )
     for month in months_between(start_month, end_month):
@@ -81,6 +91,8 @@ def collect_cycle(browser, store: Store, views: list[View]) -> list[dict]:
         begin = time.monotonic()
         try:
             capture = browser.collect(view)
+        except FatalCollectionError:
+            raise
         except Exception as exc:
             # 브라우저 예외에 폼 값·URL 인자가 포함될 수 있어 타입만 기록한다.
             capture = Capture(

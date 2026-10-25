@@ -295,3 +295,21 @@ def test_store_refuses_newer_database_schema_without_creating_tables(tmp_path):
         Store(tmp_path)
     with sqlite3.connect(tmp_path / "feed.sqlite3") as db:
         assert db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall() == []
+
+
+def test_trend_leaving_current_widget_is_not_returned_as_current(tmp_path):
+    from trader.sources.saveticker.store import Store
+
+    store = Store(tmp_path)
+    store.save(
+        capture([{"id": "old", "title": "지난 트렌드", "kind": "trend"}], stream="community_trends")
+    )
+    store.save(
+        capture(
+            [{"id": "new", "title": "현재 트렌드", "kind": "trend"}],
+            stream="community_trends",
+            when="2026-10-25T00:01:00+00:00",
+        )
+    )
+    rows = store.query(asof=datetime(2026, 10, 25, 0, 2, tzinfo=UTC))
+    assert [r["item"]["id"] for r in rows] == ["new"]

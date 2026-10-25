@@ -9,6 +9,25 @@ from urllib.parse import urlsplit
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
+class Attachment(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    pdf_path: str
+    sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    size_bytes: int = Field(gt=0)
+    pages: int = Field(ge=1)
+    text_path: str | None = None
+    text_chars: int = Field(default=0, ge=0)
+
+    @field_validator("pdf_path", "text_path")
+    @classmethod
+    def local_attachment(cls, value):
+        import re
+
+        if value is not None and not re.fullmatch(r"attachments/[a-f0-9]{64}\.(pdf|txt)", value):
+            raise ValueError("invalid_attachment_path")
+        return value
+
+
 class Item(BaseModel):
     model_config = ConfigDict(extra="forbid")
     id: str = Field(min_length=1, max_length=256)
@@ -17,6 +36,11 @@ class Item(BaseModel):
     author: str = ""
     publisher: str = ""
     source_url: str | None = None
+    source_group: str | None = None
+    categories: list[str] = Field(default_factory=list)
+    is_breaking: bool | None = None
+    report_date: str | None = None
+    attachment: Attachment | None = None
     tickers: list[str] = Field(default_factory=list)
     displayed_time: str | None = None
     published_at: datetime | None = None

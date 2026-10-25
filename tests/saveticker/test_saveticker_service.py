@@ -15,8 +15,10 @@ def test_all_requested_rankings_and_calendar_months_are_scheduled():
         "market_loss_live",
         "calendar_2026-12",
         "calendar_2027-01",
-        "community_posts",
+        "community_trends",
+        "community_top5",
     } <= streams
+    assert "community_posts" not in streams
     assert all(v.interval_s == 300 for v in views if v.kind == "calendar")
     assert {"market_turnover_regular", "community_gain_regular"} <= streams
 
@@ -202,5 +204,134 @@ def test_calendar_all_filter_does_not_click_all_range_button():
             adapter._toggle("전체", True)
             assert page.locator("body").get_attribute("data-range") is None
             assert page.locator("button[aria-pressed]").get_attribute("aria-pressed") == "true"
+        finally:
+            browser.close()
+
+
+def test_news_waits_for_delayed_body_and_ignores_carousel_and_comments():
+    import pytest
+
+    api = pytest.importorskip("playwright.sync_api")
+    from trader.sources.saveticker.browser import Browser
+    from trader.sources.saveticker.models import Item
+
+    with api.sync_playwright() as p:
+        browser = p.chromium.launch()
+        try:
+            page = browser.new_page()
+            page.set_content("""<button aria-label="제목"
+              onclick="throw new Error('wrong carousel')">제목</button>
+              <div id="news-tabpanel"><div role="button" data-read="false" aria-label="제목"
+              onclick="openDetail()">제목</div></div>
+              <script>function openDetail(){
+                document.body.insertAdjacentHTML('beforeend',
+                '<section id="detail"><h2>제목</h2>' +
+                '<div role="group" aria-label="본문 언어">번역 원문</div></section>');
+                setTimeout(()=>document.querySelector('#detail').insertAdjacentHTML('beforeend',
+                '<div class="gap-6 p-6"><p class="whitespace-pre-wrap">실제 본문</p></div>' +
+                '<div data-type="comment"><p>독자의 댓글</p></div>'),900);
+              } document.addEventListener('keydown',e=>{
+                if(e.key==='Escape')document.querySelector('#detail')?.remove()});</script>""")
+            adapter = Browser(page, ("unused", "unused"), max_details=1)
+            adapter.pace = lambda: None
+            rows = adapter._details([Item(id="n", title="제목", kind="news")])
+            assert len(rows) == 1 and rows[0].body == "실제 본문"
+            assert rows[0].detail_status == "ok"
+            assert not page.locator("#detail").count()
+        finally:
+            browser.close()
+
+
+def test_site_javascript_errors_record_type_without_private_message():
+    import pytest
+
+    api = pytest.importorskip("playwright.sync_api")
+    from trader.sources.saveticker.browser import Browser
+
+    with api.sync_playwright() as p:
+        browser = p.chromium.launch()
+        try:
+            page = browser.new_page()
+            adapter = Browser(page, ("unused", "unused"))
+            page.set_content(
+                "<script>setTimeout(()=>{throw new TypeError("
+                "'private@example.com token=secret')},0)</script>"
+            )
+            page.wait_for_timeout(100)
+            assert adapter.diagnostics["page_error_count"] == 1
+            assert adapter.diagnostics["page_error_types"] == ["TypeError"]
+            assert "secret" not in str(adapter.diagnostics)
+        finally:
+            browser.close()
+
+
+def test_lanes_separate_slow_pdf_calendar_from_fast_pages():
+    from trader.sources.saveticker.service import View, build_views, lane_for
+
+    views = build_views("2026-10", "2026-10") + [
+        View("news_all", "news"),
+        View("news_reports", "news"),
+    ]
+    groups = {}
+    for view in views:
+        groups.setdefault(lane_for(view), []).append(view.stream)
+    assert set(groups) == {"news", "community", "market", "background"}
+    assert groups["news"] == ["news_all"]
+    assert set(groups["background"]) == {"calendar_2026-10", "news_reports"}
+    assert len([s for streams in groups.values() for s in streams]) == len(views)
+
+
+def test_access_denial_stops_lane_instead_of_being_retried_forever(tmp_path):
+    import pytest
+
+    from trader.sources.saveticker.browser import AccessDenied
+    from trader.sources.saveticker.service import View, collect_cycle
+    from trader.sources.saveticker.store import Store
+
+    class Denied:
+        def collect(self, view):
+            raise AccessDenied("blocked")
+
+    with pytest.raises(AccessDenied):
+        collect_cycle(Denied(), Store(tmp_path), [View("news_all", "news")])
+
+
+def test_news_scrolling_honors_first_pass_then_limits_hot_updates():
+    from types import SimpleNamespace
+
+    from trader.sources.saveticker.browser import Browser
+    from trader.sources.saveticker.service import View
+
+    adapter = Browser(SimpleNamespace(on=lambda *args: None), ("unused", "unused"), max_scrolls=100)
+    news = View("news_all", "news")
+    assert adapter.scroll_steps(news) == 100
+    adapter.seen_streams.add("news_all")
+    assert adapter.scroll_steps(news) == 2
+    adapter.seen_streams.add("news_reports")
+    assert adapter.scroll_steps(View("news_reports", "news")) == 100
+
+
+def test_news_plan_uses_whole_once_and_keeps_required_pdf_stream():
+    import pytest
+
+    api = pytest.importorskip("playwright.sync_api")
+    from trader.sources.saveticker.browser import Browser
+
+    with api.sync_playwright() as p:
+        browser = p.chromium.launch()
+        try:
+            page = browser.new_page()
+            page.set_content("""<div role="tablist"><button role="tab">전체</button>
+              <button role="tab">속보</button><button role="tab">SAVE PICK</button>
+              <button role="tab">로이터</button></div>""")
+            adapter = Browser(page, ("unused", "unused"))
+            adapter.goto = lambda url: None
+            views = adapter.discover_news()
+            assert [(v.stream, v.source) for v in views] == [
+                ("news_all", "전체"),
+                ("news_reports", "SAVE 리포트"),
+            ]
+            assert views[0].category == "전체"
+            # 리포트 탭이 사라져도 필수 스트림을 조용히 생략하지 않는다.
         finally:
             browser.close()

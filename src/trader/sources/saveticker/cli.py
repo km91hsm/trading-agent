@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import signal
+import sys
 import threading
 import time
 from datetime import UTC, datetime
@@ -15,14 +16,14 @@ from trader.config import KST, ConfigError
 from trader.platform import paths
 from trader.sources.saveticker.dom import months_between
 from trader.sources.saveticker.models import Capture
-from trader.sources.saveticker.service import build_views, choose_due, collect_cycle
+from trader.sources.saveticker.service import View, build_views, choose_due, collect_cycle, lane_for
 from trader.sources.saveticker.store import Store, atomic_json
 
 app = typer.Typer(help="SaveTicker 브라우저 수집·파일 조회", no_args_is_help=True)
 
 
 def root() -> Path:
-    return paths.state_dir() / "external" / "saveticker"
+    return paths.state_dir() / "external" / "saveticker" / "v2"
 
 
 def _print(value):
@@ -101,9 +102,14 @@ def run_cmd(
     only: str | None = typer.Option(None, help="수집할 스트림 이름(쉼표로 구분, 생략 시 전체)"),
     max_scrolls: int = typer.Option(20, min=1, max=500),
     max_details: int = typer.Option(20, min=0, max=500),
+    lane: str | None = typer.Option(None, hidden=True),
 ):
     """계정 파일로 자동 로그인해 수집한다. Ctrl+C로 종료한다."""
     from trader.sources.saveticker.browser import Browser, credentials
+
+    if lane is not None and lane not in {"news", "community", "market", "background"}:
+        typer.echo("알 수 없는 수집 작업입니다", err=True)
+        raise typer.Exit(1)
 
     try:
         now = datetime.now(KST)
@@ -127,7 +133,7 @@ def run_cmd(
 
     folder = root()
     folder.mkdir(parents=True, exist_ok=True)
-    lock = Lock(folder / "collector.lock")
+    lock = Lock(folder / (f"collector-{lane}.lock" if lane else "collector.lock"))
     if not lock.acquire():
         typer.echo("SaveTicker 수집기가 이미 실행 중입니다", err=True)
         raise typer.Exit(1)
@@ -139,7 +145,7 @@ def run_cmd(
 
     def heartbeat(state, **kwargs):
         atomic_json(
-            folder / "runner.json",
+            folder / (f"runner-{lane}.json" if lane else "runner.json"),
             {
                 "pid": os.getpid(),
                 "state": state,
@@ -149,7 +155,53 @@ def run_cmd(
         )
 
     adapter = None
+    last_workers = {}
+
+    def worker_status(state):
+        nonlocal last_workers
+        last_workers = state.get("workers", {})
+        heartbeat("supervising", **state)
+
     try:
+        if not once and lane is None:
+            from trader.sources.saveticker.supervisor import supervise
+
+            planned = build_views(start, end) + [
+                View("news_all", "news"),
+                View("news_reports", "news"),
+            ]
+            if only:
+                requested = set(only.split(","))
+                if requested - {view.stream for view in planned}:
+                    raise ConfigError("알 수 없는 수집 스트림입니다")
+                planned = [view for view in planned if view.stream in requested]
+            commands = {}
+            for group in sorted({lane_for(view) for view in planned}):
+                command = [
+                    sys.executable,
+                    "-m",
+                    "trader",
+                    "saveticker",
+                    "run",
+                    "--lane",
+                    group,
+                    "--headed" if headed else "--headless",
+                    "--start-month",
+                    start,
+                    "--end-month",
+                    end,
+                    "--max-scrolls",
+                    str(max_scrolls),
+                    "--max-details",
+                    str(max_details),
+                ]
+                if only:
+                    command.extend(["--only", only])
+                commands[group] = command
+            _print({"state": "supervising", "lanes": list(commands), "root": str(folder)})
+            supervise(commands, folder, stop, worker_status)
+            heartbeat("stopped")
+            return
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch(headless=not headed)
             try:
@@ -159,15 +211,29 @@ def run_cmd(
                     viewport={"width": 1440, "height": 1000},
                 )
                 page = context.new_page()
-                adapter = Browser(page, account, max_scrolls=max_scrolls, max_details=max_details)
+                adapter = Browser(
+                    page,
+                    account,
+                    max_scrolls=max_scrolls,
+                    max_details=min(max_details, 2) if not once else max_details,
+                    artifact_root=folder,
+                    max_reports=max_details if once else 2,
+                )
                 heartbeat("logging_in")
                 adapter.login()
-                views = build_views(start, end) + adapter.discover_news()
+                news_views = adapter.discover_news() if lane in (None, "news", "background") else []
+                views = build_views(start, end) + news_views
                 if only:
                     requested = set(only.split(","))
-                    if requested - {view.stream for view in views}:
+                    known = build_views(start, end) + [
+                        View("news_all", "news"),
+                        View("news_reports", "news"),
+                    ]
+                    if requested - {view.stream for view in known}:
                         raise ConfigError("알 수 없는 수집 스트림입니다")
                     views = [view for view in views if view.stream in requested]
+                if lane:
+                    views = [view for view in views if lane_for(view) == lane]
                 store = Store(folder)
                 _print({"state": "collecting", "streams": len(views), "root": str(folder)})
                 due = {v.stream: 0.0 for v in views}
@@ -195,9 +261,20 @@ def run_cmd(
                         lag_s=max(0, begin - due[view.stream]) if due[view.stream] else 0,
                     )
                     result = collect_cycle(adapter, store, [view])[0]
+                    heartbeat(
+                        "collecting",
+                        stream=view.stream,
+                        diagnostics=adapter.diagnostics,
+                        elapsed_s=time.monotonic() - begin,
+                    )
                     _print(result)
                     completed.add(view.stream)
-                    due[view.stream] = max(begin + view.interval_s, time.monotonic() + 2)
+                    interval = (
+                        60
+                        if view.stream == "news_reports" and adapter.pending_reports
+                        else view.interval_s
+                    )
+                    due[view.stream] = max(begin + interval, time.monotonic() + 2)
                     if not adapter.authenticated():
                         heartbeat("reauthenticating")
                         adapter.login()
@@ -209,6 +286,7 @@ def run_cmd(
         heartbeat(
             "error",
             error_type=type(exc).__name__,
+            workers=last_workers,
             stage=adapter.stage if adapter else "browser_start",
             diagnostics=adapter.diagnostics if adapter else {},
         )

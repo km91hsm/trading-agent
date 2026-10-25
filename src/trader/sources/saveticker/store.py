@@ -250,7 +250,7 @@ class Store:
         seen = {}
         for row in rows:
             item = json.loads(row["payload"])
-            if item.get("kind") in ("quote", "event") and item["id"] not in membership.get(
+            if item.get("kind") in ("quote", "event", "trend") and item["id"] not in membership.get(
                 row["stream"], set()
             ):
                 continue

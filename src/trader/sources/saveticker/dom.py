@@ -29,6 +29,14 @@ def authentication_required(html: str) -> bool:
     return any("로그인이 필요" in text(n) for n in soup.select('h2,h3,[role="dialog"]'))
 
 
+def client_error_visible(html: str) -> bool:
+    soup = BeautifulSoup(html, "html.parser")
+    return any(
+        text(n).startswith("Application error: a client-side exception")
+        for n in soup.select("h1,h2")
+    )
+
+
 def months_between(start: str, end: str) -> list[str]:
     a = date.fromisoformat(start + "-01")
     b = date.fromisoformat(end + "-01")
@@ -46,7 +54,23 @@ def _news(soup) -> list[Item]:
     for n in soup.select('#news-tabpanel [data-read][role="button"][aria-label]'):
         title = n.get("aria-label", "")
         top = n.find("div", recursive=False)
-        publisher = text(top.select_one("div div")) if top else ""
+        header = top.find("div", recursive=False) if top else None
+        badge = header.find("div", recursive=False) if header else None
+        publisher = text(badge)
+        if not publisher and badge:
+            publisher = " ".join(n.get("alt", "") for n in badge.select("img[alt]"))
+        categories = (
+            [
+                text(n)
+                for n in header.find_all("span", recursive=False)
+                if text(n) != "·" and not text(n).startswith("헤드라인")
+            ]
+            if header
+            else []
+        )
+        source_group = {"파이낸셜주스": "속보", "로이터": "로이터", "SAVE PICK": "SAVE PICK"}.get(
+            publisher, publisher or None
+        )
         displayed = text(top.find("span", recursive=False)) if top else ""
         bottom = n.find_all("div", recursive=False)[-1]
         views = text(bottom.find_all("div", recursive=False)[-1])
@@ -55,6 +79,9 @@ def _news(soup) -> list[Item]:
                 id=identity("news", publisher, title),
                 title=title,
                 publisher=publisher,
+                source_group=source_group,
+                categories=categories,
+                is_breaking=n.get("data-breaking") == "true",
                 displayed_time=displayed or None,
                 tickers=tickers(text(n)),
                 views=views or None,
@@ -194,9 +221,89 @@ def _calendar(soup, month: str) -> list[Item]:
     return result
 
 
+def _reports(soup) -> list[Item]:
+    result = []
+    for button in soup.select('button[aria-label="PDF 다운로드"]'):
+        for scope in button.parents:
+            if scope.name in ("body", "html", "[document]"):
+                break
+            heading = scope.select_one("p")
+            match = re.fullmatch(r"(\d{4})년 (\d{1,2})월 (\d{1,2})일 \(.+\)", text(heading))
+            if match:
+                day = date(*map(int, match.groups())).isoformat()
+                result.append(
+                    Item(
+                        id=identity("daily_report", day),
+                        title=text(heading),
+                        report_date=day,
+                        publisher="SAVE REPORT",
+                        source_group="SAVE 리포트",
+                        source_url="https://www.saveticker.com/news",
+                        kind="report",
+                        detail_status="pending",
+                    )
+                )
+                break
+    return result
+
+
+def _widget(soup, label: str, selector: str):
+    heading = next(
+        (h for h in soup.select("h2,h3,h4") if label.replace(" ", "") in text(h).replace(" ", "")),
+        None,
+    )
+    if heading:
+        for scope in heading.parents:
+            if scope.name in ("body", "html", "[document]"):
+                break
+            if any(
+                label.replace(" ", "") not in text(h).replace(" ", "")
+                for h in scope.select("h2,h3,h4")
+                if h is not heading and not h.find_parent(attrs={"data-stretched-link-card": True})
+            ):
+                break
+            if scope.select(selector):
+                return scope
+            if scope.name in ("section", "aside"):
+                break
+    return None
+
+
+def _trends(soup) -> list[Item]:
+    scope = _widget(soup, "트렌드", "li button[aria-label]")
+    if scope is None:
+        return []
+    basis = " · ".join(text(n) for n in scope.select("h3,p") if text(n))
+    result = []
+    for button in scope.select("li button[aria-label]"):
+        match = re.fullmatch(r"(\d+)위 (.+) 뉴스 검색", button.get("aria-label", ""))
+        if match:
+            result.append(
+                Item(
+                    id=identity("trend", match[2]),
+                    title=match[2],
+                    rank=int(match[1]),
+                    kind="trend",
+                    basis=basis,
+                )
+            )
+    return result
+
+
+def _top5(soup) -> list[Item]:
+    scope = _widget(soup, "종목별 커뮤니티 TOP5", "[data-stretched-link-card]")
+    return _rankings(scope, "community_top5")[:5] if scope is not None else []
+
+
 def extract(html: str, stream: str, *, month: str | None = None) -> list[Item]:
     soup = BeautifulSoup(html, "html.parser")
-    if stream.startswith("news"):
+    if stream == "community_trends":
+        items = _trends(soup)
+    elif stream == "community_top5":
+        items = _top5(soup)
+    elif stream == "news_reports":
+        items = _reports(soup)
+    elif stream.startswith("news"):
         items = _news(soup)
     elif stream == "community_posts" or stream.startswith("community_ticker-"):
         items = _posts(soup)
@@ -215,12 +322,21 @@ def news_detail(html: str, item: Item) -> Item:
     heading = next((n for n in soup.select("h2") if text(n) == item.title), None)
     if not heading:
         return item.model_copy(update={"detail_status": "unavailable"})
-    # 상세 패널의 제목을 감싼 본문 영역. 제목 뒤에 표시된 번역·원문을 보존한다.
-    panel = heading.parent
-    for _ in range(4):
-        if "기사 원문 등록 시간" in text(panel):
+    # 헤더는 본문보다 먼저 나타난다. 확인된 본문 컨테이너가 나올 때까지
+    # controls/댓글/중복 모바일 헤더를 기사로 취급하지 않는다.
+    panel = None
+    content_node = None
+    for candidate in heading.parents:
+        if candidate.name in ("body", "html", "[document]"):
             break
-        panel = panel.parent or panel
+        content_node = candidate.select_one("div.gap-6.p-6")
+        if content_node is not None:
+            panel = candidate
+            break
+    if panel is None or content_node is None:
+        return item.model_copy(update={"body": "", "detail_status": "pending"})
+    paragraphs = content_node.select("p.whitespace-pre-wrap")
+    content = "\n".join(text(n) for n in paragraphs if text(n))
     value = panel.get_text("\n", strip=True)
     match = re.search(
         r"(\d{4})\.\s*(\d{1,2})\.\s*(\d{1,2})\.\s*"
@@ -230,8 +346,6 @@ def news_detail(html: str, item: Item) -> Item:
     published = None
     if match:
         published = datetime(*map(int, match.groups()), tzinfo=KST).astimezone(UTC)
-    content = value.split(item.title, 1)[-1]
-    content = content.split("기사 원문 등록 시간")[0].strip()
     return item.model_copy(
         update={
             "body": content,
