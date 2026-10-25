@@ -33,6 +33,7 @@ hedge:
 models:
   orchestrator: sonnet
   screener: haiku
+  scout: sonnet       # 종목 발굴(Phase 19): 시장 뉴스로 유니버스 안 → 상장 전체
   analyst: sonnet
   researcher_bull: sonnet
   researcher_bear: opus

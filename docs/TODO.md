@@ -277,3 +277,27 @@
 - [x] 보완(2026-10-24): 세션 상한 14(= 종목 12 + 시장 세션 2) + `llm.market_session_cap` · 제안 적중률 복기(원장 v13 `market_views`, reflect 잡이 지수 proxy 수익으로 채점, `regime.summary.scorecard`·STATUS 줄·칩 툴팁) · US 조기 마감(`daemon.us_early_closes`, fills 만기 13:00 ET) · CLAUDE.md 모듈 상세를 `docs/architecture.md` 로 이동(74KB → 43KB)
 - [ ] 결정 대기(사용자): 제안 적중률이 쌓인 뒤(만기 20건 이상) `hedge.min_weight_pct` 를 0 으로 내려 전략가의 "헤지 불필요" 를 허용할지. 적중률 50% 미만이면 `hedge.market_session: false` 로 끄고 Phase 17 규칙만 쓰는 것도 선택지
 - [ ] 이연(다음 Phase): 오늘의 실행 페이지에 시장 단계 파일 표시, 시장 세션 결과를 종목 세션 스크리너 입력에도 전달, PR 분리(Phase 18 을 Phase 17 브랜치 대상 별도 PR 로 — 사용자 요청 시)
+
+## Phase 20 응답없음 수정 + 전체 코드 리뷰 수정 (`docs/superpowers/plans/2026-10-25-phase20-hang-review.md`)
+- [x] G 공개 저장소 대비: `config/accounts.yaml` 계좌번호 자리표시자 + `secrets/.env` `KIS_PAPER_CANO/KIS_REAL_CANO` 폴백(`secrets import` 매핑 `KIS_CANO`·`KIS_LIVE_CANO`), PR CI(`.github/workflows/ci.yml`, Linux: ruff·pytest·웹) (2026-10-25)
+- [x] H 응답없음: 트레이 종료 비동기(`TrayController`, '종료 중')·캐시 상태(메인 스레드 SQLite 금지)·AppKit 메인 스레드(`on_main`)·데몬 사망 감지(`finished`), 세션 종료 유예(`run_claude(cancel=)`, SIGTERM→10s→SIGKILL), SSE 리더 탭(`events.ts` BroadcastChannel), 웹 KIS 대기 상한(`RateLimiter.max_wait` → 503), YouTube·수집 절 타임아웃, 스케줄러 풀 16 (2026-10-25)
+- [x] F high 7: NAV 총평가·손절 전 미체결 SELL 취소/매도가능수량·dry-run 40_·US 3거래소·재평가 큐·missed cron·잠금 pid+시작 시각 (2026-10-25)
+- [x] F medium 22 + low 저비용: 묶음1(executor/주문)·묶음2(데몬/큐/피처/ML)·묶음3(웹/수집/텔레그램) — 상세 `docs/architecture.md` 「전체 리뷰 수정(Phase 20)」 (2026-10-25)
+- [x] 완료 기준(코드): `uv run pytest`·`ruff`·`npm run typecheck && npm test && npm run build` 통과 (2026-10-25)
+- [ ] 실기(사용자 확인 대기, macOS): `Trader.app` 에서 분석 세션이 도는 중 메뉴 '종료' → 메뉴바 제목이 '종료 중' 으로 바뀌고 비치볼 없이 수 초~10초 안에 내려가는지; 대시보드 탭을 8개 열어도 표가 갱신되는지(리더 탭 1개만 `/api/events` 연결, 개발자 도구 Network 로 확인)
+- [ ] 실기(사용자 확인 대기, 모의): KR 잔고 응답 `output2.tot_evlu_amt`·`nass_amt`·종목 `ord_psbl_qty` 필드 존재(`uv run trader kis ping` 뒤 로그·`/api/portfolio` NAV 가 KIS 앱 총평가와 같은지), US 잔고·체결이 NASD·NYSE·AMEX 3회 조회로 합쳐지는지(`fills sync --account paper-main` 로그), 재부팅 뒤 `daemon.lock` 이 stale 로 넘겨지는지
+- [ ] 실기(사용자 확인 대기): 아침 TRIM 지정가가 미체결인 채 손절선에 닿는 날 — `[손절]` 앞에 "손절 전 미체결 SELL 취소" 로그와 `order-rvsecncl` 접수, 취소 실패면 `[손절 보류]` 알림
+- [ ] 사용자 확인: `state/logs/trader*.log` 에서 '응답없음' 당시의 시그널·세션 타임아웃·database is locked·KIS 초당 한도 줄과 `~/Library/Logs/DiagnosticReports/TraderApp*.hang` 유무 — 위 다섯 원인 밖의 것이 있으면 다음 Phase
+- [ ] 이연(다음 Phase): 야간 KIS 대조(reconciliation) 잡, 제출 시 재시세(re-quote), 재평가 우선순위 큐, SSE 끊김 표시·60초 liveness 폴링, 메모리 브레이커 다계좌 OR, `features.MAX_PAST`/`inputs.MAX_PAST` 중복 정리
+
+## Phase 19 뉴스 저장소 + 에이전트 종목 발굴 + 전략가 국면 지표 (`docs/superpowers/plans/2026-10-25-phase19-news-discovery.md`)
+- [x] N 시장 전체 뉴스 저장소: 원장 v14 `news_items`, `sources/news_store`(질의 묶음 `news.market_queries`·멱등·태깅·`recent(asof)`·prune), 데몬 `news_collect`(30분, heavy 밖)·큐 kind, 시장 세션 `macro_news` 저장소 우선, 종목 세션 `news.stock` 합침(`InputDeps.conn_factory`), `GET /api/news` + 데이터 페이지 '시장 뉴스' (2026-10-25)
+- [x] S scout 발굴: `.claude/agents/scout.md`(13번째 md)·`schemas.Discovered`·`registry.SCREEN_AGENTS=("scout","screener")`, `scan/discovery.build_inputs/resolve/merge/summary`, `tool scan discovery-inputs`·`tool submit-discovery`(ToolContext.market_client), orchestrator.md screen 2단계·screener.md discovery 규칙, `run_screen(discovery=True)`(데몬·CLI), FAKE 흉내 (2026-10-25)
+- [x] R 전략가 4번째 지표: `RegimeSignals.agent_risk_off`·`regime.reapply`·`count_text`, 데몬 `_regime_apply_view`(시장 세션 뒤), `hedge.rebalance` RISK_ON 경계 보류(`deferred`), `HedgeCfg.agent_signal/agent_min_confidence`, 웹 `countText`·라벨 (2026-10-25)
+- [x] 완료 기준(코드): `uv run pytest`·`ruff`·`npm run typecheck && npm test && npm run build` 통과 (2026-10-25)
+- [ ] 실기(사용자 확인 대기): 데몬을 켠 뒤 30분 안에 데이터 페이지 '시장 뉴스' 에 KR·US 기사가 쌓이고 태그 종목이 붙는지(`/api/news?market=KR`), `news_items` 행 수가 `store_retention_days` 안에서 유지되는지
+- [ ] 실기(사용자 확인 대기, 약 $0.5~1): `FAKE_CLAUDE` 없이 scan 1회 — `state/runs/<date>/KR/_discovery_inputs.json`·`_discovery.json` 과 `_scan.json.discovery`(유니버스 k·밖 m·미해결 u), scout 의 `catalyst` 가 저장소 뉴스 id 를 인용하는지, 유니버스 밖 종목이 picks 에 들어가면 `00_inputs.meta.name`·분석이 정상인지(피처·섹터 없음)
+- [ ] 실기(사용자 확인 대기): 시장 세션 제안이 RISK_OFF(확신 ≥ 0.7)인 날 `[국면 전환] … (n/3+전략가)` 알림과 대시보드 칩 'n/3+전략가'; RISK_ON 이고 지표 2/3 인 날 `[헤지 보류]` 알림
+- [ ] 결정 대기(사용자): 2~4주 뒤 `regime.summary.scorecard`(제안 적중률)와 발굴 종목의 결정 결과(`_scan.json.discovery` ↔ 복기)를 보고 `hedge.agent_signal`·`MAX_LISTED`·`news.market_queries` 조정
+- [ ] 이연(세이브티커): 로컬 PC 폴더에 쌓이는 세이브티커 파일(JSON/JSONL/CSV/MD, 형식 자동 감지, mtime=received_at, asof 필터)을 `news_items(source='saveticker')` 로 적재하는 `sources/saveticker.py` 리더 — 사용자가 예시 파일(형식·경로)을 주면 다음 Phase. 설정은 경로 하나(`sources.yaml news.saveticker_dir`)
+- [ ] 이연(다음 Phase): 발굴 입력에 네이버 블로그 최근 글 포함, 오늘 페이지 picks 사유 '뉴스 발굴' 표시, STATUS·텔레그램 scan 알림에 `discovery.line` 한 줄, 유니버스 밖 발굴 종목의 피처 스냅샷(분석 당일 1회)

@@ -19,7 +19,7 @@ describe("how", () => {
     for (const st of pipelineStages(files)) expect(sectionForStage(st.key)).not.toBeNull();
   });
   it("모델 키는 settings.models 의 키만 쓴다", () => {
-    const allowed = new Set(["orchestrator", "screener", "analyst", "researcher_bull", "researcher_bear", "trader", "reflector"]);
+    const allowed = new Set(["orchestrator", "scout", "screener", "analyst", "researcher_bull", "researcher_bear", "trader", "reflector"]);
     for (const s of HOW) for (const st of s.steps) if (st.model) expect(allowed.has(st.model), st.model).toBe(true);
   });
 });
