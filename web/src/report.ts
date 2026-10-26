@@ -1,6 +1,6 @@
 // 단계 파일(체크포인트) → 사람이 읽는 보고서 블록 (Phase 24). 원시 JSON 은 화면의 '원본 보기' 로만.
 // 순수 함수라 vitest 로 형식을 고정한다. 모르는 단계는 최상위 값을 표로 펼치는 일반 블록.
-import { termLabel } from "./glossary";
+import { sideLabel, termLabel } from "./glossary";
 
 export type ReportBlock = {
   title: string;
@@ -103,13 +103,13 @@ function gate(stage: string, d: Rec): ReportBlock[] {
   return [
     {
       title: `리스크 게이트 · ${str(v.account_id) || acctOf(stage)}`,
-      lead: v.approved ? `승인 ${num(v.adjusted_qty) ?? 0}주` : "거부",
+      lead: v.approved ? `${termLabel("gate.pass")} ${num(v.adjusted_qty) ?? 0}주` : termLabel("gate.reject"),
       rows: [
-        ["방향", str(v.side) || DASH],
+        ["방향", sideLabel(str(v.side)) || DASH],
         ["주문", str(v.order_type) === "MARKET" ? "시장가" : v.price ? `지정가 ${price(v.price)}` : DASH],
         ["계좌 모드", str(v.mode) ? termLabel(`mode.${str(v.mode)}`) : DASH],
         ["성향", str(v.stance) ? termLabel(`stance.${str(v.stance)}`) : DASH],
-        ["모의 실행", v.dry_run ? "예(주문 없음)" : "아니오"],
+        [termLabel("dry_run"), v.dry_run ? "예" : "아니오"],
       ],
       list: reasons.length ? reasons : undefined,
       paragraphs: str(v.note) ? [str(v.note)] : undefined,
@@ -125,7 +125,7 @@ function order(stage: string, d: Rec): ReportBlock[] {
       title: `주문 · ${acctOf(stage)}`,
       lead: termLabel(`status.${str(d.status)}`) || str(d.status),
       rows: [
-        ["요청", `${str(req.side)} ${str(req.qty)}주 ${str(req.order_type) === "MARKET" ? "시장가" : `@${price(req.price)}`}`.trim()],
+        ["요청", `${sideLabel(str(req.side))} ${str(req.qty)}주 ${str(req.order_type) === "MARKET" ? "시장가" : `@${price(req.price)}`}`.trim()],
         ["접수번호", str(res.order_no) || DASH],
         ["모드", str(d.mode) ? termLabel(`mode.${str(d.mode)}`) : DASH],
       ],

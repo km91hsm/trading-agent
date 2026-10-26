@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { GLOSSARY, termHelp, termLabel } from "./glossary";
+import { GLOSSARY, sideLabel, termHelp, termLabel } from "./glossary";
 
 const REQUIRED = [
   "action.BUY",
@@ -43,8 +43,23 @@ describe("glossary", () => {
   });
   it("termLabel 은 라벨, 없으면 키 그대로", () => {
     expect(termLabel("stop_loss")).toBe("손절선");
-    expect(termLabel("action.HOLD")).toBe("보유");
+    expect(termLabel("action.HOLD")).toBe("관망"); // 보유 수량과 겹치지 않게 (전체 검토 W12)
     expect(termLabel("nope")).toBe("nope");
     expect(termHelp("nope")).toBe("");
+  });
+});
+
+describe("용어 충돌 (전체 검토 W12)", () => {
+  it("게이트 통과·관망·주문 없이 판정은 사람 승인·보유·모의 계좌와 다른 말", () => {
+    expect(termLabel("gate.pass")).toBe("통과");
+    expect(termLabel("dry_run")).toBe("주문 없이 판정");
+    expect(termLabel("gate.pass")).not.toBe(termLabel("mode.approve"));
+    expect(termLabel("action.HOLD")).not.toBe("보유");
+  });
+  it("sideLabel 은 BUY/SELL 을 한글로, 모르는 값은 그대로, 빈 값은 빈 문자열", () => {
+    expect(sideLabel("BUY")).toBe("매수");
+    expect(sideLabel("SELL")).toBe("매도");
+    expect(sideLabel("X")).toBe("X");
+    expect(sideLabel(null)).toBe("");
   });
 });

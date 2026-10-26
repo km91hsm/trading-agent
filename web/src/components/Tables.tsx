@@ -1,11 +1,12 @@
 // 원장 표 네 개 (포지션·주문·승인·리스크 판정) — 시세표 열 문법(Table 원시요소)으로.
 import { useMemo } from "react";
 import { fmtDate, fmtDelta, fmtMoney, fmtTime, minutesLeft } from "../format";
+import { sideLabel, termLabel } from "../glossary";
 import { planCells } from "../overview";
 import type { Approval, Order, Position, RiskCheck } from "../types";
 import { Badge } from "./Badge";
 import { EmptyState } from "./EmptyState";
-import { Delta, Num, Table, Td, Th } from "./Table";
+import { Delta, DetailRow, MoreTh, Num, Table, Td, Th } from "./Table";
 import { Term } from "./Term";
 import { Ticker } from "./Ticker";
 
@@ -56,6 +57,7 @@ export function PositionsTable({ rows, nav, showAccounts = false, bandPct = 0.05
           <Th num>손절가</Th>
           <Th num>지정가</Th>
           {showAccounts && <Th>계좌</Th>}
+          <MoreTh />
         </tr>
       </thead>
       <tbody>
@@ -63,31 +65,46 @@ export function PositionsTable({ rows, nav, showAccounts = false, bandPct = 0.05
           const d = fmtDelta(p.current_price, p.avg_price);
           const ev = p.eval_amount ? Number(p.eval_amount) : NaN;
           const plan = planCells(p.plan, p.market);
+          const drift = driftCell(p.drift_pp, bandPct);
+          const avg = <Num value={p.avg_price} market={p.market} />;
+          const evalAmt = <Num value={p.eval_amount} market={p.market} />;
           return (
-            <tr key={`${p.market}:${p.ticker}`}>
+            <DetailRow
+              key={`${p.market}:${p.ticker}`}
+              label={p.ticker}
+              span={14 + (showAccounts ? 1 : 0)}
+              details={[
+                { label: "수량", value: p.qty },
+                { label: "평균단가", value: avg },
+                { label: "평가금액", value: evalAmt },
+                { label: "보유기간", value: horizonText(p) },
+                { label: "목표 비중", value: plan?.target ?? "—" },
+                { label: "드리프트", value: drift.text },
+                { label: "익절가", value: plan?.takeProfit ?? "—" },
+                { label: "손절가", value: plan?.stop ?? "—" },
+                { label: "지정가", value: plan?.limit ?? "—" },
+                ...(showAccounts ? [{ label: "계좌", value: (p.accounts ?? []).join(", ") || "—" }] : []),
+              ]}
+            >
               <Td core>
                 <Ticker market={p.market} ticker={p.ticker} />
               </Td>
               <Td>{horizonText(p)}</Td>
               <Td num>{p.qty}</Td>
-              <Td num>
-                <Num value={p.avg_price} market={p.market} />
-              </Td>
+              <Td num>{avg}</Td>
               <Td num core>
                 <Num value={p.current_price} market={p.market} />
               </Td>
               <Td num core>{d ? <Delta value={d.pct} pct /> : "—"}</Td>
-              <Td num>
-                <Num value={p.eval_amount} market={p.market} />
-              </Td>
+              <Td num>{evalAmt}</Td>
               <Td num core>{Number.isFinite(navN) && navN > 0 && Number.isFinite(ev) ? `${((ev / navN) * 100).toFixed(1)}%` : "—"}</Td>
               <Td num>{plan?.target ?? "—"}</Td>
-              <Td num className={driftCell(p.drift_pp, bandPct).over ? "pend" : ""}>{driftCell(p.drift_pp, bandPct).text}</Td>
+              <Td num className={drift.over ? "pend" : ""}>{drift.text}</Td>
               <Td num className={plan?.tpClass}>{plan?.takeProfit ?? "—"}</Td>
               <Td num className={plan?.stopClass}>{plan?.stop ?? "—"}</Td>
               <Td num>{plan?.limit ?? "—"}</Td>
               {showAccounts && <Td>{(p.accounts ?? []).join(", ")}</Td>}
-            </tr>
+            </DetailRow>
           );
         })}
       </tbody>
@@ -113,43 +130,60 @@ export function OrdersTable({ rows, onTrace, traceId }: { rows: Order[]; onTrace
           <Th>모드</Th>
           <Th>접수번호</Th>
           <Th>메시지</Th>
+          <MoreTh />
         </tr>
       </thead>
       <tbody>
-        {rows.map((o) => (
-          <tr key={o.id} data-status={o.status}>
-            {onTrace && (
-              <Td>
-                {o.decision_id ? (
-                  <button type="button" className={o.decision_id === traceId ? "btn btn-sm sel" : "btn btn-sm btn-ghost"} onClick={() => onTrace(o)} title="애널리스트 → 토론 → 결정 → 게이트 → 주문">
-                    #{o.decision_id}
-                  </button>
-                ) : (
-                  <span className="muted">—</span>
-                )}
+        {rows.map((o) => {
+          const trace = onTrace ? (
+            o.decision_id ? (
+              <button type="button" className={o.decision_id === traceId ? "btn btn-sm sel" : "btn btn-sm btn-ghost"} onClick={() => onTrace(o)} title="애널리스트 → 토론 → 결정 → 게이트 → 주문">
+                #{o.decision_id}
+              </button>
+            ) : (
+              <span className="muted">—</span>
+            )
+          ) : null;
+          const price = o.price ? <Num value={o.price} market={o.market} /> : "시장가";
+          return (
+            <DetailRow
+              key={o.id}
+              label={`${o.ticker} 주문 ${o.id}`}
+              span={12 + (onTrace ? 1 : 0)}
+              rowProps={{ "data-status": o.status }}
+              details={[
+                { label: "수량", value: o.qty },
+                { label: "가격", value: price },
+                { label: "일시", value: `${fmtDate(o.created_at)} ${fmtTime(o.created_at, o.market)}` },
+                { label: "모드", value: <Badge kind="mode" value={o.mode} /> },
+                { label: "접수번호", value: o.order_no ?? "—" },
+                ...(onTrace ? [{ label: "추적", value: trace }] : []),
+                ...(o.message ? [{ label: "메시지", value: o.message }] : []),
+              ]}
+            >
+              {onTrace && <Td>{trace}</Td>}
+              <Td>{fmtDate(o.created_at)}</Td>
+              <Td>{fmtTime(o.created_at, o.market)}</Td>
+              <Td core>
+                <Ticker market={o.market} ticker={o.ticker} />
               </Td>
-            )}
-            <Td>{fmtDate(o.created_at)}</Td>
-            <Td>{fmtTime(o.created_at, o.market)}</Td>
-            <Td core>
-              <Ticker market={o.market} ticker={o.ticker} />
-            </Td>
-            <Td core>{o.side}</Td>
-            <Td num>{o.qty}</Td>
-            <Td num>{o.price ? <Num value={o.price} market={o.market} /> : "시장가"}</Td>
-            <Td num core>
-              <Num value={o.amount} market={o.market} />
-            </Td>
-            <Td core>
-              <Badge kind="status" value={o.status} />
-            </Td>
-            <Td>
-              <Badge kind="mode" value={o.mode} />
-            </Td>
-            <Td className="muted">{o.order_no ?? "—"}</Td>
-            <Td className="muted wrap">{o.message}</Td>
-          </tr>
-        ))}
+              <Td core>{sideLabel(o.side)}</Td>
+              <Td num>{o.qty}</Td>
+              <Td num>{price}</Td>
+              <Td num core>
+                <Num value={o.amount} market={o.market} />
+              </Td>
+              <Td core>
+                <Badge kind="status" value={o.status} />
+              </Td>
+              <Td>
+                <Badge kind="mode" value={o.mode} />
+              </Td>
+              <Td className="muted">{o.order_no ?? "—"}</Td>
+              <Td className="muted wrap">{o.message}</Td>
+            </DetailRow>
+          );
+        })}
       </tbody>
     </Table>
   );
@@ -201,7 +235,7 @@ export function ApprovalsTable({
               <Td>
                 <Ticker market={m} ticker={a.order.ticker ?? "—"} />
               </Td>
-              <Td>{a.order.side}</Td>
+              <Td>{sideLabel(a.order.side)}</Td>
               <Td num>{a.order.qty}</Td>
               <Td num>{a.order.price ? fmtMoney(a.order.price, m) : "시장가"}</Td>
               <Td>
@@ -257,7 +291,7 @@ export function RiskChecksTable({ rows }: { rows: RiskCheck[] }) {
               <Ticker market={r.market ?? "KR"} ticker={r.ticker ?? "—"} />
             </Td>
             <Td>{r.action ? <Badge kind="action" value={r.action} /> : "—"}</Td>
-            <Td className={r.approved ? "gate ok" : r.action === "HOLD" ? "gate muted" : "gate no"}>{r.approved ? `승인${r.adjusted_qty ? ` · ${r.adjusted_qty}주` : ""}` : r.action === "HOLD" ? "보유 · 주문 없음" : `거부 · ${r.reasons[0] ?? "사유 없음"}`}</Td>
+            <Td className={r.approved ? "gate ok" : r.action === "HOLD" ? "gate muted" : "gate no"}>{r.approved ? `${termLabel("gate.pass")}${r.adjusted_qty ? ` · ${r.adjusted_qty}주` : ""}` : r.action === "HOLD" ? `${termLabel("action.HOLD")} · 주문 없음` : `${termLabel("gate.reject")} · ${r.reasons[0] ?? "사유 없음"}`}</Td>
             <Td num>{r.adjusted_qty ?? "—"}</Td>
             <Td className="muted wrap">{r.reasons.join(" / ") || "—"}</Td>
           </tr>

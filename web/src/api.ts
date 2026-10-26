@@ -79,10 +79,11 @@ export async function postJson<T>(path: string, body: unknown, token: string | n
 }
 
 export type EventSnapshot = {
-  orders: number;
+  // 테이블 지문 "건수:최대id:상태=건수,…" — 같은지만 비교한다 (sse.py `_fingerprint`)
+  orders: string;
   approvals_pending: number;
-  approvals: number;
-  runs: number;
+  approvals: string;
+  runs: string;
   decisions: number;
   triggers: number;
   watchlist: string;

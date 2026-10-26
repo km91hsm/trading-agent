@@ -367,5 +367,5 @@
 - [ ] 결정 대기(사용자): L2·L3 메모리 채점 재설계, L17 비용 절감
 - [x] 보완 D(단타 청산, 사용자 결정 2026-10-26): O7 청산 점검을 허용 판정보다 먼저(bear·전략가 금지·일일 손실·일시정지는 신규 진입만), O6 계좌별 다리(진입 접수 `pending_entry` → `fills` 체결분만 `held`) · 청산은 미체결 진입 BUY 취소 → 계좌별 체결 수량만 SELL(`executor.execute(max_qty=)`, 미진입 계좌 skip) · 실패·미체결은 `closing` 유지 재시도 · 수익률은 체결가 (2026-10-26)
 - [x] 보완 4차 묶음 A(프로세스·성능): P2 빠른 대기열 레인(`job_queue_fast`: 재평가·체결 동기화·뉴스 수집·대조는 heavy 락 밖), P4 데몬 OS 잠금(`daemon.lock.os`, 수명 동안), P7 수집 공통 기한·풀 비대기 종료, P8 heavy 대기 카운터, P9 derive 파일 락 밖 진행 콜백, P11 `platform/fsutil.atomic_replace` 재시도·피처 읽기 실패 시 덮어쓰기 금지, P12 `ops/retention.prune`(reflect 끝, `retention_days` 120), P13 레이트 스토어 스레드 연결 재사용, 뉴스 `(market, received_at)` 인덱스(원장 v22) (2026-10-26)
-- [ ] 보완 4차 나머지(웹·문구 — 묶음 B): W5 SSE 상태 변경 감지, W8 실시간 거리 재계산, W9 모바일 행 상세, W10 키보드 행, W12 용어 충돌, T3 문구 어투·단타 알림 요약
+- [x] 보완 4차 묶음 B(웹·문구): W5 SSE 테이블 지문, W8 `livePlan`, W9 `DetailRow`, W10 `RowButton`, W12 통과·관망·주문 없이 판정·`sideLabel`, T3 해요체·영문 코드 한글화(`regime_change`·`market_view`·`mode_changed`·`ml_trained`, `regime.line`)·단타 `scalp_digest`(`scalp.digest_every_min` 30분, 첫 묶음·중단·마감 즉시, 전송 실패면 재시도) (2026-10-26)
 - [ ] 실기(사용자 확인 대기): 데몬 재부팅·강제 종료 뒤 `state/daemon.lock.os` OS 잠금이 풀려 다음 기동이 되는지(macOS·Windows), Windows 에서 웹이 날짜 파일을 읽는 중 데몬 스냅샷 쓰기가 재시도로 성공하는지

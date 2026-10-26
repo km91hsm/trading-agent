@@ -111,6 +111,8 @@ class ScalpCfg(BaseModel):
     judge_timeout_s: float = Field(default=45, gt=0, le=300)  # 이 시간 안에 판정이 없으면 버림
     judge_max_drift_pct: float = Field(default=0.003, gt=0, le=0.05)  # 판정 사이 신호가 대비 변동
     judge_hold_every_min: int = Field(default=5, ge=1, le=60)  # 보유 중 유지/청산 조언 주기
+    # 진입·청산 알림 묶음 주기(전체 검토 T3): 첫 묶음은 바로, 그 뒤는 이 간격 · 중단·마감은 즉시
+    digest_every_min: int = Field(default=30, ge=1, le=390)
 
 
 class RepriceCfg(BaseModel):

@@ -1,5 +1,5 @@
 // 표 원시요소 — 시세표 열 문법: 이름 셀 + 기호, 우측정렬 tabular 숫자, ▲▼ 적청, 2px 머리선.
-import type { ReactNode } from "react";
+import { useId, useState, type ReactNode } from "react";
 import { fmtMoney, fmtPct, round2 } from "../format";
 import type { Market } from "../types";
 import { Glyph } from "./Glyph";
@@ -78,6 +78,94 @@ export function Td({
     <td className={cls} colSpan={colSpan}>
       {children}
     </td>
+  );
+}
+
+/** 행 선택·펼침 버튼(전체 검토 W10). `<tr onClick>` 만으로는 키보드로 열 수 없어 첫 셀 내용을 감싸
+ * Enter/Space 로 같은 동작을 하게 한다. 상세를 펼치면 `expanded`, 다른 패널을 고르면 `pressed`.
+ * 행 클릭(마우스)도 그대로 두므로 두 번 토글되지 않게 전파를 막는다. */
+export function RowButton({
+  children,
+  onClick,
+  expanded,
+  pressed,
+}: {
+  children: ReactNode;
+  onClick: () => void;
+  expanded?: boolean;
+  pressed?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      className="row-btn"
+      aria-expanded={expanded}
+      aria-pressed={pressed}
+      onClick={(e) => {
+        e.stopPropagation();
+        onClick();
+      }}
+    >
+      {children}
+    </button>
+  );
+}
+
+export type RowDetail = { label: ReactNode; value: ReactNode };
+
+/** responsive 표의 펼침 열 머리(좁은 화면에서만 보인다). */
+export function MoreTh() {
+  return (
+    <th scope="col" className="core row-more">
+      <span className="sr-only">상세</span>
+    </th>
+  );
+}
+
+/** responsive 표의 한 행 + 좁은 화면 전용 상세 행(전체 검토 W9). 좁은 화면은 core 아닌 열을 숨기므로
+ * 수량·가격·손절가를 볼 길이 없었다 → 끝 열의 '상세' 버튼으로 숨긴 값을 정의 목록으로 펼친다.
+ * 넓은 화면에서는 버튼 열과 상세 행 모두 보이지 않는다(shell.css). `span` 은 보이는 열 수와 무관하게
+ * 전체 열 수(+1)를 넘긴다 — 숨은 셀은 colSpan 계산에서 빠진다. */
+export function DetailRow({
+  children,
+  details,
+  span,
+  label,
+  rowProps,
+}: {
+  children: ReactNode;
+  details: RowDetail[];
+  span: number;
+  label: string;
+  rowProps?: Record<string, string | undefined>;
+}) {
+  const [open, setOpen] = useState(false);
+  const id = useId();
+  return (
+    <>
+      <tr {...rowProps}>
+        {children}
+        <td className="core row-more">
+          {/* 이름은 늘 '<종목> 상세'(보이는 글자 '상세' 포함), 펼침 상태는 aria-expanded·화살표로 */}
+          <button type="button" className="btn btn-sm btn-ghost" aria-expanded={open} aria-controls={id} aria-label={`${label} 상세`} onClick={() => setOpen((v) => !v)}>
+            상세
+            <Glyph name={open ? "chevron-up" : "chevron"} size={12} />
+          </button>
+        </td>
+      </tr>
+      <tr className="row-detail" id={id} hidden={!open}>
+        <td className="core" colSpan={span}>
+          <dl className="row-detail-list">
+            {details.map((d, i) => (
+              <div key={i}>
+                <dt>{d.label}</dt>
+                <dd>{d.value}</dd>
+              </div>
+            ))}
+          </dl>
+        </td>
+      </tr>
+    </>
   );
 }
 

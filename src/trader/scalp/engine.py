@@ -248,6 +248,78 @@ def _local_hms(ctx: ScalpContext, market: str) -> str:
     return ctx.now().astimezone(MARKET_TZ[market]).strftime("%H%M%S")
 
 
+def _queue_note(st: dict, **item: Any) -> None:
+    """진입·청산 알림은 틱마다 보내지 않고 상태 파일 outbox 에 모은다(전체 검토 T3 — 알림 피로)."""
+    st.setdefault("outbox", []).append(item)
+
+
+def _send_digest(
+    notifier: Notifier,
+    market: str,
+    st: dict,
+    *,
+    now: datetime,
+    every_min: int,
+    dry_run: bool,
+    force: bool,
+) -> bool:
+    """outbox 를 `messages.scalp_digest` 한 통으로 보낸다. 그날 첫 묶음은 바로, 그 뒤는
+    `digest_every_min` 마다, 중단·마감 청산·허용 해제 때는 즉시(force). 보내지면 비우고 True,
+    실패하면 남겨 다음 틱에 다시 보낸다."""
+    box = st.get("outbox") or []
+    if not box:
+        return False
+    last = st.get("digest_at")
+    if not force and last and (now - datetime.fromisoformat(last)).total_seconds() < every_min * 60:
+        return False
+    try:
+        sent = notifier.send(messages.scalp_digest(market=market, items=box, dry_run=dry_run))
+    except Exception:  # noqa: BLE001 - 알림 실패가 단타 상태를 바꾸지 않는다
+        logger.warning("단타 묶음 알림 실패", exc_info=True)
+        sent = False
+    if sent is False:  # 텔레그램은 실패를 False 로 돌려준다 — 묶음을 남겨 다음 틱에 다시
+        return False
+    st["outbox"] = []
+    st["digest_at"] = now.isoformat()
+    return True
+
+
+def _flush_digest(ctx: ScalpContext, market: str, st: dict, *, force: bool = False) -> None:
+    _send_digest(
+        ctx.notifier,
+        market,
+        st,
+        now=ctx.now(),
+        every_min=ctx.settings.scalp.digest_every_min,
+        dry_run=ctx.dry_run,
+        force=force,
+    )
+
+
+def flush_outbox(
+    state: Path | None,
+    today: date,
+    market: str,
+    *,
+    notifier: Notifier,
+    now: datetime,
+    settings: Settings,
+    dry_run: bool,
+) -> bool:
+    """tick 이 돌지 않는 틱(단타 꺼짐·일시정지·창 밖 — 데몬이 tick 전에 건너뜀)에 모아 둔 묶음을
+    보낸다(Codex 리뷰: 그날 상태 파일에 갇히면 다음 날엔 다른 파일을 읽어 영영 안 간다)."""
+    st = load_state(state, today, market)
+    if not st.get("outbox"):
+        return False
+    every = settings.scalp.digest_every_min
+    if not _send_digest(
+        notifier, market, st, now=now, every_min=every, dry_run=dry_run, force=True
+    ):
+        return False
+    save_state(state, today, market, st)
+    return True
+
+
 def _minutes(ctx: ScalpContext, market: str, c: dict) -> list:
     if market == "KR":
         return ctx.market_client.get_minute_kr(c["ticker"], count=MINUTES_NEEDED)
@@ -464,14 +536,8 @@ def _enter(
     }
     save_state(ctx.state, today, market, st)
     _event(ctx.state, today, market, "entry", **pos)
-    ctx.notifier.send(
-        messages.scalp(
-            leg="entry",
-            market=market,
-            label=_label(ctx, market, c["ticker"]),
-            price=price,
-            reason=reason + (" (dry-run)" if ctx.dry_run else ""),
-        )
+    _queue_note(
+        st, leg="entry", label=_label(ctx, market, c["ticker"]), price=str(price), reason=reason
     )
     return pos
 
@@ -943,15 +1009,13 @@ def _check_exits(
         st.setdefault("closed", []).append(closed)
         out["exits"].append({"ticker": pos["ticker"], "reason": reason, "ret": res["ret"]})
         _event(ctx.state, today, market, "exit", **closed)
-        ctx.notifier.send(
-            messages.scalp(
-                leg="exit",
-                market=market,
-                label=_label(ctx, market, pos["ticker"]),
-                price=Decimal(res["exit_price"]),
-                reason=reason + (" (dry-run)" if ctx.dry_run else ""),
-                ret=res["ret"],
-            )
+        _queue_note(
+            st,
+            leg="exit",
+            label=_label(ctx, market, pos["ticker"]),
+            price=res["exit_price"],
+            reason=reason,
+            ret=res["ret"],
         )
 
 
@@ -1060,6 +1124,9 @@ def tick(ctx: ScalpContext, *, market: str, today: date) -> dict:
                     ctx.judge.discard(entry_key(market, today, t))
             st["done"] = [*st.get("done", []), *st["pending"]]
             st["pending"] = {}
+        if st.get("outbox"):  # 진입이 막히면 다음 묶음 시점이 없을 수 있다 — 청산 묶음을 지금
+            _flush_digest(ctx, market, st, force=True)
+            had_state = True
         if had_state:
             save_state(ctx.state, today, market, st)
         return out | {"skipped": why}
@@ -1125,6 +1192,9 @@ def tick(ctx: ScalpContext, *, market: str, today: date) -> dict:
                 out["entries"].append(
                     {"ticker": c["ticker"], "price": str(e.price), "qty": pos["qty"]}
                 )
+    now_m = signals.hm_minutes(_local_hms(ctx, market))
+    closing = now_m >= signals.hm_minutes(ctx.close_hm) - cfg.close_before_min
+    _flush_digest(ctx, market, st, force=bool(st.get("halted")) or closing)
     save_state(ctx.state, today, market, st)
     return out
 

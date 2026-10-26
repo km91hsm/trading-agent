@@ -12,7 +12,11 @@
     행동 안내 (/approve 12 …)
 
 종목은 항상 `names.label` 의 '종목명(코드)'. 금액은 KR '71,500원', US '$227.55'. HTML 이스케이프는
-`TelegramNotifier.send` 가 한다(여기서는 평문)."""
+`TelegramNotifier.send` 가 한다(여기서는 평문).
+
+어투(전체 검토 T3): 안내·결과 문장은 해요체('…했어요'), 제목·항목 줄은 명사구. 내부 코드값
+(`auto`·`bear`·`RISK_OFF`·`take_profit`·dry-run)은 아래 표로 한글로 바꿔 보이고 그대로
+내보내지 않는다."""
 
 from __future__ import annotations
 
@@ -22,9 +26,19 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 
 SIDE = {"BUY": "매수", "SELL": "매도"}
-ACTION = {"BUY": "매수", "SELL": "매도", "HOLD": "보유", "ADD": "추가 매수", "TRIM": "일부 매도"}
+# HOLD 는 '관망' — 보유 수량의 '보유' 와 겹치지 않게 (웹 glossary.ts 와 같은 말, 전체 검토 W12)
+ACTION = {"BUY": "매수", "SELL": "매도", "HOLD": "관망", "ADD": "추가 매수", "TRIM": "일부 매도"}
 MODE = {"auto": "자동", "approve": "승인", "off": "끔"}
 REGIME = {"bull": "상승", "neutral": "중립", "bear": "하락"}
+STANCE = {"RISK_ON": "위험 선호", "RISK_OFF": "위험 회피", "NEUTRAL": "중립"}
+DRY_RUN = "주문 없이 판정"  # dry_run 표기 (웹 glossary `dry_run` 과 같은 말)
+SCALP_EXIT = {
+    "take_profit": "익절",
+    "stop": "손절",
+    "close": "마감 청산",
+    "max_hold": "보유 시간 초과",
+    "judge_exit": "판정자 조기 청산",
+}
 
 
 def money(v: Any, market: str | None) -> str:
@@ -184,7 +198,7 @@ def order_unknown(*, account: str, market: str, label: str, side: str, qty: Any,
         "주문 상태 미확인",
         f"{account} · {label}",
         [
-            f"{SIDE.get(side, side)} {qty}주 — 응답을 받지 못함",
+            f"{SIDE.get(side, side)} {qty}주 — 응답을 받지 못했어요",
             f"사유: {err}",
             "KIS 앱에서 확인하세요. 체결 동기화(fills sync)가 확정해요.",
         ],
@@ -344,7 +358,10 @@ def reprice_deferred(
     return render(
         "재호가 보류",
         f"{account} · {label}",
-        [f"{SIDE.get(side, side)} {qty}주 @{money(limit, market)}", f"{why} — 원 주문 유지"],
+        [
+            f"{SIDE.get(side, side)} {qty}주 @{money(limit, market)}",
+            f"{why} — 원 주문은 그대로 둬요",
+        ],
     )
 
 
@@ -364,12 +381,83 @@ def hedge(
 def scalp(
     *, leg: str, market: str, label: str, price: Any = None, reason: str = "", ret: Any = None
 ) -> str:
-    """leg: entry|exit|halt."""
+    """leg: entry|exit|halt. 진입·청산은 틱마다 보내지 않고 `scalp_digest` 로 묶는다."""
     if leg == "halt":
-        return render("단타 중단", market, [reason, "오늘 신규 진입 없음"])
+        return render("단타 중단", market, [reason, "오늘은 새로 진입하지 않아요."])
     lines = [f"@{money(price, market)}" + (f" · 수익 {float(ret):+.2%}" if ret is not None else "")]
-    lines.append(reason)
+    lines.append(SCALP_EXIT.get(reason, reason))
     return render("단타 진입" if leg == "entry" else "단타 청산", f"{market} {label}", lines)
+
+
+def scalp_digest(*, market: str, items: list[dict], dry_run: bool = False) -> str:
+    """단타 진입·청산 묶음 요약(전체 검토 T3 — 틱마다 오던 알림 피로). items 는 엔진 outbox 의
+    {leg, label, price, reason, ret?} 순서 그대로. 수익 합계는 이 묶음 청산 수익률의 단순 합."""
+    entries = [i for i in items if i.get("leg") == "entry"]
+    exits = [i for i in items if i.get("leg") == "exit"]
+    head = f"{market} 진입 {len(entries)} · 청산 {len(exits)}"
+    if exits:
+        head += f" · 수익 합계 {sum(float(i.get('ret') or 0) for i in exits):+.2%}"
+    if dry_run:
+        head += f" ({DRY_RUN})"
+    lines = []
+    for i in items:
+        where = f"{i.get('label')} @{money(i.get('price'), market)}"
+        if i.get("leg") == "entry":
+            lines.append(f"진입 {where} · {i.get('reason') or '—'}")
+        else:
+            why = SCALP_EXIT.get(str(i.get("reason")), str(i.get("reason") or "—"))
+            ret = f" · {float(i['ret']):+.2%}" if i.get("ret") is not None else ""
+            lines.append(f"청산 {where} · {why}{ret}")
+    return render("단타", head, lines)
+
+
+# --- 운영 이벤트(국면·시장 뷰·모드·학습) — 코드값을 한글 표로 -------------------------------
+
+
+def regime_change(*, market: str, before: str | None, after: str, count: str) -> str:
+    def name(s: str | None) -> str:
+        return REGIME.get(s, s) if s else "—"
+
+    return render("국면 전환", f"{market} {name(before)} → {name(after)} ({count})")
+
+
+def market_view(
+    *,
+    market: str,
+    stance: str | None,
+    hedge_weight: Any,
+    leveraged: bool,
+    rationale: str | None = None,
+) -> str:
+    stance_text = STANCE.get(str(stance), stance or "—")
+    head = f"{market} {stance_text} · 헤지 제안 {float(hedge_weight or 0):.0%}"
+    why = first_sentences(rationale)
+    return render(
+        "시장 뷰", head + ("" if leveraged else " (레버리지 거부)"), [f"근거: {why}" if why else ""]
+    )
+
+
+def mode_changed(*, account: str, mode: str) -> str:
+    return render("모드", f"{account} → {MODE.get(mode, mode)}")
+
+
+def ml_trained(
+    *,
+    kind: str,
+    version: str | None,
+    trained: bool,
+    detail: str | None,
+    promoted: bool | None,
+    note: str = "",
+) -> str:
+    """학습 결과. promoted None(학습 안 됨·수동 승격 모델)이면 승격 줄 없음."""
+    head = f"{kind} {version or '—'}: {'학습 완료' if trained else '데이터 부족'}"
+    if detail:
+        head += f" · {detail}"
+    lines = []
+    if promoted is not None:
+        lines.append("승격했어요" if promoted else "승격 안 함(기준 미달)")
+    return render("ML 학습", head, [*lines, note])
 
 
 def reconcile_mismatch(*, account: str, market: str, day: str, parts: list[str]) -> str:

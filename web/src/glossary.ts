@@ -5,7 +5,7 @@ export type TermEntry = { label: string; help: string };
 export const GLOSSARY: Record<string, TermEntry> = {
   "action.BUY": { label: "매수", help: "새로 사는 결정. 목표 비중만큼 산다." },
   "action.SELL": { label: "매도", help: "보유분을 전부 파는 결정." },
-  "action.HOLD": { label: "보유", help: "사지도 팔지도 않고 그대로 둔다." },
+  "action.HOLD": { label: "관망", help: "사지도 팔지도 않고 지켜본다(보유 수량 '보유' 와 다른 말)." },
   "action.ADD": { label: "추가 매수", help: "이미 보유한 종목을 목표 비중까지 더 산다." },
   "action.TRIM": { label: "일부 매도", help: "보유분 일부를 팔아 목표 비중으로 줄인다." },
   target_weight: { label: "목표 비중", help: "주문 뒤 이 종목이 계좌 평가액에서 차지할 비율." },
@@ -18,7 +18,9 @@ export const GLOSSARY: Record<string, TermEntry> = {
   "mode.auto": { label: "자동", help: "리스크 게이트를 통과한 주문을 바로 낸다." },
   "mode.approve": { label: "승인", help: "주문 전에 사람 승인을 기다린다(30분 뒤 만료)." },
   "mode.off": { label: "끔", help: "판정만 기록하고 주문은 내지 않는다." },
-  dry_run: { label: "모의 실행", help: "판정·기록까지만 하고 주문·승인 요청은 내지 않는다." },
+  dry_run: { label: "주문 없이 판정", help: "판정·기록까지만 하고 주문·승인 요청은 내지 않는다(모의 계좌와 다른 말)." },
+  "gate.pass": { label: "통과", help: "리스크 게이트가 주문을 허용했다(사람의 '승인' 과 다른 말)." },
+  "gate.reject": { label: "거부", help: "리스크 게이트가 한도·규칙으로 주문을 막았다. 사유는 전부 적힌다." },
   trigger: { label: "트리거", help: "익절선·±7%·무효화 조건에 닿아 재평가 세션을 띄운 신호." },
   sycophantic: { label: "토론 붕괴", help: "강세·약세가 한쪽으로 쏠려 라운드 0 의견을 우선한 경우." },
   paused: { label: "일시정지", help: "거래 중단. 판정만 기록하고 주문·승인을 내지 않는다." },
@@ -98,6 +100,12 @@ export const GLOSSARY: Record<string, TermEntry> = {
 
 export function termLabel(k: string): string {
   return GLOSSARY[k]?.label ?? k;
+}
+
+/** 주문 방향 BUY/SELL → 매수/매도. 모르는 값은 그대로(영문 노출은 막고 처음 보는 값은 숨기지 않는다). */
+export function sideLabel(side: string | null | undefined): string {
+  if (!side) return "";
+  return GLOSSARY[`side.${side}`]?.label ?? side;
 }
 
 export function termHelp(k: string): string {

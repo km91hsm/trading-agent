@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { applyQuotes, CLOSED_RECHECK_MS, LIVE_INTERVAL_MS, liveLabel, nextDelay } from "./live";
+import { applyQuotes, CLOSED_RECHECK_MS, LIVE_INTERVAL_MS, liveLabel, livePlan, nextDelay } from "./live";
+import { planCells } from "./overview";
 import type { Position } from "./types";
 
 const pos = (ticker: string, qty: number, avg: string, cur: string): Position => ({
@@ -9,6 +10,34 @@ const pos = (ticker: string, qty: number, avg: string, cur: string): Position =>
   avg_price: avg,
   current_price: cur,
   eval_amount: String(qty * Number(cur)),
+});
+
+const plan = {
+  decision_id: 1, date: "2026-10-26", action: "BUY", target_weight: 0.1,
+  take_profit: 120, stop_loss: 90, limit_price: 100, horizon_days: 10, horizon: "short" as const,
+  dist_take_profit_pct: 0.2, dist_stop_pct: -0.1, dist_limit_pct: 0,
+};
+
+describe("livePlan (전체 검토 W8)", () => {
+  it("실시간 현재가로 익절·손절·지정가 거리를 다시 잰다", () => {
+    const p = livePlan(plan, 110)!;
+    expect(p.dist_take_profit_pct).toBeCloseTo(120 / 110 - 1);
+    expect(p.dist_stop_pct).toBeCloseTo(90 / 110 - 1);
+    expect(p.dist_limit_pct).toBeCloseTo(100 / 110 - 1);
+    expect(plan.dist_stop_pct).toBe(-0.1); // 원본 불변
+  });
+  it("가격이 없거나 0 이하·목표가 없으면 그 거리는 null", () => {
+    expect(livePlan({ ...plan, stop_loss: null }, 110)!.dist_stop_pct).toBeNull();
+    expect(livePlan(plan, 0)).toEqual(plan);
+    expect(livePlan(null, 110)).toBeNull();
+  });
+  it("applyQuotes 가 실시간 행의 계획 거리를 갱신해 planCells 문구가 바뀐다", () => {
+    const r = applyQuotes([{ ...pos("005930", 1, "100", "100"), plan }], {
+      "005930": { price: "95", change_pct: null, asof: "x", stale: false },
+    });
+    expect(r.positions[0].plan!.dist_stop_pct).toBeCloseTo(90 / 95 - 1);
+    expect(planCells(r.positions[0].plan, "KR")!.stop).not.toEqual(planCells(plan, "KR")!.stop);
+  });
 });
 
 describe("applyQuotes", () => {

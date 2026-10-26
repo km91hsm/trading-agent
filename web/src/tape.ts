@@ -82,7 +82,7 @@ export function gateFor(
   now: Date,
 ): { approved: boolean | null; text: string } {
   if (!rc) return { approved: null, text: "판정 없음" };
-  if (d.action === "HOLD") return { approved: null, text: "보유 · 주문 없음" };
+  if (d.action === "HOLD") return { approved: null, text: `${termLabel("action.HOLD")} · 주문 없음` };
   if (!rc.approved) return { approved: false, text: `거부 · ${rc.reasons[0] ?? "사유 없음"}` };
   const qty = rc.adjusted_qty ?? 0;
   if (order) {
@@ -93,7 +93,7 @@ export function gateFor(
     const left = minutesLeft(approval.expires_at, now);
     return { approved: true, text: `${qty}주 승인 대기${left === null ? "" : ` · ${left}분 뒤 만료`}` };
   }
-  if (qty > 0) return { approved: true, text: `${qty}주 승인 · 주문 없음` };
+  if (qty > 0) return { approved: true, text: `${qty}주 ${termLabel("gate.pass")} · 주문 없음` };
   return { approved: true, text: "통과 · 주문 없음" };
 }
 

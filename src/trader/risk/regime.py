@@ -18,6 +18,7 @@ from typing import Literal
 
 from trader.config import HedgeCfg
 from trader.control import control
+from trader.notify.messages import REGIME
 
 State = Literal["bull", "neutral", "bear"]
 FLAG_PREFIX = "regime:"
@@ -288,7 +289,8 @@ def summary(
 
 
 def line(conn: sqlite3.Connection, markets: list[str], *, today: date | None = None) -> str:
-    """한 줄 표기: 'KR bear(2/3) 10-24~ 제안 12% · US bull(0/3)'. 기록 없으면 '-'."""
+    """한 줄 표기: 'KR 하락(2/3) 10-24~ 제안 12% · US 상승(0/3)'. 기록 없으면 '-'.
+    상태 코드는 한글로(STATUS·텔레그램 /status 공용, 전체 검토 T3)."""
     parts = []
     for r in summary(conn, markets, today=today):
         if r["state"] is None:
@@ -297,7 +299,8 @@ def line(conn: sqlite3.Connection, markets: list[str], *, today: date | None = N
             since = f" {r['since'][5:]}~" if r.get("since") else ""
             v = r.get("view")
             prop = f" 제안 {float(v['hedge_weight'] or 0):.0%}" if v else ""
-            parts.append(f"{r['market']} {r['state']}({count_text(r)}){since}{prop}")
+            shown = REGIME.get(r["state"], r["state"])
+            parts.append(f"{r['market']} {shown}({count_text(r)}){since}{prop}")
     return " · ".join(parts)
 
 

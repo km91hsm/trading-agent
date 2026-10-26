@@ -146,7 +146,10 @@ def test_tick_enters_on_signal_paper_only_and_once_per_ticker(conn, project):
     assert conn.execute("SELECT COUNT(*) FROM decisions").fetchone()[0] == 0
     row = conn.execute("SELECT decision_id, side, qty FROM orders").fetchone()
     assert row["decision_id"] is None and row["side"] == "BUY"
-    assert any("[단타 진입]" in m for m in ctx.notifier.msgs)
+    # 그날 첫 묶음은 바로 — 진입은 '[단타]' 묶음 한 통 안의 한 줄 (전체 검토 T3)
+    assert [m.splitlines()[1] for m in ctx.notifier.msgs if m.startswith("[단타]")] == [
+        "진입 005930 @10,050원 · " + engine.load_state(None, D, "KR")["open"][0]["reason"]
+    ]
     # 다음 틱: 같은 종목은 보유 중이라 후보에서 빠지고, 신호가 있어도 다시 사지 않는다
     out2 = engine.tick(ctx, market="KR", today=D)
     assert out2["entries"] == [] and out2["candidates"] == 1
@@ -180,6 +183,9 @@ def test_tick_exits_on_take_profit_and_halts_on_daily_stop(conn, project):
     assert out["exits"] == [
         {"ticker": "005930", "reason": "take_profit", "ret": pytest.approx(0.0249, abs=1e-3)}
     ]
+    # 첫 묶음 5분 뒤 청산은 묶음 주기(30분) 안이라 모아 둔다 — 틱마다 오지 않는다
+    assert sum(m.startswith("[단타]") for m in ctx.notifier.msgs) == 1
+    assert engine.load_state(None, D, "KR")["outbox"][0]["leg"] == "exit"
     st = engine.load_state(None, D, "KR")
     assert st["open"] == [] and st["closed"][0]["exit_price"] == "10300"
     sells = conn.execute("SELECT side, order_type FROM orders WHERE side='SELL'").fetchall()
@@ -194,6 +200,10 @@ def test_tick_exits_on_take_profit_and_halts_on_daily_stop(conn, project):
     assert out3["entries"] == [] and "실현" in engine.load_state(None, D, "KR")["halted"]
     assert "skipped" in engine.tick(ctx, market="KR", today=D)
     assert any("[단타 중단]" in m for m in ctx.notifier.msgs)
+    # 중단 때는 모아 둔 청산을 즉시 보낸다 (한글 사유·영문 코드 없음)
+    digest = [m for m in ctx.notifier.msgs if m.startswith("[단타]")][-1]
+    assert "청산 005930 @10,300원 · 익절" in digest and "take_profit" not in digest
+    assert engine.load_state(None, D, "KR")["outbox"] == []
 
 
 def test_allowed_blocks_disabled_paused_bear_and_strategist(conn, project):
@@ -252,3 +262,35 @@ def test_dry_run_records_without_orders(conn, project):
     assert engine.load_state(None, D, "KR")["open"][0]["dry_run"] is True
     rep = engine.report(None, market="KR", days=3, today=D)
     assert rep["days"][0]["date"] == D.isoformat() and rep["summary"]["trades"] == 0
+
+
+def test_digest_every_min_bundles_and_dry_run_is_korean(conn, project):
+    """전체 검토 T3: 묶음 주기가 지나면 모인 알림을 한 통으로, dry_run 은 '주문 없이 판정'."""
+    _scan(["005930", "000660"])
+    ctx = _ctx(conn, minutes={"005930": _bars(True)}, dry_run=True)
+    engine.tick(ctx, market="KR", today=D)
+    assert len(ctx.notifier.msgs) == 1 and "(주문 없이 판정)" in ctx.notifier.msgs[0]
+    assert "dry-run" not in ctx.notifier.msgs[0]
+    ctx.market_client.minutes["000660"] = _bars(True)
+    ctx.now = lambda: NOW + timedelta(minutes=10)
+    engine.tick(ctx, market="KR", today=D)
+    assert len(ctx.notifier.msgs) == 1  # 주기 안 — 보류
+    ctx.now = lambda: NOW + timedelta(minutes=31)
+    engine.tick(ctx, market="KR", today=D)
+    assert len(ctx.notifier.msgs) == 2 and "진입 000660" in ctx.notifier.msgs[1]
+
+
+def test_digest_kept_when_send_fails(conn, project):
+    """Codex 리뷰: 텔레그램 실패(False)·예외면 묶음을 버리지 않고 다음 틱에 다시 보낸다."""
+    _scan(["005930"])
+    ctx = _ctx(conn, minutes={"005930": _bars(True)})
+    ctx.notifier.send = lambda text, *, escape=True: False
+    engine.tick(ctx, market="KR", today=D)
+    st = engine.load_state(None, D, "KR")
+    assert len(st["outbox"]) == 1 and not st.get("digest_at")
+    sent = []
+    ctx.notifier.send = lambda text, *, escape=True: sent.append(text) or True
+    ctx.now = lambda: NOW + timedelta(minutes=1)
+    engine.tick(ctx, market="KR", today=D)
+    assert len(sent) == 1 and "진입 005930" in sent[0]
+    assert engine.load_state(None, D, "KR")["outbox"] == []
