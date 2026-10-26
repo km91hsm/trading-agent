@@ -13,6 +13,7 @@ from typing import Any
 
 from trader.config import KST, MARKET_TZ, Market
 from trader.platform import paths
+from trader.platform.fsutil import atomic_replace
 
 _US_OPEN = time(9, 30)
 
@@ -62,7 +63,7 @@ def write_checkpoint(dir: Path, name: str, data: dict) -> Path:
     final = dir / f"{name}.json"
     tmp = dir / f"{name}.json.{os.getpid()}.tmp"
     tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.replace(tmp, final)
+    atomic_replace(tmp, final)
     return final
 
 

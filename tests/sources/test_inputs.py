@@ -908,3 +908,41 @@ def test_sentiment_saveticker_section_from_local_dir(project, monkeypatch):
         deps=deps(),
     )
     assert d3["sentiment"]["saveticker"]["error"] == "no saveticker dir"
+
+
+def test_build_inputs_returns_at_shared_deadline_without_waiting_stuck_section(project):
+    """전체 검토 P7: 멈춘 절을 기다리지 않고 공통 기한에 돌아온다(예전 `with` 풀은 닫힐 때 대기)."""
+    import threading
+    import time
+
+    import pytest
+
+    from trader.sources import inputs as inputs_mod
+
+    release = threading.Event()
+
+    def stuck(*a, **kw):
+        release.wait(5)
+        return {}
+
+    mp = pytest.MonkeyPatch()
+    mp.setattr(inputs_mod, "SECTION_TIMEOUT_S", 0.3)
+    mp.setattr(inputs_mod, "_fundamental", lambda *a, **kw: {})
+    mp.setattr(inputs_mod, "_news_macro", stuck)
+    mp.setattr(inputs_mod, "_sentiment", stuck)
+    t0 = time.monotonic()
+    try:
+        d = build_inputs(
+            ticker="005930",
+            market="KR",
+            exchange=None,
+            asof=T0,
+            cfg=cfg(),
+            secrets=Secrets(),
+            deps=deps(),
+        )
+    finally:
+        mp.undo()
+        release.set()
+    assert time.monotonic() - t0 < 2.0  # 절마다 0.3초씩 따로 기다리지도 않는다
+    assert "timeout" in d["news_macro"]["error"] and "timeout" in d["sentiment"]["error"]

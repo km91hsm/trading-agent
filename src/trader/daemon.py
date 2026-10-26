@@ -40,6 +40,7 @@ SCALP_INTERVAL_S = 60  # 분 단위 단타 틱 (Phase 23 S)
 OPS_CHECK_S = 1800  # 운영 점검 주기 (Phase 23 A)
 TELEGRAM_POLL_S = 30
 QUEUE_JOB_ID = "job_queue"  # 작업 대기열 소비 잡 (jobs.py)
+FAST_QUEUE_JOB_ID = "job_queue_fast"  # 빠른 레인: 재평가·가벼운 잡(heavy 락 밖, 전체 검토 P2)
 QUEUE_INTERVAL_S = 10
 QUEUED_MAX_AGE = timedelta(hours=6)  # 데몬이 꺼진 동안 쌓인 요청은 만료
 BOOTSTRAP_RETRY_AGE = timedelta(hours=24)  # 피처 스토어 부트스트랩 백필 실패 뒤 재시도 간격
@@ -50,8 +51,13 @@ FILLS_SYNC_TIMES = ((16, 10), (7, 10))  # KR 마감 후, US 마감 후 (KST)
 
 
 class Lock:
+    """데몬 단일 인스턴스 잠금. `<path>.os` 에 **수명 동안 쥐는 OS 파일 잠금**을 먼저 잡고(전체 검토
+    P4 — 죽은 잠금 인수를 두 프로세스가 동시에 판단해 둘 다 뜨던 경합을 OS 가 직렬화), 표시·생존
+    판정용 pid 파일(`path`)은 예전처럼 쓴다(heartbeat.read_status 가 읽는다)."""
+
     def __init__(self, path: Path) -> None:
         self.path = path
+        self._hold = None
 
     def _holder(self) -> tuple[int, str | None]:
         try:
@@ -89,7 +95,20 @@ class Lock:
         """원자적으로 만든다. 이미 있으면 pid 생존을 보고 죽은 데몬의 잠금만 넘겨받는다(재시도 1회).
         pid 를 읽을 수 없는 잠금은 방금 생긴 것이면 살아 있는 것으로(다른 데몬이 쓰는 중),
         오래됐으면 죽은 것으로 본다."""
+        from trader.platform import filelock
+
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._hold = filelock.try_hold(self.path.with_name(self.path.name + ".os"))
+        if self._hold is None:
+            logger.error("데몬이 이미 실행 중입니다 (OS 잠금): %s", self.path)
+            return False
+        if not self._acquire_pidfile():
+            filelock.release_hold(self._hold)
+            self._hold = None
+            return False
+        return True
+
+    def _acquire_pidfile(self) -> bool:
         payload = json.dumps(
             {
                 "pid": os.getpid(),
@@ -126,6 +145,8 @@ class Lock:
             tmp.unlink(missing_ok=True)
 
     def release(self) -> None:
+        from trader.platform import filelock
+
         try:
             if self.path.exists():
                 data = json.loads(self.path.read_text(encoding="utf-8"))
@@ -133,6 +154,9 @@ class Lock:
                     self.path.unlink()
         except (ValueError, OSError):
             pass
+        finally:
+            filelock.release_hold(self._hold)
+            self._hold = None
 
 
 # --- 창·건너뜀 ---------------------------------------------------------------------
@@ -324,6 +348,7 @@ def build_jobs(schedule: ScheduleConfig, settings: Settings, *, markets: list[st
     )
     jobs.append(Job("telegram_poll", "telegram_poll", interval_s=TELEGRAM_POLL_S))
     jobs.append(Job(QUEUE_JOB_ID, "job_queue", interval_s=QUEUE_INTERVAL_S))
+    jobs.append(Job(FAST_QUEUE_JOB_ID, "job_queue_fast", interval_s=QUEUE_INTERVAL_S))
     jobs.append(Job("news_collect", "news_collect", interval_s=schedule.news_collect.interval_s))
     jobs.append(Job("ops_check", "ops_check", interval_s=OPS_CHECK_S))  # 운영 점검(Phase 23 A)
     for i, (h, mi) in enumerate(FILLS_SYNC_TIMES):
@@ -398,6 +423,27 @@ def run_job(
 # --- 의존성·잡 본체 -------------------------------------------------------------------
 
 
+class HeavyWanted:
+    """heavy 락을 기다리는 cron 잡 수(전체 검토 P8). Event 하나로는 cron 둘이 기다릴 때 먼저 끝난
+    쪽이 clear 해 남은 쪽의 양보 요청이 사라졌다 — 수를 세어 0 이 될 때만 꺼진다."""
+
+    def __init__(self) -> None:
+        self._n = 0
+        self._lock = threading.Lock()
+
+    def enter(self) -> None:
+        with self._lock:
+            self._n += 1
+
+    def leave(self) -> None:
+        with self._lock:
+            self._n = max(0, self._n - 1)
+
+    def is_set(self) -> bool:
+        with self._lock:
+            return self._n > 0
+
+
 @dataclass
 class DaemonDeps:
     settings: Settings
@@ -429,7 +475,7 @@ class DaemonDeps:
     scalp_judge: Any | None = None  # Phase 25 단타 판정자(scalp.judge 일 때 _scalp_body 가 만든다)
     # cron 잡이 heavy 락을 기다리는 중이면 선다. 대기열의 긴 잡(백필)은 진행 콜백에서 이것을 보고
     # 락을 잠시 내놓는다(종목 경계) — 아침 scan 이 백필 뒤로 수 시간 밀리지 않도록
-    heavy_wanted: threading.Event = field(default_factory=threading.Event)
+    heavy_wanted: HeavyWanted = field(default_factory=lambda: HeavyWanted())
 
 
 HEAVY_POLL_S = 30.0  # heavy 락 대기 폴링 간격
@@ -1929,6 +1975,15 @@ def _reflect_body(deps: DaemonDeps) -> dict:
                 errors.append(f"{market}: {res.error}")
                 deps.notifier.send(messages.event("reflect 실패", f"{market}: {res.error}"))
         pr = store.promote_and_prune(conn, now=deps.now(), settings=deps.settings.memory)
+        try:  # 보존 정리(전체 검토 P12) — 실패가 반성 결과를 바꾸지 않는다
+            from trader.ops import retention
+
+            retained = retention.prune(
+                conn, deps.state, today=_today(deps), keep_days=deps.settings.retention_days
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("보존 정리 실패: %s", e)
+            retained = None
     finally:
         conn.close()
     return {
@@ -1939,6 +1994,7 @@ def _reflect_body(deps: DaemonDeps) -> dict:
         "sessions": sessions,
         "errors": errors,
         "pruned": pr["deleted"],
+        "retention": retained,
     }
 
 
@@ -2069,7 +2125,7 @@ def _heavy(deps: DaemonDeps, fn: Callable[[], Any], *, cron: bool = True) -> Any
     """무거운 잡은 한 번에 하나. cron 은 기다리되 `heavy_wanted` 를 세워 대기열 잡이 양보하게
     하고, HEAVY_WAIT_NOTIFY_S 넘게 기다리면 알림 1건을 보낸다."""
     if cron:
-        deps.heavy_wanted.set()
+        deps.heavy_wanted.enter()
     waited = 0.0
     notified = False
     try:
@@ -2092,7 +2148,7 @@ def _heavy(deps: DaemonDeps, fn: Callable[[], Any], *, cron: bool = True) -> Any
                     logger.debug("대기 알림 실패", exc_info=True)
     finally:
         if cron:
-            deps.heavy_wanted.clear()
+            deps.heavy_wanted.leave()
     try:
         return fn()
     finally:
@@ -2158,6 +2214,8 @@ def job_body(
         return lambda: _heavy(deps, lambda: _ml_train_body(deps))
     if job.kind == "job_queue":
         return lambda: _queue_tick(deps, heartbeat)
+    if job.kind == "job_queue_fast":
+        return lambda: _fast_queue_tick(deps, heartbeat)
     raise ValueError(f"알 수 없는 잡: {job.kind}")
 
 
@@ -2265,10 +2323,20 @@ def _queue_tick(deps: DaemonDeps, heartbeat: Heartbeat | None) -> dict:
         deps.heavy_lock.release()
 
 
-def _queue_tick_locked(deps: DaemonDeps, heartbeat: Heartbeat | None) -> dict:
+def _fast_queue_tick(deps: DaemonDeps, heartbeat: Heartbeat | None) -> dict:
+    """빠른 레인(전체 검토 P2): 재평가·체결 동기화·뉴스 수집·대조는 heavy 락을 기다리지 않는다.
+    백필·scan_analyze 가 돌아도 손절 재평가가 같은 틱에 나간다. 큰 잡은 기존 `job_queue` 만."""
+    if deps.stop_event.is_set():
+        return {"skipped": "종료 중"}
+    return _queue_tick_locked(deps, heartbeat, kinds=jobq.FAST_KINDS)
+
+
+def _queue_tick_locked(
+    deps: DaemonDeps, heartbeat: Heartbeat | None, *, kinds: frozenset[str] | None = None
+) -> dict:
     conn = deps.conn_factory()
     try:
-        row = jobq.claim_next(conn, now=deps.now())
+        row = jobq.claim_next(conn, now=deps.now(), kinds=kinds)
     finally:
         conn.close()
     if row is None:
@@ -2309,7 +2377,7 @@ def _queue_tick_locked(deps: DaemonDeps, heartbeat: Heartbeat | None) -> dict:
             name, wrapped, conn_factory=deps.conn_factory, interval=False, heartbeat=heartbeat
         )
 
-    run_it()  # heavy 락은 _queue_tick 이 이미 들고 있다
+    run_it()  # heavy 락은 _queue_tick 이 들고 있다(빠른 레인 _fast_queue_tick 은 락 없이)
     return {"request": req_id, "kind": kind}
 
 
@@ -2561,7 +2629,10 @@ def _install_heartbeat_listener(
     def on_job(event: Any) -> None:
         if event.code in (ev.EVENT_JOB_MISSED, ev.EVENT_JOB_MAX_INSTANCES):
             # 대기열 틱은 긴 요청을 도는 동안 10초마다 MAX_INSTANCES 가 나므로 놓침이 아니다
-            if not (event.code == ev.EVENT_JOB_MAX_INSTANCES and event.job_id == QUEUE_JOB_ID):
+            if not (
+                event.code == ev.EVENT_JOB_MAX_INSTANCES
+                and event.job_id in (QUEUE_JOB_ID, FAST_QUEUE_JOB_ID)
+            ):
                 hb.job_missed(event.job_id, datetime.now(UTC))
             job = by_id.get(event.job_id)
             if event.code == ev.EVENT_JOB_MISSED and deps is not None and job and job.cron:

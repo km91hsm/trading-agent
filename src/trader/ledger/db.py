@@ -342,6 +342,13 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
             )""",
         ],
     ),
+    (
+        21,  # 전체 검토: 시장별 최근 뉴스 조회(news_store.recent·novel_items) 인덱스
+        [
+            "CREATE INDEX IF NOT EXISTS ix_news_market_received "
+            "ON news_items(market, received_at)",
+        ],
+    ),
 ]
 
 

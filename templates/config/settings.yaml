@@ -61,6 +61,7 @@ models:
 
 debate_rounds: 1      # 0~2. 독립 의견(라운드 0) + 반박 라운드 수
 anonymize: false      # true 면 프롬프트 직전 종목명·티커 치환
+retention_days: 120   # 이 일수보다 오래된 state/runs·운영일 플래그·끝난 잡 기록을 reflect 잡이 정리(원장 사실은 유지)
 claude_bin: null      # null 이면 PATH 에서 claude 탐색
 
 # 오케스트레이터 세션 예산·동시성 (스펙 §4.1)

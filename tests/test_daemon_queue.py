@@ -404,3 +404,44 @@ def test_reevaluate_request_passes_cancel_and_skips_when_stopping(conn):
     deps.stop_event.set()
     out = daemon._reevaluate_request(deps, {**p, "trigger_id": trig()})
     assert out == {"skipped": "종료 중"} and len(seen) == 1
+
+
+def test_fast_lane_runs_reevaluate_while_heavy_lock_held(project, conn, monkeypatch):
+    """전체 검토 P2: 백필 등이 heavy 락을 쥐고 있어도 재평가·가벼운 잡은 빠른 레인이 꺼낸다."""
+    deps = _deps(conn, FakeMarket(), now=lambda: NOW)
+    ran = []
+    monkeypatch.setattr(
+        daemon, "queued_job_body", lambda d, req, prog: lambda: ran.append(req["kind"]) or {}
+    )
+    jobq.enqueue(conn, "ml_train", {}, source="web", now=NOW)
+    rid = jobq.enqueue(conn, "fills_sync", {}, source="web", now=NOW)
+    with deps.heavy_lock:
+        assert daemon._queue_tick(deps, None) == {"skipped": "다른 무거운 잡 실행 중"}
+        assert daemon._fast_queue_tick(deps, None) == {"request": rid, "kind": "fills_sync"}
+        # 무거운 잡은 빠른 레인이 가져가지 않는다
+        assert daemon._fast_queue_tick(deps, None) == {"skipped": "대기 없음"}
+    assert ran == ["fills_sync"]
+    assert daemon._queue_tick(deps, None)["kind"] == "ml_train"
+
+
+def test_claim_next_filters_kinds(conn):
+    jobq.enqueue(conn, "ml_train", {}, source="web", now=NOW)
+    assert jobq.claim_next(conn, now=NOW, kinds=jobq.FAST_KINDS) is None
+    assert jobq.claim_next(conn, now=NOW, kinds=frozenset()) is None
+    assert jobq.claim_next(conn, now=NOW)["kind"] == "ml_train"
+    assert "reevaluate" in jobq.FAST_KINDS and "features_backfill" not in jobq.FAST_KINDS
+
+
+def test_heavy_wanted_counts_waiting_crons():
+    """전체 검토 P8: cron 둘이 기다릴 때 먼저 끝난 쪽이 양보 요청을 지우지 않는다."""
+    w = daemon.HeavyWanted()
+    assert not w.is_set()
+    w.enter()
+    w.enter()
+    w.leave()
+    assert w.is_set()
+    w.leave()
+    w.leave()  # 0 아래로 내려가지 않는다
+    assert not w.is_set()
+    w.enter()
+    assert w.is_set()

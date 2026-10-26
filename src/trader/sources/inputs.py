@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeout
@@ -570,24 +571,31 @@ def build_inputs(
     # 세 절은 서로 독립(fundamental 만 technical 의 현재가를 쓴다)이고 네트워크 대기가 대부분이라
     # 동시에 돈다. KIS 클라이언트는 RateLimiter 락, httpx.Client 는 스레드 안전, DART 지연 초기화는
     # 자체 락. 각 절은 run_section 이 예외를 절 안에 가두므로 결과 조립은 그대로다.
-    with ThreadPoolExecutor(max_workers=3, thread_name_prefix="collect") as pool:
+    # 기한은 세 절 공통(시작부터 SECTION_TIMEOUT_S): 절마다 따로 기다리면 최악 3배가 되고, `with`
+    # 블록은 닫힐 때 멈춘 스레드를 끝까지 기다려 기한이 무의미했다(전체 검토 P7) → 기한이 지나면
+    # 결과를 오류 절로 적고 풀은 기다리지 않고 닫는다(멈춘 스레드는 끝날 때까지 뒤에 남는다)
+    pool = ThreadPoolExecutor(max_workers=3, thread_name_prefix="collect")
+    try:
         futures = {
             "fundamental": pool.submit(_fundamental, ticker, market, asof, cfg, deps, technical),
             "news_macro": pool.submit(_news_macro, ticker, market, name, asof, cfg, secrets, deps),
             "sentiment": pool.submit(_sentiment, ticker, market, name, asof, cfg, deps, secrets),
         }
+        deadline = time.monotonic() + SECTION_TIMEOUT_S
         for key, fut in futures.items():
             try:
-                result[key] = fut.result(timeout=SECTION_TIMEOUT_S)
+                result[key] = fut.result(timeout=max(0.0, deadline - time.monotonic()))
             except FuturesTimeout:
-                # 한 절이 멈춰도(네트워크 TLS 교착 등) 수집 전체·세션을 막지 않는다. 스레드는 풀이
-                # 닫힐 때까지 남지만 결과는 오류 절로 기록한다
+                # 한 절이 멈춰도(네트워크 TLS 교착 등) 수집 전체·세션을 막지 않는다
                 logger.warning("수집 절 %s 시간 초과(%ss) %s", key, SECTION_TIMEOUT_S, ticker)
+                fut.cancel()
                 result[key] = Section(
                     data=None,
                     received_at=deps.now().isoformat(),
                     error=f"timeout after {SECTION_TIMEOUT_S}s",
                 )
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
     result["news_macro"]["events"] = _events(
         result["fundamental"], asof, deps.now, upcoming=_upcoming(asof, cfg)
     )
