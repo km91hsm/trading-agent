@@ -1,5 +1,7 @@
 from datetime import UTC, datetime
 
+from helpers_saveticker import launch_or_skip
+
 
 def test_all_requested_rankings_and_calendar_months_are_scheduled():
     from trader.saveticker.service import build_views
@@ -108,10 +110,7 @@ def test_login_waits_for_hydrated_email_dialog_before_filling():
       };
     },4000)</script>"""
     with api.sync_playwright() as p:
-        try:
-            browser = p.chromium.launch()
-        except api.Error:
-            pytest.skip("선택 의존성 Chromium 미설치")
+        browser = launch_or_skip(p)
         try:
             page = browser.new_page()
             page.set_default_timeout(1000)
@@ -153,10 +152,7 @@ def test_community_comment_budget_reaches_second_post_next_cycle():
           <button data-selected="false" onclick="{onclick}">1</button></div>
           <button aria-label="더보기 메뉴"></button></div></div>""")
     with api.sync_playwright() as p:
-        try:
-            browser = p.chromium.launch()
-        except api.Error:
-            pytest.skip("선택 의존성 Chromium 미설치")
+        browser = launch_or_skip(p)
         try:
             page = browser.new_page()
             page.set_content("".join(cards))
@@ -190,10 +186,7 @@ def test_calendar_all_filter_does_not_click_all_range_button():
     from trader.saveticker.browser import Browser
 
     with api.sync_playwright() as p:
-        try:
-            browser = p.chromium.launch()
-        except api.Error:
-            pytest.skip("선택 의존성 Chromium 미설치")
+        browser = launch_or_skip(p)
         try:
             page = browser.new_page()
             page.set_content("""<button onclick="document.body.dataset.range='all'">전체</button>
@@ -215,7 +208,7 @@ def test_news_waits_for_delayed_body_and_ignores_carousel_and_comments():
     from trader.saveticker.models import Item
 
     with api.sync_playwright() as p:
-        browser = p.chromium.launch()
+        browser = launch_or_skip(p)
         try:
             page = browser.new_page()
             page.set_content("""<button aria-label="제목"
@@ -256,7 +249,7 @@ def test_site_javascript_errors_record_type_without_private_message():
     from trader.saveticker.browser import Browser
 
     with api.sync_playwright() as p:
-        browser = p.chromium.launch()
+        browser = launch_or_skip(p)
         try:
             page = browser.new_page()
             adapter = Browser(page, ("unused", "unused"))
@@ -325,7 +318,7 @@ def test_news_plan_uses_whole_once_and_keeps_required_pdf_stream():
     from trader.saveticker.browser import Browser
 
     with api.sync_playwright() as p:
-        browser = p.chromium.launch()
+        browser = launch_or_skip(p)
         try:
             page = browser.new_page()
             page.set_content("""<div role="tablist"><button role="tab">전체</button>

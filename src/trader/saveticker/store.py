@@ -24,6 +24,15 @@ def _stable(stream: str, item: dict) -> dict:
     return {k: v for k, v in item.items() if k not in drop}
 
 
+_GOOD = (
+    "json_extract(payload,'$.status') IN ('ok','partial') "
+    "AND json_array_length(payload,'$.items') > 0"
+)
+_LAST_GOOD_SQL = (
+    f"SELECT payload FROM captures WHERE stream=? AND {_GOOD} ORDER BY seq DESC LIMIT 1"
+)
+
+
 def _json(value) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True)
 
@@ -71,6 +80,7 @@ class Store:
                     seq INTEGER PRIMARY KEY, stream TEXT NOT NULL,
                     observed_at TEXT NOT NULL, payload TEXT NOT NULL
                 );
+                CREATE INDEX IF NOT EXISTS captures_stream_seq ON captures(stream, seq);
             """)
             db.execute("BEGIN IMMEDIATE")
             columns = {row[1] for row in db.execute("PRAGMA table_info(revisions)")}
@@ -199,16 +209,18 @@ class Store:
                     "INSERT OR REPLACE INTO exports VALUES (?,?,?)",
                     (name, last_seq, path.stat().st_size),
                 )
-            latest = db.execute(
-                "SELECT payload FROM captures WHERE seq IN "
-                "(SELECT MAX(seq) FROM captures GROUP BY stream)"
-            ).fetchall()
-            good = db.execute(
-                "SELECT payload FROM captures WHERE seq IN "
-                "(SELECT MAX(seq) FROM captures WHERE "
-                "json_extract(payload,'$.status') IN ('ok','partial') "
-                "AND json_array_length(payload,'$.items') > 0 GROUP BY stream)"
-            ).fetchall()
+            # 스트림별 마지막·마지막 성공 캡처: (stream, seq) 인덱스로 뒤에서부터 찾아 첫 일치에서
+            # 멈춘다 — 저장마다 보관 기간 전체 payload 를 훑지 않게(Codex 리뷰)
+            heads = db.execute("SELECT stream, MAX(seq) FROM captures GROUP BY stream").fetchall()
+            latest = [
+                db.execute("SELECT payload FROM captures WHERE seq=?", (seq,)).fetchone()
+                for _, seq in heads
+            ]
+            good = [
+                row
+                for stream, _ in heads
+                if (row := db.execute(_LAST_GOOD_SQL, (stream,)).fetchone()) is not None
+            ]
             successes = {json.loads(row[0])["stream"]: json.loads(row[0]) for row in good}
             for stream, payload in successes.items():
                 atomic_json(self.root / "latest" / f"{stream}.json", payload)
@@ -241,10 +253,21 @@ class Store:
             out["revisions"] = db.execute(
                 "DELETE FROM revisions WHERE received_at < ?", (stamp,)
             ).rowcount
+            # 스트림별 마지막 캡처와 마지막 성공 캡처는 남긴다(latest·status 의 원본)
+            keep = {
+                seq
+                for _, seq in db.execute("SELECT stream, MAX(seq) FROM captures GROUP BY stream")
+            }
+            keep |= {
+                seq
+                for (seq,) in db.execute(
+                    f"SELECT MAX(seq) FROM captures WHERE {_GOOD} GROUP BY stream"
+                )
+            }
             out["captures"] = db.execute(
-                "DELETE FROM captures WHERE observed_at < ? AND seq NOT IN "
-                "(SELECT MAX(seq) FROM captures GROUP BY stream)",
-                (stamp,),
+                "DELETE FROM captures WHERE observed_at < ? "
+                "AND seq NOT IN (SELECT value FROM json_each(?))",
+                (stamp, json.dumps(sorted(keep))),
             ).rowcount
             # 지운 날짜의 내보내기 커서도 지운다(남기면 export 가 파일이 없다고 보고 다시 만든다)
             db.execute("DELETE FROM exports WHERE substr(path, 1, 10) < ?", (cutoff.isoformat(),))

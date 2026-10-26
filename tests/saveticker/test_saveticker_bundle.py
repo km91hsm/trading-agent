@@ -67,6 +67,28 @@ def test_chromium_ensure_installs_only_when_missing(monkeypatch):
     assert chromium.ensure() is True and len(calls) == 1  # 이미 있으면 설치하지 않는다
 
 
+def test_install_and_workers_share_browser_dir(monkeypatch, tmp_path):
+    """번들 Playwright 는 PLAYWRIGHT_BROWSERS_PATH 가 없으면 패키지 안을 본다 → 설치 전에 OS 캐시로
+    명시해 설치·확인·수집 작업(env 상속)이 같은 곳을 본다. 사용자가 정한 값은 존중."""
+    from trader.platform import paths
+
+    monkeypatch.delenv("PLAYWRIGHT_BROWSERS_PATH", raising=False)
+    seen = []
+    monkeypatch.setattr(chromium, "installed", lambda: False)
+
+    def popen(argv, **kw):
+        seen.append(kw["env"].get("PLAYWRIGHT_BROWSERS_PATH"))
+        return FakeInstall(0)
+
+    monkeypatch.setattr(chromium.subprocess, "Popen", popen)
+    chromium.ensure()
+    assert seen == [str(paths.playwright_browsers_dir())]
+    assert os.environ["PLAYWRIGHT_BROWSERS_PATH"] == seen[0]
+    monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(tmp_path))
+    chromium.prepare_env()
+    assert os.environ["PLAYWRIGHT_BROWSERS_PATH"] == str(tmp_path)
+
+
 def test_chromium_ensure_reports_failure(monkeypatch):
     monkeypatch.setattr(chromium, "installed", lambda: False)
     monkeypatch.setattr(chromium.subprocess, "Popen", lambda argv, **kw: FakeInstall(1))
@@ -90,12 +112,30 @@ def test_kill_leftovers_targets_live_collector_lanes(tmp_path, monkeypatch):
     from trader.platform import procs
 
     (tmp_path / "runtime").mkdir()
-    for name, pid in (("runner-news", 501), ("runner-market", 502), ("runner", 503)):
-        (tmp_path / "runtime" / f"{name}.json").write_text(json.dumps({"pid": pid}), "utf-8")
-    monkeypatch.setattr(automation, "collector_alive", lambda pid: pid in (501, 503))
+    rows = {
+        "runner-news": {"pid": 501, "proc_start": "s501"},
+        "runner-market": {"pid": 502, "proc_start": "s502"},  # 수집기 아님
+        "runner": {"pid": 503, "proc_start": "old"},  # 재부팅 뒤 다른 프로그램이 같은 pid
+        "runner-community": {"pid": 504},  # 시작 시각 기록 없음 → 확인 불가, 건드리지 않음
+        "runner-background": {"pid": 505, "proc_start": "s505"},
+    }
+    for name, row in rows.items():
+        (tmp_path / "runtime" / f"{name}.json").write_text(json.dumps(row), "utf-8")
+    monkeypatch.setattr(automation, "collector_alive", lambda pid: pid != 502)
+    monkeypatch.setattr(procs, "process_start", lambda pid: f"s{pid}")
     killed = []
     monkeypatch.setattr(procs, "kill_group", killed.append)
-    assert automation.kill_leftovers(tmp_path) == 2 and sorted(killed) == [501, 503]
+    assert automation.kill_leftovers(tmp_path) == 2 and sorted(killed) == [501, 505]
+
+
+def test_calendar_range_rolls_and_views_follow():
+    from trader.config import KST
+    from trader.saveticker.cli import rolling_range, select_views
+
+    assert rolling_range(datetime(2026, 10, 27, tzinfo=KST)) == ("2026-09", "2027-01")
+    assert rolling_range(datetime(2027, 1, 31, tzinfo=KST)) == ("2026-12", "2027-04")
+    views = select_views("2026-12", "2027-04", [], only=None, lane="background")
+    assert "calendar_2027-04" in {v.stream for v in views}
 
 
 def _service_state(home, value):
@@ -220,3 +260,28 @@ def test_service_blocks_when_chromium_install_fails(tmp_path, monkeypatch):
     state = automation.read(tmp_path / "runtime" / "service.json")
     assert state["state"] == "blocked" and state["reason"] == "chromium_install_failed"
     assert not (tmp_path / "runtime" / "service.lock").exists()  # 잠금은 풀어 둔다
+
+
+def test_prune_keeps_last_good_capture_and_latest_files(tmp_path):
+    """마지막 캡처가 실패여도 그 전의 마지막 성공 화면은 남긴다 — latest/<stream>.json 의 원본."""
+    from trader.saveticker.models import Capture
+    from trader.saveticker.store import Store
+
+    store = Store(tmp_path)
+    store.save(_capture([{"id": "a", "title": "성공"}], "2026-09-01T00:00:00+00:00"))
+    store.save(_capture([{"id": "b", "title": "더 옛 성공"}], "2026-09-01T00:00:01+00:00"))
+    failed = Capture(
+        stream="news_all",
+        page_url="https://www.saveticker.com/news",
+        observed_at="2026-09-02T00:00:00+00:00",
+        items=[],
+        status="error",
+        reason="TimeoutError",
+    )
+    store.save(failed)
+    out = store.prune(today=datetime(2026, 10, 27, tzinfo=UTC).date(), keep_days=30)
+    assert out["captures"] == 1  # 첫 성공만 지운다(마지막 성공·마지막 캡처는 남김)
+    store.export(incremental=True)
+    latest = json.loads((tmp_path / "latest" / "news_all.json").read_text())
+    assert latest["items"][0]["title"] == "더 옛 성공"
+    assert store.status()["streams"]["news_all"]["status"] == "error"

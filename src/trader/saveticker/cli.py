@@ -105,6 +105,23 @@ def _month_offset(now: datetime, offset: int) -> str:
     return f"{index // 12:04}-{index % 12 + 1:02}"
 
 
+def rolling_range(now: datetime) -> tuple[str, str]:
+    """기본 캘린더 범위: KST 지난달 ~ 3개월 뒤(양 끝 포함). 상시 수집은 달이 바뀌면 다시 센다."""
+    return _month_offset(now, -1), _month_offset(now, 3)
+
+
+def select_views(
+    start: str, end: str, news_views: list[View], *, only: str | None, lane: str | None
+) -> list[View]:
+    views = build_views(start, end) + news_views
+    if only:
+        requested = set(only.split(","))
+        views = [view for view in views if view.stream in requested]
+    if lane:
+        views = [view for view in views if lane_for(view) == lane]
+    return views
+
+
 @app.command("run")
 def run_cmd(
     once: bool = typer.Option(False, help="전체 스트림을 1회 수집한 뒤 종료"),
@@ -125,11 +142,18 @@ def run_cmd(
 
     try:
         now = datetime.now(KST)
-        start = start_month or _month_offset(now, -1)
-        end = end_month or _month_offset(now, 3)
+        # 범위를 지정하지 않았으면 상시 수집 중 달이 바뀔 때 굴린다(Codex 리뷰: 10월에 띄운 수집기가
+        # 9~1월만 계속 보면 1월 말에 2월 일정이 빠진다)
+        rolling = start_month is None and end_month is None
+        start, end = rolling_range(now)
+        start, end = start_month or start, end_month or end
         months_between(start, end)
         account = credentials(credentials_path())
         from playwright.sync_api import sync_playwright
+
+        from trader.saveticker import chromium
+
+        chromium.prepare_env()
     except ImportError:
         typer.echo(
             "uv sync 및 uv run trader saveticker install-browser 를 실행하세요", err=True
@@ -157,11 +181,17 @@ def run_cmd(
         previous[sig] = signal.signal(sig, lambda *_: stop.set())
     import os
 
+    from trader.platform.procs import process_start
+
+    # pid 재사용 대비: 남은 작업 정리(automation.kill_leftovers)가 같은 프로세스인지 확인한다
+    proc_start = process_start(os.getpid())
+
     def heartbeat(state, **kwargs):
         atomic_json(
             run_folder / (f"runner-{lane}.json" if lane else "runner.json"),
             {
                 "pid": os.getpid(),
+                "proc_start": proc_start,
                 "state": state,
                 "updated_at": datetime.now(UTC).isoformat(),
                 **kwargs,
@@ -198,10 +228,7 @@ def run_cmd(
                     "--lane",
                     group,
                     "--headed" if headed else "--headless",
-                    "--start-month",
-                    start,
-                    "--end-month",
-                    end,
+                    *([] if rolling else ["--start-month", start, "--end-month", end]),
                     "--max-scrolls",
                     str(max_scrolls),
                     "--max-details",
@@ -234,24 +261,25 @@ def run_cmd(
                 heartbeat("logging_in")
                 adapter.login()
                 news_views = adapter.discover_news() if lane in (None, "news", "background") else []
-                views = build_views(start, end) + news_views
                 if only:
-                    requested = set(only.split(","))
                     known = build_views(start, end) + [
                         View("news_all", "news"),
                         View("news_reports", "news"),
                     ]
-                    if requested - {view.stream for view in known}:
+                    if set(only.split(",")) - {view.stream for view in known}:
                         raise ConfigError("알 수 없는 수집 스트림입니다")
-                    views = [view for view in views if view.stream in requested]
-                if lane:
-                    views = [view for view in views if lane_for(view) == lane]
+                views = select_views(start, end, news_views, only=only, lane=lane)
                 store = Store(folder)
                 _print({"state": "collecting", "streams": len(views), "root": str(folder)})
                 due = {v.stream: 0.0 for v in views}
                 completed = set()
                 hot_streak = 0
                 while not stop.is_set():
+                    if rolling and not once and rolling_range(datetime.now(KST)) != (start, end):
+                        start, end = rolling_range(datetime.now(KST))
+                        views = select_views(start, end, news_views, only=only, lane=lane)
+                        for v in views:
+                            due.setdefault(v.stream, 0.0)
                     candidates = [v for v in views if not once or v.stream not in completed]
                     if not candidates:
                         break

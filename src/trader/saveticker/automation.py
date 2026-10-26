@@ -209,14 +209,19 @@ def _blocked(runtime, reason, **extra):
 
 def kill_leftovers(root):
     """서비스가 죽은 뒤 남은 수집 작업(각자 세션 리더라 서비스 그룹 SIGKILL 이 닿지 않는다)과
-    그 브라우저를 끝낸다. `runner-<lane>.json` 의 pid 가 아직 수집기 명령이면 그 그룹을 SIGKILL.
+    그 브라우저를 끝낸다. `runner-<lane>.json` 의 pid·시작 시각이 지금 프로세스와 같고 수집기
+    명령이면 그 그룹을 SIGKILL.
     끝낸 수를 돌려준다."""
     from trader.platform import procs
 
     killed = 0
     for name in RUNNERS:
-        pid = (read(root / "runtime" / (name + ".json")) or {}).get("pid")
-        if isinstance(pid, int) and pid != os.getpid() and collector_alive(pid):
+        row = read(root / "runtime" / (name + ".json")) or {}
+        pid, start = row.get("pid"), row.get("proc_start")
+        if not isinstance(pid, int) or pid == os.getpid() or not start:
+            continue  # 시작 시각 기록이 없으면 그 프로세스라고 확인할 수 없다 — 건드리지 않는다
+        # pid 는 재부팅 뒤 다른 프로그램에 재사용된다(Windows 는 명령줄 확인도 없다)
+        if procs.process_start(pid) == start and collector_alive(pid):
             procs.kill_group(pid)
             killed += 1
     return killed
@@ -279,6 +284,8 @@ def service(root):
         return
     from trader.saveticker import chromium
 
+    # 설치·확인·수집 작업(자식은 env 를 물려받는다)이 같은 브라우저 폴더를 본다
+    chromium.prepare_env()
     stop = threading.Event()
     child = None
     old_handlers = {}

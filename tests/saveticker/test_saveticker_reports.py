@@ -1,4 +1,5 @@
 import pytest
+from helpers_saveticker import launch_or_skip
 
 
 def test_report_cards_are_not_mistaken_for_empty_news():
@@ -67,7 +68,7 @@ def test_browser_downloads_report_via_button_and_reuses_persisted_manifest(tmp_p
     writer.write(second)
     uri2 = "data:application/pdf;base64," + base64.b64encode(second.getvalue()).decode()
     with api.sync_playwright() as p:
-        browser = p.chromium.launch()
+        browser = launch_or_skip(p)
         try:
             page = browser.new_page()
             page.set_content(f'''<main><div><p>2026년 10월 20일 (화)</p>
@@ -105,7 +106,7 @@ def test_failed_newest_reports_do_not_starve_later_pdf(tmp_path, monkeypatch):
     writer.write(buffer)
     uri = "data:application/pdf;base64," + base64.b64encode(buffer.getvalue()).decode()
     with api.sync_playwright() as p:
-        browser = p.chromium.launch()
+        browser = launch_or_skip(p)
         try:
             page = browser.new_page()
             page.set_content(f'''<main>
