@@ -9,6 +9,10 @@ risk:
   stop_loss_pct: -0.15
   min_cash_pct: 0.0
   max_sector_pct: 0.40     # 같은 섹터(config/sectors.yaml) 합계 상한. BUY/ADD 뒤 초과면 거부. 헤지 ETF 는 제외
+  max_theme_pct: 0.20      # 같은 테마(오늘 상위 테마, Phase 25) 합계 상한. BUY/ADD 뒤 초과면 거부
+  chase_limit_pct: 0.10    # 당일 등락률이 이 이상이면 신규 매수(BUY·ADD) 금지 — 급등 추격 방지
+  theme_max_horizon_days: 10  # 오늘 상위 테마 종목의 BUY·ADD 는 보유 10일 이하·익절가 필수
+  risk_per_trade_pct: 0.02 # 1회 손실 한도: 손절까지 잃는 금액 ≤ NAV × 2% 로 BUY/ADD 수량을 자른다(전체 검토 L9)
   # 보유기간 프로필(Phase 23). 결정의 horizon_days 로 short(≤10 거래일)·mid(11~40)·long(>40) 을 고른다.
   #   move_pct: 평단 대비 이만큼 움직이면 재평가 트리거 / reeval_interval_min: 같은 종목 재평가 최소 간격
   #   periodic_check_min: 시간 단위 정기 재평가(단기만, 0 = 없음; 변동이 move_pct/2 이상일 때만, 운영일 ≤ 6회)
@@ -31,7 +35,7 @@ hedge:
   leverage: true           # 3지표 모두 켜지면 −2x, 아니면 −1x
   bear_min_signals: 2      # 3지표(200일선 아래·20일 수익률 ≤ −5%·변동성 높음) 중 n개 이상이면 bear
   exit_streak_days: 5      # bear 해제: 지표 ≤ 1개가 이 일수 연속
-  agent_signal: true       # 시장 세션 전략가 RISK_OFF 를 4번째 지표로(지표 0개면 bear 불가), RISK_ON 은 경계(지표 = bear_min_signals)에서 하루 보류 (Phase 19)
+  agent_signal: false      # (전체 검토 L8, 2026-10-26 끔) 전략가 RISK_OFF 를 국면 4번째 지표로 — 한도 기울기(agent_gate)와 이중 반영이라 끄고 기울기만 쓴다. 켜면 Phase 19 동작
   agent_min_confidence: 0.7  # 전략가 제안을 지표·보류로 쓸 최소 confidence
   agent_gate: true         # 전략가 제안(확신 ≥ agent_min_confidence)이 국면 한도를 한 칸 옮김 — neutral+RISK_ON 20%·4, neutral+RISK_OFF 10%·2, bull+RISK_OFF neutral 한도, bear+RISK_ON 은 신규 매수 10%·2 조건부 허용 (Phase 22)
   flow_signal: false       # KR 외인 수급(KODEX 200 20일·5일 순매수 합 모두 음수)을 보조 국면 지표로 (Phase 21, 데이터 확인 뒤 켬)
@@ -44,14 +48,14 @@ hedge:
     KR: "069500"                                                        # KODEX 200 일봉 = 국면 판정용 지수 proxy
     US: {symbol: SPY, exchange: AMS}
 
-# 역할별 모델 (스펙 §4.1). researcher_bear 는 백본 편향 상쇄용 이종 모델.
+# 역할별 모델 (스펙 §4.1). 강세·약세 리서처는 같은 모델(2026-10-26 전체 검토 L11 — 이전엔 약세만 opus).
 models:
   orchestrator: sonnet
   screener: haiku
   scout: sonnet       # 종목 발굴(Phase 19): 시장 뉴스로 유니버스 안 → 상장 전체
   analyst: sonnet
   researcher_bull: sonnet
-  researcher_bear: opus
+  researcher_bear: sonnet  # 강세와 같은 모델(전체 검토 L11 — 비대칭이면 정당한 수렴도 '아첨' 으로 판정)
   trader: opus
   reflector: sonnet
 
@@ -114,3 +118,10 @@ rebalance:               # 주간 리밸런스(Phase 25): 최근 결정 목표 �
   enabled: true
   band_pct: 0.05         # 5%p 넘게 벗어나면 조정 (게이트 규칙은 그대로 — 3거래일·주 2회·비중·섹터·테마)
   lookback_days: 30      # 이보다 오래된 결정은 목표로 쓰지 않음
+
+theme:                   # 테마 열기 감지(Phase 25) — 감지·알림·scout 입력만, 매매는 분석 세션→게이트
+  enabled: true
+  interval_s: 1800       # 데몬 <시장>_theme 주기(장중만)
+  top_n: 3               # 알림·scout·게이트가 보는 상위 테마 수
+  min_cluster_titles: 3  # 키워드 테마: 오늘 새 뉴스 제목 공출현 최소 건수
+  weights: {news: 0.35, rank: 0.25, flow: 0.15, saveticker: 0.10, vol: 0.15}

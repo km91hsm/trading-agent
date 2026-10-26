@@ -328,20 +328,22 @@ def test_risk_on_defers_entry_only_at_boundary(project, conn):
     ctx = _ctx(conn)
     _set_regime(conn, "bear", 2)
     _view(conn, stance="RISK_ON", confidence=0.9)
-    out = hedge.rebalance(ctx, market="KR", today=D, cfg=CFG, quote_fn=lambda i: Decimal("5000"))
+    # 전체 검토 L8 뒤 기본 끔 — Phase 19 동작은 켜서 확인
+    cfg = CFG.model_copy(update={"agent_signal": True})
+    out = hedge.rebalance(ctx, market="KR", today=D, cfg=cfg, quote_fn=lambda i: Decimal("5000"))
     assert out["action"] == "deferred" and "보류" in out["reason"]
     assert ctx.brokers["paper-main"].orders == []
     assert control.get_flag(conn, hedge.done_key("KR", D))["action"] == "deferred"
     assert any("[헤지 보류] KR" in m for m in ctx.notifier.sent)
     assert hedge.rebalance(
-        ctx, market="KR", today=D, cfg=CFG, quote_fn=lambda i: Decimal("5000")
+        ctx, market="KR", today=D, cfg=cfg, quote_fn=lambda i: Decimal("5000")
     ) == {"skipped": "오늘 이미 실행"}
     # 3/3 은 보류 불가
     ctx2 = _ctx(conn)
     d2 = date(2026, 10, 27)
     _set_regime(conn, "bear", 3)
     _view(conn, date=d2.isoformat(), stance="RISK_ON", confidence=0.9)
-    out2 = hedge.rebalance(ctx2, market="KR", today=d2, cfg=CFG, quote_fn=lambda i: Decimal("5000"))
+    out2 = hedge.rebalance(ctx2, market="KR", today=d2, cfg=cfg, quote_fn=lambda i: Decimal("5000"))
     assert out2["action"] == "enter" and len(ctx2.brokers["paper-main"].orders) == 1
     # 확신이 낮으면 진입
     ctx3 = _ctx(conn)
@@ -349,7 +351,7 @@ def test_risk_on_defers_entry_only_at_boundary(project, conn):
     _set_regime(conn, "bear", 2)
     _view(conn, date=d3.isoformat(), stance="RISK_ON", confidence=0.5)
     assert (
-        hedge.rebalance(ctx3, market="KR", today=d3, cfg=CFG, quote_fn=lambda i: Decimal("5000"))[
+        hedge.rebalance(ctx3, market="KR", today=d3, cfg=cfg, quote_fn=lambda i: Decimal("5000"))[
             "action"
         ]
         == "enter"
@@ -448,3 +450,26 @@ def test_agent_gate_opens_bear_buy_when_strategist_risk_on(project, conn):
     ctx.settings = Settings(hedge=CFG.model_copy(update={"agent_gate": False}))
     res = executor.execute(ctx, dec, date=D, market="KR", price=Decimal("70000"), dry_run=True)
     assert not next(r for r in res if r["account_id"] == "paper-main")["approved"]
+
+
+def test_leverage_needs_three_core_indicators_not_agent_or_flow(project, conn):
+    """전체 검토 O14: count 3(정량 2 + 전략가)이어도 −2x 가 아니라 −1x."""
+    from trader.control import control
+
+    ctx = _ctx(conn)
+    control.set_flag(
+        conn,
+        "regime:KR",
+        {
+            "state": "bear",
+            "count": 3,
+            "signals": {
+                "ma_below": True,
+                "momentum_weak": True,
+                "vol_high": False,
+                "agent_risk_off": True,
+            },
+        },
+    )
+    out = hedge.rebalance(ctx, market="KR", today=D, cfg=CFG, quote_fn=lambda i: Decimal("5000"))
+    assert out["ticker"] == "114800"  # −1x (−2x 252670 아님)

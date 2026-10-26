@@ -367,15 +367,18 @@ def has_open_order_or_approval(
     decision_id: int,
     account_id: str,
     side: str | None = None,
+    *,
+    include_filled: bool = True,
+    now: str | None = None,
 ) -> bool:
     """같은 결정·계좌(·방향)에 살아 있는 주문(실패·거부·취소 제외)이나 pending 승인이 있으면 True.
 
     재평가(31_decision_r<n>)는 같은 decisions 행을 갱신하므로 방향이 다르면(BUY 뒤 SELL) 허용한다.
-    """
-    sql = (
-        "SELECT 1 FROM orders WHERE decision_id=? AND account_id=? "
-        f"AND status NOT IN ({dead_status_sql()})"
-    )
+    include_filled=False(재평가 라운드)면 이미 **체결 완료**된 주문은 보지 않는다 — 아침 TRIM 이
+    체결된 뒤 오후 재평가의 전량 SELL 이 "이미 주문 있음"으로 막히던 문제(전체 검토 O3). 첫 실행의
+    재시도(같은 결정 재제출)는 체결분까지 막아 이중 매수를 피한다."""
+    dead = dead_status_sql() + ("" if include_filled else ",'filled'")
+    sql = f"SELECT 1 FROM orders WHERE decision_id=? AND account_id=? AND status NOT IN ({dead})"
     args: list = [decision_id, account_id]
     if side:
         sql += " AND side=?"
@@ -384,6 +387,9 @@ def has_open_order_or_approval(
         return True
     sql = "SELECT 1 FROM approvals WHERE decision_id=? AND account_id=? AND status='pending'"
     args = [decision_id, account_id]
+    if now is not None:  # 만료됐는데 아직 expired 로 안 바뀐 요청은 살아 있지 않다(검토 O17)
+        sql += " AND expires_at > ?"
+        args.append(now)
     if side:
         sql += " AND json_extract(order_json, '$.side')=?"
         args.append(side)
@@ -499,6 +505,23 @@ def latest_decision(conn: sqlite3.Connection, market: str, ticker: str) -> dict 
     return _hydrate_decision(row) if row is not None else None
 
 
+def max_stop_since(
+    conn: sqlite3.Connection, market: str, ticker: str, since: date | None
+) -> Decimal | None:
+    """보유 묶음 시작일(since) 이후 그 종목 결정들의 손절선 중 최고값(헤지 결정 제외). 손절선은
+    올리기만 한다 — 보유 재분석의 HOLD 가 손절가를 비우거나 낮춰도 이전 손절선을 지킨다(검토 L5).
+    since 가 없으면 None."""
+    if since is None:
+        return None
+    row = conn.execute(
+        "SELECT MAX(CAST(json_extract(json, '$.stop_loss') AS REAL)) AS s FROM decisions "
+        "WHERE market=? AND ticker=? AND source != 'hedge' AND date >= ? "
+        "AND json_extract(json, '$.stop_loss') IS NOT NULL",
+        (market, ticker, since.isoformat()),
+    ).fetchone()
+    return Decimal(str(row["s"])) if row is not None and row["s"] is not None else None
+
+
 def today_buy_tickers(
     conn: sqlite3.Connection, account_id: str, d: date, market: str | None = None
 ) -> set[str]:
@@ -523,6 +546,7 @@ def today_order_amount(
     market: str | None = None,
     *,
     exclude_filled: bool = False,
+    now: str | None = None,
 ) -> Decimal:
     """운영일 d(시장 현지 하루)의 누적 매수 주문금액. 통화가 달라 market 으로 거른다.
     exclude_filled=True 면 체결 완료 주문은 빼고 미체결(accepted·partial·unknown)만 더한다 —
@@ -549,6 +573,9 @@ def today_order_amount(
         "AND json_extract(order_json, '$.side')='BUY' AND requested_at >= ? AND requested_at < ?"
     )
     args = [account_id, lo, hi]
+    if now is not None:  # 만료 요청은 현금을 더 예약하지 않는다 — expire 잡이 안 돌아도(검토 O17)
+        sql += " AND expires_at > ?"
+        args.append(now)
     if market:
         sql += " AND json_extract(order_json, '$.market')=?"
         args.append(market)
@@ -826,11 +853,19 @@ def create_approval(
     order: dict,
     requested_at: str,
     expires_at: str,
+    fingerprint: str | None = None,
 ) -> int:
     cur = conn.execute(
         "INSERT INTO approvals(decision_id, account_id, order_json, status, requested_at, "
-        "expires_at) VALUES (?, ?, ?, 'pending', ?, ?)",
-        (decision_id, account_id, json.dumps(order, ensure_ascii=False), requested_at, expires_at),
+        "expires_at, fingerprint) VALUES (?, ?, ?, 'pending', ?, ?, ?)",
+        (
+            decision_id,
+            account_id,
+            json.dumps(order, ensure_ascii=False),
+            requested_at,
+            expires_at,
+            fingerprint,
+        ),
     )
     conn.commit()
     return int(cur.lastrowid)

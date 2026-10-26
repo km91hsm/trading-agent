@@ -156,7 +156,7 @@ def test_approval_request_and_status_use_names(conn, project):
     assert "삼성전자(005930)" in commands.approval_line(pending[0])
     (project / "docs" / "TODO.md").write_text("", encoding="utf-8")
     text = status.build_status(conn, Settings(), [acct], project / "docs" / "TODO.md", now=t0)
-    assert "BUY 삼성전자(005930)" in text
+    assert "매수 삼성전자(005930)" in text
     # 승인 실행은 order 의 name 을 벗겨 OrderRequest 를 만든다
     r = executor.approve(ectx, pending[0]["id"])
     assert r["ok"] is True and broker.orders[0].ticker == "005930"

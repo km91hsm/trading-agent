@@ -277,7 +277,8 @@ def ensure_quant(ctx: ToolContext, *, ticker: str, market: Market, date: date) -
 
         if not load_ml().models.quant.enabled:
             return None
-        found = registry.latest("quant", state=ctx.state)
+        # 그 시장 모델 우선·전시장 폴백, 다른 시장 한정 모델은 쓰지 않는다(registry.latest 계약)
+        found = registry.latest("quant", state=ctx.state, market=market)
     except Exception as e:  # noqa: BLE001 - ML 은 선택 입력: 어떤 오류도 수집·분석을 막지 않는다
         logger.warning("05_quant 생략(레지스트리 오류): %s", e)
         return None
@@ -758,9 +759,7 @@ def submit_decision(
             s[len("40_risk_check_") :]
             for s in stages
             if s.startswith("40_risk_check_")
-            and (
-                ctx.dry_run or not ((read_checkpoint(d, s) or {}).get("data") or {}).get("dry_run")
-            )
+            and _account_finished(ctx, d, s, stages, date, market, ticker)
         }
         wanted = {a.id for a in ctx.accounts if market in a.markets}
         if executed and not (wanted - executed):
@@ -774,7 +773,7 @@ def submit_decision(
         price = _quote_price(inputs)
         if price is None:
             return out | {"message": "00_inputs 에 현재가가 없어 실행을 재개하지 못함"}
-        price, requote = _requote(ctx, inputs, market, ticker, price)
+        price, requote, change_pct = _requote(ctx, inputs, market, ticker, price)
         if decision.stop_loss is not None and Decimal(str(decision.stop_loss)) >= price:
             return out | {
                 "message": f"손절선 {decision.stop_loss} 이 재시세 {price} 이상이라 실행 생략"
@@ -791,6 +790,7 @@ def submit_decision(
             price,
             skip_accounts=frozenset(executed),
             extra_note=requote,
+            change_pct=change_pct,
         )
         logger.warning("미실행 결정의 실행 재개 %s %s: %s", market, ticker, decision.action)
         return out | {
@@ -819,15 +819,19 @@ def submit_decision(
     inputs = read_checkpoint(d, "00_inputs") or {}
     price = _quote_price(inputs)
     requote: str | None = None
+    change_pct = _input_change_pct(inputs)
     if resume_stage:
         # 재평가의 현재가는 아침 시세가 아니라 장중 트리거 가격이다 (트레이더 md 의 "현재가")
         trig = repo.latest_trigger_price(ctx.conn, market, ticker, date)
         if trig is not None:
             price = trig
+            change_pct = (
+                None  # 트리거 가격의 등락률은 모른다 — 아침 시세 값으로 추격 판정하지 않는다
+            )
         elif price is not None:  # 뉴스 재평가(가격 없는 트리거)는 재수집 입력 + 재시세
-            price, requote = _requote(ctx, inputs, market, ticker, price)
+            price, requote, change_pct = _requote(ctx, inputs, market, ticker, price)
     elif price is not None:
-        price, requote = _requote(ctx, inputs, market, ticker, price)
+        price, requote, change_pct = _requote(ctx, inputs, market, ticker, price)
     if price is None:
         return {
             "ok": False,
@@ -865,6 +869,7 @@ def submit_decision(
         price,
         resume_round=int(m_round.group(1)) if m_round else None,
         extra_note=requote,
+        change_pct=change_pct,
     )
     logger.info("결정 저장 %s %s: %s (계좌 %d)", market, ticker, decision.action, len(executions))
     return {
@@ -892,6 +897,7 @@ def _execute_and_record(
     resume_round: int | None = None,
     skip_accounts: frozenset[str] = frozenset(),
     extra_note: str | None = None,
+    change_pct: float | None = None,
 ) -> tuple[list[dict], int | None]:
     """리스크 게이트·계좌별 실행(주문은 executor 안에서만) + 메모리 엔트리.
 
@@ -921,6 +927,7 @@ def _execute_and_record(
         resume_round=resume_round,
         skip_accounts=skip_accounts,
         extra_note=extra_note,
+        change_pct=change_pct,
     )
     memory_entry_id = _record_memory(ctx, decision, market, date)
     return executions, memory_entry_id
@@ -984,23 +991,64 @@ def _record_memory(
 REQUOTE_AFTER_S = 600  # 입력 수집 뒤 이만큼 지났으면 제출 때 현재가를 다시 받는다(Phase 21)
 
 
+def _input_change_pct(inputs: dict) -> float | None:
+    """00_inputs 시세의 당일 등락률(소수). 없으면 None."""
+    try:
+        v = inputs["technical"]["quote"]["data"].get("change_pct")
+        return float(v) if v is not None else None
+    except (KeyError, TypeError, ValueError, AttributeError):
+        return None
+
+
+def _account_finished(
+    ctx: ToolContext,
+    d: Path,
+    risk_stage: str,
+    stages: list[str],
+    day: date,
+    market: str,
+    ticker: str,
+) -> bool:
+    """재개 판단: 이 계좌의 실행이 끝났는가. 판정(40_)만 있고 **통과했는데 주문·승인 흔적이 없으면**
+    (판정 저장 뒤 주문 전에 끊김) 끝나지 않은 것으로 본다 — 예전엔 40_ 만 보고 그날 주문을 영구
+    생략했다(전체 검토 O9). 재실행은 executor 의 살아 있는 주문·승인 중복 방지가 지킨다.
+    dry-run 판정은 지금 실전이면 실행이 아니다(Phase 21)."""
+    v = (read_checkpoint(d, risk_stage) or {}).get("data") or {}
+    if v.get("dry_run") and not ctx.dry_run:
+        return False
+    if not v.get("approved") or v.get("dry_run") or v.get("mode") == "off":
+        return True
+    acct = risk_stage[len("40_risk_check_") :]
+    if f"50_order_{acct}" in stages:
+        return True
+    if v.get("mode") == "approve" and ctx.conn is not None:
+        did = repo.decision_id(ctx.conn, day, market, ticker)
+        row = ctx.conn.execute(
+            "SELECT 1 FROM approvals WHERE decision_id=? AND account_id=? LIMIT 1", (did, acct)
+        ).fetchone()
+        return row is not None
+    return False
+
+
 def _requote(
     ctx: ToolContext, inputs: dict, market: Market, ticker: str, price: Decimal
-) -> tuple[Decimal, str | None]:
+) -> tuple[Decimal, str | None, float | None]:
     """제출 시 재시세: `00_inputs.meta.asof` 가 REQUOTE_AFTER_S 넘게 늙었고 시세 클라이언트가 있으면
     현재가를 다시 받아 게이트(수량·손절 검사)에 쓴다. 실패·0·변동 없음은 입력가 유지. 둘째 값은
-    판정 note 에 남길 문구("재시세 71500→71800")."""
+    판정 note 에 남길 문구("재시세 71500→71800"), 셋째 값은 당일 등락률(소수, 재시세 값 우선 —
+    게이트의 급등 추격 금지, Phase 25)."""
+    base_pct = _input_change_pct(inputs)
     if ctx.market_client is None:
-        return price, None
+        return price, None, base_pct
     asof_raw = (inputs.get("meta") or {}).get("asof")
     try:
         asof = datetime.fromisoformat(str(asof_raw))
         if asof.tzinfo is None:
             asof = asof.replace(tzinfo=UTC)
     except (TypeError, ValueError):
-        return price, None
+        return price, None, base_pct
     if (ctx.now() - asof).total_seconds() < REQUOTE_AFTER_S:
-        return price, None
+        return price, None, base_pct
     try:
         if market == "KR":
             q = ctx.market_client.get_price_kr(ticker)
@@ -1008,14 +1056,16 @@ def _requote(
             exch = (inputs.get("meta") or {}).get("exchange") or "NAS"
             q = ctx.market_client.get_price_us(ticker, exch)
         fresh = Decimal(str(getattr(q, "price", None) or 0))
+        fresh_pct = getattr(q, "change_pct", None)
     except Exception as e:  # noqa: BLE001 - 재시세 실패는 입력가로 간다
         logger.warning("재시세 실패 %s %s: %s", market, ticker, e)
-        return price, None
+        return price, None, base_pct
+    pct = float(fresh_pct) if fresh_pct is not None else base_pct
     if fresh <= 0 or fresh == price:
-        return price, None
+        return price, None, pct if fresh > 0 else base_pct
     note = f"재시세 {price}→{fresh}"
     logger.info("%s %s %s (입력 %s)", market, ticker, note, asof_raw)
-    return fresh, note
+    return fresh, note, pct
 
 
 def _quote_price(inputs: dict) -> Decimal | None:

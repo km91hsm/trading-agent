@@ -13,10 +13,15 @@ import type { Approval, Order, RiskCheck } from "../types";
 import { limitDistancePct, type TraceResp, traceSteps, unknownLine } from "../trace";
 import { CsvLink } from "../components/CsvLink";
 
+/** 승인 행 자신의 계좌가 실전이면 확인창을 띄운다(전체 검토 W1). 모르는 계좌도 확인(안전 쪽). */
+export function approvalNeedsConfirm(a: Pick<Approval, "account_id">, accounts: Array<{ id: string; env: string }>): boolean {
+  const env = accounts.find((x) => x.id === a.account_id)?.env;
+  return env !== "paper";
+}
+
 export function OrdersPage() {
   const { accountId, accounts, token, tick, names } = useApp();
   const toast = useToast();
-  const acct = accounts.find((a) => a.id === accountId);
   const [pendingAct, setPendingAct] = useState<{ action: "approve" | "reject"; a: Approval } | null>(null);
   const approvals = useLoad(() => (accountId ? getJson<Approval[]>(withAccount("/api/approvals", accountId)) : null), [accountId, tick]);
   const orders = useLoad(() => (accountId ? getJson<Order[]>(withAccount("/api/orders", accountId)) : null), [accountId, tick]);
@@ -24,7 +29,14 @@ export function OrdersPage() {
 
   const run = async (action: "approve" | "reject", a: Approval) => {
     try {
-      const r = await postJson<{ ok: boolean; order?: { order_no?: string } }>(`/api/control/${action}`, { approval_id: a.id }, token);
+      const r = await postJson<{ ok: boolean; unknown?: boolean; message?: string; order?: { order_no?: string } }>(`/api/control/${action}`, { approval_id: a.id }, token);
+      if (r.unknown) {
+        // 응답 없음: 접수됐을 수 있다 — 다시 누르지 않게 경고만(전체 검토 W2)
+        toast(r.message ?? "주문 응답을 받지 못했어요. KIS 앱에서 확인하세요.", "error");
+        approvals.reload();
+        orders.reload();
+        return;
+      }
       toast(action === "approve" ? `승인 #${a.id} → 접수번호 ${r.order?.order_no ?? "—"}` : `거부 #${a.id}`, "ok");
       approvals.reload();
       orders.reload();
@@ -33,11 +45,14 @@ export function OrdersPage() {
     }
   };
   const decide = (action: "approve" | "reject", a: Approval) => {
-    // 실전 계좌의 승인은 한 번 더 묻는다. 거부·모의는 바로.
-    if (action === "approve" && acct?.env === "real") setPendingAct({ action, a });
+    // 실전 계좌의 승인은 한 번 더 묻는다. 거부·모의는 바로. 판단은 지금 고른 계좌가 아니라 **그 승인
+    // 행의 계좌**로 한다 — 계좌를 바꾼 직후 남아 있던 실전 행이 확인 없이 승인되지 않게(전체 검토 W1).
+    if (action === "approve" && approvalNeedsConfirm(a, accounts)) setPendingAct({ action, a });
     else void run(action, a);
   };
-  const pending = (approvals.data ?? []).filter((a) => a.status === "pending");
+  // 계좌 전환 중에는 새 응답이 오기 전까지 이전 계좌의 행을 그리지 않는다
+  const approvalRows = (approvals.data ?? []).filter((a) => a.account_id === accountId);
+  const pending = approvalRows.filter((a) => a.status === "pending");
   const realIds = accounts.filter((a) => a.env === "real").map((a) => a.id);
   const [traceId, setTraceId] = useState<number | null>(null);
   const trace = useLoad(() => (traceId ? getJson<TraceResp>(`/api/decisions/${traceId}/trace`) : null), [traceId]);
@@ -67,7 +82,7 @@ export function OrdersPage() {
           <Skeleton rows={2} cols={6} />
         ) : (
           <ApprovalsTable
-            rows={approvals.data ?? []}
+            rows={approvalRows}
             realAccounts={realIds}
             onApprove={token ? (a) => decide("approve", a) : undefined}
             onReject={token ? (a) => decide("reject", a) : undefined}

@@ -207,18 +207,27 @@ def enqueue(
     p = validate(kind, params)
     prio = PRIORITY.get(kind, 0) if priority is None else int(priority)
     key = canonical(p)
-    dup = conn.execute(
-        "SELECT id FROM job_requests WHERE kind=? AND params=? AND status IN ('queued','running') "
-        "LIMIT 1",
-        (kind, key),
-    ).fetchone()
-    if dup is not None:
-        raise DuplicateRequest(f"같은 작업이 이미 대기·실행 중이에요 (#{dup['id']})")
-    cur = conn.execute(
-        "INSERT INTO job_requests(kind, params, status, source, requested_at, priority) "
-        "VALUES (?, ?, 'queued', ?, ?, ?)",
-        (kind, key, source, _iso(now), prio),
-    )
+    if conn.in_transaction:
+        conn.commit()
+    # 중복 검사와 삽입을 한 쓰기 잠금 안에서 — 웹·텔레그램이 동시에 같은 요청을 넣어도 하나만
+    # 들어간다(전체 검토 P5)
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        dup = conn.execute(
+            "SELECT id FROM job_requests WHERE kind=? AND params=? "
+            "AND status IN ('queued','running') LIMIT 1",
+            (kind, key),
+        ).fetchone()
+        if dup is not None:
+            raise DuplicateRequest(f"같은 작업이 이미 대기·실행 중이에요 (#{dup['id']})")
+        cur = conn.execute(
+            "INSERT INTO job_requests(kind, params, status, source, requested_at, priority) "
+            "VALUES (?, ?, 'queued', ?, ?, ?)",
+            (kind, key, source, _iso(now), prio),
+        )
+    except BaseException:
+        conn.rollback()
+        raise
     conn.commit()
     return int(cur.lastrowid)
 

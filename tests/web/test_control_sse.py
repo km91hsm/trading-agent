@@ -223,3 +223,53 @@ def test_sse_snapshot_excludes_agent_calls_and_stream_reuses_connection(deps, mo
 
     events = anyio.run(run)
     assert len(events) == 3 and opened["n"] == 1
+
+
+def test_web_approve_unknown_response_is_not_reported_as_rejection(client, deps):
+    """전체 검토 W2: 응답 없는(unknown) 승인 주문은 502 '브로커 거부'가 아니라 200 + 경고."""
+    from trader.broker.errors import UNKNOWN_RESPONSE_CODE, KisApiError
+    from trader.broker.fake import FakeBroker
+
+    class Timeout(FakeBroker):
+        def place_order(self, req):
+            raise KisApiError(UNKNOWN_RESPONSE_CODE, "ReadTimeout", "TTTC0012U")
+
+    aid = _pending_approval(deps)
+    old = deps.brokers["paper-main"]
+    deps.brokers["paper-main"] = Timeout(old.account, cash=old.cash)
+    r = client.post("/api/control/approve", json={"approval_id": aid}, headers=AUTH)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["unknown"] is True and "다시 누르지" in body["message"]
+    assert body["order"]["status"] == "unknown"
+
+
+def test_approve_skips_when_decision_changed_after_request(client, deps):
+    """전체 검토 O11: 요청 뒤 결정이 SELL·HOLD 로 바뀌면 옛 BUY 요청은 실행하지 않는다."""
+    aid = _pending_approval(deps)
+    conn = deps.conn_factory()
+    try:
+        conn.execute("UPDATE decisions SET action='HOLD'")
+        conn.commit()
+    finally:
+        conn.close()
+    r = client.post("/api/control/approve", json={"approval_id": aid}, headers=AUTH)
+    assert r.status_code == 409 and "결정이 HOLD" in r.json()["detail"]
+    assert deps.brokers["paper-main"].orders == []
+
+
+def test_expired_pending_approval_no_longer_reserves_cash(deps):
+    """전체 검토 O17: expire 잡이 안 돌아도 만료 시각이 지난 요청은 현금·중복 판정에서 빠진다."""
+    from datetime import timedelta
+
+    aid = _pending_approval(deps)
+    conn = deps.conn_factory()
+    try:
+        a = repo.get_approval(conn, aid)
+        later = (NOW + timedelta(hours=1)).isoformat()
+        assert repo.today_order_amount(conn, "paper-main", D, market="KR") > 0
+        assert repo.today_order_amount(conn, "paper-main", D, market="KR", now=later) == 0
+        assert repo.has_open_order_or_approval(conn, a["decision_id"], "paper-main")
+        assert not repo.has_open_order_or_approval(conn, a["decision_id"], "paper-main", now=later)
+    finally:
+        conn.close()

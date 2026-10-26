@@ -79,6 +79,8 @@ export const GLOSSARY: Record<string, TermEntry> = {
   "section.fundamental": { label: "재무·공시", help: "00_inputs 의 재무비율·추세·공시·동종업" },
   "section.news_macro": { label: "뉴스·거시", help: "00_inputs 의 뉴스·거시 지표·일정" },
   "section.sentiment": { label: "수급·커뮤니티", help: "00_inputs 의 수급·공매도·커뮤니티·트렌드" },
+  "side.BUY": { label: "매수", help: "" },
+  "side.SELL": { label: "매도", help: "" },
   "status.pending": { label: "대기", help: "승인을 기다리는 중." },
   "status.approved": { label: "승인됨", help: "사람이 승인해 주문이 나갔다." },
   "status.rejected": { label: "거부", help: "사람 또는 브로커가 거부했다." },

@@ -18,7 +18,7 @@ CLAUDE.md 의 "아키텍처 핵심 규칙" 에서 옮겨 온 모듈 단위 상�
 
 ## 전략가 지표(Phase 19, `risk/regime.py`·`orchestrator/hedge.py`)
 
-**전략가 지표(Phase 19).** 시장 세션 제안이 비중만 조절하던 것을 국면 판정에도 넣는다 — 단 파이썬 규칙 안에서. `RegimeSignals.agent_risk_off` 가 4번째 지표로 `count` 에 +1 하되 `raw_state` 는 정량 지표 0개면 전략가만으로 neutral 까지만 올린다(bear 진입은 지표 1개 이상 + 전략가). 데몬 `_scan_analyze_body` 순서는 `_regime_body → _market_view_body → _regime_apply_view → scan → analyze`: 오늘 제안이 RISK_OFF 이고 `confidence ≥ hedge.agent_min_confidence`(0.7) 면 `regime.reapply(agent_risk_off=True)` 로 저장된 오늘 지표에 신호만 바꿔 재판정(같은 운영일 재계산이라 streak 겹침 없음, 전환은 `[국면 전환] … (1/3+전략가)` 알림), 아니면 신호를 끈 채 재판정(어제 신호가 남지 않게). `hedge.agent_signal=false` 면 전부 꺼진다. **RISK_ON 하루 보류**: `hedge.rebalance` 가 bear 진입 직전에 `_risk_on_deferral` — 제안 RISK_ON ∧ 확신 ≥ 기준 ∧ 정량 지표 수 == `bear_min_signals`(경계) ∧ 3/3 아님이면 `action: deferred` 로 그날 플래그를 세우고(알림 1건) 진입하지 않는다; 3/3·확신 낮음·해제는 영향 없다. 가시성은 `regime.count_text`(STATUS·텔레그램·알림)·웹 `countText`·지표 라벨 '전략가 위험 회피'. 평가는 기존 scorecard(제안 적중률)로 2~4주 뒤 — 나쁘면 `hedge.agent_signal: false`.
+**전략가 지표(Phase 19).** 시장 세션 제안이 비중만 조절하던 것을 국면 판정에도 넣는다 — 단 파이썬 규칙 안에서. `RegimeSignals.agent_risk_off` 가 4번째 지표로 `count` 에 +1 하되 `raw_state` 는 정량 지표 0개면 전략가만으로 neutral 까지만 올린다(bear 진입은 지표 1개 이상 + 전략가). 데몬 `_scan_analyze_body` 순서는 `_regime_body → _market_view_body → _regime_apply_view → scan → analyze`: 오늘 제안이 RISK_OFF 이고 `confidence ≥ hedge.agent_min_confidence`(0.7) 면 `regime.reapply(agent_risk_off=True)` 로 저장된 오늘 지표에 신호만 바꿔 재판정(같은 운영일 재계산이라 streak 겹침 없음, 전환은 `[국면 전환] … (1/3+전략가)` 알림), 아니면 신호를 끈 채 재판정(어제 신호가 남지 않게). `hedge.agent_signal=false` 면 전부 꺼진다. **RISK_ON 하루 보류**: `hedge.rebalance` 가 bear 진입 직전에 `_risk_on_deferral` — 제안 RISK_ON ∧ 확신 ≥ 기준 ∧ 정량 지표 수 == `bear_min_signals`(경계) ∧ 3/3 아님이면 `action: deferred` 로 그날 플래그를 세우고(알림 1건) 진입하지 않는다; 3/3·확신 낮음·해제는 영향 없다. 가시성은 `regime.count_text`(STATUS·텔레그램·알림)·웹 `countText`·지표 라벨 '전략가 위험 회피'. 평가는 기존 scorecard(제안 적중률)로 2~4주 뒤 — 나쁘면 `hedge.agent_signal: false`. **2026-10-26 전체 검토 L8: 기본값을 false 로 내렸다** — Phase 22 한도 기울기(`agent_gate`)가 같은 제안을 한 번 더 반영해 RISK_OFF 하나가 국면 지표 +1 과 한도 축소로 이중 작동했다. 전략가는 기울기로만 주문 범위에 닿고, 켜면 위 동작이 돌아온다.
 
 ## 응답없음 대응(Phase 20, `platform/tray.py`·`orchestrator/session.py`·`web/src/events.ts`)
 
@@ -31,6 +31,10 @@ CLAUDE.md 의 "아키텍처 핵심 규칙" 에서 옮겨 온 모듈 단위 상�
 ## 전략가 기울기 게이트(Phase 22, `risk/stance.py`·`risk/rules.py`·`orchestrator/executor.py`)
 
 **전략가 기울기 게이트(Phase 22).** "주문 허용 범위는 파이썬만 정한다" 를 한 칸 열어 에이전트(시장 세션 전략가)의 톤이 한도에 닿게 했다. `executor.execute` 가 시장·날짜마다 `_agent_tilt`(= `stance.tilt_of(market_view_today(...), min_confidence=hedge.agent_min_confidence)`) 를 한 번 구해 `rules.evaluate(agent_tilt=)` 로 넘기고, `stance.limits_for_regime(regime, limits, tilt)` 가 국면 한도를 **한 칸만** 옮긴다: bull−1 → neutral 한도(15%·3), neutral+1 → `TILT_UP`(20%·4), neutral−1 → `TILT_DOWN`(10%·2), bear+1 → 10%·2 — bear 의 신규 매수 거부 규칙은 `tilt > 0` 일 때만 "조건부 허용" 사유로 바뀐다. 설정 `risk.max_position_pct/max_positions` 보다 넓어지지 않는다(min). 헤지(`is_hedge`)·손절(`is_stop_loss`)은 tilt 0 으로 고정. 판정 reasons 에 "국면 neutral + 전략가 RISK_ON: 신규 매수 한도(종목당 20%·4종목)" 처럼 한도의 출처가 남는다. `hedge.agent_gate=false`(또는 `hedge.enabled=false`) 면 tilt 는 늘 0 이라 Phase 17 동작과 같다. 트레이더 md 는 bear + RISK_ON 확신 높음일 때만 `target_weight ≤ 0.10` 매수를 낼 수 있다고 안다. 전략가 제안 적중률(`regime.summary.scorecard`)이 나쁘면 사용자가 꺼야 한다 — 어떤 코드도 자동으로 켜거나 끄지 않는다. RL 사이저 `mode: apply` 는 기존대로 `ml.yaml` 수동(승격 뒤)이다.
+
+## 투자 방식 게이트 강화(전체 검토 3차, 2026-10-26, `risk/rules.py`·`risk/costs.py`)
+
+**게이트 강화만(사용자 결정 L9).** 사이징 모델을 새로 들이지 않고 게이트 세 줄로 손실 비대칭을 막는다. ① **1회 손실 한도**: BUY/ADD 수량을 `floor(NAV × risk_per_trade_pct ÷ (주문가 − 손절가))` 로 자른다(기본 2%, `settings.risk.risk_per_trade_pct`) — 목표 비중만 보던 사이징은 손절 거리가 −20% 든 −3% 든 같은 금액을 샀다. 반감 뒤에 적용하고 사유에 손절 거리를 남긴다. ② **손절·익절 필수**: BUY/ADD 에 둘 중 하나라도 없으면 거부(익절가를 비우면 비용 검사를 건너뛰던 구멍). ③ **확신 가중 기대값**: `costs.expected_value = p·(익절/주문가 − 1) − (1−p)·(1 − 손절/주문가)`, p = confidence 를 0.05~0.95 로 자른 값, 이 값이 왕복비용(KR 30bp·US 50bp) 미만이면 거부 — 목표 +2%·손절 −20% 같은 음의 기대값 주문이 기존 '기대수익 ≥ 비용×2' 를 통과하던 것을 막는다. 헤지·단타는 셋 다 면제(각자 전용 규칙), 손절 SELL 은 BUY 분기 밖이라 무관. 트레이더 md 규칙 6 이 같은 조건을 안내한다. 같은 묶음에서 `hedge.agent_signal` 기본을 끄고(L8, 위 「전략가 지표」) 약세 리서처 모델을 강세와 같게(sonnet) 맞췄다(L11 — 비대칭 모델이면 수렴 감시가 정당한 수렴도 아첨으로 본다).
 
 ## 보완 묶음(Phase 21, 2026-10-25)
 
@@ -107,6 +111,8 @@ CLAUDE.md 의 "아키텍처 핵심 규칙" 에서 옮겨 온 모듈 단위 상�
 ## 미확인
 
 미확인: `KisBroker` 의 US 잔고·예수금은 `OVRS_EXCG_CD=NASD` 고정이라 NYS/AMS 보유분이 같이 조회되는지 실기에서 확인한다.
+
+미확인(Phase 25): KIS 순위 API 3종(`VOLUME_RANK` FHPST01710000 거래량, `FLUCT_RANK` FHPST01700000 등락률, `FRGN_INST_TOTAL` FHPTJ04400000 외인·기관 순매수)의 요청 파라미터(`kis_market._RANK_PARAMS`)와 응답 필드명은 공개 예제 기준 추정이다. 파서는 후보 키(`mksc_shrn_iscd|stck_shrn_iscd`, `hts_kor_isnm`, `data_rank`, `prdy_ctrt`, `acml_vol`, `frgn_ntby_qty`+`orgn_ntby_qty`)를 순서대로 보고 코드가 없으면 행을 버린다 — 실기에서 `uv run trader theme show --live` 의 `signals.ranks` 가 0 이면 응답을 보고 파라미터·키를 고친다.
 
 ## 수집 계층(`sources/`)
 
@@ -211,3 +217,34 @@ CLAUDE.md 의 "아키텍처 핵심 규칙" 에서 옮겨 온 모듈 단위 상�
 - **리밸런스(`orchestrator/rebalance.py`, 주문 경로).** 데몬 cron `<시장>_rebalance`(`schedule.yaml rebalance`, 기본 금요일 KR 14:30·US 15:00 현지, `market_job` 게이트 — paused·주말·휴장 건너뜀)가 운영일 1회(`control.rebalance_done:<market>:<date>`) 계좌마다 `build_portfolio` → 헤지 ETF·단타 보유를 뺀 보유 중 최근 결정(source≠hedge, BUY·ADD·TRIM, `rebalance.lookback_days` 30 안)의 `target_weight` 대비 `|현재 − 목표| > rebalance.band_pct`(5%p)인 것만 `drift_legs`(순수 함수). 모든 계좌의 TRIM 을 먼저, ADD 를 나중에; 종목마다 파이썬 Decision(원 결정의 보유기간·익절·손절·확신, 현재가 지정가)을 `executor.execute(is_rebalance=True, decision_id=None, skip_accounts=밴드 안 계좌)` 로 — 체크포인트 `43_rebalance_*`·`53_order_rebalance_*`, `orders.decision_id=NULL`. 게이트(최소 보유 3거래일·주 2회·비중·섹터·테마·현금·당일 중복)는 그대로라 거부되면 그 주는 건너뛴다. ADD 인데 원 손절 ≥ 현재가면 건너뛰고, 오늘 같은 방향 살아 있는 주문이 있는 계좌도 건너뛴다(`repo.has_open_order_today`).
 - **드리프트 표시.** `/api/portfolio` 보유 행 `drift_pp`(현재 비중 − 목표, %p; HOLD·SELL 결정은 None)·`rebalance_band_pct`, 계좌 표 '드리프트' 열(밴드 밖 주의 색).
 - **세금 로트(`ledger/lots.py`, 표시 전용).** `fills JOIN orders` 를 FIFO 로 맞춘 실현 로트(US 보유 > 365일 장기·아니면 단기, KR 구분 없음), 손실 매도 앞뒤 30일 안 같은 종목 매수면 `wash_sale`, 원장 밖 매수로 원가를 모르는 매도 수량은 `unmatched_sell_qty`. `GET /api/tax-lots?account_id&market[&year][&format=csv]`, 계좌 페이지 '실현 로트'. 수수료·세금·환율 미반영 — 신고용 아님.
+
+### 테마 열기 감지·안전장치 (단계 4)
+- **`scan/theme.py`** — 감지만 한다(매매 없음). 신호: 오늘 새 내용 뉴스(`novel=1`) 건수 − 전일, KIS 거래량·등락률 순위(실전 전용·KR), 외인·기관 순매수 순위, 세이브티커 일별 화면(`data/<날짜>/community.jsonl`·`market.jsonl`)의 종목별 최고 순위 전일 대비 상승, 피처 `vol_z_20`. 테마 = sectors.yaml 대분류(`섹터:<이름>`) + 오늘 새 뉴스 제목 키워드 공출현(`kw:<키워드>`, `theme.min_cluster_titles` 건 이상). 성분을 테마 간 최댓값으로 정규화해 `theme.weights` 가중합. `catalyst_ok` = 테마 종목 태그 새 뉴스 중 출처가 커뮤니티·세이브티커(`NON_CATALYST` 접두)가 아닌 것 ≥ 1. 순위 API 가 실패·빈 목록이면 나머지 신호로 점수(`signals.ranks` 에 건수).
+- **기록·알림.** 데몬 `<시장>_theme`(장중 창, `theme.interval_s` 기본 1800초, 가벼운 잡)이 `control.theme_heat:<market>`(전체 결과) + 원장 v18 `theme_heat`(테마별 그날 최고 점수 1행, `UNIQUE(market,date,theme)`)를 남기고, 상위 `top_n` 테마 집합이 `control.theme_top:<market>` 과 달라질 때만 `[테마 열기]` 알림. reflect 잡이 7일 지난 행의 `fwd_ret_5d`(구성 종목 5거래일 수익 − 1/N, 피처 종가)를 채워 사후 검증. CLI `trader theme show [--market] [--live]`, `GET /api/system/theme`, 대시보드 '테마 열기' 블록(`web/src/themeHeat.ts`).
+- **scout 연결.** 발굴 입력 `theme_heat`(오늘 상위 `top_n`, 다른 날은 []). scout.md 규칙 1 예외: `catalyst_ok` 테마의 대표 종목 1~2개를 촉매 뉴스 id 와 함께 후보로 — 이후는 기존 분석 세션·토론·게이트 그대로(단타 후보에 직접 넣지 않는다).
+- **게이트(주문 경로).** `rules.evaluate(change_pct=)` + `Portfolio.theme_of`(executor `_theme_of` = `theme.theme_of_map` 의 오늘 상위 테마 `members`), 일반 BUY/ADD 만(헤지·손절·단타 면제, 사유 전부 수집): 당일 등락률 ≥ `risk.chase_limit_pct`(0.10) 거부 / 테마 종목은 `horizon_days ≤ risk.theme_max_horizon_days`(10)·`take_profit` 필수 / 같은 테마(다른 보유 + 현재 + 이번 주문) > `risk.max_theme_pct`(0.20) × NAV 거부. 등락률은 `tools._requote` 의 셋째 값(재시세 시세의 `change_pct`, 아니면 `00_inputs.technical.quote.change_pct`)이 `executor.execute(change_pct=)` 로 간다. 재평가·재호가는 등락률을 넘기지 않아 추격 규칙은 보지 않는다(테마 규칙은 본다).
+
+## 전체 검토 보완 1차 (2026-10-26, `docs/reviews/2026-10-26-full-review.md`)
+Claude 리뷰어 4 + Codex 2 교차검증 결과 중 비주문 항목. 표의 번호(W·T·P·L)는 보고서 기준.
+- **웹 승인 안전(W1·W2).** 실전 확인창 여부는 **승인 행의 계좌** env 로 정한다(`Orders.approvalNeedsConfirm`, 모르는 계좌도 확인). 계좌를 바꾸는 동안 이전 계좌 행은 그리지 않는다. 승인 주문이 응답 없음(unknown)이면 `/api/control/approve` 는 502 '브로커 거부'가 아니라 200 + `unknown: true` + "다시 누르지 말고 KIS 앱 확인" 문구, 텔레그램은 executor 의 `[주문 상태 미확인]` 하나만(실패 덧알림 없음).
+- **'전체' 대시보드 범위(W3·W4·W6·W7·W11).** 미승인·오늘 주문은 모든 계좌를 합쳐 '계좌' 를 덧붙이고, 시세표 보유는 `overview.mergeHoldings`(수량·평가 합, 계좌 합집합), '오늘' 은 시장 현지 날짜(`format.marketDate`). 실전 계좌가 섞여 있으면 셸이 실전 표식(`data-env="real"` + '실전' 배지). 점검 특보판은 데몬 결과가 45분 넘게 묵으면 '점검 결과가 오래됐어요'(`ops.opsStale`), 경보(critical)는 `danger` 배지.
+- **텔레그램(T1·T2).** 승인 요청 = `[승인 요청 #n · 실전|모의 · 종류] 계좌 · 종목명(코드)` / `매수 10주 @71,500원 = 715,000원` / `리스크 한도 통과` 또는 `리스크 판정: …` / 의견 / `/approve n 실전 · /reject n — HH:MM KST 까지`. **실전 계좌 승인은 텔레그램에서 `/approve <id> 실전` 이어야 실행**(확인어 없으면 안내만). `/status` 미승인 줄·계좌 모드는 한글·KST. 모르는 `/명령` 은 명령 목록으로 답한다. 헤지 승인 요청은 executor 알림 하나(중복 제거), 헤지 국면 표기는 한글.
+- **프로세스(P1·P3·P5·P10).** 재평가·복기 세션에도 `cancel=stop_event` 를 넘기고 뉴스 재수집 뒤 종료 중이면 세션을 띄우지 않는다. `news_store.novel_items` 는 판정을 메모리에서 끝내고 `executemany` 한 번으로 커밋(쓰기 잠금 최소), 제목 특징은 한 번만 계산. `jobs.enqueue` 는 중복 검사·삽입을 `BEGIN IMMEDIATE` 하나로. 로그: apscheduler 는 WARNING 이상·"maximum number of running instances" 버림, 터미널이 아닌 stderr 는 WARNING 이상만, 데몬 웹 서버 `access_log=False`.
+- **퀀트 모델 시장(L4).** `tools.ensure_quant` 가 `registry.latest(..., market=)` 로 그 시장 모델만(다른 시장 한정 모델 제외 계약).
+- **2차(주문 경로)·3차(설계 결정)** 항목은 보고서 §6 과 `docs/TODO.md` 에 있다.
+
+## 전체 검토 보완 2차 — 주문 경로 (2026-10-26, `docs/reviews/2026-10-26-full-review.md` §1)
+- **US NAV(O1).** `KisBroker.get_cash("US")` 는 `nav=None` — executor 가 USD 예수금 + USD 평가 합으로 NAV 를 만든다. `output3.tot_asst_amt` 는 원화 환산 총자산이라 USD 로 쓰면 비중·현금 유보·섹터/테마 상한·TRIM·헤지·서킷브레이커가 모두 틀어진다(미결제 매수대금 이중 계산은 KR 만 `tot_evlu_amt` 로 피한다; US T+1 은 감수).
+- **재호가 후보(O2).** `reprice.candidates` 는 결정 행과 JOIN 해 `source != 'hedge'` 이고 주문 방향이 결정 행동(BUY/ADD→BUY, SELL/TRIM→SELL)과 같은 주문만 — 손절 SELL(BUY 결정에 붙음)·헤지 주문은 재호가하지 않는다.
+- **중복 방지(O3·O17).** `repo.has_open_order_or_approval(include_filled=, now=)`: 재평가 라운드(`51_`)는 체결 완료 주문을 중복으로 보지 않고(아침 TRIM 체결 뒤 오후 SELL 허용), 첫 실행 재시도는 체결분까지 막는다. `now` 가 있으면 만료 시각이 지난 pending 승인은 살아 있지 않다 — `today_order_amount(now=)` 의 현금 예약도 같다(텔레그램 poll 의 expire 가 안 돌아도).
+- **주문 응답 불명(O4).** `KisClient.post` 는 게이트웨이 5xx(비JSON)·`rt_cd` 없는 본문을 `UNKNOWN_RESPONSE_CODE` 로 올린다 → executor 가 unknown 으로 남겨 중복 방지가 살아 있다. KIS 본문 거부(msg_cd)는 그대로 실패.
+- **손절(O5·O13·O15·L5).** `monitor._sell_now` 는 실제로 주문을 낼 수 있을 때(dry-run 아님·mode≠off·일시정지 아님)만 미체결 SELL 취소·**같은 종목 당일 미체결 BUY 취소**(손절 뒤 재보유 방지) 같은 KIS 쓰기를 한다. 기록만 하는 손절의 하루 1회 억제 키에 실행 상태(`dry|live-<mode>`)를 넣어 같은 날 auto 로 바꾸면 실제 손절이 나간다. 손절선은 `_monotone_stop` 이 **보유 묶음 시작 이후 결정들의 손절선 최고값**(`repo.max_stop_since`)으로 단조 유지 — 보유 재분석 HOLD 가 손절가를 비우거나 낮춰도 기본 −15% 로 풀리지 않는다.
+- **재개(O9).** `submit-decision` 재제출의 '실행 끝난 계좌' 는 `tools._account_finished`: 판정 통과·실전인데 `50_order_<id>`(auto)·승인 행(approve)이 없으면 끝나지 않은 것 — 판정 저장 뒤 주문 전에 끊겨도 그날 주문이 영구 생략되지 않는다(재실행은 executor 중복 방지가 지킴).
+- **승인 실행(O11).** `executor.approve` 는 요청 뒤 결정 행동이 바뀌었으면(HOLD·반대 방향, 헤지 결정 제외) 실행하지 않고 요청을 expired 로 닫는다.
+- **헤지 레버리지(O14).** −2x 는 `regime.core_count`(200일선·모멘텀·변동성 3지표)가 3 일 때만 — 전략가·수급 보조 신호로 count 가 3 이 돼도 −1x.
+- **가격 검증(O16).** `Decision.limit_price·stop_loss·take_profit` 은 양수만(gt=0).
+
+### 승인 지문·공시 중요도 (단계 6)
+- **승인 지문.** `executor.approval_fingerprint(account_id, decision_id, order)` = 정렬 키 JSON(표시용 `name` 제외, `quote_price`·`order_stage` 포함) sha256. `_request_approval` 이 원장 v19 `approvals.fingerprint` 에 저장하고 `executor.approve` 가 실행 직전 `order_json` 으로 다시 계산해 다르면 주문하지 않고 `failed` + CRITICAL 로그 + `[긴급: 승인 지문 불일치]` 알림. 지문 없는 옛 행(NULL)은 통과.
+- **공시 중요도(`sources/disclosures.py`).** KR 은 DART `list.json` 을 회사 지정 없이 그날 1~3쪽(`DartClient.market_disclosures`) 받아 대상 종목만, US 는 대상 종목 CIK 의 `submissions`(`EdgarClient.submissions`) 최근 3일 8-K. 보고서명 키워드(`DART_CRITICAL`: 감자·거래정지·관리종목·상장폐지·회생절차·파산·감사의견 거절/부적정 등, `DART_HIGH`: 유상증자·전환사채·최대주주변경·횡령·배임·불성실공시)·8-K item(1.03·3.01·4.02 critical, 1.05 high, 2.02 info)으로 `severity` 를 매겨 뉴스 저장소(`news_items.severity`, v19, source `dart`|`edgar`)에 멱등 적재. 대상 = 유니버스 ∪ 보유 ∪ 관심.
+- **critical 처리.** 데몬 `news_collect` 가 시장별 `_disclosure_trigger` 를 부른다: 처음 보는(`control.disclosure_seen:<market>`, 최근 300개) 최근 1일 critical 이 유니버스·보유 종목에 붙으면 `[중요 공시]` 알림 1회 + `news_min_novel`·`news_burst` 조건 없이 `_news_reanalyze`(오늘 결정 있으면 재평가, 없으면 analyze_ticker). paused·장중 창 밖이면 알림만. 운영 점검 새 영역 `disclosure`: 보유 종목(최신 스냅샷)의 최근 3일 critical → critical 단계(웹 `ops.ts` '공시').

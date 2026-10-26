@@ -22,6 +22,7 @@ logger = logging.getLogger("trader.sources")
 
 TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 FACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
+SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik}.json"
 CACHE_DAYS = 7
 
 # 공통 키 → (taxonomy, 후보 태그들, 기간형 여부)
@@ -120,6 +121,11 @@ class EdgarClient:
         메모는 새 10-Q 를 영영 반영하지 못한다. 한 수집 안에서 비율·history 가 같이 쓰려면 호출자가
         facts 를 들고 넘긴다."""
         return self._get(FACTS_URL.format(cik=cik))
+
+    def submissions(self, cik: str) -> dict:
+        """최근 제출 목록(Phase 25 공시 중요도). `filings.recent` 의 병렬 배열(form·filingDate·
+        accessionNumber·primaryDocument·items). 메모하지 않는다."""
+        return self._get(SUBMISSIONS_URL.format(cik=cik))
 
 
 # 정정 공시(/A)는 같은 결산일의 원본을 덮는다 — 정렬이 (end, filed) 내림차순이라 asof 까지 제출된

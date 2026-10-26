@@ -277,6 +277,9 @@ def build_jobs(schedule: ScheduleConfig, settings: Settings, *, markets: list[st
         jobs.append(Job(f"{lo}_monitor", "monitor", m, interval_s=ms.monitor.interval_s))
         # 분 단위 단타(Phase 23 S): monitor 와 별도 60초 잡, 장중 창·모의 전용·기본 끔(body 가 판단)
         jobs.append(Job(f"{lo}_scalp", "scalp", m, interval_s=SCALP_INTERVAL_S))
+        # 테마 열기 감지(Phase 25): 장중 창만, 가벼운 잡(KIS 순위 3회 + 원장 읽기)
+        if settings.theme.enabled:
+            jobs.append(Job(f"{lo}_theme", "theme", m, interval_s=settings.theme.interval_s))
         # 야간 KIS 대조(Phase 21): 체결 동기화 뒤, 시장 현지 시각. 가벼운 잡(heavy 락 밖)
         rt = _hm(getattr(schedule.reconcile, lo))
         jobs.append(
@@ -1100,6 +1103,10 @@ def _reevaluate_request(deps: DaemonDeps, p: dict) -> dict:
         if trig["kind"] == "news":
             # 뉴스 재평가(Phase 23): 트레이더가 새 뉴스를 보도록 00_inputs 를 다시 수집한다
             _recollect(deps, market, p["ticker"], p.get("exchange"))
+        if (
+            deps.stop_event.is_set()
+        ):  # 재수집(최대 수 분) 사이 종료 요청이 왔으면 세션을 띄우지 않는다
+            return {"skipped": "종료 중"}
         res = resume.reevaluate(
             deps.settings,
             conn,
@@ -1120,6 +1127,7 @@ def _reevaluate_request(deps: DaemonDeps, p: dict) -> dict:
             state=deps.state,
             session_runner=deps.session_runner or run_session,
             notifier=deps.notifier,
+            cancel=deps.stop_event,
         )
         for tid in p.get("trigger_ids") or []:
             repo.mark_trigger_handled(
@@ -1225,6 +1233,35 @@ def _rebalance_body(deps: DaemonDeps, market: str) -> dict:
             )
         )
     return out
+
+
+def _theme_body(deps: DaemonDeps, market: str) -> dict:
+    """테마 열기 감지 1회(Phase 25). 결과를 control·원장에 남기고 상위 테마가 바뀔 때만 알림."""
+    from trader.orchestrator.run_store import run_date_for
+    from trader.scan import theme
+    from trader.sources import saveticker
+
+    root = None
+    if deps.sources_cfg is not None:
+        root = saveticker.resolve_dir(deps.sources_cfg.news.saveticker_dir)
+    conn = deps.conn_factory()
+    try:
+        heat = theme.compute(
+            conn,
+            deps.settings,
+            market=market,
+            today=run_date_for(market, deps.now()),
+            now=deps.now(),
+            market_client=deps.market_client,
+            saveticker_root=root,
+            state=deps.state,
+        )
+        msg = theme.record(conn, heat, top_n=deps.settings.theme.top_n)
+    finally:
+        conn.close()
+    if msg:
+        deps.notifier.send(msg)
+    return {"themes": len(heat["themes"]), "alerted": bool(msg), **heat["signals"]}
 
 
 def _scalp_body(deps: DaemonDeps, market: str) -> dict:
@@ -1399,6 +1436,12 @@ def _news_body(deps: DaemonDeps) -> dict:
         except Exception as e:  # noqa: BLE001 - 로컬 폴더 문제가 뉴스 잡을 막지 않는다
             logger.warning("세이브티커 적재 실패: %s", e)
             out["saveticker"] = {"error": f"{type(e).__name__}: {e}"}
+        for market in deps.settings.markets:  # 공시 중요도(Phase 25): 수집 → critical 즉시 처리
+            try:
+                out[f"disclosure:{market}"] = _disclosure_trigger(deps, conn, market, universe)
+            except Exception as e:  # noqa: BLE001 - 공시 실패가 뉴스 수집을 막지 않는다
+                logger.warning("공시 처리 실패 %s: %s", market, e)
+                out[f"disclosure:{market}"] = {"error": f"{type(e).__name__}: {e}"}
         out["pruned"] = news_store.prune(
             conn, before=deps.now() - timedelta(days=cfg.store_retention_days)
         )
@@ -1419,6 +1462,85 @@ def _in_market_window(deps: DaemonDeps, market: str) -> bool:
     return in_window(
         now_local.time().replace(second=0, microsecond=0), ms.monitor.start, ms.monitor.end
     )
+
+
+def _held_tickers(deps: DaemonDeps, market: str) -> set[str]:
+    held: set[str] = set()
+    for a in deps.accounts:
+        b = deps.brokers.get(a.id)
+        if market in a.markets and b is not None:
+            try:
+                held |= {p.ticker for p in b.get_positions(market)}
+            except Exception as e:  # noqa: BLE001
+                logger.debug("보유 조회 실패 %s: %s", a.id, e)
+    return held
+
+
+DISCLOSURE_SEEN_MAX = 300
+
+
+def _disclosure_trigger(deps: DaemonDeps, conn: sqlite3.Connection, market: str, universe) -> dict:
+    """공시 중요도(Phase 25 단계 6). 보유·유니버스·관심 종목의 오늘 공시를 적재하고, 처음 보는
+    critical 은 `[중요 공시]` 알림 + 새 뉴스 건수 조건(news_min_novel·news_burst) 없이 즉시 재분석
+    요청(paused·장중 창 밖이면 알림만). 같은 공시는 `control.disclosure_seen:<market>` 로 1회."""
+    from trader.orchestrator.run_store import run_date_for
+    from trader.sources import disclosures
+
+    uni = set(universe.kr) if market == "KR" else {u.symbol for u in universe.us}
+    held = _held_tickers(deps, market)
+    watch = set(control.get_watchlist(conn, market=market))
+    inp = deps.input_deps
+    res = disclosures.collect(
+        conn,
+        market=market,
+        tickers=uni | held | watch,
+        now=deps.now(),
+        dart=getattr(inp, "dart", None),
+        edgar=getattr(inp, "edgar", None),
+    )
+    key = f"disclosure_seen:{market}"
+    seen = list(control.get_flag(conn, key) or [])
+    fresh = [
+        r
+        for r in disclosures.critical_recent(
+            conn, market, since=deps.now() - timedelta(days=1), tickers=uni | held
+        )
+        if r["id"] not in seen
+    ]
+    if not fresh:
+        return res
+    can_run = not control.is_paused(conn) and _in_market_window(deps, market)
+    today = run_date_for(market, deps.now())
+    cache = _cache_dir(deps)
+    hedge = set(deps.settings.hedge.tickers(market)) if deps.settings.hedge.enabled else set()
+    queued = []
+    for r in fresh:
+        for t in r["tickers"]:
+            if t in hedge or t not in (uni | held):
+                continue
+            rid = _news_reanalyze(deps, conn, market, t, [r], today, universe) if can_run else None
+            action = (
+                f"재분석 요청 #{rid}"
+                if rid is not None
+                else ("재분석 요청 중복" if can_run else "일시정지·장 밖 — 알림만")
+            )
+            if rid is not None:
+                queued.append({"ticker": t, "request_id": rid})
+            try:
+                deps.notifier.send(
+                    messages.disclosure(
+                        market=market,
+                        label=names.display(conn, cache, market, t),
+                        title=r["title"],
+                        url=r["url"],
+                        action=action,
+                    )
+                )
+            except Exception:  # noqa: BLE001
+                logger.debug("중요 공시 알림 실패", exc_info=True)
+        seen.append(r["id"])
+    control.set_flag(conn, key, seen[-DISCLOSURE_SEEN_MAX:])
+    return res | {"critical_new": len(fresh), "queued": queued}
 
 
 def _news_trigger(deps: DaemonDeps, conn: sqlite3.Connection, market: str, universe) -> dict:
@@ -1718,6 +1840,13 @@ def _reflect_body(deps: DaemonDeps) -> dict:
     try:
         matured = outcomes.mature(conn, state=deps.state, today=_today(deps))
         views_matured = _mature_market_views(deps, conn)
+        for m in deps.settings.markets:  # 테마 열기 판정 사후 검증(Phase 25) — 실패는 경고만
+            try:
+                from trader.scan import theme as theme_mod
+
+                theme_mod.mature(conn, m, state=deps.state, today=_today(deps))
+            except Exception as e:  # noqa: BLE001
+                logger.warning("테마 판정 채점 실패 %s: %s", m, e)
         sessions = 0
         errors: list[str] = []
         for market in deps.settings.markets:
@@ -1738,6 +1867,7 @@ def _reflect_body(deps: DaemonDeps) -> dict:
                     dry_run=True,
                     brokers=deps.brokers,
                     notifier=deps.notifier,
+                    cancel=deps.stop_event,
                 )
             except Exception as e:  # noqa: BLE001 - 한 시장의 실패가 다른 시장을 막지 않는다
                 logger.exception("reflect 실패 %s", market)
@@ -1927,6 +2057,10 @@ def job_body(
     if job.kind == "rebalance":
         return lambda: market_job(
             deps, job.market or "KR", "rebalance", lambda: _rebalance_body(deps, job.market or "KR")
+        )
+    if job.kind == "theme":
+        return lambda: monitor_job(
+            deps, job.market or "KR", lambda: _theme_body(deps, job.market or "KR")
         )
     if job.kind == "telegram_poll":
         return lambda: _telegram_body(deps)
@@ -2161,7 +2295,10 @@ def _start_web(app: Any, host: str, port: int, *, notifier: Any = None) -> threa
     로그와 알림으로 드러낸다(트레이 모드는 stderr 가 보이지 않는다)."""
     import uvicorn
 
-    server = uvicorn.Server(uvicorn.Config(app, host=host, port=port, log_level="info"))
+    # 접근 로그는 실시간 시세 폴링(10초)마다 줄이 쌓여 끈다(전체 검토 P10)
+    server = uvicorn.Server(
+        uvicorn.Config(app, host=host, port=port, log_level="info", access_log=False)
+    )
 
     def run() -> None:
         try:

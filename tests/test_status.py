@@ -82,7 +82,7 @@ def test_status_shows_pending_and_distribution(conn, project):
     now = datetime(2026, 10, 9, 5, 10, tzinfo=UTC)
     text = status.build_status(conn, Settings(), accounts, p, now=now)
     assert "## 결정 분포(30일)" in text and "BUY 1" in text and "HOLD 1" in text
-    assert "## 미승인 주문" in text and "#1 paper-main BUY 005930 3주" in text
+    assert "## 미승인 주문" in text and "#1 paper-main 매수 005930 3주" in text
     assert "| paper-main | paper | approve | KR | KR normal |" in text
 
 

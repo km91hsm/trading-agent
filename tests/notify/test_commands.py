@@ -101,7 +101,7 @@ def test_status_shows_effective_mode(conn):
     control.set_flag(conn, "mode:real-main", "auto")  # 확인 문자열 없이 직접 쓴 값
     commands.poll_once(ctx, Recv(["/status"]))
     msg = sent.msgs[-1]
-    assert "real-main=off" in msg and "강등" in msg and "real-main=auto" not in msg
+    assert "real-main(실전) 끔" in msg and "강등" in msg and "real-main(실전) 자동" not in msg
 
 
 def test_status_includes_daemon_line(conn, project):
@@ -168,3 +168,36 @@ def test_telegram_run_enqueues_when_daemon_alive(conn, project):
     assert "알 수 없는 작업" in sent.msgs[-2] and "파라미터 오류" in sent.msgs[-1]
     commands.poll_once(ctx, Recv(["/run analyze_ticker KR 005930"]))
     assert "종목 분석 005930 (모의)" in sent.msgs[-1]
+
+
+def test_real_approve_requires_confirm_word_and_unknown_command_gets_help(conn, monkeypatch):
+    """전체 검토 T2: 실전 계좌 승인은 '/approve <id> 실전' 이어야 실행, 모르는 /명령은 안내."""
+    from trader.ledger import repo
+    from trader.orchestrator import executor
+
+    sent = Sent()
+    ctx = _ctx(conn, sent)
+    aid = repo.create_approval(
+        conn,
+        decision_id=0,
+        account_id="real-main",
+        order={
+            "ticker": "005930",
+            "market": "KR",
+            "side": "BUY",
+            "qty": 1,
+            "order_type": "LIMIT",
+            "price": "70000",
+            "exchange": None,
+        },
+        requested_at="2026-10-26T00:00:00+00:00",
+        expires_at="2026-10-26T00:30:00+00:00",
+    )
+    calls = []
+    monkeypatch.setattr(executor, "approve", lambda c, i: calls.append(i) or {"ok": True})
+    commands.poll_once(ctx, Recv([f"/approve {aid}"]))
+    assert calls == [] and f"/approve {aid} 실전" in sent.msgs[-1]
+    commands.poll_once(ctx, Recv([f"/approve {aid} 실전"]))
+    assert calls == [aid]
+    commands.poll_once(ctx, Recv(["/aprove 1"]))
+    assert sent.msgs[-1].startswith("[명령 안내]") and "/status" in sent.msgs[-1]

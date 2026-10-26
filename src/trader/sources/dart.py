@@ -276,6 +276,23 @@ class DartClient:
         items.sort(key=lambda i: i["rcept_dt"], reverse=True)
         return items
 
+    def market_disclosures(self, day: date, *, pages: int = 3) -> list[dict]:
+        """그날(KST) 시장 전체 공시 목록(Phase 25 공시 중요도) — `list.json` 을 회사 지정 없이
+        page_count 100 으로 최대 pages 쪽. 행은 DART 원본 필드(stock_code·corp_name·report_nm·
+        rcept_no·rcept_dt)."""
+        out: list[dict] = []
+        ymd = day.strftime("%Y%m%d")
+        for page in range(1, pages + 1):
+            data = self._get_json(
+                "list.json", bgn_de=ymd, end_de=ymd, page_no=str(page), page_count="100"
+            )
+            rows = data.get("list") or []
+            out.extend(r for r in rows if isinstance(r, dict))
+            total = int(data.get("total_page") or 1)
+            if page >= total or not rows:
+                break
+        return out
+
 
 # --- 비율 (DART·EDGAR 공유) -------------------------------------------------
 

@@ -25,3 +25,12 @@ def rows(v: Any) -> list[dict]:
     if isinstance(v, dict) and v:
         return [v]
     return []
+
+
+def first_of(row: dict, *keys: str) -> Any:
+    """후보 필드명 중 처음으로 값이 있는 것 (응답 필드명이 미확인인 API 용). 없으면 None."""
+    for k in keys:
+        v = row.get(k)
+        if v not in (None, ""):
+            return v
+    return None

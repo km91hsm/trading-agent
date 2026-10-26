@@ -96,8 +96,8 @@ def insert_items(
             tickers = sorted(set(tickers) | {str(t).strip() for t in it.get("tickers") or [] if t})
         cur = conn.execute(
             "INSERT OR IGNORE INTO news_items(market, source, query, title, url, url_hash, "
-            "published_at, received_at, summary, tickers_json, lang) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "published_at, received_at, summary, tickers_json, lang, severity) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 market,
                 source,
@@ -110,6 +110,7 @@ def insert_items(
                 (it.get("summary") or "")[:300],
                 json.dumps(tickers, ensure_ascii=False),
                 lang,
+                it.get("severity"),  # 공시 중요도(Phase 25): critical|high|info|None
             ),
         )
         n += int(cur.rowcount == 1)
@@ -236,20 +237,35 @@ def title_tokens(title: str) -> set[str]:
     return {w for w in normalize_title(title).split() if w not in _STOP and len(w) > 1}
 
 
-def is_similar(a: str, b: str, *, jaccard: float = 0.6, ratio: float = 0.8) -> bool:
-    """두 제목이 같은 내용인가: 토큰 Jaccard ≥ jaccard 또는 문자열 유사도 ≥ ratio. 숫자 토큰
-    (분기·금액·가격)이 다르면 다른 사건으로 본다."""
-    ta, tb = title_tokens(a), title_tokens(b)
-    if {t for t in ta if t[0].isdigit()} != {t for t in tb if t[0].isdigit()}:
+def _features(title: str) -> tuple[str, set[str], set[str]]:
+    """(정규화 제목, 토큰, 숫자 토큰) — 유사 판정에 쓰는 것을 한 번만 계산한다."""
+    norm = normalize_title(title)
+    toks = {w for w in norm.split() if w not in _STOP and len(w) > 1}
+    return norm, toks, {t for t in toks if t[0].isdigit()}
+
+
+def _similar_f(
+    fa: tuple[str, set[str], set[str]],
+    fb: tuple[str, set[str], set[str]],
+    *,
+    jaccard: float,
+    ratio: float,
+) -> bool:
+    na, ta, da = fa
+    nb, tb, db = fb
+    if da != db:
         return False
-    if ta and tb:
-        j = len(ta & tb) / len(ta | tb)
-        if j >= jaccard:
-            return True
-    na, nb = normalize_title(a), normalize_title(b)
+    if ta and tb and len(ta & tb) / len(ta | tb) >= jaccard:
+        return True
     if not na or not nb:
         return False
     return SequenceMatcher(None, na, nb).ratio() >= ratio
+
+
+def is_similar(a: str, b: str, *, jaccard: float = 0.6, ratio: float = 0.8) -> bool:
+    """두 제목이 같은 내용인가: 토큰 Jaccard ≥ jaccard 또는 문자열 유사도 ≥ ratio. 숫자 토큰
+    (분기·금액·가격)이 다르면 다른 사건으로 본다."""
+    return _similar_f(_features(a), _features(b), jaccard=jaccard, ratio=ratio)
 
 
 def novel_items(
@@ -263,16 +279,21 @@ def novel_items(
 ) -> list[dict]:
     """`since` 이후 받은 미판정 항목을 앞선 항목(최근 lookback_days, 같은 시장)과 비교해
     `novel`(1 새 내용 / 0 유사)을 저장하고 **새 내용인 항목**만 돌려준다. 비교 풀은 같은 태그
-    종목끼리(태그 없는 뉴스는 태그 없는 풀), 표준 라이브러리만 쓴다(LLM 없음)."""
+    종목끼리(태그 없는 뉴스는 태그 없는 풀), 표준 라이브러리만 쓴다(LLM 없음).
+
+    판정은 전부 메모리에서 끝낸 뒤 쓰기는 `executemany` 한 번으로 짧게 커밋한다 — 판정 루프 동안
+    쓰기 잠금을 잡고 있으면 손절 기록·결정 제출이 busy timeout 에 걸린다(전체 검토 P3). 제목
+    정규화·토큰은 항목마다 한 번만 계산한다."""
     lo = (since.astimezone(UTC) - timedelta(days=lookback_days)).isoformat()
     rows = conn.execute(
         "SELECT id, title, tickers_json, received_at, novel FROM news_items "
         "WHERE market=? AND received_at >= ? ORDER BY received_at, id",
         (market, lo),
     ).fetchall()
+    if conn.in_transaction:
+        conn.commit()  # 읽기 트랜잭션을 판정 루프 동안 붙잡지 않는다
     since_iso = since.astimezone(UTC).isoformat()
-    # 풀: 태그 종목(또는 '' = 태그 없음) → 이미 판정된(또는 since 이전) 제목 목록
-    pools: dict[str, list[str]] = {}
+    pools: dict[str, list[tuple[str, set[str], set[str]]]] = {}
     pending: list[sqlite3.Row] = []
     for r in rows:
         if r["received_at"] >= since_iso and r["novel"] is None:
@@ -280,27 +301,38 @@ def novel_items(
             continue
         if r["novel"] == 0:
             continue  # 유사 기사로 판정된 것은 대표가 아니다(대표 제목만 풀에)
+        f = _features(r["title"])
         for key in _pool_keys(r["tickers_json"]):
-            pools.setdefault(key, []).append(r["title"])
-    out: list[dict] = []
+            pools.setdefault(key, []).append(f)
+    updates: list[tuple[int, int]] = []
+    novel_ids: list[int] = []
     for r in pending:
         keys = _pool_keys(r["tickers_json"])
+        f = _features(r["title"])
         dup = any(
-            is_similar(r["title"], prev, jaccard=jaccard, ratio=ratio)
+            _similar_f(f, prev, jaccard=jaccard, ratio=ratio)
             for key in keys
             for prev in pools.get(key, ())
         )
-        conn.execute("UPDATE news_items SET novel=? WHERE id=?", (0 if dup else 1, r["id"]))
+        updates.append((0 if dup else 1, r["id"]))
         if not dup:
+            novel_ids.append(int(r["id"]))
             for key in keys:
-                pools.setdefault(key, []).append(r["title"])
-            row = conn.execute(
-                "SELECT id, market, source, query, title, url, url_hash, published_at, "
-                "received_at, summary, tickers_json, lang FROM news_items WHERE id=?",
-                (r["id"],),
-            ).fetchone()
-            out.append(_row(row))
-    conn.commit()
+                pools.setdefault(key, []).append(f)
+    if updates:
+        conn.executemany("UPDATE news_items SET novel=? WHERE id=?", updates)
+        conn.commit()
+    out: list[dict] = []
+    for i in range(0, len(novel_ids), 500):
+        chunk = novel_ids[i : i + 500]
+        qs = ",".join("?" * len(chunk))
+        found = conn.execute(
+            "SELECT id, market, source, query, title, url, url_hash, published_at, "
+            f"received_at, summary, tickers_json, lang FROM news_items WHERE id IN ({qs})",
+            chunk,
+        ).fetchall()
+        by_id = {int(row["id"]): row for row in found}
+        out += [_row(by_id[x]) for x in chunk if x in by_id]
     return out
 
 

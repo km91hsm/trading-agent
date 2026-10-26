@@ -130,6 +130,29 @@ class RebalanceCfg(BaseModel):
     lookback_days: int = Field(default=30, ge=1, le=365)  # 목표로 쓸 결정의 최대 나이
 
 
+class ThemeWeights(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    news: float = 0.35
+    rank: float = 0.25
+    flow: float = 0.15
+    saveticker: float = 0.10
+    vol: float = 0.15
+
+
+class ThemeCfg(BaseModel):
+    """테마 열기 감지 (Phase 25 단계 4, `scan/theme.py`). 감지·알림·scout 입력만 —
+    매매는 분석 세션."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    interval_s: int = Field(default=1800, ge=300, le=86400)  # 데몬 <시장>_theme 주기(장중만)
+    top_n: int = Field(default=3, ge=1, le=10)  # 알림·scout·게이트가 보는 상위 테마 수
+    min_cluster_titles: int = Field(default=3, ge=2)  # 키워드 테마: 새 뉴스 제목 공출현 최소 건수
+    weights: ThemeWeights = Field(default_factory=ThemeWeights)
+
+
 class RiskLimits(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -139,9 +162,16 @@ class RiskLimits(BaseModel):
     stop_loss_pct: float = -0.15
     min_cash_pct: float = 0.0
     max_sector_pct: float = Field(default=0.40, gt=0, le=1)  # 같은 섹터 합계 상한 (BUY/ADD 뒤)
+    # 1회 손실 한도(검토 L9): 손절까지 잃는 금액이 NAV 의 이 비율을 넘지 않게 BUY/ADD 수량을 자른다
+    risk_per_trade_pct: float = Field(default=0.02, gt=0, le=0.25)
     # 보유기간 프로필(Phase 23 T): short(≤10일)·mid(11~40)·long(>40) 셋이 전부 있어야 한다
     horizon_profiles: dict[str, HorizonProfile] = Field(default_factory=_default_profiles)
     reprice: RepriceCfg = Field(default_factory=RepriceCfg)  # 아침 미체결 재호가(Phase 23 B)
+    # 테마 매매 안전장치(Phase 25 단계 4): 같은 테마(오늘 상위 테마) 합계 상한, 당일 급등 추격 금지,
+    # 테마 종목 결정은 짧은 보유·익절가 필수
+    max_theme_pct: float = Field(default=0.20, gt=0, le=1)
+    chase_limit_pct: float = Field(default=0.10, gt=0)  # 당일 등락률 ≥ 이 값이면 신규 매수 금지
+    theme_max_horizon_days: int = Field(default=10, ge=1)
 
     @field_validator("horizon_profiles")
     @classmethod
@@ -181,7 +211,7 @@ class HedgeCfg(BaseModel):
     exit_streak_days: int = Field(default=5, ge=1, le=30)
     # Phase 19: 전략가(시장 세션) RISK_OFF 를 4번째 국면 지표로 센다(지표 0개면 bear 진입 불가),
     # RISK_ON 은 지표가 bear_min_signals 와 같을 때 하루 진입 보류. 둘 다 confidence 기준 이상만
-    agent_signal: bool = True
+    agent_signal: bool = False  # 전체 검토 L8: 기울기(agent_gate)와 이중 반영이라 기본 끔
     agent_min_confidence: float = Field(default=0.7, ge=0, le=1)
     # Phase 22: 전략가 제안(확신 ≥ agent_min_confidence)이 국면 한도를 한 칸 옮긴다 —
     # neutral+RISK_ON 20%·4, neutral+RISK_OFF 10%·2, bull+RISK_OFF → neutral 한도, bear+RISK_ON →
@@ -345,10 +375,9 @@ class Settings(BaseModel):
     web: WebSettings = Field(default_factory=WebSettings)
     memory: MemorySettings = Field(default_factory=MemorySettings)
     discovery: DiscoveryCfg = Field(default_factory=DiscoveryCfg)  # Phase 23 장중 뉴스 발굴
-    scalp: ScalpCfg = Field(default_factory=ScalpCfg)
-    rebalance: RebalanceCfg = Field(
-        default_factory=RebalanceCfg
-    )  # Phase 25 주간 리밸런스  # Phase 23 분 단위 단타(모의 전용, 기본 끔)
+    scalp: ScalpCfg = Field(default_factory=ScalpCfg)  # Phase 23 분 단위 단타(모의 전용, 기본 끔)
+    theme: ThemeCfg = Field(default_factory=ThemeCfg)  # Phase 25 테마 열기 감지
+    rebalance: RebalanceCfg = Field(default_factory=RebalanceCfg)  # Phase 25 주간 리밸런스
 
 
 # --- accounts.yaml ---------------------------------------------------------

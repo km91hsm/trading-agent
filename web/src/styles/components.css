@@ -148,6 +148,12 @@
   background: var(--pending-bg);
   border-color: transparent;
 }
+.badge-danger {
+  color: var(--danger);
+  background: var(--danger-bg);
+  border-color: var(--danger);
+  font-weight: 600;
+}
 .badge-pending {
   color: var(--pending);
   background: var(--pending-bg);

@@ -57,6 +57,19 @@ def drop_incomplete_tail(candles: list[Candle]) -> list[Candle]:
     return out
 
 
+class RankRow(BaseModel):
+    """KIS 순위 API 한 줄 (Phase 25). 필드가 없는 API 는 None. change_pct 는 소수(0.125=12.5%)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    ticker: str
+    name: str | None = None
+    rank: int
+    change_pct: float | None = None
+    volume: int | None = None
+    net_buy: int | None = None
+
+
 class InvestorFlow(BaseModel):
     """투자자별 일별 순매수 수량."""
 

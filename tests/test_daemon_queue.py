@@ -370,3 +370,37 @@ def test_fills_body_isolates_account_failure(conn, monkeypatch):
     monkeypatch.setattr(fills_mod, "sync_fills", fake_sync)
     out = daemon._fills_body(deps)
     assert "error" in out["real-main"] and out["paper-main"] == {"inserted": 0}
+
+
+def test_reevaluate_request_passes_cancel_and_skips_when_stopping(conn):
+    """전체 검토 P1: 재평가 세션에 종료 신호(cancel)를 넘기고, 종료 중이면 세션을 안 띄운다."""
+    from trader.ledger import repo
+
+    seen = []
+
+    def runner(spec, *a, **kw):
+        seen.append(kw.get("cancel"))
+        return SimpleNamespace(ok=True, session_id="s", cost_usd=0.1, error=None)
+
+    deps = _deps(conn, FakeMarket(), now=lambda: NOW)
+    deps.session_runner = runner
+
+    def trig():
+        return repo.insert_trigger(
+            conn,
+            market="KR",
+            ticker="005930",
+            kind="move_7pct",
+            detail={},
+            price=None,
+            decision_id=None,
+            account_id="paper-main",
+            created_at=NOW.isoformat(),
+        )
+
+    p = {"market": "KR", "ticker": "005930", "trigger_id": trig()}
+    daemon._reevaluate_request(deps, p)
+    assert seen == [deps.stop_event]
+    deps.stop_event.set()
+    out = daemon._reevaluate_request(deps, {**p, "trigger_id": trig()})
+    assert out == {"skipped": "종료 중"} and len(seen) == 1

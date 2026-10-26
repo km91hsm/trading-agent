@@ -192,7 +192,8 @@ def rebalance(
             executor._notify_quietly(ctx, messages.event("헤지 보류", f"{market} {deferred}"))
         return out
     if st == "bear" and not held:
-        leveraged = int(state.get("count") or 0) >= 3 and (
+        # −2x 는 정량 3지표가 모두 켜졌을 때만(전략가·수급 보조 신호는 세지 않는다, 검토 O14)
+        leveraged = regime_mod.core_count(state) >= 3 and (
             view is None or bool(view.get("leveraged", True))
         )
         inst = cfg.instrument(market, leveraged=leveraged)
@@ -253,7 +254,7 @@ def rebalance(
                 held=held,
                 want=cfg.instrument(
                     market,
-                    leveraged=int(state.get("count") or 0) >= 3
+                    leveraged=regime_mod.core_count(state) >= 3
                     and (view is None or bool(view.get("leveraged", True))),
                 ),
             )
@@ -415,19 +416,12 @@ def _execute(
                     label=executor._label(ctx, market, inst.symbol),
                     qty=r["qty"],
                     detail=(
-                        f"국면 {state.get('state')} {state.get('count')}/3 · "
+                        f"국면 {messages.REGIME.get(str(state.get('state')), state.get('state'))} "
+                        f"{state.get('count')}/3 · "
                         f"접수번호 {o.get('order_no')}"
                     ),
                 ),
             )
-        elif r.get("approval_id"):
-            executor._notify_quietly(
-                ctx,
-                messages.hedge_approval(
-                    approval_id=r["approval_id"],
-                    account=r["account_id"],
-                    market=market,
-                    label=executor._label(ctx, market, inst.symbol),
-                ),
-            )
+        # 승인 요청은 executor 가 '[승인 요청 #n · 실전 · 헤지]'(금액·만료 포함)로 이미 보낸다 —
+        # 여기서 또 보내면 같은 요청이 두 번 온다(전체 검토 T1·T3)
     return results
