@@ -249,17 +249,31 @@ def run_fake_ticker(
 
     for role in ANALYST_ROLES:
         write(f"10_analyst_{role}", fake_report(ticker, asof, role), f"analyst-{role}")
-    before = len(written)
-    for n in range(0, debate_rounds + 1):
-        for side in ("bull", "bear"):
-            write(f"20_debate_r{n}_{side}", fake_turn(side, n), f"researcher-{side}")
-    debate_changed = len(written) > before
-    # 토론 턴을 새로 썼으면 요약도 다시 만든다 (오케스트레이터 프롬프트와 같은 규칙)
-    if debate_changed or "25_research_summary" not in list_checkpoints(d):
+    stages = list_checkpoints(d)
+    has_debate = any(s.startswith("20_debate_") for s in stages)
+    skipped = False
+    if not has_debate and "25_research_summary" not in stages:
+        # 오케스트레이터 프롬프트와 같은 순서: 토론 전에 summarize — 합의면 토론 생략(L17)
         r = tools.checkpoint_summarize(ctx, ticker=ticker, market=market, date=date)
-        if not r["ok"]:
+        if r["ok"]:
+            skipped = True
+            written.append("25_research_summary")
+        elif not r.get("debate_required"):
             raise tools.ToolError(r["error"])
-        written.append("25_research_summary")
+    elif not has_debate:
+        skipped = True  # 이미 생략 요약이 있다
+    if not skipped:
+        before = len(written)
+        for n in range(0, debate_rounds + 1):
+            for side in ("bull", "bear"):
+                write(f"20_debate_r{n}_{side}", fake_turn(side, n), f"researcher-{side}")
+        debate_changed = len(written) > before
+        # 토론 턴을 새로 썼으면 요약도 다시 만든다 (오케스트레이터 프롬프트와 같은 규칙)
+        if debate_changed or "25_research_summary" not in list_checkpoints(d):
+            r = tools.checkpoint_summarize(ctx, ticker=ticker, market=market, date=date)
+            if not r["ok"]:
+                raise tools.ToolError(r["error"])
+            written.append("25_research_summary")
     if trigger is not None:
         n = 1 + sum(1 for s in list_checkpoints(d) if s.startswith("31_decision_r"))
         stage = f"31_decision_r{n}"

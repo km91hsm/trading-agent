@@ -10,7 +10,7 @@ export type TraceResp = {
   quote: string | null;
   analysts: TraceAnalyst[];
   debate: TraceDebate[];
-  research: { rounds?: number; gap_round0?: number; gap_final?: number; sycophantic?: boolean; preferred?: string | null } | null;
+  research: { rounds?: number; gap_round0?: number; gap_final?: number; sycophantic?: boolean | null; preferred?: string | null; skipped_debate?: boolean; reason?: string } | null;
   gate: TraceGate[];
   orders: TraceOrder[];
   reevaluations: { round: string; decision: Record<string, unknown>; gate: TraceGate[]; orders: TraceOrder[] }[];
@@ -46,7 +46,7 @@ export function traceSteps(t: TraceResp): TraceStep[] {
     steps.push({
       key: "research",
       title: "수렴 감시",
-      lines: [t.research.sycophantic ? `붕괴(아첨적 수렴) · 라운드 0 우선 · 차이 ${pct(t.research.gap_round0)}→${pct(t.research.gap_final)}` : `정상 · 차이 ${pct(t.research.gap_round0)}→${pct(t.research.gap_final)}`],
+      lines: [t.research.skipped_debate ? `토론 생략 · ${t.research.reason ?? "애널리스트 합의"}` : t.research.sycophantic ? `붕괴(아첨적 수렴) · 라운드 0 우선 · 차이 ${pct(t.research.gap_round0)}→${pct(t.research.gap_final)}` : `정상 · 차이 ${pct(t.research.gap_round0)}→${pct(t.research.gap_final)}`],
     });
   }
   const d = t.decision.data ?? {};

@@ -60,6 +60,10 @@ models:
   reflector: sonnet
 
 debate_rounds: 1      # 0~2. 독립 의견(라운드 0) + 반박 라운드 수
+debate:
+  # 애널리스트 4명이 모두 같은 방향(NEUTRAL 제외)·확신 ≥ 기준이면 토론 없이 트레이더로 (전체 검토 L17, 세션 비용)
+  skip_on_consensus: true
+  consensus_min_conviction: 0.7
 anonymize: false      # true 면 프롬프트 직전 종목명·티커 치환
 retention_days: 120   # 이 일수보다 오래된 state/runs·운영일 플래그·끝난 잡 기록을 reflect 잡이 정리(원장 사실은 유지)
 claude_bin: null      # null 이면 PATH 에서 claude 탐색

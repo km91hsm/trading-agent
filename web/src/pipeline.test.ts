@@ -35,6 +35,7 @@ describe("stageSummary", () => {
   it("요약 붕괴는 r0 우선", () => {
     expect(stageSummary("25_research_summary", [{ file: "25_research_summary", data: { sycophantic: true } }])).toBe("붕괴 · r0 우선");
     expect(stageSummary("25_research_summary", [{ file: "25_research_summary", data: { sycophantic: false, preferred: "final" } }])).toBe("정상 수렴 · final");
+    expect(stageSummary("25_research_summary", [{ file: "25_research_summary", data: { skipped_debate: true, sycophantic: null } }])).toBe("토론 생략 · 애널리스트 합의");
   });
   it("애널리스트는 입장 집계, 결정은 action·비중·확신", () => {
     expect(

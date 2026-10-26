@@ -127,6 +127,18 @@ class RepriceCfg(BaseModel):
     max_chase_pct: float = Field(default=0.01, gt=0, le=0.1)
 
 
+class DebateCfg(BaseModel):
+    """애널리스트 합의 시 토론 생략 (2026-10-26 전체 검토 L17 — 세션 비용).
+
+    10_analyst_* 네 역할이 모두 같은 방향(NEUTRAL·UNKNOWN 제외)이고 확신이 전부
+    `consensus_min_conviction` 이상이면 `checkpoint summarize` 가 토론 없이 요약을 만든다."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    skip_on_consensus: bool = True
+    consensus_min_conviction: float = Field(default=0.7, ge=0, le=1)
+
+
 class RebalanceCfg(BaseModel):
     """주간 리밸런스(Phase 25 단계 7). 최근 LLM 결정의 target_weight 대비 ±band_pct 넘게 벗어난
     보유만 TRIM 먼저·ADD 나중, 결정 행 없이(decision_id=None) 게이트를 그대로 통과한 수량만."""
@@ -377,6 +389,7 @@ class Settings(BaseModel):
     hedge: HedgeCfg = Field(default_factory=HedgeCfg)
     models: dict[str, str] = Field(default_factory=dict)
     debate_rounds: int = Field(default=1, ge=0, le=2)
+    debate: DebateCfg = Field(default_factory=DebateCfg)  # 합의 시 토론 생략(L17)
     anonymize: bool = False
     claude_bin: str | None = None
     llm: LlmSettings = Field(default_factory=LlmSettings)

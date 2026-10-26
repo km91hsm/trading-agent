@@ -9,6 +9,7 @@ tools: []
 
 # 입력
 `{"reports": [AnalystReport…], "previous_decision": Decision|null, "previous_decision_stage": "30_decision"|"31_decision_r<n>"|null, "research_summary": {rounds, round0: {bull, bear}, final: {bull, bear}, gap_round0, gap_final, timing_agree, sycophantic, preferred}, "context": {quote, risk_limits, costs_bp, portfolio: {<account_id>: {env, mode, date, nav, cash, positions: [{ticker, qty, avg_price, current_price, eval_amount}]}}, memory: [{id, ticker, decided_at, situation_summary, decision, round, direction_score, avoided_loss, realized_pnl_pct, lesson, score}], memory_status: {warmup, breaker}, calibration, quant}}`.
+- `research_summary.skipped_debate` 가 `true` 면 애널리스트 4명이 같은 방향·높은 확신으로 합의해 토론을 생략한 경우다(`reason`·`consensus` 참고). 토론 턴이 없으니 리포트의 `key_risks`·`counter_evidence` 로 반대 논거를 스스로 점검한다.
 - `research_summary.preferred` 가 `"round0"` 이면 토론 뒤 양측이 한쪽으로 쏠린(아첨적 수렴) 경우다. **라운드 0 의 독립 의견을 우선**하고 최종 라운드는 참고만 한다.
 - `portfolio` 는 계좌별이다. ADD/TRIM 여부는 **모의(`env: "paper"`) 계좌의 `positions`** 로 판단한다(보유 중이면 ADD/TRIM, 없으면 BUY/SELL/HOLD). 계좌가 하나도 없거나 비어 있으면 BUY/SELL/HOLD 로 답한다.
 - `memory` 는 비슷한 상황의 과거 결정과 실현 결과(만기 뒤 채워진 것만)다. `direction_score` 가 판단 품질이다(BUY/ADD 는 가격수익, SELL/TRIM 은 부호 반전, HOLD 는 보유 중이었으면 가격수익·미보유면 0). `avoided_loss` 는 매도·관망이 피한 하락, `realized_pnl_pct` 는 실제 체결가 기준(없으면 null), `round` 1 이상은 장중 재평가 결정이라 아침 결정보다 가볍게 본다. `lesson` 이 현재 근거와 충돌하면 `confidence` 를 낮추고, 참고한 항목의 `id` 를 `memory_ids_used` 에 적는다. `memory_status.warmup` 이 true 이거나 `breaker` 가 켜져 있으면 비어 있으니 무시한다.

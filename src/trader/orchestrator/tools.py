@@ -536,9 +536,15 @@ def _load_turns(d: Path) -> dict[int, dict[str, schemas.DebateTurn]]:
 
 @_guarded
 def checkpoint_summarize(ctx: ToolContext, *, ticker: str, market: Market, date: date) -> dict:
-    """20_debate_* 를 모아 25_research_summary 를 만든다 (파이썬이 수렴 감시)."""
+    """20_debate_* 를 모아 25_research_summary 를 만든다 (파이썬이 수렴 감시).
+
+    토론 턴이 하나도 없으면 애널리스트 합의(`summary.analyst_consensus`)를 보고, 합의면 토론 없이
+    `skipped_debate: true` 요약을, 아니면 `debate_required: true` 오류를 돌려준다(전체 검토 L17).
+    토론 턴이 있으면 합의 여부와 무관하게 정상 요약이다."""
     d = _dir(ctx, ticker, market, date)
     turns = _load_turns(d)
+    if not turns:
+        return _summarize_without_debate(ctx, d)
     if 0 not in turns or set(turns[0]) != {"bull", "bear"}:
         return {"ok": False, "error": "라운드 0 의 bull·bear 턴이 모두 필요합니다"}
     final_round = max(r for r, sides in turns.items() if set(sides) == {"bull", "bear"})
@@ -553,6 +559,23 @@ def checkpoint_summarize(ctx: ToolContext, *, ticker: str, market: Market, date:
         "sycophantic": summ["sycophantic"],
         "preferred": summ["preferred"],
     }
+
+
+def _summarize_without_debate(ctx: ToolContext, d: Path) -> dict:
+    cfg = ctx.settings.debate
+    consensus = None
+    if cfg.skip_on_consensus:
+        reports = [schemas.AnalystReport.model_validate(r) for r in _reports(d)]
+        consensus = summary_mod.analyst_consensus(reports, cfg.consensus_min_conviction)
+    if consensus is None:
+        return {
+            "ok": False,
+            "debate_required": True,
+            "error": "애널리스트 합의가 아니라 토론이 필요합니다 (라운드 0 의 bull·bear 턴 먼저)",
+        }
+    summ = summary_mod.skipped_summary(consensus)
+    path = write_checkpoint(d, "25_research_summary", _wrap(summ, None))
+    return {"ok": True, "path": str(path), "skipped_debate": True, "reason": summ["reason"]}
 
 
 # --- submit-decision --------------------------------------------------------
@@ -640,6 +663,8 @@ def _brief_turn(t: dict) -> dict:
 
 def _trader_summary(summ: dict) -> dict:
     """preferred 쪽 턴은 전문, 반대쪽은 핵심만 (트레이더 md 가 preferred 를 우선한다)."""
+    if summ.get("skipped_debate"):
+        return dict(summ)  # 토론 생략(합의) 요약은 턴이 없어 줄일 것이 없다
     out = dict(summ)
     other = "final" if summ.get("preferred") == "round0" else "round0"
     if isinstance(summ.get(other), dict):

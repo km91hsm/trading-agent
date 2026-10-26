@@ -108,6 +108,12 @@ describe("stageReport", () => {
     expect(genericBlocks({})).toEqual([]);
   });
 
+  it("토론 생략 요약은 사유만 보인다", () => {
+    const b = stageReport("25_research_summary", { skipped_debate: true, reason: "애널리스트 4명 모두 BULLISH", sycophantic: null });
+    expect(b[0].lead).toBe("토론 생략 — 애널리스트 합의");
+    expect(b[0].rows).toEqual([["사유", "애널리스트 4명 모두 BULLISH"]]);
+  });
+
   it("필드가 빠져도 던지지 않는다", () => {
     for (const s of ["00_inputs", "05_quant", "10_analyst_x", "20_debate_r0_bull", "25_research_summary", "30_decision", "31_decision_r1", "35_calibration", "40_risk_check_a", "50_order_a", "_market_view", "_scan", "_screen", "_discovery"]) {
       expect(() => stageReport(s, { x: 1 })).not.toThrow();
