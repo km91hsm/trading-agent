@@ -24,6 +24,27 @@ WS_URL: dict[Env, str] = {
 
 # 이름 -> (경로, 실전 tr_id, 모의 tr_id | None)
 _TR: dict[str, tuple[str, str, str | None]] = {
+    # 예탁원 권리 일정(기준일) — Stock 프로젝트가 공식 샘플과 대조한 값(D-108, 2026-10). 시세 env
+    "KSD_PAIDIN": (
+        "/uapi/domestic-stock/v1/ksdinfo/paidin-capin",
+        "HHKDB669100C0",
+        "HHKDB669100C0",
+    ),
+    "KSD_BONUS": (
+        "/uapi/domestic-stock/v1/ksdinfo/bonus-issue",
+        "HHKDB669101C0",
+        "HHKDB669101C0",
+    ),
+    "KSD_MERGER_SPLIT": (
+        "/uapi/domestic-stock/v1/ksdinfo/merger-split",
+        "HHKDB669104C0",
+        "HHKDB669104C0",
+    ),
+    "KSD_REV_SPLIT": (
+        "/uapi/domestic-stock/v1/ksdinfo/rev-split",
+        "HHKDB669105C0",
+        "HHKDB669105C0",
+    ),
     # 국내 시세 (실전 env 로만 호출한다)
     "DOM_PRICE": (
         "/uapi/domestic-stock/v1/quotations/inquire-price",

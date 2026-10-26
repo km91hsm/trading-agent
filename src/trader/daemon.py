@@ -374,6 +374,15 @@ def build_jobs(schedule: ScheduleConfig, settings: Settings, *, markets: list[st
     jobs.append(Job("balance_refresh", "balance_refresh", interval_s=BALANCE_REFRESH_S))
     jobs.append(Job("saveticker", "saveticker", interval_s=SAVETICKER_WATCH_S))
     jobs.append(Job("ledger_backup", "ledger_backup", cron={"hour": 17, "minute": 10}))
+    if "KR" in markets:  # 권리 일정 수집(블랙아웃이 꺼져 있어도 모아 둔다 — 켤 때 바로 쓰게)
+        jobs.append(
+            Job(
+                "ksd_events",
+                "ksd_events",
+                "KR",
+                cron={"hour": 7, "minute": 5, "day_of_week": "mon-fri"},
+            )
+        )
     if settings.briefing.enabled and "KR" in markets:
         bt = _hm(settings.briefing.time)
         jobs.append(
@@ -1582,6 +1591,24 @@ def _backup_body(deps: DaemonDeps) -> dict:
     return {"file": out.name, "pruned": removed}
 
 
+def _ksd_body(deps: DaemonDeps) -> dict:
+    """예탁원 권리 일정 수집(평일 07:05 KST) → control.ksd_events:KR. 시세 클라이언트 없으면 생략.
+    """
+    from trader.risk import blackout
+
+    if deps.market_client is None or not hasattr(deps.market_client, "ksd_schedule"):
+        return {"skipped": "시세 클라이언트 없음"}
+    r = blackout.collect(
+        deps.market_client, deps.settings.event_blackout, today=deps.now().astimezone(KST).date()
+    )
+    conn = deps.conn_factory()
+    try:
+        blackout.store(conn, r)
+    finally:
+        conn.close()
+    return {"events": len(r["events"]), "errors": r["errors"]}
+
+
 def _briefing_body(deps: DaemonDeps) -> dict:
     """아침 브리핑(평일 07:20 KST, KR 휴장일·일시정지 제외) → 텔레그램. 사람이 읽는 요약 전용."""
     from trader.orchestrator import briefing
@@ -2393,9 +2420,7 @@ def _shadow_record(deps: DaemonDeps, market: str, analyzed: dict | None = None) 
         conn = deps.conn_factory()
         try:
             index = shadow.index_table(deps.market_client, deps.settings.hedge, market)
-            shadow.record(
-                conn, market=market, day=today, scan=scan, now=deps.now(), index=index
-            )
+            shadow.record(conn, market=market, day=today, scan=scan, now=deps.now(), index=index)
         finally:
             conn.close()
     except Exception as e:  # noqa: BLE001 - 측정 실패가 분석 잡을 실패로 만들지 않는다
@@ -2481,6 +2506,8 @@ def job_body(
         return lambda: market_job(
             deps, job.market or "KR", "rebalance", lambda: _rebalance_body(deps, job.market or "KR")
         )
+    if job.kind == "ksd_events":
+        return lambda: _ksd_body(deps)
     if job.kind == "briefing":
         return lambda: market_job(deps, "KR", "briefing", lambda: _briefing_body(deps))
     if job.kind == "daily_report":

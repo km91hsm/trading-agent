@@ -464,6 +464,13 @@ def execute(
     else:
         risk_stage, order_stage = "40_risk_check", "50_order"
     paused = control.is_paused(ctx.conn)
+    if market == "KR" and decision.action in ("BUY", "ADD") and not is_hedge:
+        # 권리 일정 블랙아웃(기본 끔, Stock D-113): 모든 매수 경로(분석·리밸런스·단타)가 지난다
+        from trader.risk import blackout
+
+        ev = blackout.reason(ctx.conn, decision.ticker, date, ctx.settings.event_blackout)
+        if ev:
+            trade_block = f"{trade_block} · {ev}" if trade_block else ev
     results: list[dict] = []
     bookkeeping_error: OrderBookkeepingError | None = None
     rl_base = _RlBase()
