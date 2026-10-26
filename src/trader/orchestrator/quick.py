@@ -45,6 +45,7 @@ _FAKE = {
         "confidence": 0.5,
     },
     "ScalpAdvice": {"action": "hold", "reason": "FAKE 모드", "confidence": 0.5},
+    "Briefing": {"lines": ["FAKE 모드: 아침 브리핑 없음"], "uncertain": [], "confidence": 0.5},
 }
 _JSON_OBJ = re.compile(r"\{.*\}", re.S)
 

@@ -374,6 +374,16 @@ def build_jobs(schedule: ScheduleConfig, settings: Settings, *, markets: list[st
     jobs.append(Job("balance_refresh", "balance_refresh", interval_s=BALANCE_REFRESH_S))
     jobs.append(Job("saveticker", "saveticker", interval_s=SAVETICKER_WATCH_S))
     jobs.append(Job("ledger_backup", "ledger_backup", cron={"hour": 17, "minute": 10}))
+    if settings.briefing.enabled and "KR" in markets:
+        bt = _hm(settings.briefing.time)
+        jobs.append(
+            Job(
+                "morning_briefing",
+                "briefing",
+                "KR",
+                cron={"hour": bt.hour, "minute": bt.minute, "day_of_week": "mon-fri"},
+            )
+        )
     jobs.append(
         Job("paper_review", "paper_review", cron={"hour": 9, "minute": 0, "day_of_week": "sat"})
     )
@@ -1572,6 +1582,30 @@ def _backup_body(deps: DaemonDeps) -> dict:
     return {"file": out.name, "pruned": removed}
 
 
+def _briefing_body(deps: DaemonDeps) -> dict:
+    """아침 브리핑(평일 07:20 KST, KR 휴장일·일시정지 제외) → 텔레그램. 사람이 읽는 요약 전용."""
+    from trader.orchestrator import briefing
+    from trader.sources import saveticker
+
+    root = None
+    if deps.sources_cfg is not None:
+        root = saveticker.resolve_dir(deps.sources_cfg.news.saveticker_dir)
+    conn = deps.conn_factory()
+    try:
+        return briefing.run(
+            conn,
+            deps.settings,
+            deps.accounts,
+            now=deps.now(),
+            notifier=deps.notifier,
+            market_client=deps.market_client,
+            saveticker_root=root,
+            cancel=deps.stop_event,
+        )
+    finally:
+        conn.close()
+
+
 def _daily_report_body(deps: DaemonDeps, market: str) -> dict:
     """장 마감 일일 리포트 → 텔레그램(오늘 스냅샷이 있는 계좌만, 없으면 조용히)."""
     from trader.ledger import daily_report
@@ -2447,6 +2481,8 @@ def job_body(
         return lambda: market_job(
             deps, job.market or "KR", "rebalance", lambda: _rebalance_body(deps, job.market or "KR")
         )
+    if job.kind == "briefing":
+        return lambda: market_job(deps, "KR", "briefing", lambda: _briefing_body(deps))
     if job.kind == "daily_report":
         return lambda: market_job(
             deps,

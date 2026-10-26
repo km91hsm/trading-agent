@@ -110,7 +110,7 @@ def test_common_rules_identical_prefix_across_all_agents():
             ]
         )
     )
-    assert len(names) == 14
+    assert len(names) == 15  # + briefing(아침 브리핑, 2026-10-27)
     canon = None
     for name in names:
         body = load_agent(name, REPO_AGENTS).prompt
