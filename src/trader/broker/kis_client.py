@@ -120,6 +120,10 @@ class KisClient:
     def base_url(self) -> str:
         return BASE_URL[self.env]
 
+    @property
+    def auth(self) -> KisAuth:
+        return self._auth
+
     def _headers(self, tr: str, extra: dict[str, str] | None = None) -> dict[str, str]:
         return {
             "content-type": "application/json; charset=utf-8",

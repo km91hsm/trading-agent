@@ -343,6 +343,8 @@ class WebSettings(BaseModel):
 
     bind: str = "127.0.0.1"
     port: int = 8787
+    # 국내 현재가를 KIS 웹소켓으로(`web/live_quotes`, 화면 1초 갱신). 끄면 10초 REST 폴링
+    realtime_ws: bool = True
 
 
 class HalfLives(BaseModel):

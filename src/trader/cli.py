@@ -1496,7 +1496,17 @@ def _web_deps(log_name: str | None = None):
         dist=paths.web_dist(),
         notifier=make_notifier(secrets),
         schedule=schedule,
+        quote_hub=_quote_hub(settings, market),
     )
+
+
+def _quote_hub(settings: config.Settings, market):
+    """웹 실시간 시세 허브(`settings.web.realtime_ws`). 첫 장중 요청에 스레드가 뜬다."""
+    if not settings.web.realtime_ws:
+        return None
+    from trader.web.live_quotes import QuoteHub
+
+    return QuoteHub.for_market(market)
 
 
 @app.command("web")

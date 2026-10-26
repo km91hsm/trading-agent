@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyQuotes, CLOSED_RECHECK_MS, LIVE_INTERVAL_MS, liveLabel, livePlan, nextDelay } from "./live";
+import { applyQuotes, CLOSED_RECHECK_MS, LIVE_INTERVAL_MS, liveLabel, livePlan, nextDelay, STREAM_INTERVAL_MS } from "./live";
 import { planCells } from "./overview";
 import type { Position } from "./types";
 
@@ -61,8 +61,11 @@ describe("applyQuotes", () => {
 });
 
 describe("폴링 주기·표기", () => {
-  it("장중 10초, 장 밖 5분", () => {
+  it("장중 10초(웹소켓이면 1초), 장 밖 1분", () => {
     expect(nextDelay({ session: "open", asof: "", quotes: {} })).toBe(LIVE_INTERVAL_MS);
+    expect(nextDelay({ session: "open", asof: "", quotes: {}, stream: true })).toBe(STREAM_INTERVAL_MS);
+    expect(nextDelay({ session: "closed", asof: "", quotes: {}, stream: true })).toBe(CLOSED_RECHECK_MS);
+    expect(liveLabel({ session: "open", asof: "", quotes: {}, stream: true }, 3)).toBe("실시간 3종목 · 체결 즉시");
     expect(nextDelay({ session: "closed", asof: "", quotes: {} })).toBe(CLOSED_RECHECK_MS);
     expect(nextDelay(null)).toBe(CLOSED_RECHECK_MS);
     expect(liveLabel({ session: "closed", asof: "", quotes: {} }, 0)).toBe("장 밖 · 마지막 잔고 기준");
@@ -91,6 +94,7 @@ describe("시세 나눠 받기", () => {
       { session: "open", asof: "b", quotes: { B: { price: "2", change_pct: 1, asof: "", stale: false } } },
     ]);
     expect(m.session).toBe("open");
+    expect(m.stream).toBe(false);
     expect(Object.keys(m.quotes).sort()).toEqual(["A", "B"]);
   });
 });

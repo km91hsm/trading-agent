@@ -121,3 +121,41 @@ def test_quotes_concurrent_misses_call_kis_once(project, conn):
     for th in ths:
         th.join()
     assert deps.market.calls.count("get_price_kr") == 1
+
+
+class FakeHub:
+    def __init__(self, ticks, connected=True):
+        self.ticks, self.connected, self.requested = ticks, connected, []
+
+    def request(self, tickers):
+        self.requested.append(list(tickers))
+        return {t: v for t, v in self.ticks.items() if t in tickers}
+
+    def status(self):
+        return {"connected": self.connected, "subscribed": len(self.ticks)}
+
+
+def test_quotes_kr_uses_ws_hub_first(project, conn):
+    """웹소켓 틱이 있는 종목은 허브 값, 없는 종목만 REST. stream 이면 화면이 1초 주기."""
+    c, deps = _client(project, OPEN)
+    tick = {"price": "71600", "change_pct": 1.2, "asof": "x", "stale": False, "source": "ws"}
+    deps.quote_hub = FakeHub({"000660": tick})
+    r = c.get("/api/quotes", params={"market": "KR", "tickers": "005930,000660"}).json()
+    assert r["quotes"]["000660"] == tick and r["stream"] is True
+    assert r["quotes"]["005930"]["price"] == "71500"  # REST
+    assert deps.market.calls.count("get_price_kr") == 1
+    assert deps.quote_hub.requested == [["005930", "000660"]]
+
+
+def test_quotes_us_and_closed_never_touch_hub(project, conn):
+    c, deps = _client(project, OPEN)
+    deps.quote_hub = FakeHub({})
+    r = c.get("/api/quotes", params={"market": "US", "tickers": "AAPL"}).json()
+    assert r["stream"] is False and deps.quote_hub.requested == []
+    c2, deps2 = _client(project, CLOSED)
+    deps2.quote_hub = FakeHub({})
+    assert (
+        c2.get("/api/quotes", params={"market": "KR", "tickers": "005930"}).json()["stream"]
+        is False
+    )
+    assert deps2.quote_hub.requested == []
