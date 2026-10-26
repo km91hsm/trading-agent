@@ -1,4 +1,4 @@
-"""데몬 ↔ 공시 중요도(Phase 25 단계 6): critical 은 건수 조건 없이 즉시 재분석·알림 1회, 운영 점검."""
+"""데몬 ↔ 공시 중요도(Phase 25 단계 6): critical 즉시 재분석·알림 1회, 운영 점검."""
 
 from datetime import UTC, datetime
 
@@ -22,8 +22,13 @@ class FakeDart:
 
 
 def _row(code, name, no):
-    return {"stock_code": code, "corp_name": "가나", "report_nm": name, "rcept_no": no,
-            "rcept_dt": "20261024"}
+    return {
+        "stock_code": code,
+        "corp_name": "가나",
+        "report_nm": name,
+        "rcept_no": no,
+        "rcept_dt": "20261024",
+    }
 
 
 def _deps(conn, rows):
@@ -74,4 +79,5 @@ def test_health_disclosure_area_critical_for_held(conn, project):
     assert r["areas"]["disclosure"] == "critical"
     assert any(i["key"] == "disclosure.KR" for i in r["items"])
     later = datetime(2026, 10, 30, tzinfo=UTC)
-    assert health.check(conn, Settings(markets=["KR"]), [acct], now=later)["areas"]["disclosure"] == "ok"
+    r2 = health.check(conn, Settings(markets=["KR"]), [acct], now=later)
+    assert r2["areas"]["disclosure"] == "ok"
