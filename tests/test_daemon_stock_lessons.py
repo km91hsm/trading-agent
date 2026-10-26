@@ -43,3 +43,13 @@ def test_paper_review_job_weekly_message(conn, project):
     conn.commit()
     daemon._paper_review_body(deps)
     assert sent and sent[-1].startswith("[모의 체결 점검]")
+
+
+def test_daily_report_jobs_per_market(conn, project):
+    jobs = {j.id: j for j in daemon.build_jobs(SCHED, Settings(), markets=["KR", "US"])}
+    assert jobs["kr_daily_report"].cron["timezone"] == "Asia/Seoul"
+    assert jobs["us_daily_report"].cron["timezone"] == "America/New_York"
+    deps = _deps(conn, None, now=lambda: NOW)
+    sent = []
+    deps.notifier.send = lambda text, **kw: sent.append(text) or True
+    assert daemon._daily_report_body(deps, "KR") == {"items": 0} and sent == []

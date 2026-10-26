@@ -305,6 +305,20 @@ def build_jobs(schedule: ScheduleConfig, settings: Settings, *, markets: list[st
             )
         )
         jobs.append(Job(f"{lo}_monitor", "monitor", m, interval_s=ms.monitor.interval_s))
+        # 장 마감 일일 리포트(Stock D-095): 시장 현지 16:20, 휴장일은 market_job 이 건너뛴다
+        jobs.append(
+            Job(
+                f"{lo}_daily_report",
+                "daily_report",
+                m,
+                cron={
+                    "hour": 16,
+                    "minute": 20,
+                    "day_of_week": "mon-fri",
+                    "timezone": str(MARKET_TZ[m]),  # schedule 의 US tz 는 KST 라 현지 마감 기준으로
+                },
+            )
+        )
         # 분 단위 단타(Phase 23 S): monitor 와 별도 60초 잡, 장중 창·모의 전용·기본 끔(body 가 판단)
         jobs.append(Job(f"{lo}_scalp", "scalp", m, interval_s=SCALP_INTERVAL_S))
         # 테마 열기 감지(Phase 25): 장중 창만, 가벼운 잡(KIS 순위 3회 + 원장 읽기)
@@ -1558,6 +1572,26 @@ def _backup_body(deps: DaemonDeps) -> dict:
     return {"file": out.name, "pruned": removed}
 
 
+def _daily_report_body(deps: DaemonDeps, market: str) -> dict:
+    """장 마감 일일 리포트 → 텔레그램(오늘 스냅샷이 있는 계좌만, 없으면 조용히)."""
+    from trader.ledger import daily_report
+    from trader.orchestrator.run_store import run_date_for
+
+    conn = deps.conn_factory()
+    try:
+        r = daily_report.compute(
+            conn,
+            deps.accounts,
+            markets=[market],
+            today_of=lambda m: run_date_for(m, deps.now()),
+        )
+    finally:
+        conn.close()
+    if r["items"]:
+        deps.notifier.send(daily_report.message(r))
+    return {"items": len(r["items"])}
+
+
 def _paper_review_body(deps: DaemonDeps) -> dict:
     """모의 체결 대 가정 주간 점검(토 09:00 KST): 지난 7일 결정 주문 체결률·슬리피지 → 텔레그램."""
     from trader.ledger import paper_review
@@ -2412,6 +2446,13 @@ def job_body(
     if job.kind == "rebalance":
         return lambda: market_job(
             deps, job.market or "KR", "rebalance", lambda: _rebalance_body(deps, job.market or "KR")
+        )
+    if job.kind == "daily_report":
+        return lambda: market_job(
+            deps,
+            job.market or "KR",
+            "daily_report",
+            lambda: _daily_report_body(deps, job.market or "KR"),
         )
     if job.kind == "theme":
         return lambda: monitor_job(
