@@ -43,15 +43,16 @@ def _price_sign(entry_realized: float, action: str) -> int:
 def signal_hits(conn: sqlite3.Connection) -> pd.DataFrame:
     """만기 엔트리 × 그날 애널리스트 보고서를 JOIN 1회로 (엔트리마다 질의하던 N+1 제거).
 
-    analyst_reports.date 는 KST 운영일, decided_at 은 UTC ISO 라 SQLite 의 '+9 hours' 로 맞춘다."""
+    analyst_reports.date 는 운영일이라 결정 행의 date(US 는 뉴욕 날짜)로 맞추고, 결정 행이 없으면
+    decided_at(UTC ISO) 의 '+9 hours' KST 날짜로 맞춘다."""
     rows = []
     sign_cache: dict[int, tuple[int, list]] = {}
     for e in conn.execute(
         "SELECT m.id, m.decision, m.realized_return, m.price_return, m.situation_vector, "
         "a.role, a.signal "
-        "FROM memory_entries m JOIN analyst_reports a "
-        "ON a.market = m.market AND a.ticker = m.ticker "
-        "AND a.date = date(m.decided_at, '+9 hours') "
+        "FROM memory_entries m LEFT JOIN decisions d ON d.id = m.decision_id "
+        "JOIN analyst_reports a ON a.market = m.market AND a.ticker = m.ticker "
+        "AND a.date = coalesce(d.date, date(m.decided_at, '+9 hours')) "
         "WHERE m.outcome_at IS NOT NULL AND m.round = 0 ORDER BY m.id, a.role"
     ).fetchall():
         eid = int(e["id"])

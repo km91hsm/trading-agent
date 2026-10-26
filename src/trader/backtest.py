@@ -15,8 +15,11 @@ from trader.config import KST
 from trader.memory import outcomes
 
 
-def _decided_date(iso: str) -> date | None:
+def _decided_date(iso: str, run_date: str | None = None) -> date | None:
+    """결정 행의 운영일(US 는 뉴욕 날짜) 우선, 없으면 decided_at 의 KST 날짜."""
     try:
+        if run_date:
+            return date.fromisoformat(run_date)
         return datetime.fromisoformat(iso).astimezone(KST).date()
     except ValueError:
         return None
@@ -41,17 +44,20 @@ def simple_backtest(
 ) -> dict:
     """{n, hit_rate, avg_return, avg_alpha, by_action, cutoff, decisions, skipped}."""
     # 결정 단위 백테스트라 아침 라운드만 (재평가 엔트리는 같은 결정의 장중 판단 — L2)
-    sql = "SELECT * FROM memory_entries WHERE round=0"
+    sql = (
+        "SELECT m.*, d.date AS run_date FROM memory_entries m "
+        "LEFT JOIN decisions d ON d.id = m.decision_id WHERE m.round=0"
+    )
     args: list = []
     if market:
-        sql += " AND market=?"
+        sql += " AND m.market=?"
         args.append(market)
-    rows = conn.execute(sql + " ORDER BY decided_at, id", args).fetchall()
+    rows = conn.execute(sql + " ORDER BY m.decided_at, m.id", args).fetchall()
     tables: dict = {}
     decisions: list[dict] = []
     skipped = 0
     for r in rows:
-        d = _decided_date(r["decided_at"])
+        d = _decided_date(r["decided_at"], r["run_date"])
         if d is None or d < since:
             continue
         dec = json.loads(r["decision"] or "{}") or {}

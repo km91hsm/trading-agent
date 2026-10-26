@@ -374,3 +374,47 @@ def test_us_reevaluation_after_kst_midnight_keeps_round_order():
     assert run_date_for("US", late) == run
     assert tools._decided_at(morning, run, "US") == morning
     assert tools._decided_at(late, run, "US") == late
+
+
+def test_us_consumers_use_decision_run_date_not_kst_date(conn):
+    """Codex(GitHub): US 결정이 KST 자정 뒤 실제 시각으로 남아도 보정·복기·백테스트는
+    운영일로 묶는다."""
+    from helpers_agents import ok_report
+
+    from trader import backtest
+    from trader.calibration import model as cal
+    from trader.orchestrator import reflect
+
+    run = date(2026, 10, 26)
+    dec_id = repo.ingest_checkpoint(
+        conn, run, "US", "AAPL", "30_decision", {"data": ok_decision(ticker="AAPL")}
+    )
+    repo.ingest_checkpoint(
+        conn,
+        run,
+        "US",
+        "AAPL",
+        "10_analyst_technical",
+        {"data": ok_report(role="technical", ticker="AAPL", signal="BUY")},
+    )
+    late = datetime(2026, 10, 26, 16, 0, tzinfo=UTC)  # 10-27 01:00 KST
+    e = store.record_decision(
+        conn,
+        decision_id=dec_id,
+        ticker="AAPL",
+        market="US",
+        account_id="paper-main",
+        decided_at=late.isoformat(),
+        decision={"action": "BUY", "confidence": 0.6},
+        row=None,
+        horizon_days=5,
+        vector=[0.5] * 12,
+    )
+    store.fill_outcome(
+        conn, e, realized_return=0.02, alpha=0.0, outcome_at=NOW.isoformat(), price_return=0.02
+    )
+    hits = cal.signal_hits(conn)
+    assert list(hits["role"]) == ["technical"] and list(hits["realized_sign"]) == [1]
+    assert reflect.pending(conn, market="US")[0]["analyst_signals"] == {"technical": "BUY"}
+    bt = backtest.simple_backtest(conn, None, since=run, market="US")
+    assert bt["n"] == 1
