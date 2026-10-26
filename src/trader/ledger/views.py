@@ -132,6 +132,15 @@ def attach_plans(conn: sqlite3.Connection, market: str, snap: dict | None) -> No
         p["horizon"] = plan["horizon"] if plan else None
         ev = Decimal(str(p.get("eval_amount") or 0))
         p["weight"] = float(ev / nav) if nav > 0 else None
+        # 목표 비중 대비 드리프트(%p, Phase 25 리밸런스): 현재 − 목표. HOLD·SELL 은 목표 없음
+        tgt = (plan or {}).get("target_weight")
+        p["drift_pp"] = (
+            round((p["weight"] - float(tgt)) * 100, 2)
+            if p["weight"] is not None
+            and tgt is not None
+            and plan["action"] in ("BUY", "ADD", "TRIM")
+            else None
+        )
 
 
 def _env_block(

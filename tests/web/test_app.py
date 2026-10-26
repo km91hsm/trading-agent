@@ -437,3 +437,21 @@ def test_names_search_endpoint(client, conn):
     assert rows[0]["source"] == "held"
     assert client.get("/api/names/search", params={"q": ""}).json() == []
     assert client.get("/api/names/search", params={"q": "a", "market": "XX"}).status_code == 400
+
+
+def test_portfolio_position_drift(client, conn):
+    """Phase 25: 보유 행 드리프트(%p) = 현재 비중 − 최근 결정 목표 비중. HOLD 결정은 None."""
+    _snap(conn, "paper-main", "KR", "005930", 3, "90", "100", "1000", "700")  # 30%
+    _snap(conn, "paper-main", "KR", "000660", 1, "100", "100", "1000", "700")  # 10%
+    conn.execute(
+        "INSERT INTO decisions(date, market, ticker, action, target_weight, json, created_at) "
+        "VALUES ('2026-10-24','KR','005930','BUY',0.2,'{\"target_weight\": 0.2}',"
+        "'2026-10-24T00:00:00+00:00'), ('2026-10-24','KR','000660','HOLD',0.0,"
+        "'{\"target_weight\": 0.0}','2026-10-24T00:00:00+00:00')"
+    )
+    conn.commit()
+    r = client.get("/api/portfolio", params={"account_id": "paper-main", "market": "KR"}).json()
+    by = {p["ticker"]: p for p in r["snapshot"]["positions"]}
+    assert by["005930"]["drift_pp"] == pytest.approx(10.0)
+    assert by["000660"]["drift_pp"] is None
+    assert r["rebalance_band_pct"] == 0.05

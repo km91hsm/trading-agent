@@ -125,6 +125,17 @@ class RepriceCfg(BaseModel):
     max_chase_pct: float = Field(default=0.01, gt=0, le=0.1)
 
 
+class RebalanceCfg(BaseModel):
+    """주간 리밸런스(Phase 25 단계 7). 최근 LLM 결정의 target_weight 대비 ±band_pct 넘게 벗어난
+    보유만 TRIM 먼저·ADD 나중, 결정 행 없이(decision_id=None) 게이트를 그대로 통과한 수량만."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    band_pct: float = Field(default=0.05, gt=0, le=0.5)  # 비중 차이(소수, 0.05 = 5%p)
+    lookback_days: int = Field(default=30, ge=1, le=365)  # 목표로 쓸 결정의 최대 나이
+
+
 class ThemeWeights(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -372,6 +383,7 @@ class Settings(BaseModel):
     discovery: DiscoveryCfg = Field(default_factory=DiscoveryCfg)  # Phase 23 장중 뉴스 발굴
     scalp: ScalpCfg = Field(default_factory=ScalpCfg)  # Phase 23 분 단위 단타(모의 전용, 기본 끔)
     theme: ThemeCfg = Field(default_factory=ThemeCfg)  # Phase 25 테마 열기 감지
+    rebalance: RebalanceCfg = Field(default_factory=RebalanceCfg)  # Phase 25 주간 리밸런스
 
 
 # --- accounts.yaml ---------------------------------------------------------
@@ -733,6 +745,28 @@ class ReconcileSchedule(BaseModel):
         return _check_hm(v)
 
 
+class RebalanceSchedule(BaseModel):
+    """주간 리밸런스 요일·시장별 현지 시각(마감 전, 지정가가 체결될 시간을 둔다)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    weekday: str = "fri"
+    kr: str = "14:30"
+    us: str = "15:00"
+
+    @field_validator("weekday")
+    @classmethod
+    def _w(cls, v: str) -> str:
+        if v not in WEEKDAYS:
+            raise ValueError(f"요일은 {WEEKDAYS} 중 하나여야 합니다: {v!r}")
+        return v
+
+    @field_validator("kr", "us")
+    @classmethod
+    def _hm_ok(cls, v: str) -> str:
+        return _check_hm(v)
+
+
 class ScheduleConfig(BaseModel):
     """config/schedule.yaml (KST). 데몬이 잡을 등록할 때 읽는다."""
 
@@ -746,6 +780,7 @@ class ScheduleConfig(BaseModel):
     reconcile: ReconcileSchedule = Field(
         default_factory=ReconcileSchedule
     )  # 야간 KIS 대조(Phase 21)
+    rebalance: RebalanceSchedule = Field(default_factory=RebalanceSchedule)  # Phase 25
 
     @field_validator("reflect")
     @classmethod

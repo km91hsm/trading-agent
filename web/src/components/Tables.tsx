@@ -29,7 +29,13 @@ export function horizonText(p: Pick<Position, "horizon" | "horizon_days">): stri
   return p.horizon_days ? `${label} ${p.horizon_days}일` : label;
 }
 
-export function PositionsTable({ rows, nav, showAccounts = false }: { rows: Position[]; nav?: string | null; showAccounts?: boolean }) {
+/** 드리프트(%p) 표기: "+6.2%p" · 밴드 밖이면 주의 색. */
+export function driftCell(d: number | null | undefined, bandPct = 0.05): { text: string; over: boolean } {
+  if (d === null || d === undefined) return { text: "—", over: false };
+  return { text: `${d > 0 ? "+" : ""}${d.toFixed(1)}%p`, over: Math.abs(d) > bandPct * 100 };
+}
+
+export function PositionsTable({ rows, nav, showAccounts = false, bandPct = 0.05 }: { rows: Position[]; nav?: string | null; showAccounts?: boolean; bandPct?: number }) {
   if (!rows.length) return <EmptyState title="보유 종목이 없어요" hint="매수가 체결되면 다음 판정 때 스냅샷에 잡혀요." />;
   const navN = nav ? Number(nav) : NaN;
   return (
@@ -45,6 +51,7 @@ export function PositionsTable({ rows, nav, showAccounts = false }: { rows: Posi
           <Th num>평가금액</Th>
           <Th num core>비중</Th>
           <Th num>목표 비중</Th>
+          <Th num>드리프트</Th>
           <Th num>익절가</Th>
           <Th num>손절가</Th>
           <Th num>지정가</Th>
@@ -75,6 +82,7 @@ export function PositionsTable({ rows, nav, showAccounts = false }: { rows: Posi
               </Td>
               <Td num core>{Number.isFinite(navN) && navN > 0 && Number.isFinite(ev) ? `${((ev / navN) * 100).toFixed(1)}%` : "—"}</Td>
               <Td num>{plan?.target ?? "—"}</Td>
+              <Td num className={driftCell(p.drift_pp, bandPct).over ? "pend" : ""}>{driftCell(p.drift_pp, bandPct).text}</Td>
               <Td num className={plan?.tpClass}>{plan?.takeProfit ?? "—"}</Td>
               <Td num className={plan?.stopClass}>{plan?.stop ?? "—"}</Td>
               <Td num>{plan?.limit ?? "—"}</Td>

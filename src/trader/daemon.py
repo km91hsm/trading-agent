@@ -295,6 +295,23 @@ def build_jobs(schedule: ScheduleConfig, settings: Settings, *, markets: list[st
                 },
             )
         )
+    if settings.rebalance.enabled:  # 주간 리밸런스(Phase 25): 시장 현지 시각, 운영일 1회
+        for m in markets:
+            ms = schedule.kr if m == "KR" else schedule.us
+            rt = _hm(getattr(schedule.rebalance, m.lower()))
+            jobs.append(
+                Job(
+                    f"{m.lower()}_rebalance",
+                    "rebalance",
+                    m,
+                    cron={
+                        "hour": rt.hour,
+                        "minute": rt.minute,
+                        "day_of_week": schedule.rebalance.weekday,
+                        "timezone": ms.tz,
+                    },
+                )
+            )
     h, mi = _hm(schedule.reflect).hour, _hm(schedule.reflect).minute
     jobs.append(Job("reflect", "reflect", cron={"hour": h, "minute": mi, "day_of_week": "mon-fri"}))
     t = _hm(schedule.ml_train.time)
@@ -1170,6 +1187,61 @@ def _monitor_body(deps: DaemonDeps, market: str) -> dict:
         return out
     finally:
         conn.close()
+
+
+def _rebalance_body(deps: DaemonDeps, market: str) -> dict:
+    """주간 리밸런스(Phase 25 단계 7). 최근 결정 목표 비중 대비 밴드 밖 보유만, TRIM 먼저.
+    게이트·계좌 모드·dry_run·paused 는 executor 가 그대로 본다."""
+    from trader.orchestrator import executor, rebalance
+    from trader.orchestrator.run_store import run_date_for
+
+    if deps.market_client is None:
+        return {"skipped": "시세 클라이언트 없음"}
+    universe = deps.universe
+    ex_cache: dict[str, str | None] = {}
+
+    def exchange_of(t: str) -> str | None:
+        # 유니버스 밖(발굴·제외된) US 보유도 브로커 보유의 거래소로 시세·주문을 낸다
+        if market != "US":
+            return None
+        if t not in ex_cache:
+            ex_cache[t] = _exchange_of(deps, market, t, universe)
+        return ex_cache[t]
+
+    def quote(t: str):
+        if market == "KR":
+            return deps.market_client.get_price_kr(t)  # price·change_pct(급등 추격 게이트)
+        return deps.market_client.get_price_us(t, exchange_of(t) or "NAS")
+
+    conn = deps.conn_factory()
+    try:
+        ectx = executor.ExecContext(
+            settings=deps.settings,
+            accounts=deps.accounts,
+            conn=conn,
+            brokers=deps.brokers,
+            notifier=deps.notifier,
+            state=deps.state,
+            now=deps.now,
+        )
+        out = rebalance.run(
+            ectx,
+            market=market,
+            today=run_date_for(market, deps.now()),
+            dry_run=deps.dry_run,
+            quote_fn=quote,
+            exchange_of=exchange_of,
+        )
+    finally:
+        conn.close()
+    n = len(out.get("orders") or [])
+    if n:
+        deps.notifier.send(
+            messages.event(
+                "리밸런스", f"{market} 목표 비중 이탈 {len(out['legs'])}건 → 주문 시도 {n}건"
+            )
+        )
+    return out
 
 
 def _scalp_judge(deps: DaemonDeps):
@@ -2059,6 +2131,10 @@ def job_body(
     if job.kind == "scalp":
         return lambda: monitor_job(
             deps, job.market or "KR", lambda: _scalp_body(deps, job.market or "KR")
+        )
+    if job.kind == "rebalance":
+        return lambda: market_job(
+            deps, job.market or "KR", "rebalance", lambda: _rebalance_body(deps, job.market or "KR")
         )
     if job.kind == "theme":
         return lambda: monitor_job(

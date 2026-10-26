@@ -379,6 +379,7 @@ def execute(
     extra_note: str | None = None,
     scalp_leg: str | None = None,
     is_reprice: bool = False,
+    is_rebalance: bool = False,
     change_pct: float | None = None,
 ) -> list[dict]:
     """계좌마다 판정·기록·(모드별) 주문. 계좌 하나의 실패가 다른 계좌를 막지 않는다.
@@ -397,7 +398,9 @@ def execute(
     """
     d = run_dir(date, market, decision.ticker, ctx.state)
     is_scalp = scalp_leg is not None
-    if decision_id is None and not is_scalp:
+    # 단타·주간 리밸런스는 파이썬이 만든 결정이라 결정 행이 없다(decision_id=None 유지 — 오늘 LLM
+    # 결정 행에 묶으면 그 결정의 멱등 조건이 리밸런스 주문을 막거나 반대로 섞인다)
+    if decision_id is None and not is_scalp and not is_rebalance:
         decision_id = repo.decision_id(ctx.conn, date, market, decision.ticker)
     # 손절·재평가는 오늘 분석의 40_/50_ 체크포인트를 덮어쓰지 않도록 별도 이름을 쓴다
     if is_stop_loss:
@@ -406,6 +409,8 @@ def execute(
         risk_stage, order_stage = f"47_scalp_{scalp_leg}", f"57_order_scalp_{scalp_leg}"
     elif is_reprice:  # 아침 미체결 재호가(Phase 23 B): 오늘 분석의 40_/50_ 을 덮지 않는다
         risk_stage, order_stage = "42_reprice", "52_order_reprice"
+    elif is_rebalance:  # 주간 리밸런스(Phase 25 단계 7)
+        risk_stage, order_stage = "43_rebalance", "53_order_rebalance"
     elif is_hedge:
         risk_stage, order_stage = "46_hedge", "56_order_hedge"
     elif resume_round is not None:
@@ -866,6 +871,7 @@ class OrderBookkeepingError(RuntimeError):
 _STAGE_KIND = {
     "51_order": "재평가",
     "52_order_reprice": "재호가",
+    "53_order_rebalance": "리밸런스",
     "55_order_sl": "손절",
     "56_order_hedge": "헤지",
     "57_order_scalp": "단타",

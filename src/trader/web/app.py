@@ -76,6 +76,7 @@ def create_app(deps: WebDeps) -> FastAPI:
         system.router,
         accounts.router,
         portfolio.router,
+        portfolio.lots_router,
         orders.router,
         runs.router,
         names.router,

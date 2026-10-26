@@ -119,6 +119,11 @@ scalp:
   judge_max_drift_pct: 0.003 # 판정을 기다리는 사이 신호가보다 0.3% 넘게 움직이면 버림
   judge_hold_every_min: 5    # 보유 중 유지/조기 청산 조언 주기(조언은 조기 청산만 — 손절·마감은 파이썬)
 
+rebalance:               # 주간 리밸런스(Phase 25): 최근 결정 목표 비중 대비 ±band 밖 보유만 TRIM 먼저·ADD 나중
+  enabled: true
+  band_pct: 0.05         # 5%p 넘게 벗어나면 조정 (게이트 규칙은 그대로 — 3거래일·주 2회·비중·섹터·테마)
+  lookback_days: 30      # 이보다 오래된 결정은 목표로 쓰지 않음
+
 theme:                   # 테마 열기 감지(Phase 25) — 감지·알림·scout 입력만, 매매는 분석 세션→게이트
   enabled: true
   interval_s: 1800       # 데몬 <시장>_theme 주기(장중만)
