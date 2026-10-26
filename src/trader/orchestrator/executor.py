@@ -399,12 +399,15 @@ def execute(
     is_reprice: bool = False,
     is_rebalance: bool = False,
     change_pct: float | None = None,
+    max_qty: dict[str, int] | None = None,
 ) -> list[dict]:
     """계좌마다 판정·기록·(모드별) 주문. 계좌 하나의 실패가 다른 계좌를 막지 않는다.
     scalp_leg(Phase 23 S, "entry"|"exit")는 분 단위 단타: 결정 행 없이(decision_id None 유지 —
     오늘 LLM 결정과 섞지 않는다) 체크포인트 47_/57_ 에 남기고 게이트는 단타 면제 규칙을 쓴다.
     extra_note 는 판정 note 에 덧붙이는 호출자 문구(재시세 등, Phase 21).
     change_pct 는 판정 시점 당일 등락률(소수, 재시세 값 우선) — 게이트의 급등 추격 금지(Phase 25).
+    max_qty 는 계좌별 수량 상한(단타 청산: 그 계좌가 단타로 체결받은 수량만 판다 — 같은 종목의
+    일반 보유분을 건드리지 않게, 전체 검토 O6). 판정 수량을 줄이기만 한다.
 
     skip_accounts 는 건너뛸 계좌(이미 판정이 있는 계좌의 실행 재개, 헤지의 계좌별 보유 판단).
     브로커·규칙 밖의 예외(원장 잠금·OSError·OrderBookkeepingError)도 그 계좌의 `error` 항목으로
@@ -486,6 +489,7 @@ def execute(
                     is_scalp=is_scalp,
                     theme_of=theme_of,
                     change_pct=change_pct,
+                    max_qty=None if max_qty is None else max_qty.get(account.id),
                 )
             )
         except OrderBookkeepingError as e:  # 접수 뒤 기록 실패: 다른 계좌를 마친 뒤 올린다
@@ -543,6 +547,7 @@ def _execute_account(
     is_scalp: bool = False,
     theme_of: Callable[[str], list[str] | None] | None = None,
     change_pct: float | None = None,
+    max_qty: int | None = None,
 ) -> dict:
     """계좌 하나의 판정·기록·(모드별) 주문. 반환은 results 항목 하나."""
     if True:  # 들여쓰기 유지(execute 루프 본문을 그대로 옮김)
@@ -618,6 +623,15 @@ def _execute_account(
                     "approved": False,
                     "adjusted_qty": 0,
                     "reasons": verdict.reasons + ["이미 이 결정에 대한 주문/승인 요청이 존재"],
+                }
+            )
+        if max_qty is not None and verdict.approved and verdict.adjusted_qty > max_qty:
+            capped = max(int(max_qty), 0)
+            verdict = verdict.model_copy(
+                update={
+                    "approved": capped > 0,
+                    "adjusted_qty": capped,
+                    "reasons": verdict.reasons + [f"호출자 수량 상한 {capped}주"],
                 }
             )
         if rl_prop is not None and decision_id is not None:
@@ -960,7 +974,7 @@ def _place(
                 kind=_STAGE_KIND.get(order_stage.split("_r")[0], ""),
             ),
         )
-    return payload["result"] | {"status": status}
+    return payload["result"] | {"status": status, "order_id": order_id}
 
 
 class OrderBookkeepingError(RuntimeError):

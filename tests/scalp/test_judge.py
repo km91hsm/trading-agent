@@ -3,7 +3,7 @@
 from datetime import timedelta
 from decimal import Decimal
 
-from scalp.test_engine import NOW, D, _bars, _ctx, _scan
+from scalp.test_engine import NOW, D, _bars, _ctx, _scan, fill_all
 from trader.agents.schemas import ScalpAdvice, ScalpVerdict
 from trader.config import ScalpCfg
 from trader.scalp import engine
@@ -140,8 +140,11 @@ def test_stop_loss_exits_immediately_while_advice_pending(conn, project):
         def poll(self, key):
             return "pending"
 
+    fill_all(ctx, conn)
     ctx.judge = Pending(GO)
     ctx.market_client.prices["005930"] = Decimal("9800")  # 손절선 −1% 아래
+    engine.tick(ctx, market="KR", today=D)  # 판정 대기와 무관하게 청산 주문
+    fill_all(ctx, conn)
     out = engine.tick(ctx, market="KR", today=D)
     assert out["exits"] and out["exits"][0]["reason"] == "stop"
 
@@ -152,9 +155,12 @@ def test_advice_exit_closes_early(conn, project):
     ctx = _judged_ctx(conn, lambda k, p, s: GO if s is ScalpVerdict else advice)
     engine.tick(ctx, market="KR", today=D)
     engine.tick(ctx, market="KR", today=D)  # 진입
+    fill_all(ctx, conn)
     ctx.now = lambda: NOW + timedelta(minutes=6)
     engine.tick(ctx, market="KR", today=D)  # 조언 제출(동기 판정)
-    out = engine.tick(ctx, market="KR", today=D)  # 회수 → 조기 청산
+    engine.tick(ctx, market="KR", today=D)  # 회수 → 조기 청산 주문
+    fill_all(ctx, conn)
+    out = engine.tick(ctx, market="KR", today=D)
     assert out["exits"] and out["exits"][0]["reason"] == "judge_exit"
 
 
@@ -173,9 +179,12 @@ def test_report_go_vs_nogo_summary(conn, project):
     ctx.judge = SyncJudge(lambda k, p, s: GO if "005930" in k else NOGO)
     engine.tick(ctx, market="KR", today=D)
     engine.tick(ctx, market="KR", today=D)  # 005930 GO 진입, 000660 NO_GO
+    fill_all(ctx, conn)
     ctx.market_client.prices["005930"] = Decimal("10300")
     ctx.judge = SyncJudge(ScalpAdvice(action="hold", reason="r", confidence=0.5))
     engine.tick(ctx, market="KR", today=D)  # 익절(+2.5% ≥ 판정 2%)
+    fill_all(ctx, conn)
+    engine.tick(ctx, market="KR", today=D)  # 청산 체결 확인
     after = bars(True, price="10200")  # 신호 뒤 봉: +1.5% 익절
     r = engine.report(
         None,

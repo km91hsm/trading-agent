@@ -7,7 +7,7 @@ import pytest
 from conftest import make_account
 
 from trader.broker.fake import FakeBroker, FakeMarket
-from trader.broker.models import Candle, Cash, Position
+from trader.broker.models import Candle, Cash, Fill, Position
 from trader.config import HedgeCfg, ScalpCfg, Settings
 from trader.control import control
 from trader.orchestrator import run_store
@@ -40,6 +40,59 @@ def _bars(burst: bool, price="10000"):
             Candle(date=D, open=p, high=p, low=p, close=p, volume=vol, time=f"{h:02d}{m:02d}00")
         )
     return out
+
+
+def _fill(order_no, side, qty, price, at):
+    return Fill(
+        order_no=order_no,
+        ticker="005930",
+        market="KR",
+        side=side,
+        qty=qty,
+        price=Decimal(price),
+        filled_at=at,
+    )
+
+
+def fill_all(ctx, conn, price=None):
+    """접수된 주문을 전부 체결시킨다(모의 브로커 체결 조회에 반영 — 다음 틱의 동기화가 읽는다).
+    가격은 지정가, 시장가는 price(없으면 현재가)."""
+    for o in conn.execute("SELECT * FROM orders WHERE status IN ('accepted','partial')"):
+        px = o["price"] or price or str(ctx.market_client.prices[o["ticker"]])
+        b = ctx.brokers[o["account_id"]]
+        fills = b.fills.setdefault(("KR", D), [])
+        if any(f.order_no == o["order_no"] for f in fills):
+            continue
+        fills.append(
+            Fill(
+                order_no=o["order_no"],
+                ticker=o["ticker"],
+                market="KR",
+                side=o["side"],
+                qty=o["qty"],
+                price=Decimal(str(px)),
+                filled_at=ctx.now(),
+            )
+        )
+        held = {x.ticker: x.qty for x in b.positions}
+        q = held.get(o["ticker"], 0) + (o["qty"] if o["side"] == "BUY" else -o["qty"])
+        others = [x for x in b.positions if x.ticker != o["ticker"]]
+        p = Decimal(str(px))
+        b.positions = others + (
+            [
+                Position(
+                    ticker=o["ticker"],
+                    market="KR",
+                    qty=q,
+                    avg_price=p,
+                    current_price=p,
+                    eval_amount=p * q,
+                    pnl_pct=0.0,
+                )
+            ]
+            if q > 0
+            else []
+        )
 
 
 def _ctx(
@@ -115,9 +168,14 @@ def test_tick_exits_on_take_profit_and_halts_on_daily_stop(conn, project):
             pnl_pct=2.5,
         )
     ]
+    fills = ctx.brokers["paper-main"].fills
+    fills[("KR", D)] = [_fill("FAKE-1", "BUY", 49, "10050", NOW + timedelta(minutes=1))]
     ctx.market_client.prices["005930"] = Decimal("10300")  # +2.5% ≥ 1.5%
     later = NOW + timedelta(minutes=5)
     ctx.now = lambda: later
+    out = engine.tick(ctx, market="KR", today=D)
+    assert out["exits"] == []  # 청산 주문 접수 — 체결을 기다린다
+    fills[("KR", D)].append(_fill("FAKE-2", "SELL", 49, "10300", later))
     out = engine.tick(ctx, market="KR", today=D)
     assert out["exits"] == [
         {"ticker": "005930", "reason": "take_profit", "ret": pytest.approx(0.0249, abs=1e-3)}
