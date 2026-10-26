@@ -15,7 +15,9 @@ export type StageKey =
   | "45_stop_loss"
   | "50_order"
   | "51_order"
-  | "55_order_sl";
+  | "55_order_sl"
+  | "43_rebalance"
+  | "53_order_rebalance";
 
 export type Stage = { key: StageKey; label: string; done: boolean; files: string[]; optional: boolean };
 
@@ -34,6 +36,8 @@ const ORDER: Array<{ key: StageKey; test: (s: string) => boolean; optional?: boo
   { key: "51_order", test: (s) => s.startsWith("51_order_"), optional: true },
   { key: "45_stop_loss", test: (s) => s.startsWith("45_stop_loss_"), optional: true },
   { key: "55_order_sl", test: (s) => s.startsWith("55_order_sl_"), optional: true },
+  { key: "43_rebalance", test: (s) => s.startsWith("43_rebalance_"), optional: true },
+  { key: "53_order_rebalance", test: (s) => s.startsWith("53_order_rebalance_"), optional: true },
 ];
 
 /** 항상 보이는 판 9개 + 파일이 있을 때만 붙는 선택 판. 파일은 이름순. */
@@ -95,6 +99,7 @@ export function stageSummary(key: StageKey, items: Array<{ file: string; data: u
     case "40_risk_check":
     case "41_risk_check":
     case "45_stop_loss":
+    case "43_rebalance":
       return items
         .map((it) => {
           const d = rec(it.data);
@@ -108,6 +113,7 @@ export function stageSummary(key: StageKey, items: Array<{ file: string; data: u
     case "50_order":
     case "51_order":
     case "55_order_sl":
+    case "53_order_rebalance":
       return items
         .map((it) => {
           const d = rec(it.data);

@@ -292,6 +292,23 @@ def build_jobs(schedule: ScheduleConfig, settings: Settings, *, markets: list[st
                 },
             )
         )
+    if settings.rebalance.enabled:  # 주간 리밸런스(Phase 25): 시장 현지 시각, 운영일 1회
+        for m in markets:
+            ms = schedule.kr if m == "KR" else schedule.us
+            rt = _hm(getattr(schedule.rebalance, m.lower()))
+            jobs.append(
+                Job(
+                    f"{m.lower()}_rebalance",
+                    "rebalance",
+                    m,
+                    cron={
+                        "hour": rt.hour,
+                        "minute": rt.minute,
+                        "day_of_week": schedule.rebalance.weekday,
+                        "timezone": ms.tz,
+                    },
+                )
+            )
     h, mi = _hm(schedule.reflect).hour, _hm(schedule.reflect).minute
     jobs.append(Job("reflect", "reflect", cron={"hour": h, "minute": mi, "day_of_week": "mon-fri"}))
     t = _hm(schedule.ml_train.time)
@@ -1163,6 +1180,53 @@ def _monitor_body(deps: DaemonDeps, market: str) -> dict:
         conn.close()
 
 
+def _rebalance_body(deps: DaemonDeps, market: str) -> dict:
+    """주간 리밸런스(Phase 25 단계 7). 최근 결정 목표 비중 대비 밴드 밖 보유만, TRIM 먼저.
+    게이트·계좌 모드·dry_run·paused 는 executor 가 그대로 본다."""
+    from trader.orchestrator import executor, rebalance
+    from trader.orchestrator.run_store import run_date_for
+
+    if deps.market_client is None:
+        return {"skipped": "시세 클라이언트 없음"}
+    universe = deps.universe
+    us_ex = {u.symbol: u.exchange for u in (universe.us if universe else [])}
+
+    def quote(t: str):
+        if market == "KR":
+            return deps.market_client.get_price_kr(t).price
+        return deps.market_client.get_price_us(t, us_ex.get(t, "NAS")).price
+
+    conn = deps.conn_factory()
+    try:
+        ectx = executor.ExecContext(
+            settings=deps.settings,
+            accounts=deps.accounts,
+            conn=conn,
+            brokers=deps.brokers,
+            notifier=deps.notifier,
+            state=deps.state,
+            now=deps.now,
+        )
+        out = rebalance.run(
+            ectx,
+            market=market,
+            today=run_date_for(market, deps.now()),
+            dry_run=deps.dry_run,
+            quote_fn=quote,
+            exchange_of=lambda t: us_ex.get(t) if market == "US" else None,
+        )
+    finally:
+        conn.close()
+    n = len(out.get("orders") or [])
+    if n:
+        deps.notifier.send(
+            messages.event(
+                "리밸런스", f"{market} 목표 비중 이탈 {len(out['legs'])}건 → 주문 시도 {n}건"
+            )
+        )
+    return out
+
+
 def _scalp_body(deps: DaemonDeps, market: str) -> dict:
     """분 단위 단타 1틱(Phase 23 S). 꺼져 있으면 skipped(잡 표에는 보인다). 창·paused 는 engine 이
     다시 보고, 세션·heavy 락과 무관하다."""
@@ -1859,6 +1923,10 @@ def job_body(
     if job.kind == "scalp":
         return lambda: monitor_job(
             deps, job.market or "KR", lambda: _scalp_body(deps, job.market or "KR")
+        )
+    if job.kind == "rebalance":
+        return lambda: market_job(
+            deps, job.market or "KR", "rebalance", lambda: _rebalance_body(deps, job.market or "KR")
         )
     if job.kind == "telegram_poll":
         return lambda: _telegram_body(deps)

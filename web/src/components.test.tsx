@@ -254,3 +254,12 @@ describe("섹터 비중 표", () => {
     expect(html(<SectorTable market="KR" maxSectorPct={0.4} rows={[]} />)).toContain("섹터 비중이 없어요");
   });
 });
+
+describe("driftCell (Phase 25)", () => {
+  it("부호와 밴드 밖 표시", async () => {
+    const { driftCell } = await import("./components/Tables");
+    expect(driftCell(6.24)).toEqual({ text: "+6.2%p", over: true });
+    expect(driftCell(-3)).toEqual({ text: "-3.0%p", over: false });
+    expect(driftCell(null)).toEqual({ text: "—", over: false });
+  });
+});

@@ -12,6 +12,7 @@ import { Term } from "../components/Term";
 import { useToast } from "../components/Toast";
 import { fmtMoney, fmtPct } from "../format";
 import { AccountPicker } from "../components/AccountPicker";
+import { TaxLotsSection } from "../components/TaxLots";
 import { useApp, useLiveQuotes, useLoad } from "../hooks";
 import { applyQuotes, liveLabel } from "../live";
 import type { Market, PerformanceReport, Portfolio } from "../types";
@@ -121,7 +122,7 @@ export function AccountPage() {
             </span>
           }
         >
-          {pf.loading && !pf.data ? <Skeleton rows={3} cols={7} /> : <PositionsTable rows={applied.positions} nav={applied.liveCount && applied.nav !== null ? String(applied.nav) : snap?.nav} />}
+          {pf.loading && !pf.data ? <Skeleton rows={3} cols={7} /> : <PositionsTable rows={applied.positions} nav={applied.liveCount && applied.nav !== null ? String(applied.nav) : snap?.nav} bandPct={pf.data?.rebalance_band_pct ?? 0.05} />}
         </Section>
         <Section title="섹터 비중" aside={`상한 ${Math.round((pf.data?.max_sector_pct ?? 0.4) * 100)}% · 헤지·현금 제외`}>
           {pf.loading && !pf.data ? (
@@ -137,6 +138,7 @@ export function AccountPage() {
       <Section title="최근 주문" aside={`${market} · 최신순`}>
         <OrdersTable rows={pf.data?.orders ?? []} />
       </Section>
+      <TaxLotsSection accountId={accountId} market={market} />
     </>
   );
 }

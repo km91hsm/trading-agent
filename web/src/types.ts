@@ -24,6 +24,7 @@ export type Position = {
   horizon_days?: number | null;
   plan?: PositionPlan | null; // 최근 결정의 계획과 현재가 대비 거리 (Phase 24)
   weight?: number | null; // 평가금액 / NAV
+  drift_pp?: number | null; // 목표 비중 대비 현재 − 목표 (%p, Phase 25 리밸런스)
   accounts?: string[]; // 전체 합산 행: 이 종목을 가진 계좌들
   pnl?: string | null;
   pnl_pct?: number | null;
@@ -141,6 +142,7 @@ export type Portfolio = {
   snapshot: Snapshot;
   sectors?: Array<{ sector: string; eval_amount: string; weight: number | null; tickers: string[]; count: number }>;
   max_sector_pct?: number;
+  rebalance_band_pct?: number;
   orders: Order[];
   approvals: Approval[];
 };

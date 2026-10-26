@@ -42,6 +42,7 @@ def portfolio(
             "snapshot": snap,
             "sectors": _sectors(deps, m, snap),
             "max_sector_pct": deps.settings.risk.max_sector_pct,
+            "rebalance_band_pct": deps.settings.rebalance.band_pct,
             "orders": views.list_orders(conn, acct.id, limit=20),
             "approvals": views.list_approvals(conn, acct.id, status="pending"),
         }
@@ -111,3 +112,42 @@ def refresh(request: Request, account_id: str | None = None, market: str | None 
             raise HTTPException(status_code=502, detail=f"잔고 조회 실패: {e}") from None
         snap = views.latest_positions(conn, acct.id, m)
     return snap or {}
+
+
+lots_router = APIRouter(tags=["portfolio"])
+
+
+@lots_router.get("/tax-lots")
+def tax_lots(
+    request: Request,
+    account_id: str | None = None,
+    market: str | None = None,
+    year: int | None = None,
+    format: str | None = None,
+):
+    """세금 로트·워시세일(Phase 25, 표시 전용). FIFO 실현 로트·보유 로트·요약, `?format=csv` 는
+    실현 로트 표."""
+    from trader.ledger import lots
+
+    acct = require_account(request, account_id)
+    m = require_market(market, acct)
+    deps = deps_of(request)
+    with closing(deps.conn_factory()) as conn:
+        out = lots.report(conn, acct.id, m, year=year)
+    if format == "csv":
+        return csv_response(
+            out["realized"],
+            f"tax_lots_{acct.id}_{m}{'_' + str(year) if year else ''}.csv",
+            columns=[
+                "ticker",
+                "qty",
+                "buy_date",
+                "sell_date",
+                "cost",
+                "proceeds",
+                "pnl",
+                "term",
+                "wash_sale",
+            ],
+        )
+    return out

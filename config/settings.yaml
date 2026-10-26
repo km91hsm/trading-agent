@@ -109,3 +109,8 @@ scalp:
   warmup_min: 15             # 개장 뒤 이 시간은 진입 없음
   close_before_min: 20       # 마감 전 이 시간부터 신규 금지·전량 청산
   daily_stop_pct: 0.01       # 단타 일일 실현손실(NAV 비중 합) 한도 — 닿으면 그날 중단
+
+rebalance:               # 주간 리밸런스(Phase 25): 최근 결정 목표 비중 대비 ±band 밖 보유만 TRIM 먼저·ADD 나중
+  enabled: true
+  band_pct: 0.05         # 5%p 넘게 벗어나면 조정 (게이트 규칙은 그대로 — 3거래일·주 2회·비중·섹터·테마)
+  lookback_days: 30      # 이보다 오래된 결정은 목표로 쓰지 않음

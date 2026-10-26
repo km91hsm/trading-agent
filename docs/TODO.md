@@ -350,4 +350,5 @@
 - [ ] 단계 4 테마 열기 감지·안전장치 (`feat/phase25-4-theme`, 머지 전 사용자 확인)
 - [ ] 단계 5 분 단위 LLM 판정자 (`feat/phase25-5-scalp-judge`, 머지 전 사용자 확인)
 - [ ] 단계 6 승인 지문·공시 중요도 (`feat/phase25-6-approval-disclosure`)
-- [ ] 단계 7 주간 리밸런스·세금 로트 (`feat/phase25-7-rebalance-tax`, 머지 전 사용자 확인)
+- [ ] 단계 7 주간 리밸런스·세금 로트 (`feat/phase25-7-rebalance-tax`, 머지 전 사용자 확인): `rebalance.drift_legs/run`·executor `is_rebalance`(43_/53_)·데몬 금요일 cron·드리프트 열, `ledger/lots.py` FIFO·US 장단기·워시세일·`/api/tax-lots`·CSV·계좌 '실현 로트' — 구현·테스트 완료, PR 확인 대기
+- [ ] 실기(사용자 확인 대기, 모의): 첫 금요일 14:30 KST 뒤 `control.rebalance_done:KR:<date>`·`43_rebalance_*`·`[리밸런스]` 알림과 계좌 표 드리프트 열
