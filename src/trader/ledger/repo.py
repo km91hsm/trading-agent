@@ -853,11 +853,19 @@ def create_approval(
     order: dict,
     requested_at: str,
     expires_at: str,
+    fingerprint: str | None = None,
 ) -> int:
     cur = conn.execute(
         "INSERT INTO approvals(decision_id, account_id, order_json, status, requested_at, "
-        "expires_at) VALUES (?, ?, ?, 'pending', ?, ?)",
-        (decision_id, account_id, json.dumps(order, ensure_ascii=False), requested_at, expires_at),
+        "expires_at, fingerprint) VALUES (?, ?, ?, 'pending', ?, ?, ?)",
+        (
+            decision_id,
+            account_id,
+            json.dumps(order, ensure_ascii=False),
+            requested_at,
+            expires_at,
+            fingerprint,
+        ),
     )
     conn.commit()
     return int(cur.lastrowid)

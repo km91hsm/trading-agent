@@ -66,11 +66,12 @@ def check(
     items += _reconcile(conn, settings, accounts, now)
     items += _jobs(conn, now, state, schedule_jobs or [])
     items += _llm(conn, settings, now)
+    items += _disclosure(conn, settings, accounts, now)
     areas: dict[str, str] = {}
     for it in items:
         area = it.key.split(".")[0]
         areas[area] = worst([areas.get(area, "ok"), it.level])
-    for area in ("loss", "orders", "reconcile", "jobs", "llm"):
+    for area in ("loss", "orders", "reconcile", "jobs", "llm", "disclosure"):
         areas.setdefault(area, "ok")
     level = worst([it.level for it in items])
     return {
@@ -84,6 +85,40 @@ def check(
 
 
 # --- 영역 -------------------------------------------------------------------------------
+
+
+DISCLOSURE_DAYS = 3
+
+
+def _disclosure(conn, settings, accounts, now) -> list[Item]:
+    """보유 종목(최신 스냅샷)의 최근 3일 critical 공시(Phase 25) → critical 단계."""
+    from trader.ledger import views
+    from trader.sources import disclosures
+
+    out: list[Item] = []
+    for market in settings.markets:
+        held: set[str] = set()
+        for a in accounts:
+            if market not in a.markets:
+                continue
+            snap = views.latest_positions(conn, a.id, market)
+            held |= {p["ticker"] for p in (snap or {}).get("positions") or [] if p["qty"]}
+        if not held:
+            continue
+        rows = disclosures.critical_recent(
+            conn, market, since=now - timedelta(days=DISCLOSURE_DAYS), tickers=held
+        )
+        if rows:
+            out.append(
+                Item(
+                    f"disclosure.{market}",
+                    "critical",
+                    f"{market} 보유 종목 중요 공시 {len(rows)}건 — {rows[-1]['title']}",
+                    link="/data",
+                    count=len(rows),
+                )
+            )
+    return out
 
 
 def _loss(conn, settings, accounts, now) -> list[Item]:

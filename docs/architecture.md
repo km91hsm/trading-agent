@@ -227,3 +227,8 @@ Claude 리뷰어 4 + Codex 2 교차검증 결과 중 비주문 항목. 표의 �
 - **승인 실행(O11).** `executor.approve` 는 요청 뒤 결정 행동이 바뀌었으면(HOLD·반대 방향, 헤지 결정 제외) 실행하지 않고 요청을 expired 로 닫는다.
 - **헤지 레버리지(O14).** −2x 는 `regime.core_count`(200일선·모멘텀·변동성 3지표)가 3 일 때만 — 전략가·수급 보조 신호로 count 가 3 이 돼도 −1x.
 - **가격 검증(O16).** `Decision.limit_price·stop_loss·take_profit` 은 양수만(gt=0).
+
+### 승인 지문·공시 중요도 (단계 6)
+- **승인 지문.** `executor.approval_fingerprint(account_id, decision_id, order)` = 정렬 키 JSON(표시용 `name` 제외, `quote_price`·`order_stage` 포함) sha256. `_request_approval` 이 원장 v18 `approvals.fingerprint` 에 저장하고 `executor.approve` 가 실행 직전 `order_json` 으로 다시 계산해 다르면 주문하지 않고 `failed` + CRITICAL 로그 + `[긴급: 승인 지문 불일치]` 알림. 지문 없는 옛 행(NULL)은 통과.
+- **공시 중요도(`sources/disclosures.py`).** KR 은 DART `list.json` 을 회사 지정 없이 그날 1~3쪽(`DartClient.market_disclosures`) 받아 대상 종목만, US 는 대상 종목 CIK 의 `submissions`(`EdgarClient.submissions`) 최근 3일 8-K. 보고서명 키워드(`DART_CRITICAL`: 감자·거래정지·관리종목·상장폐지·회생절차·파산·감사의견 거절/부적정 등, `DART_HIGH`: 유상증자·전환사채·최대주주변경·횡령·배임·불성실공시)·8-K item(1.03·3.01·4.02 critical, 1.05 high, 2.02 info)으로 `severity` 를 매겨 뉴스 저장소(`news_items.severity`, v18, source `dart`|`edgar`)에 멱등 적재. 대상 = 유니버스 ∪ 보유 ∪ 관심.
+- **critical 처리.** 데몬 `news_collect` 가 시장별 `_disclosure_trigger` 를 부른다: 처음 보는(`control.disclosure_seen:<market>`, 최근 300개) 최근 1일 critical 이 유니버스·보유 종목에 붙으면 `[중요 공시]` 알림 1회 + `news_min_novel`·`news_burst` 조건 없이 `_news_reanalyze`(오늘 결정 있으면 재평가, 없으면 analyze_ticker). paused·장중 창 밖이면 알림만. 운영 점검 새 영역 `disclosure`: 보유 종목(최신 스냅샷)의 최근 3일 critical → critical 단계(웹 `ops.ts` '공시').

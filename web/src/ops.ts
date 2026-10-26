@@ -15,7 +15,7 @@ export type OpsResp = {
 
 export const LEVEL_ORDER: OpsLevel[] = ["ok", "watch", "warning", "critical"];
 export const LEVEL_LABEL: Record<OpsLevel, string> = { ok: "정상", watch: "관심", warning: "주의", critical: "경보" };
-export const AREA_LABEL: Record<string, string> = { loss: "손익", orders: "주문", reconcile: "대조", jobs: "데몬·잡", llm: "세션" };
+export const AREA_LABEL: Record<string, string> = { loss: "손익", orders: "주문", reconcile: "대조", jobs: "데몬·잡", llm: "세션", disclosure: "공시" };
 
 export type OpsRow = { key: string; area: string; level: OpsLevel; levelLabel: string; text: string; link: string | null; danger: boolean };
 

@@ -300,6 +300,13 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
             "CREATE INDEX IF NOT EXISTS ix_llm_rate_limits_at ON llm_rate_limits(observed_at)",
         ],
     ),
+    (
+        18,  # Phase 25 단계 6: 승인 지문(요청 뒤 주문 내용 변조 감지) + 공시 중요도
+        [
+            "ALTER TABLE approvals ADD COLUMN fingerprint TEXT",
+            "ALTER TABLE news_items ADD COLUMN severity TEXT",
+        ],
+    ),
 ]
 
 
