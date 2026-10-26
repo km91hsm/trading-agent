@@ -1,10 +1,14 @@
 """분 단위 단타 집행 (Phase 23 S) — **모의 계좌 전용**, 기본 끔.
 
-틱(60초)마다: ① 허용 판정(설정·paused·bear 국면·전략가 RISK_OFF/scalp_ok=false·일일 손실 한도) →
-② 후보(오늘 `_scan` picks + 새 뉴스 재분석 종목 + 관심종목 − 보유·헤지·오늘 이미 거래) ≤
-`max_universe` → ③ 보유 중 단타는 청산 규칙, 나머지는 1분봉 진입 규칙(`signals.py`) →
-④ `executor.execute(scalp_leg=...)` 로 계좌 모드·dry_run·게이트를 그대로 지키며 주문(실전 계좌는
-`skip_accounts`). 상태는 `state/scalp/<date>/<market>.json`, 사건은 같은 폴더 `events.jsonl`.
+틱(60초)마다: ⓪ 열린 단타의 청산 점검(허용 판정과 무관 — bear·금지·한도는 신규 진입만 막는다,
+전체 검토 O7) → ① 허용 판정(설정·paused·bear 국면·전략가 RISK_OFF/scalp_ok=false·일일 손실
+한도) → ② 후보(오늘 `_scan` picks + 새 뉴스 재분석 종목 + 관심종목 − 보유·헤지·오늘 이미 거래) ≤
+`max_universe` → ③ 1분봉 진입 규칙(`signals.py`) → ④ `executor.execute(scalp_leg=...)` 로 계좌
+모드·dry_run·게이트를 그대로 지키며 주문(실전 계좌는 `skip_accounts`). 포지션은 **계좌별 다리**
+(진입·청산 주문 id)로 들고 보유 수량은 원장 `fills` 로 센다(O6): 진입 접수는 `pending_entry`,
+체결분만 `held`, 청산 신호면 `closing` — 미체결 진입 BUY 취소 → 계좌별 체결 수량만 SELL(같은
+종목의 일반 보유분은 건드리지 않음) → 전부 체결될 때까지 다음 틱에 재시도, 수익률은 체결가 기준.
+상태는 `state/scalp/<date>/<market>.json`, 사건은 같은 폴더 `events.jsonl`.
 결정 행(`decisions`)은 만들지 않는다 — 오늘 LLM 결정과 같은 (date, market, ticker) 키를 덮기 때문.
 """
 
@@ -291,20 +295,22 @@ def _decision(
     )
 
 
-def _filled_qty(results: list[dict]) -> dict[str, int]:
-    """계좌별 접수(또는 dry_run 승인) 수량."""
-    out: dict[str, int] = {}
+def _entry_legs(results: list[dict]) -> dict[str, dict]:
+    """계좌별 진입 다리: 접수(accepted·unknown) 주문 id 와 요청 수량. dry_run 승인은 주문 없이
+    체결로 본다(`dry`). 거부·실패 계좌는 다리가 없다 — 청산도 그 계좌를 건너뛴다(O6)."""
+    out: dict[str, dict] = {}
     for r in results:
-        if r.get("error") or not r.get("approved"):
+        qty = int(r.get("qty") or 0)
+        if r.get("error") or not r.get("approved") or qty <= 0:
             continue
         order = r.get("order")
         if order is None:
             if r.get("dry_run"):
-                out[r["account_id"]] = int(r.get("qty") or 0)
+                out[r["account_id"]] = {"req": qty, "dry": True, "buy": [], "sell": []}
             continue
-        if order.get("status") in ("accepted", "unknown"):
-            out[r["account_id"]] = int(r.get("qty") or 0)
-    return {k: v for k, v in out.items() if v > 0}
+        if order.get("status") in ("accepted", "unknown") and order.get("order_id") is not None:
+            out[r["account_id"]] = {"req": qty, "buy": [int(order["order_id"])], "sell": []}
+    return out
 
 
 def _quote(ctx: ScalpContext, market: str, ticker: str, exchange: str | None) -> Decimal:
@@ -413,6 +419,25 @@ def _enter(
 ) -> dict | None:
     cfg = ctx.settings.scalp
     dec = _decision("BUY", c["ticker"], market, price, cfg, reason, weight_mult=weight_mult)
+    # 하루 종목당 1회(거부돼도) + 임시 포지션(entering)을 주문 전에 남긴다 — 접수 뒤 저장 전에
+    # 끊기면 다음 틱이 원장의 진입 주문을 흡수한다(`_adopt_entry_orders`), 다시 사지 않는다
+    st.setdefault("done", []).append(c["ticker"])
+    pos = {
+        "ticker": c["ticker"],
+        "exchange": c.get("exchange"),
+        "weight": cfg.max_weight_pct * weight_mult,  # 일일 손실 계산이 실제 비중을 쓰게
+        "entry_price": str(price),
+        "entry_time": time_hms,
+        "entry_at": ctx.now().isoformat(),
+        "qty": {},
+        "legs": {},
+        "status": "entering",
+        "reason": reason,
+        "dry_run": ctx.dry_run,
+        **(params or {}),
+    }
+    st["open"].append(pos)
+    save_state(ctx.state, today, market, st)
     results = executor.execute(
         ectx,
         dec,
@@ -425,25 +450,19 @@ def _enter(
         skip_accounts=skip,
         scalp_leg="entry",
     )
-    st.setdefault("done", []).append(c["ticker"])  # 하루 종목당 1회(거부돼도)
-    qty = _filled_qty(results)
-    if not qty:
+    legs = _entry_legs(results)
+    if not legs:
+        st["open"].remove(pos)
+        save_state(ctx.state, today, market, st)
         reasons = [r.get("reasons") for r in results]
         _event(ctx.state, today, market, "entry_rejected", ticker=c["ticker"], reasons=reasons)
         return None
-    pos = {
-        "ticker": c["ticker"],
-        "exchange": c.get("exchange"),
-        "weight": cfg.max_weight_pct * weight_mult,  # 일일 손실 계산이 실제 비중을 쓰게
-        "entry_price": str(price),
-        "entry_time": time_hms,
-        "entry_at": ctx.now().isoformat(),
-        "qty": qty,
-        "reason": reason,
-        "dry_run": ctx.dry_run,
-        **(params or {}),
+    pos |= {
+        "qty": {a: leg["req"] for a, leg in legs.items()},  # 요청 수량(표시용)
+        "legs": legs,
+        "status": "held" if ctx.dry_run else "pending_entry",
     }
-    st["open"].append(pos)
+    save_state(ctx.state, today, market, st)
     _event(ctx.state, today, market, "entry", **pos)
     ctx.notifier.send(
         messages.scalp(
@@ -537,108 +556,483 @@ def _settle_pending(
     return entered
 
 
-def tick(ctx: ScalpContext, *, market: str, today: date) -> dict:
-    """1틱: 청산 → (판정 회수) → 진입. 반환 {entries, exits, skipped?, candidates}."""
+# --- 계좌별 체결 상태 (전체 검토 O6) ----------------------------------------------------
+
+EXIT_REQUOTE_S = 120  # 청산 지정가(US)가 이만큼 미체결이면 취소하고 다음 틱에 현재가로 다시 낸다
+
+
+def _legs(pos: dict) -> dict[str, dict]:
+    """포지션의 계좌별 다리. 옛 상태 파일(legs 없음)은 요청 수량을 체결로 보고(`assumed`) 청산
+    주문만 추적한다."""
+    if "legs" not in pos:
+        assumed = "dry" if pos.get("dry_run") else "assumed"
+        pos["legs"] = {
+            a: {"req": int(q), assumed: True, "buy": [], "sell": []}
+            for a, q in (pos.get("qty") or {}).items()
+        }
+    return pos["legs"]
+
+
+def _live(status: str) -> bool:
+    from trader.ledger import repo
+
+    return status not in repo.DEAD_STATUSES and status != "filled"
+
+
+def _orders(conn: sqlite3.Connection, ids: list[int]) -> list[dict]:
+    """주문 행 + 체결 합계(수량·금액)."""
+    out = []
+    for oid in ids:
+        o = conn.execute(
+            "SELECT id, order_no, org_no, qty, status, order_type, created_at FROM orders "
+            "WHERE id=?",
+            (oid,),
+        ).fetchone()
+        if o is None:
+            continue
+        q, amt = 0, Decimal(0)
+        for f in conn.execute("SELECT qty, price FROM fills WHERE order_id=?", (oid,)):
+            q += int(f["qty"])
+            amt += Decimal(str(f["price"])) * int(f["qty"])
+        out.append(dict(o) | {"filled": q, "filled_amt": amt})
+    return out
+
+
+def _leg_view(ctx: ScalpContext, leg: dict) -> dict:
+    """다리 하나의 체결 현황: 매수·매도 체결 수량/금액, 살아 있는 매수·매도 주문."""
+    if leg.get("dry"):
+        q = int(leg["req"])
+        sold = q if leg.get("dry_sold") else 0
+        return {"bought": q, "cost": None, "sold": sold, "proceeds": None, "buys": [], "sells": []}
+    buys = _orders(ctx.conn, leg.get("buy") or [])
+    sells = _orders(ctx.conn, leg.get("sell") or [])
+    assumed = bool(leg.get("assumed"))  # 옛 상태: 진입 체결가를 몰라 신호가로 본다
+    return {
+        "bought": int(leg["req"]) if assumed else sum(o["filled"] for o in buys),
+        "cost": None if assumed else sum((o["filled_amt"] for o in buys), Decimal(0)),
+        "sold": sum(o["filled"] for o in sells),
+        "proceeds": sum((o["filled_amt"] for o in sells), Decimal(0)),
+        "buys": [o for o in buys if _live(o["status"])],
+        "sells": [o for o in sells if _live(o["status"])],
+    }
+
+
+def _order_days(ctx: ScalpContext, market: str, pos: dict) -> list[date]:
+    """체결을 다시 읽을 현지 날짜: 오늘 + 이월 전 주문일들(전일 주문의 체결·만료도 갱신)."""
+    today = ctx.now().astimezone(MARKET_TZ[market]).date()
+    days = {date.fromisoformat(x) for x in pos.get("order_days") or []}
+    return sorted(days | {today})
+
+
+def _sync_fills(ctx: ScalpContext, market: str, pos: dict, synced: dict) -> None:
+    """살아 있는 주문(또는 취소 뒤 재확인)이 있는 계좌만 체결을 다시 읽는다(틱당 계좌·날짜 1회).
+    조회가 전부 성공해야 취소 뒤 재확인(`recheck`)을 지운다."""
+    from trader.orchestrator import fills
+
+    for acct, leg in _legs(pos).items():
+        if leg.get("dry"):
+            continue
+        v = _leg_view(ctx, leg)
+        if not v["buys"] and not v["sells"] and not leg.get("recheck"):
+            continue
+        broker = ctx.brokers.get(acct)
+        account = next((a for a in ctx.accounts if a.id == acct), None)
+        if broker is None or account is None:
+            continue
+        ok = True
+        for d in _order_days(ctx, market, pos):
+            key = (acct, d.isoformat())
+            if key not in synced:
+                try:
+                    res = fills.sync_fills(
+                        ctx.conn, broker, account, d, now=ctx.now, notifier=ctx.notifier
+                    )
+                    synced[key] = market not in (res.get("failed_markets") or [])
+                except Exception as e:  # noqa: BLE001 - 다음 틱에 다시 읽는다
+                    logger.warning("단타 체결 동기화 실패 %s: %s", acct, e)
+                    synced[key] = False
+            ok = ok and synced[key]
+        if ok:
+            leg.pop("recheck", None)  # 이번 조회로 취소 뒤 최종 체결을 확인했다
+
+
+def _cancel(
+    ctx: ScalpContext,
+    market: str,
+    pos: dict,
+    acct: str,
+    leg: dict,
+    o: dict,
+    persist: Callable[[], None] = lambda: None,
+) -> bool:
+    """미체결 잔량 취소. 성공하면 그 다리에 `recheck`(side 목록)를 남긴다 — 취소 직전 체결이
+    원장에 아직 없을 수 있어, 다음 틱 체결 동기화로 최종 수량을 확인하기 전에는 그 방향으로
+    다리를 끝내거나(BUY) 잔량을 다시 팔지(SELL) 않는다(Codex 리뷰)."""
+    from trader.ledger import repo
+
+    broker = ctx.brokers.get(acct)
+    if broker is None or not o.get("order_no"):
+        return False  # 응답 없는(unknown) 주문은 번호가 없어 취소할 수 없다 → 체결 동기화 대기
+    # 재확인 표시는 취소 **전에** 저장한다 — 취소 뒤 저장 전에 끊겨도 다음 틱이 최종 체결을 읽는다
+    side = "buy" if int(o["id"]) in (leg.get("buy") or []) else "sell"
+    leg["recheck"] = sorted({*(leg.get("recheck") or []), side})
+    persist()
+    try:
+        res = broker.cancel_order(
+            str(o["order_no"]),
+            market=market,
+            org_no=o.get("org_no"),
+            ticker=pos["ticker"],
+            exchange=pos.get("exchange"),
+            qty=int(o["qty"]) - int(o["filled"]),
+        )
+    except (KisApiError, ValueError) as e:
+        logger.warning("단타 미체결 취소 실패 %s %s #%s: %s", acct, pos["ticker"], o["order_no"], e)
+        return False
+    if res.accepted:
+        repo.set_order_status(ctx.conn, int(o["id"]), "cancelled")
+        _event(
+            ctx.state,
+            ctx.now().astimezone(MARKET_TZ[market]).date(),
+            market,
+            "cancel",
+            ticker=pos["ticker"],
+            account_id=acct,
+            order_id=o["id"],
+        )
+        return True
+    return False
+
+
+def _close_step(
+    ctx: ScalpContext,
+    ectx: executor.ExecContext,
+    *,
+    market: str,
+    today: date,
+    pos: dict,
+    price: Decimal,
+    skip: frozenset[str],
+    persist: Callable[[], None] = lambda: None,
+) -> dict | None:
+    """청산 중(closing) 포지션 한 걸음: 미체결 진입 BUY 취소 → 계좌별 체결 보유 수량만 SELL →
+    전부 팔렸으면 체결가 기준 결과를 돌려준다(아직이면 None — 다음 틱 재시도). 진입 체결이
+    하나도 없이 끝나면 {"void": True}."""
     cfg = ctx.settings.scalp
-    st = load_state(ctx.state, today, market)
-    why = allowed(ctx, market, today, st)
-    if why:
-        return {"skipped": why}
+    legs = _legs(pos)
+    now = ctx.now()
+    need: dict[str, int] = {}
+    waiting = False
+    for acct, leg in legs.items():
+        if not leg.get("dry"):
+            _adopt_exit_orders(ctx, pos, acct, leg)
+        v = _leg_view(ctx, leg)
+        for o in v["buys"]:
+            if not _cancel(ctx, market, pos, acct, leg, o, persist):
+                waiting = True  # 취소되지 않은 진입은 더 체결될 수 있다 — 끝내지 않는다
+        for o in v["sells"]:
+            age = (now - datetime.fromisoformat(o["created_at"])).total_seconds()
+            if o["order_type"] == "LIMIT" and age >= EXIT_REQUOTE_S:
+                _cancel(ctx, market, pos, acct, leg, o, persist)
+            waiting = True  # 살아 있는 청산 주문: 체결(또는 취소 확인)을 기다린다
+        if leg.get("recheck"):
+            waiting = True  # 취소 뒤 최종 체결 확인 전에는 끝내지 않는다
+        if v["sells"] or "sell" in (leg.get("recheck") or []):
+            continue  # 청산 체결을 모르는 채 잔량을 다시 팔면 일반 보유분까지 판다
+        rest = v["bought"] - v["sold"]
+        if rest > 0:
+            need[acct] = rest
+    if need:
+        dec = _decision("SELL", pos["ticker"], market, price, cfg, pos["exit_reason"])
+        results = executor.execute(
+            ectx,
+            dec,
+            date=today,
+            market=market,
+            price=price,
+            exchange=pos.get("exchange"),
+            dry_run=ctx.dry_run,
+            decision_id=None,
+            skip_accounts=skip | frozenset(a.id for a in ctx.accounts if a.id not in need),
+            scalp_leg="exit",
+            max_qty=need,
+        )
+        pos.setdefault("exit_results", []).append(
+            [{k: r.get(k) for k in ("account_id", "approved", "qty", "reasons")} for r in results]
+        )
+        for r in results:
+            leg = legs.get(r.get("account_id"))
+            if leg is None or r.get("error") or not r.get("approved"):
+                continue
+            order = r.get("order")
+            if leg.get("dry"):
+                if order is None and r.get("dry_run"):
+                    leg["dry_sold"] = True
+                    leg["dry_price"] = str(price)
+                    need.pop(r["account_id"], None)
+            elif order is not None and order.get("order_id") is not None:
+                leg.setdefault("sell", []).append(int(order["order_id"]))
+        persist()  # 접수한 청산 주문 id 를 바로 남긴다(틱 중간에 끊겨도 다시 내지 않게)
+        waiting = waiting or bool(need)
+    if waiting:
+        return None
+    bought = sold = 0
+    cost = proceeds = Decimal(0)
+    for leg in legs.values():
+        v = _leg_view(ctx, leg)
+        if v["cost"] is None:
+            v["cost"] = Decimal(str(pos["entry_price"])) * v["bought"]
+        if v["proceeds"] is None:
+            v["proceeds"] = Decimal(str(leg.get("dry_price") or price)) * v["sold"]
+        bought += v["bought"]
+        sold += v["sold"]
+        cost += v["cost"]
+        proceeds += v["proceeds"]
+    if bought == 0 or sold == 0:
+        return {"void": True}
+    entry_px = cost / bought
+    exit_px = proceeds / sold
+    return {
+        "entry_fill": _px(entry_px),
+        "exit_price": _px(exit_px),
+        "filled": {a: _leg_view(ctx, leg)["bought"] for a, leg in legs.items()},
+        "ret": round(float(exit_px / entry_px - 1), 5),
+    }
+
+
+def _adopt_exit_orders(ctx: ScalpContext, pos: dict, acct: str, leg: dict) -> None:
+    """진입 뒤 이 계좌·종목에 낸 결정 없는 SELL 중 다리에 없는 것을 흡수한다 — 접수와 상태
+    저장 사이에 프로세스가 끊긴 경우 같은 잔량을 다시 팔지 않게(Codex 리뷰)."""
+    since = pos.get("entry_at")
+    if not since:
+        return
+    known = set(leg.get("sell") or [])
+    for r in ctx.conn.execute(
+        "SELECT id FROM orders WHERE account_id=? AND ticker=? AND side='SELL' "
+        "AND decision_id IS NULL AND created_at >= ? ORDER BY id",
+        (acct, pos["ticker"], since),
+    ):
+        if int(r["id"]) not in known:
+            leg.setdefault("sell", []).append(int(r["id"]))
+            logger.warning("단타 청산 주문 흡수 %s %s #%s", acct, pos["ticker"], r["id"])
+
+
+def _adopt_entry_orders(ctx: ScalpContext, pos: dict) -> None:
+    """임시 포지션(entering)의 진입 주문을 원장에서 찾아 다리로 만든다(진입 뒤 결정 없는 BUY)."""
+    legs: dict[str, dict] = {}
+    for r in ctx.conn.execute(
+        "SELECT id, account_id, qty FROM orders WHERE ticker=? AND side='BUY' "
+        "AND decision_id IS NULL AND created_at >= ? ORDER BY id",
+        (pos["ticker"], pos["entry_at"]),
+    ):
+        leg = legs.setdefault(r["account_id"], {"req": 0, "buy": [], "sell": []})
+        leg["req"] += int(r["qty"])
+        leg["buy"].append(int(r["id"]))
+    pos |= {
+        "legs": legs,
+        "qty": {a: leg["req"] for a, leg in legs.items()},
+        "status": "pending_entry",
+    }
+    logger.warning("단타 진입 주문 흡수 %s %s", pos["ticker"], sorted(legs))
+
+
+def _px(v: Decimal) -> str:
+    """체결 평균가 표기: 소수 4자리 이하, 지수 표기 없이."""
+    return format(v.quantize(Decimal("0.0001")).normalize(), "f")
+
+
+def _check_exits(
+    ctx: ScalpContext,
+    ectx: executor.ExecContext,
+    *,
+    market: str,
+    today: date,
+    st: dict,
+    skip: frozenset[str],
+    out: dict,
+) -> None:
+    persist = lambda: save_state(ctx.state, today, market, st)  # noqa: E731
+    """보유·진입 대기 단타의 청산 점검(허용 판정과 무관하게 매 틱 — O7). 손절·익절·마감·최대
+    보유는 파이썬이 즉시, 판정자 조언은 조기 청산만."""
+    cfg = ctx.settings.scalp
     judge_on = cfg.judge and ctx.judge is not None
-    ectx = _exec_ctx(ctx)
-    skip = _skip_accounts(ctx, market)
     now_t = _local_hms(ctx, market)
-    out: dict[str, Any] = {"entries": [], "exits": [], "candidates": 0}
-    # --- 청산 (손절·익절·마감·최대 보유는 파이썬이 즉시 — 판정자 조언은 조기 청산만) ---
+    synced: dict = {}
     still_open = []
     for pos in st.get("open") or []:
+        if pos.get("status") == "entering":  # 진입 주문 뒤 저장 전에 끊겼다
+            _adopt_entry_orders(ctx, pos)
+        _legs(pos)
+        if not ctx.dry_run:
+            _sync_fills(ctx, market, pos, synced)
+        views = {a: _leg_view(ctx, leg) for a, leg in pos["legs"].items()}
+        bought = sum(v["bought"] for v in views.values())
+        live_buys = any(v["buys"] for v in views.values())
+        if pos.get("status") != "closing":
+            if bought == 0 and not live_buys:  # 진입이 체결 없이 죽었다(거부·만료·취소)
+                _event(ctx.state, today, market, "entry_void", ticker=pos["ticker"])
+                if ctx.judge is not None:
+                    ctx.judge.discard(advice_key(market, pos))
+                continue
+            pos["status"] = "held" if bought > 0 else "pending_entry"
+            if bought > 0:
+                pos["filled"] = {a: v["bought"] for a, v in views.items()}
+                costs = [v for v in views.values() if v["cost"] is not None and v["bought"] > 0]
+                if costs:  # 청산 규칙은 실제 체결 평균가 기준(신호가 아님)
+                    pos["entry_fill"] = _px(
+                        sum((v["cost"] for v in costs), Decimal(0))
+                        / sum(v["bought"] for v in costs)
+                    )
         try:
             q = _quote(ctx, market, pos["ticker"], pos.get("exchange"))
         except (KisApiError, ValueError) as e:
             logger.warning("단타 시세 실패 %s: %s", pos["ticker"], e)
             still_open.append(pos)
             continue
-        reason = signals.exit_reason(
-            entry_price=Decimal(str(pos["entry_price"])),
-            entry_time=pos["entry_time"],
-            price=q,
-            now_time=now_t,
-            cfg=_pos_cfg(cfg, pos),
-            close_hm=ctx.close_hm,
+        if pos.get("status") != "closing":
+            reason = signals.exit_reason(
+                entry_price=Decimal(str(pos.get("entry_fill") or pos["entry_price"])),
+                entry_time=pos["entry_time"],
+                price=q,
+                now_time=now_t,
+                cfg=_pos_cfg(cfg, pos),
+                close_hm=ctx.close_hm,
+            )
+            if reason is None and judge_on:
+                reason = _advice(ctx, market, today, pos, q)
+            if reason is None:
+                still_open.append(pos)
+                continue
+            if ctx.judge is not None:
+                ctx.judge.discard(advice_key(market, pos))
+            pos |= {
+                "status": "closing",
+                "exit_reason": reason,
+                "exit_time": now_t,
+                "closing_at": ctx.now().isoformat(),
+            }
+            persist()
+            _event(ctx.state, today, market, "closing", ticker=pos["ticker"], reason=reason)
+        res = _close_step(
+            ctx, ectx, market=market, today=today, pos=pos, price=q, skip=skip, persist=persist
         )
-        if reason is None and judge_on:
-            key = advice_key(market, pos)
-            adv = ctx.judge.poll(key)
-            if adv not in (None, "pending") and getattr(adv, "action", None) == "exit":
-                reason = "judge_exit"
-                _event(ctx.state, today, market, "advice", ticker=pos["ticker"], why=adv.reason)
-            elif adv != "pending":
-                last = pos.get("advice_at") or pos.get("entry_at")
-                due = last is None or ctx.now() - datetime.fromisoformat(last) >= timedelta(
-                    minutes=cfg.judge_hold_every_min
-                )
-                if due:
-                    pos["advice_at"] = ctx.now().isoformat()
-                    payload = {
-                        "kind": "hold",
-                        "market": market,
-                        "ticker": pos["ticker"],
-                        "entry": {"price": pos["entry_price"], "time": pos["entry_time"]},
-                        "price": str(q),
-                        "limits": _limits(_pos_cfg(cfg, pos)),
-                    }
-                    try:
-                        payload["bars"] = _bars_json(_minutes(ctx, market, pos))
-                    except (KisApiError, ValueError):
-                        payload["bars"] = []
-                    payload |= {
-                        "news": _judge_context(ctx, market, pos["ticker"], pos.get("exchange"))[
-                            "news"
-                        ]
-                    }
-                    ctx.judge.submit(key, payload, schemas.ScalpAdvice)
-        if reason is None:
+        if res is None:
             still_open.append(pos)
             continue
-        if ctx.judge is not None:
-            ctx.judge.discard(advice_key(market, pos))
-        dec = _decision("SELL", pos["ticker"], market, q, cfg, reason)
-        results = executor.execute(
-            ectx,
-            dec,
-            date=today,
-            market=market,
-            price=q,
-            exchange=pos.get("exchange"),
-            dry_run=ctx.dry_run,
-            decision_id=None,
-            skip_accounts=skip,
-            scalp_leg="exit",
-        )
-        ret = float(q / Decimal(str(pos["entry_price"])) - 1)
-        closed = pos | {
-            "exit_price": str(q),
-            "exit_time": now_t,
+        if res.get("void"):
+            _event(ctx.state, today, market, "entry_void", ticker=pos["ticker"])
+            continue
+        reason = pos["exit_reason"]
+        closed = {k: v for k, v in pos.items() if k not in ("status",)} | {
+            "exit_price": res["exit_price"],
+            "entry_fill": res["entry_fill"],
+            "filled": res["filled"],
             "reason": reason,
-            "ret": round(ret, 5),
-            "exit_results": [
-                {k: r.get(k) for k in ("account_id", "approved", "qty", "reasons")} for r in results
-            ],
+            "ret": res["ret"],
         }
         st.setdefault("closed", []).append(closed)
-        out["exits"].append({"ticker": pos["ticker"], "reason": reason, "ret": round(ret, 5)})
+        out["exits"].append({"ticker": pos["ticker"], "reason": reason, "ret": res["ret"]})
         _event(ctx.state, today, market, "exit", **closed)
         ctx.notifier.send(
             messages.scalp(
                 leg="exit",
                 market=market,
                 label=_label(ctx, market, pos["ticker"]),
-                price=q,
+                price=Decimal(res["exit_price"]),
                 reason=reason + (" (dry-run)" if ctx.dry_run else ""),
-                ret=ret,
+                ret=res["ret"],
             )
         )
     st["open"] = still_open
+
+
+def _advice(ctx: ScalpContext, market: str, today: date, pos: dict, q: Decimal) -> str | None:
+    """판정자 보유 조언: 지난 조언이 exit 면 "judge_exit", 아니면 주기가 됐을 때 새로 묻는다."""
+    cfg = ctx.settings.scalp
+    key = advice_key(market, pos)
+    adv = ctx.judge.poll(key)
+    if adv not in (None, "pending") and getattr(adv, "action", None) == "exit":
+        _event(ctx.state, today, market, "advice", ticker=pos["ticker"], why=adv.reason)
+        return "judge_exit"
+    if adv == "pending":
+        return None
+    last = pos.get("advice_at") or pos.get("entry_at")
+    due = last is None or ctx.now() - datetime.fromisoformat(last) >= timedelta(
+        minutes=cfg.judge_hold_every_min
+    )
+    if due:
+        pos["advice_at"] = ctx.now().isoformat()
+        payload = {
+            "kind": "hold",
+            "market": market,
+            "ticker": pos["ticker"],
+            "entry": {"price": pos["entry_price"], "time": pos["entry_time"]},
+            "price": str(q),
+            "limits": _limits(_pos_cfg(cfg, pos)),
+        }
+        try:
+            payload["bars"] = _bars_json(_minutes(ctx, market, pos))
+        except (KisApiError, ValueError):
+            payload["bars"] = []
+        payload |= {"news": _judge_context(ctx, market, pos["ticker"], pos.get("exchange"))["news"]}
+        ctx.judge.submit(key, payload, schemas.ScalpAdvice)
+    return None
+
+
+CARRY_DAYS = 14  # 이만큼 거슬러 미종결 단타를 찾는다(주말·연휴 포함)
+
+
+def _carry_over(ctx: ScalpContext, market: str, today: date, st: dict) -> None:
+    """지난 운영일 상태 파일의 미종결 단타(마감까지 못 판 잔량·unknown·일시정지)를 오늘로 옮겨
+    곧바로 청산을 이어 간다(Codex 리뷰). 매 틱 본다 — 오늘 파일을 먼저 쓰고 옛 파일을 비우므로
+    그 사이에 끊겨도 다음 틱이 (종목, 진입 시각) 으로 중복 없이 마저 옮긴다."""
+    have = {f"{p['ticker']}|{p.get('entry_at')}" for p in st.get("open") or []}
+    have |= set(st.get("carried") or [])  # 이미 승계해 끝낸 것도(옛 파일이 다시 보여도) 건너뛴다
+    for i in range(1, CARRY_DAYS + 1):
+        d = today - timedelta(days=i)
+        p = state_dir(ctx.state, d) / f"{market}.json"
+        if not p.exists():
+            continue
+        old = load_state(ctx.state, d, market)
+        if not old.get("open"):
+            continue
+        for pos in old["open"]:
+            pos["order_days"] = sorted({*(pos.get("order_days") or []), d.isoformat()})
+            key = f"{pos['ticker']}|{pos.get('entry_at')}"
+            if key in have:
+                continue
+            st.setdefault("carried", []).append(key)
+            if pos.get("status") == "entering":  # 진입 접수 뒤 저장 전에 끊긴 채 넘어왔다
+                _adopt_entry_orders(ctx, pos)
+            if pos.get("status") != "closing":
+                pos |= {
+                    "status": "closing",
+                    "exit_reason": "carry_over",
+                    "exit_time": _local_hms(ctx, market),
+                    "closing_at": ctx.now().isoformat(),
+                }
+            pos["carried_from"] = d.isoformat()
+            st["open"].append(pos)
+            st.setdefault("done", []).append(pos["ticker"])
+            _event(ctx.state, today, market, "carry_over", ticker=pos["ticker"], since=str(d))
+        old["open"] = []
+        save_state(ctx.state, today, market, st)  # 오늘 파일을 먼저 — 끊겨도 잃지 않게
+        save_state(ctx.state, d, market, old)
+
+
+def tick(ctx: ScalpContext, *, market: str, today: date) -> dict:
+    """1틱: 청산 → (판정 회수) → 진입. 반환 {entries, exits, skipped?, candidates}.
+    청산은 허용 판정(bear·전략가 금지·일일 손실·일시정지)보다 먼저 돈다 — 그 제한은 신규 진입만
+    막는다(전체 검토 O7). 일시정지면 executor 가 주문을 내지 않아 포지션은 closing 으로 남는다."""
+    cfg = ctx.settings.scalp
+    st = load_state(ctx.state, today, market)
+    _carry_over(ctx, market, today, st)
+    ectx = _exec_ctx(ctx)
+    skip = _skip_accounts(ctx, market)
+    out: dict[str, Any] = {"entries": [], "exits": [], "candidates": 0}
+    had_state = bool(st.get("open") or st.get("pending"))
+    if st.get("open"):
+        _check_exits(ctx, ectx, market=market, today=today, st=st, skip=skip, out=out)
     # 일일 손실 한도: 청산된 거래의 (수익률 × 비중) 합
     realized = sum(
         float(c.get("ret") or 0) * float(c.get("weight") or cfg.max_weight_pct)
@@ -646,20 +1040,29 @@ def tick(ctx: ScalpContext, *, market: str, today: date) -> dict:
     )
     if realized <= -cfg.daily_stop_pct and not st.get("halted"):
         st["halted"] = f"실현 {realized:+.2%} ≤ -{cfg.daily_stop_pct:.2%}"
+        had_state = True
         ctx.notifier.send(messages.scalp(leg="halt", market=market, label="", reason=st["halted"]))
         _event(ctx.state, today, market, "halt", realized=realized)
-    # --- 판정 회수 (지난 틱 제출분) ---
-    if st.get("pending"):
-        if st.get("halted"):
+    why = allowed(ctx, market, today, st)
+    if why:  # 신규 진입만 막는다: 판정 대기 신호도 버린다(그날 그 종목은 끝)
+        if st.get("pending"):
+            for t in st["pending"]:
+                if ctx.judge is not None:
+                    ctx.judge.discard(entry_key(market, today, t))
             st["done"] = [*st.get("done", []), *st["pending"]]
             st["pending"] = {}
-        else:
-            for pos in _settle_pending(ctx, ectx, market=market, today=today, st=st, skip=skip):
-                out["entries"].append(
-                    {"ticker": pos["ticker"], "price": pos["entry_price"], "qty": pos["qty"]}
-                )
+        if had_state:
+            save_state(ctx.state, today, market, st)
+        return out | {"skipped": why}
+    judge_on = cfg.judge and ctx.judge is not None
+    # --- 판정 회수 (지난 틱 제출분) ---
+    if st.get("pending"):
+        for pos in _settle_pending(ctx, ectx, market=market, today=today, st=st, skip=skip):
+            out["entries"].append(
+                {"ticker": pos["ticker"], "price": pos["entry_price"], "qty": pos["qty"]}
+            )
     # --- 진입 ---
-    if not st.get("halted") and len(st["open"]) + len(st.get("pending") or {}) < cfg.max_positions:
+    if len(st["open"]) + len(st.get("pending") or {}) < cfg.max_positions:
         cands = candidates(ctx, market, today, st)
         out["candidates"] = len(cands)
         for c in cands:
