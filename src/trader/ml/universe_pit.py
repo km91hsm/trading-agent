@@ -100,8 +100,9 @@ def _liquidity_mask(
     df: pd.DataFrame, top_n: int, window: int, eligible: pd.Series | None = None
 ) -> pd.Series:
     """그날까지의 window 일 평균 거래대금(종가×거래량) 순위가 (날짜·시장) 안 top_n 이하인 행.
-    (시장·종목·날짜) 순으로 굴려 입력 순서·다른 시장의 같은 코드와 섞이지 않는다. 평균은 **걸러내기
-    전 전체 봉**으로 내고(새로 편입한 종목도 그 전 거래대금이 있다) 순위는 eligible 행끼리만 매긴다."""
+    (시장·종목·날짜) 순으로 굴려 입력 순서·다른 시장의 같은 코드와 섞이지 않는다. 평균은
+    **걸러내기 전 전체 봉**으로 내고(새로 편입한 종목도 그 전 거래대금이 있다) 순위는 eligible
+    행끼리만 매긴다."""
     eligible = pd.Series(True, index=df.index) if eligible is None else eligible
     order = df.sort_values(["market", "ticker", "date"])
     turnover = (order["close"].astype(float) * order["volume"].astype(float)).fillna(0.0)
