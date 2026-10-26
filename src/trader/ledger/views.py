@@ -81,6 +81,163 @@ def latest_positions(conn: sqlite3.Connection, account_id: str, market: str) -> 
     return {"date": row["date"], "nav": row["nav"], "cash": row["cash"], "positions": positions}
 
 
+def _dist(target, current) -> float | None:
+    """목표가의 현재가 대비 거리(소수). 어느 쪽이든 없거나 0 이면 None."""
+    try:
+        t, c = Decimal(str(target)), Decimal(str(current))
+    except (ArithmeticError, ValueError, TypeError):
+        return None
+    if t <= 0 or c <= 0:
+        return None
+    return float(t / c - 1)
+
+
+def position_plan(decision: dict | None, current_price) -> dict | None:
+    """보유 행의 계획(Phase 24): 최근 결정의 목표 비중·익절·손절·지정가·보유기간과 현재가 대비 거리.
+    결정이 없거나 헤지 결정이면 None."""
+    from trader.risk import horizon
+
+    if not decision or decision.get("source") == "hedge":
+        return None
+    data = decision.get("data") or {}
+    days = data.get("horizon_days")
+    return {
+        "decision_id": decision.get("id"),
+        "date": decision.get("date"),
+        "action": decision.get("action"),
+        "target_weight": data.get("target_weight", decision.get("target_weight")),
+        "take_profit": data.get("take_profit"),
+        "stop_loss": data.get("stop_loss"),
+        "limit_price": data.get("limit_price"),
+        "horizon_days": days,
+        "horizon": horizon.name_of(days),
+        "dist_take_profit_pct": _dist(data.get("take_profit"), current_price),
+        "dist_stop_pct": _dist(data.get("stop_loss"), current_price),
+        "dist_limit_pct": _dist(data.get("limit_price"), current_price),
+    }
+
+
+def attach_plans(conn: sqlite3.Connection, market: str, snap: dict | None) -> None:
+    """스냅샷 보유 행에 `plan`·`weight`(평가/NAV) 와 하위 호환 `horizon`·`horizon_days` 를 붙인다."""
+    if not snap:
+        return
+    nav = Decimal(str(snap.get("nav") or 0))
+    for p in snap.get("positions") or []:
+        plan = position_plan(
+            repo.latest_decision(conn, market, p["ticker"]), p.get("current_price")
+        )
+        p["plan"] = plan
+        p["horizon_days"] = plan["horizon_days"] if plan else None
+        p["horizon"] = plan["horizon"] if plan else None
+        ev = Decimal(str(p.get("eval_amount") or 0))
+        p["weight"] = float(ev / nav) if nav > 0 else None
+
+
+def account_overview(
+    conn: sqlite3.Connection,
+    accounts: list,
+    *,
+    sector_of: Callable[[str, str], str | None] | None,
+    hedge_tickers: Callable[[str], set[str]],
+) -> dict:
+    """전체 계좌 합산(Phase 24). 통화가 달라 시장별로만 더한다. 같은 종목은 수량을 합치고 평단은
+    수량 가중. 스냅샷이 없는 계좌는 `accounts_missing_snapshot[시장]` 에 둔다."""
+    markets = [m for m in MARKETS if any(m in a.markets for a in accounts)]
+    out: dict = {"markets": {}, "accounts_missing_snapshot": {}}
+    for m in markets:
+        nav = cash = cost = ev_sum = Decimal(0)
+        merged: dict[str, dict] = {}
+        per_acct, missing = [], []
+        for a in accounts:
+            if m not in a.markets:
+                continue
+            snap = latest_positions(conn, a.id, m)
+            if snap is None:
+                missing.append(a.id)
+                continue
+            nav += Decimal(str(snap["nav"] or 0))
+            cash += Decimal(str(snap["cash"] or 0))
+            per_acct.append(
+                {
+                    "id": a.id,
+                    "env": a.env,
+                    "nav": snap["nav"],
+                    "cash": snap["cash"],
+                    "snapshot_date": snap["date"],
+                }
+            )
+            for p in snap["positions"]:
+                qty = int(p["qty"] or 0)
+                if qty <= 0:
+                    continue
+                avg = Decimal(str(p["avg_price"] or 0))
+                ev = Decimal(str(p["eval_amount"] or 0))
+                g = merged.setdefault(
+                    p["ticker"],
+                    {
+                        "ticker": p["ticker"],
+                        "market": m,
+                        "qty": 0,
+                        "cost": Decimal(0),
+                        "eval": Decimal(0),
+                        "current_price": p["current_price"],
+                        "accounts": [],
+                    },
+                )
+                g["qty"] += qty
+                g["cost"] += avg * qty
+                g["eval"] += ev
+                g["accounts"].append(a.id)
+                cost += avg * qty
+                ev_sum += ev
+        positions = []
+        for g in sorted(merged.values(), key=lambda g: -g["eval"]):
+            avg = g["cost"] / g["qty"] if g["qty"] else Decimal(0)
+            pnl = g["eval"] - g["cost"]
+            positions.append(
+                {
+                    "ticker": g["ticker"],
+                    "market": m,
+                    "qty": g["qty"],
+                    "avg_price": str(avg),
+                    "current_price": g["current_price"],
+                    "eval_amount": str(g["eval"]),
+                    "pnl": str(pnl),
+                    "pnl_pct": float(pnl / g["cost"]) if g["cost"] else None,
+                    "weight": float(g["eval"] / nav) if nav > 0 else None,
+                    "accounts": g["accounts"],
+                    "plan": position_plan(
+                        repo.latest_decision(conn, m, g["ticker"]), g["current_price"]
+                    ),
+                }
+            )
+        hedge = hedge_tickers(m)
+        smap = (lambda t, _m=m: sector_of(t, _m)) if sector_of else None
+        unmapped = [
+            p["ticker"]
+            for p in positions
+            if p["ticker"] not in hedge and not (smap and smap(p["ticker"]))
+        ]
+        pnl_all = ev_sum - cost
+        out["markets"][m] = {
+            "nav": str(nav),
+            "cash": str(cash),
+            "pnl": str(pnl_all),
+            "pnl_pct": float(pnl_all / cost) if cost else None,
+            "positions": positions,
+            "sectors": sector_weights(positions, nav, smap, hedge_tickers=hedge, cash=cash)
+            if per_acct
+            else [],
+            "unmapped": unmapped,
+            "accounts": per_acct,
+        }
+        out["accounts_missing_snapshot"][m] = missing
+    out["pending_approvals"] = conn.execute(
+        "SELECT COUNT(*) FROM approvals WHERE status='pending'"
+    ).fetchone()[0]
+    return out
+
+
 def sector_weights(
     positions: list[dict],
     nav: str | Decimal | None,

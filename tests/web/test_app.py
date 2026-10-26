@@ -1,3 +1,6 @@
+from decimal import Decimal
+
+import pytest
 from fastapi.testclient import TestClient
 from helpers_web import AUTH, make_deps
 from typer.testing import CliRunner
@@ -311,3 +314,64 @@ def test_csv_format_for_orders_decisions_positions(client, conn):
     assert r3.status_code == 200 and r3.headers["content-type"].startswith("text/csv")
     # 기본은 그대로 JSON
     assert isinstance(client.get("/api/decisions").json(), list)
+
+
+def _snap(conn, acct, market, ticker, qty, avg, cur, nav, cash, d="2026-10-24"):
+    conn.execute(
+        "INSERT INTO positions_snapshot(account_id, market, date, ticker, qty, avg_price, "
+        "current_price, eval_amount, nav, cash, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            acct,
+            market,
+            d,
+            ticker,
+            qty,
+            avg,
+            cur,
+            str(qty * float(cur)) if cur else None,
+            nav,
+            cash,
+            f"{d}T07:00:00+00:00",
+        ),
+    )
+
+
+def test_portfolio_position_plan_distances(client, conn):
+    """Phase 24: 보유 행에 최근 결정의 계획(익절·손절·지정가)과 현재가 대비 거리."""
+    _snap(conn, "paper-main", "KR", "005930", 2, "90", "100", "1000", "800")
+    _snap(conn, "paper-main", "KR", "000660", 1, "100", "100", "1000", "800")
+    conn.execute(
+        "INSERT INTO decisions(date, market, ticker, action, target_weight, json, created_at) "
+        "VALUES ('2026-10-24','KR','005930','BUY',0.2,"
+        '\'{"horizon_days": 5, "take_profit": 110, "stop_loss": 95, "limit_price": 99,'
+        " \"target_weight\": 0.2}','2026-10-24T00:00:00+00:00')"
+    )
+    conn.commit()
+    r = client.get("/api/portfolio", params={"account_id": "paper-main", "market": "KR"}).json()
+    by = {p["ticker"]: p for p in r["snapshot"]["positions"]}
+    plan = by["005930"]["plan"]
+    assert plan["take_profit"] == 110 and plan["stop_loss"] == 95 and plan["horizon"] == "short"
+    assert plan["dist_take_profit_pct"] == pytest.approx(0.1)
+    assert plan["dist_stop_pct"] == pytest.approx(-0.05)
+    assert plan["dist_limit_pct"] == pytest.approx(-0.01)
+    assert plan["target_weight"] == 0.2
+    assert by["005930"]["weight"] == pytest.approx(0.2)
+    assert by["000660"]["plan"] is None
+
+
+def test_portfolio_overview_per_market(client, conn):
+    """Phase 24: 전체 계좌 합산은 시장(통화)별, 같은 종목은 합치고 평단은 가중."""
+    _snap(conn, "paper-main", "KR", "005930", 2, "90", "100", "1000", "800")
+    _snap(conn, "real-main", "KR", "005930", 1, "120", "100", "500", "400")
+    _snap(conn, "paper-main", "US", "AAPL", 1, "10", "12", "100", "88")
+    conn.commit()
+    r = client.get("/api/portfolio/overview").json()
+    kr, us = r["markets"]["KR"], r["markets"]["US"]
+    assert Decimal(kr["nav"]) == Decimal("1500") and Decimal(us["nav"]) == Decimal("100")
+    (pos,) = kr["positions"]
+    assert pos["qty"] == 3 and Decimal(pos["avg_price"]) == Decimal("100")
+    assert sorted(pos["accounts"]) == ["paper-main", "real-main"]
+    assert Decimal(kr["pnl"]) == Decimal("0")
+    assert [p["ticker"] for p in us["positions"]] == ["AAPL"]
+    assert r["accounts_missing_snapshot"] == {"KR": [], "US": []}  # real-main 은 KR 전용
+    assert kr["sectors"][0]["sector"] in {"기타", "현금", "반도체"}
