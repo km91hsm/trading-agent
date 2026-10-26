@@ -48,20 +48,34 @@ def settings(request: Request) -> dict:
     }
 
 
-USAGE_NOTE = "정확한 구독 사용률은 claude 에서 /usage 로 확인. 여기 값은 마지막 관측값"
+USAGE_NOTE = (
+    "세션마다 claude 가 알려 준 구독 사용률(또는 대화형 상태줄 관측) 중 최신값. "
+    "정확한 값은 claude 에서 /usage"
+)
 
 
 @router.get("/usage")
 def usage_view(request: Request) -> dict:
-    """Claude 사용량: 상태줄 관측 파일(있으면) + 이 저장소 세션의 5시간·7일 창 집계."""
+    """Claude 사용량: 최신 관측(세션 rate_limit_event 원장 ↔ 상태줄 파일, Phase 24) + 감속 상태
+    + 이 저장소 세션의 5시간·7일 창 집계."""
     deps = request.app.state.deps
     now = deps.now()
     path = usage.usage_file(deps.settings.llm.usage_file)
-    limits = usage.read_rate_limits(path, now) if path is not None else None
     with closing(deps.conn_factory()) as conn:
+        limits = usage.latest_observation(conn, now, path)
         windows = usage.ledger_windows(conn, now, cap=deps.settings.llm.daily_session_cap)
+        ok_new, why_new = usage.session_allowance(conn, deps.settings, kind="analyze", now=now)
+        ok_re, why_re = usage.session_allowance(conn, deps.settings, kind="resume", now=now)
+    t = deps.settings.llm.usage_throttle
     return {
         "rate_limits": limits,
+        "throttle": {
+            "enabled": t.enabled,
+            "soft_pct": t.soft_pct,
+            "hard_pct": t.hard_pct,
+            "state": "ok" if ok_new else ("soft" if ok_re else "hard"),
+            "reason": why_new or why_re,
+        },
         "usage_file": str(path) if path is not None else None,
         "windows": windows,
         "note": USAGE_NOTE,

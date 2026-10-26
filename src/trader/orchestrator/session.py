@@ -29,6 +29,7 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
+from trader import usage
 from trader.agents import fake, registry
 from trader.config import AccountConfig, ConfigError, Settings
 from trader.ledger import db
@@ -90,7 +91,8 @@ def build_command(
         str(bin_path),
         "-p",
         "--output-format",
-        "json",
+        "stream-json",  # 결과 줄 + rate_limit_event(구독 사용률) — json 결과에는 사용률이 없다
+        "--verbose",  # stream-json 은 -p 에서 --verbose 가 있어야 한다
         "--model",
         model,
         "--tools",
@@ -133,14 +135,38 @@ def _stdin_payload(spec: SessionSpec, asof: datetime) -> str:
     return json.dumps(payload, ensure_ascii=False, default=str)
 
 
-def _parse_result(stdout: str) -> dict:
+def _parse_stream(stdout: str) -> tuple[dict, dict | None]:
+    """claude -p 출력 → (결과 객체, 마지막 rate_limit_info | None).
+
+    stream-json(JSONL)이면 마지막 `type == "result"` 줄과 마지막 `rate_limit_event` 를 고른다.
+    단일 JSON 객체(옛 `--output-format json`·테스트 러너)도 그대로 받는다. 결과 줄이 없으면
+    (중간에 죽음) PipelineError — 호출자가 세션을 error 로 닫는다."""
+    text = stdout.strip()
     try:
-        data = json.loads(stdout)
+        whole = json.loads(text)
     except ValueError:
-        raise PipelineError("claude 출력이 JSON 이 아닙니다") from None
-    if not isinstance(data, dict):
-        raise PipelineError("claude 출력이 JSON 객체가 아닙니다")
-    return data
+        whole = None
+    if isinstance(whole, dict):
+        return whole, None
+    result: dict | None = None
+    rate: dict | None = None
+    for line in text.splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            ev = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(ev, dict):
+            continue
+        if ev.get("type") == "result":
+            result = ev
+        elif ev.get("type") == "rate_limit_event" and isinstance(ev.get("rate_limit_info"), dict):
+            rate = ev["rate_limit_info"]
+    if result is None:
+        raise PipelineError("claude 출력에 결과(result) JSON 줄이 없습니다")
+    return result, rate
 
 
 def _start_call(
@@ -331,6 +357,10 @@ def run_session(
         raise PipelineError(
             f"오늘 세션 상한({settings.llm.daily_session_cap})에 도달해 세션을 띄우지 않습니다"
         )
+    if not is_fake():
+        ok, why = usage.session_allowance(conn, settings, kind=spec.kind, now=now())
+        if not ok:
+            raise PipelineError(why or "구독 사용률 감속")
     run_kind = {
         "screen": "scan",
         "discover": "scan",
@@ -489,9 +519,14 @@ def run_session(
     finally:
         shutil.rmtree(cwd, ignore_errors=True)
     try:
-        data = _parse_result(proc.stdout)
+        data, rate = _parse_stream(proc.stdout)
     except PipelineError as e:
         return fail(f"{e} (exit={proc.returncode}, stderr={proc.stderr[:200]!r})")
+    if rate is not None and conn is not None:
+        try:
+            usage.record_rate_limit(conn, rate, now=now())
+        except Exception:  # noqa: BLE001 - 사용률은 부가 정보 — 세션 결과를 막지 않는다
+            logger.warning("사용률 기록 실패", exc_info=True)
     try:
         return _finish_session(conn, call_id, run_id, spec, data, proc, session_id, elapsed_ms)
     except Exception as e:  # noqa: BLE001 - 결과 처리 중 예외에도 running 행을 남기지 않는다

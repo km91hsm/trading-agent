@@ -296,6 +296,20 @@ def _llm(conn, settings, now) -> list[Item]:
         )
     elif cap and n >= cap * LLM_CAP_WATCH:
         out.append(Item("llm.cap", "watch", f"오늘 세션 {n}/{cap} — 상한 근접", link="/system"))
+    # 구독 사용률 감속(Phase 24): soft 면 watch(새 분석 생략), hard 면 warning(세션 전부 중지)
+    from trader import usage
+
+    ok_new, why = usage.session_allowance(conn, settings, kind="analyze", now=now)
+    if not ok_new:
+        ok_re, why_re = usage.session_allowance(conn, settings, kind="resume", now=now)
+        out.append(
+            Item(
+                "llm.usage",
+                "watch" if ok_re else "warning",
+                why if ok_re else (why_re or why or "구독 사용률 감속"),
+                link="/system",
+            )
+        )
     row = conn.execute(
         "SELECT COUNT(*) AS n, SUM(CASE WHEN status='error' THEN 1 ELSE 0 END) AS e "
         "FROM agent_calls WHERE agent='orchestrator' AND COALESCE(model,'') != 'fake' "

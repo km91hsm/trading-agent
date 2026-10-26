@@ -237,12 +237,28 @@ class HedgeCfg(BaseModel):
         return d.get("inverse")
 
 
+class UsageThrottle(BaseModel):
+    """구독 사용률 감속 (Phase 24). 마지막 관측(세션 rate_limit_event·상태줄 파일)의 5시간·7일 창 중
+    하나라도 soft 이상이면 보유 재평가(resume)만, hard 이상이면 새 세션을 전부 막는다.
+    관측이 없거나 max_age_h 보다 오래면 막지 않는다(고정 상한 daily_session_cap 만)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    soft_pct: float = Field(0.80, gt=0, le=1)
+    hard_pct: float = Field(0.95, gt=0, le=1)
+    max_age_h: float = Field(6.0, gt=0)
+
+
 class LlmSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     budget_usd: float = 5.0
     timeout_s: int = 600
-    daily_session_cap: int = 40  # 종목 analyze + 시장 세션 + 장중 발굴·재분석(Phase 23) 합계
+    # 종목 analyze + 시장 세션 + 장중 발굴·재분석 합계. Phase 24 에 40→80
+    # (구독 사용률 감속 usage_throttle 이 실제 브레이크, 2~4주 통계 뒤 다시 정한다)
+    daily_session_cap: int = 80
+    usage_throttle: UsageThrottle = Field(default_factory=UsageThrottle)
     market_session_cap: int = 2  # 하루 시장 세션(kind=market) 상한 (종목 분석 예산 보호)
     # 대화형 Claude Code 상태줄이 남기는 구독 사용률 관측 파일 (usage.py). 비우면 표시 안 함
     usage_file: str | None = "~/.claude/rate_limits.json"
