@@ -129,6 +129,9 @@ HEAVY_KINDS: frozenset[str] = frozenset(k for k in KINDS if k not in LIGHT_KINDS
 # 빠른 레인(전체 검토 P2): heavy 락과 무관하게 데몬 `job_queue_fast` 틱이 꺼낸다 — 백필·scan_analyze
 # 가 몇십 분 도는 동안 손절 재평가·체결 동기화가 뒤로 밀리지 않게
 FAST_KINDS: frozenset[str] = LIGHT_KINDS | {"reevaluate"}
+# 기존 `job_queue` 가 꺼내는 종류 — 빠른 레인 종류는 빼서 소비자를 하나로 둔다(두 레인이 같은 종목
+# 재평가를 동시에 꺼내 `31_decision_r<n>` 를 함께 쓰는 경합 방지, Codex 리뷰)
+SLOW_KINDS: frozenset[str] = frozenset(KINDS) - FAST_KINDS
 _KIND_LABEL = {
     "features_backfill": "피처 백필",
     "features_snapshot": "피처 스냅샷",

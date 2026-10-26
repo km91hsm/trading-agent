@@ -24,11 +24,12 @@ def atomic_replace(
 ) -> None:
     """`os.replace(src, dst)` 를 PermissionError 에 한해 짧게 물러서며 다시 시도한다(최대 attempts).
     마지막에도 실패하면 그 예외를 올린다."""
-    for i in range(max(1, attempts)):
+    n = max(1, int(attempts))
+    for i in range(n):
         try:
             os.replace(src, dst)
             return
         except PermissionError:
-            if i == attempts - 1:
+            if i == n - 1:
                 raise
             time.sleep(delay_s * (2**i))

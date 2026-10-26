@@ -49,6 +49,20 @@ from trader.sources.macro import collect_macro
 from trader.sources.news import collect_news
 
 SECTION_TIMEOUT_S = 180.0  # 절(fundamental·news_macro·sentiment) 하나의 최대 대기
+# 시간 초과 뒤에도 끝나지 않은 절 작업 수(절 이름별). 이만큼 쌓이면 그 절은 새로 띄우지 않고
+# 오류 절로 둔다 — 멈춘 네트워크 호출이 종목마다 스레드를 하나씩 계속 쌓지 않게(Codex 리뷰)
+MAX_STUCK_PER_SECTION = 2
+_STUCK: dict[str, int] = {}
+_STUCK_LOCK = threading.Lock()
+
+
+def _stuck_done(key: str) -> Callable[[Any], None]:
+    def done(_fut: Any) -> None:
+        with _STUCK_LOCK:
+            _STUCK[key] = max(0, _STUCK.get(key, 0) - 1)
+
+    return done
+
 
 logger = logging.getLogger("trader.sources")
 
@@ -576,11 +590,26 @@ def build_inputs(
     # 결과를 오류 절로 적고 풀은 기다리지 않고 닫는다(멈춘 스레드는 끝날 때까지 뒤에 남는다)
     pool = ThreadPoolExecutor(max_workers=3, thread_name_prefix="collect")
     try:
-        futures = {
-            "fundamental": pool.submit(_fundamental, ticker, market, asof, cfg, deps, technical),
-            "news_macro": pool.submit(_news_macro, ticker, market, name, asof, cfg, secrets, deps),
-            "sentiment": pool.submit(_sentiment, ticker, market, name, asof, cfg, deps, secrets),
+        calls = {
+            "fundamental": (_fundamental, (ticker, market, asof, cfg, deps, technical)),
+            "news_macro": (_news_macro, (ticker, market, name, asof, cfg, secrets, deps)),
+            "sentiment": (_sentiment, (ticker, market, name, asof, cfg, deps, secrets)),
         }
+        futures = {}
+        for key, (fn, args) in calls.items():
+            with _STUCK_LOCK:
+                stuck = _STUCK.get(key, 0)
+            if stuck >= MAX_STUCK_PER_SECTION:
+                logger.warning(
+                    "수집 절 %s: 이전 시간 초과 작업 %d개가 아직 실행 중 → 생략", key, stuck
+                )
+                result[key] = Section(
+                    data=None,
+                    received_at=deps.now().isoformat(),
+                    error=f"skipped: 이전 시간 초과 작업 {stuck}개 실행 중",
+                )
+                continue
+            futures[key] = pool.submit(fn, *args)
         deadline = time.monotonic() + SECTION_TIMEOUT_S
         for key, fut in futures.items():
             try:
@@ -588,7 +617,10 @@ def build_inputs(
             except FuturesTimeout:
                 # 한 절이 멈춰도(네트워크 TLS 교착 등) 수집 전체·세션을 막지 않는다
                 logger.warning("수집 절 %s 시간 초과(%ss) %s", key, SECTION_TIMEOUT_S, ticker)
-                fut.cancel()
+                if not fut.cancel():  # 이미 실행 중이면 끝날 때까지 '멈춘 작업' 으로 센다
+                    with _STUCK_LOCK:
+                        _STUCK[key] = _STUCK.get(key, 0) + 1
+                    fut.add_done_callback(_stuck_done(key))
                 result[key] = Section(
                     data=None,
                     received_at=deps.now().isoformat(),

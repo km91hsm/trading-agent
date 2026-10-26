@@ -57,3 +57,14 @@ def test_prune_removes_only_old_items(project, conn):
     )
     # 멱등
     assert not any(retention.prune(conn, project / "state", today=TODAY, keep_days=120).values())
+
+
+def test_prune_keeps_persistent_keys_with_date_like_account_ids(project, conn):
+    """계좌 id 에 날짜 모양이 있어도 모드·실전 확인 같은 영구 키는 지우지 않는다(Codex 리뷰)."""
+    control.set_flag(conn, "mode:paper-2026-01-01", "off")
+    control.set_flag(conn, "live_confirmed:2026-01-01", True)
+    control.set_flag(conn, "reconcile:paper-2026-01-01:KR:2026-01-02", {"x": 1})
+    out = retention.prune(conn, project / "state", today=TODAY, keep_days=120)
+    assert out["control"] == 1
+    assert control.get_flag(conn, "mode:paper-2026-01-01") == "off"
+    assert control.get_flag(conn, "live_confirmed:2026-01-01") is True

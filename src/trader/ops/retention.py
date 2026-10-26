@@ -20,16 +20,27 @@ from trader.platform import paths
 
 logger = logging.getLogger("trader.ops")
 
-_DATE = re.compile(r"(?<!\d)(\d{4}-\d{2}-\d{2})(?!\d)")
+_DATE_SEGMENT = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+# 날짜가 들어 있어도 지우지 않는 영구 키(계좌 id 에 날짜 모양이 섞여도 안전하게)
+PERSISTENT_PREFIXES = frozenset(
+    {"mode", "live_confirmed", "paused", "watchlist", "telegram_offset", "memory_breaker"}
+)
 
 
-def _old_date(text: str, cutoff: date) -> bool:
-    for m in _DATE.findall(text):
-        try:
-            if date.fromisoformat(m) < cutoff:
-                return True
-        except ValueError:
-            continue
+def _old_date(key: str, cutoff: date) -> bool:
+    """`:` 로 나눈 **세그먼트 하나가 통째로 날짜**인 운영일 플래그만 대상(`reconcile:<계좌>:<시장>:
+    <날짜>`, `sl_recorded:…:<날짜>:<상태>` 등). 계좌 id 같은 다른 세그먼트 안의 날짜 모양은 보지
+    않고 영구 키 접두사는 건너뛴다(`mode:paper-2026-01-01` 이 지워지면 계좌 모드가 풀린다)."""
+    parts = key.split(":")
+    if parts[0] in PERSISTENT_PREFIXES:
+        return False
+    for seg in parts[1:]:
+        if _DATE_SEGMENT.match(seg):
+            try:
+                if date.fromisoformat(seg) < cutoff:
+                    return True
+            except ValueError:
+                continue
     return False
 
 

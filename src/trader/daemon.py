@@ -2318,7 +2318,7 @@ def _queue_tick(deps: DaemonDeps, heartbeat: Heartbeat | None) -> dict:
     if not deps.heavy_lock.acquire(blocking=False):
         return {"skipped": "다른 무거운 잡 실행 중"}
     try:
-        return _queue_tick_locked(deps, heartbeat)
+        return _queue_tick_locked(deps, heartbeat, kinds=jobq.SLOW_KINDS)
     finally:
         deps.heavy_lock.release()
 

@@ -445,3 +445,12 @@ def test_heavy_wanted_counts_waiting_crons():
     assert not w.is_set()
     w.enter()
     assert w.is_set()
+
+
+def test_main_queue_does_not_take_fast_kinds(project, conn):
+    """두 레인이 같은 재평가를 함께 꺼내지 않도록 기존 큐는 빠른 레인 종류를 건너뛴다."""
+    deps = _deps(conn, FakeMarket(), now=lambda: NOW)
+    jobq.enqueue(conn, "fills_sync", {}, source="web", now=NOW)
+    assert daemon._queue_tick(deps, None) == {"skipped": "대기 없음"}
+    assert jobq.SLOW_KINDS.isdisjoint(jobq.FAST_KINDS)
+    assert jobq.SLOW_KINDS | jobq.FAST_KINDS == frozenset(jobq.KINDS)
