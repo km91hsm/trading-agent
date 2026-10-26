@@ -145,3 +145,12 @@ def test_site_text_content_blocks_and_korean_translation():
     item = jsonfeed.news_item(row, detail=True)
     assert item.title == "번역 제목" and item.body == "전체 본문"
     assert jsonfeed.body_text([{"type": "text", "content": "Full article"}]) == "Full article"
+
+
+def test_empty_translation_keeps_available_original_body():
+    row = {
+        "title": "T",
+        "content": [{"content": "Original body"}],
+        "translations": {"translated": {"ko_KR": {"content": [{"content": ""}]}}},
+    }
+    assert jsonfeed.news_item(row, detail=True).body == "Original body"

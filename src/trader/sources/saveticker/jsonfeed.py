@@ -73,7 +73,7 @@ def news_item(row, *, detail=False):
         for x in labels
     ]
     headline = bool(row.get("is_headline_only"))
-    body = body_text(translated.get("content") or row.get("content")) if detail else ""
+    body = (body_text(translated.get("content")) or body_text(row.get("content"))) if detail else ""
     return Item(
         id=identity("news", publisher, title),
         title=title,
