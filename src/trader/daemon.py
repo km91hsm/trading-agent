@@ -1058,6 +1058,39 @@ def _market_view_body(deps: DaemonDeps, market: str) -> dict:
     return out
 
 
+def _cash_park_body(deps: DaemonDeps) -> dict:
+    """현금 단기금리 ETF(기본 끔, Stock D-115): monitor 틱에서 헤지 뒤, 운영일 1회·KR·일시정지
+    보류."""
+    from trader.orchestrator import cash_park
+    from trader.orchestrator.executor import ExecContext, regime_state
+    from trader.orchestrator.run_store import run_date_for
+
+    if deps.market_client is None:
+        return {"skipped": "시세 클라이언트 없음"}
+    conn = deps.conn_factory()
+    try:
+        if control.is_paused(conn):
+            return {"skipped": "일시정지"}
+        ectx = ExecContext(
+            settings=deps.settings,
+            accounts=deps.accounts,
+            conn=conn,
+            brokers=deps.brokers,
+            notifier=deps.notifier,
+            state=deps.state,
+            now=deps.now,
+        )
+        return cash_park.run(
+            ectx,
+            market_client=deps.market_client,
+            today=run_date_for("KR", deps.now()),
+            regime=regime_state(ectx, "KR"),
+            dry_run=deps.dry_run,
+        )
+    finally:
+        conn.close()
+
+
 def _hedge_body(deps: DaemonDeps, market: str) -> dict:
     """monitor 첫 창 안 틱에서 운영일 1회: bear 면 인버스 진입, 벗어났으면 해제(paused 면 보류)."""
     from trader.orchestrator import hedge as hedge_mod
@@ -1266,6 +1299,13 @@ def _monitor_body(deps: DaemonDeps, market: str) -> dict:
         logger.exception("헤지 실행 실패 %s", market)
         deps.notifier.send(messages.failure("헤지 실패", f"{market}", e))
         hedge = {"error": f"{type(e).__name__}: {e}"}
+    park: dict | None = None
+    if market == "KR" and deps.settings.cash_park.enabled:
+        try:
+            park = _cash_park_body(deps)
+        except Exception as e:  # noqa: BLE001 - 현금 운용 실패가 손절 점검을 막지 않는다
+            logger.exception("현금 운용 실패")
+            park = {"error": f"{type(e).__name__}: {e}"}
     rep: dict | None = None
     try:
         rep = _reprice_body(deps, market)
@@ -1292,6 +1332,8 @@ def _monitor_body(deps: DaemonDeps, market: str) -> dict:
         out = monitor_mod.monitor_once(ctx, market=market, today=run_date_for(market, deps.now()))
         if hedge and "skipped" not in hedge:
             out["hedge"] = hedge
+        if park and "skipped" not in park:
+            out["cash_park"] = park
         if rep and "skipped" not in rep:
             out["reprice"] = rep
         return out
@@ -1898,7 +1940,7 @@ def _disclosure_trigger(deps: DaemonDeps, conn: sqlite3.Connection, market: str,
     can_run = not control.is_paused(conn) and _in_market_window(deps, market)
     today = run_date_for(market, deps.now())
     cache = _cache_dir(deps)
-    hedge = set(deps.settings.hedge.tickers(market)) if deps.settings.hedge.enabled else set()
+    hedge = deps.settings.excluded_tickers(market)
     queued = []
     for r in fresh:
         for t in r["tickers"]:
@@ -1974,7 +2016,7 @@ def _news_trigger(deps: DaemonDeps, conn: sqlite3.Connection, market: str, unive
     burst = discovery_mod.news_burst(
         novel, universe_tickers=uni, held=held, min_items=cfg.min_items
     )
-    hedge = set(deps.settings.hedge.tickers(market)) if deps.settings.hedge.enabled else set()
+    hedge = deps.settings.excluded_tickers(market)
     for ticker, items in burst["tickers"].items():
         if ticker in hedge:
             continue
@@ -2184,7 +2226,7 @@ def _discover_body(deps: DaemonDeps, market: str) -> dict:
         queued = []
         for c in found.get("candidates") or []:
             t = c.get("ticker")
-            if not t or t in set(deps.settings.hedge.tickers(market)):
+            if not t or t in deps.settings.excluded_tickers(market):
                 continue
             rid = _news_reanalyze(
                 deps, conn, market, t, [], today, universe, exchange=c.get("exchange")

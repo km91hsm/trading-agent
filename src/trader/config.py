@@ -460,6 +460,14 @@ class Settings(BaseModel):
     briefing: BriefingCfg = Field(default_factory=BriefingCfg)  # 아침 브리핑(Stock docs/06)
     cash_park: CashParkCfg = Field(default_factory=CashParkCfg)  # 현금 단기금리 ETF(기본 끔)
     event_blackout: BlackoutCfg = Field(default_factory=BlackoutCfg)  # 권리 일정 블랙아웃(기본 끔)
+
+    def excluded_tickers(self, market: str) -> set[str]:
+        """분석·monitor·종목 수·섹터 계산에서 뺄 운용 상품: 헤지 ETF(켜져 있으면) + 현금 단기금리
+        ETF(cash_park 켜져 있고 KR). 헤지 진입·해제가 볼 종목은 `hedge.tickers` 그대로."""
+        out = set(self.hedge.tickers(market)) if self.hedge.enabled else set()
+        if self.cash_park.enabled and market == "KR":
+            out.add(self.cash_park.ticker)
+        return out
     theme: ThemeCfg = Field(default_factory=ThemeCfg)  # Phase 25 테마 열기 감지
     rebalance: RebalanceCfg = Field(default_factory=RebalanceCfg)  # Phase 25 주간 리밸런스
     # 보존 정리(검토 P12): reflect 잡이 이 일수보다 오래된 runs 폴더·날짜 플래그·잡 기록 삭제

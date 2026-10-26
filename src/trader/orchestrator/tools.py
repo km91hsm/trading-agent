@@ -1460,8 +1460,7 @@ def submit_discovery(
         universe = Universe()
     cache_dir = (ctx.state or paths.state_dir()) / "cache"
     cache_names = names.load_cache_names(cache_dir)
-    hedge = ctx.settings.hedge
-    exclude = set(hedge.tickers(market)) if hedge.enabled else set()
+    exclude = ctx.settings.excluded_tickers(market)
     exclude |= set(inputs.get("held") or [])
     resolved = discovery.resolve(
         found.model_dump(),
