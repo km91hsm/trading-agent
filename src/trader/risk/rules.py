@@ -334,7 +334,10 @@ def evaluate(
             if decision.take_profit is None or decision.stop_loss is None:
                 rejected.append("매수·추가 매수에는 손절가와 익절가가 모두 필요")
             else:
-                ev = costs.expected_value(decision, price)
+                # 진입가는 실제 주문가(지정가) — 수량·1회 손실 한도와 같은 기준(PR #31 리뷰)
+                ev = costs.expected_value(
+                    decision, order_price if order_price is not None else price
+                )
                 cost = costs.round_trip_bp(market) / 10_000
                 if ev is not None and ev < cost:
                     rejected.append(

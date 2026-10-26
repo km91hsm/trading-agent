@@ -155,7 +155,8 @@ def test_expected_return_below_cost_rejected():
 
 
 def test_low_confidence_halves():
-    v = _eval(ok_decision(confidence=0.4))
+    # 0.45: 반감 대상이면서 지정가(71000) 기준 기대값이 비용을 넘는다(0.4 는 EV≈0 → 거부)
+    v = _eval(ok_decision(confidence=0.45))
     assert v.approved and v.adjusted_qty == 7 and any("confidence" in r for r in v.reasons)
 
 
@@ -537,6 +538,16 @@ def test_negative_expected_value_rejected_even_if_target_far_enough():
     # 현재 70000, 익절 +2%(71400)·손절 −20%(56000), 확신 0.6 → EV = 0.6×2% − 0.4×20% < 0
     v = _eval(ok_decision(take_profit=71400.0, stop_loss=56000.0, limit_price=None))
     assert not v.approved and any("기대값" in r for r in v.reasons)
+
+
+def test_expected_value_uses_limit_price_not_quote():
+    """현재가 100000, 지정가 90000·손절 80000·익절 102000·확신 0.5: 현재가 기준이면 EV −9% 지만
+    지정가 진입 기준 EV 는 +1.1% 로 왕복비용 0.3% 를 넘는다(PR #31 리뷰)."""
+    d = ok_decision(
+        limit_price=90000.0, stop_loss=80000.0, take_profit=102000.0, confidence=0.5
+    )
+    v = _eval(d, price="100000")
+    assert not any("기대값" in r for r in v.reasons)
 
 
 def test_risk_per_trade_caps_quantity_by_stop_distance():
