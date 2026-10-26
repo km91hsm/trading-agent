@@ -67,6 +67,7 @@ def run_reflect(
     dry_run: bool = True,
     brokers: dict | None = None,
     notifier=None,
+    cancel=None,
 ) -> session_mod.SessionResult:
     items = pending(conn, market=market)
     if not items:
@@ -89,4 +90,5 @@ def run_reflect(
         now=now,
         brokers=brokers or {},
         notifier=notifier,
+        cancel=cancel,  # 데몬 종료 때 세션을 끊는다(전체 검토 P1)
     )

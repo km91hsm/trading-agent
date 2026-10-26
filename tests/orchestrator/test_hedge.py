@@ -448,3 +448,26 @@ def test_agent_gate_opens_bear_buy_when_strategist_risk_on(project, conn):
     ctx.settings = Settings(hedge=CFG.model_copy(update={"agent_gate": False}))
     res = executor.execute(ctx, dec, date=D, market="KR", price=Decimal("70000"), dry_run=True)
     assert not next(r for r in res if r["account_id"] == "paper-main")["approved"]
+
+
+def test_leverage_needs_three_core_indicators_not_agent_or_flow(project, conn):
+    """전체 검토 O14: count 3(정량 2 + 전략가)이어도 −2x 가 아니라 −1x."""
+    from trader.control import control
+
+    ctx = _ctx(conn)
+    control.set_flag(
+        conn,
+        "regime:KR",
+        {
+            "state": "bear",
+            "count": 3,
+            "signals": {
+                "ma_below": True,
+                "momentum_weak": True,
+                "vol_high": False,
+                "agent_risk_off": True,
+            },
+        },
+    )
+    out = hedge.rebalance(ctx, market="KR", today=D, cfg=CFG, quote_fn=lambda i: Decimal("5000"))
+    assert out["ticker"] == "114800"  # −1x (−2x 252670 아님)

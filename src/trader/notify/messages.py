@@ -24,6 +24,7 @@ from typing import Any
 SIDE = {"BUY": "매수", "SELL": "매도"}
 ACTION = {"BUY": "매수", "SELL": "매도", "HOLD": "보유", "ADD": "추가 매수", "TRIM": "일부 매도"}
 MODE = {"auto": "자동", "approve": "승인", "off": "끔"}
+REGIME = {"bull": "상승", "neutral": "중립", "bear": "하락"}
 
 
 def money(v: Any, market: str | None) -> str:
@@ -207,6 +208,37 @@ def execution_failure(*, account: str, market: str, label: str, err: Any) -> str
     return failure("실행 실패", f"{account} · {market} {label}", err)
 
 
+ENV = {"paper": "모의", "real": "실전"}
+REAL_CONFIRM = "실전"  # 텔레그램에서 실전 승인에 붙여야 하는 확인어 (/approve 12 실전)
+
+
+def kst_hhmm(iso: str | None) -> str:
+    """UTC ISO → 'HH:MM'(KST). 해석 못 하면 원문."""
+    if not iso:
+        return "—"
+    try:
+        from datetime import datetime
+
+        from trader.config import KST
+
+        return datetime.fromisoformat(iso).astimezone(KST).strftime("%H:%M")
+    except (TypeError, ValueError):
+        return str(iso)
+
+
+def _amount(qty: Any, price: Any, market: str | None) -> str:
+    try:
+        return money(Decimal(str(qty)) * Decimal(str(price)), market)
+    except (InvalidOperation, ValueError, TypeError):
+        return ""
+
+
+def approve_hint(approval_id: int, env: str | None) -> str:
+    """승인·거부 명령 안내. 실전은 확인어를 붙여야 실행된다(전체 검토 T2)."""
+    ok = f"/approve {approval_id}" + (f" {REAL_CONFIRM}" if env == "real" else "")
+    return f"{ok} · /reject {approval_id}"
+
+
 def approval_request(
     *,
     approval_id: int,
@@ -219,15 +251,26 @@ def approval_request(
     reasons: list[str],
     opinion: DecisionBrief | None = None,
     kind: str = "",
+    env: str | None = None,
+    quote_price: Any = None,
+    expires_at: str | None = None,
 ) -> str:
-    tag = f"승인 요청 #{approval_id}" + (f" · {kind}" if kind else "")
+    """승인 요청: 모의/실전·금액·리스크 판정·의견·만료 시각(KST) — 폰에서 판단에 필요한 것만."""
+    tag = f"승인 요청 #{approval_id}" + (f" · {ENV[env]}" if env in ENV else "")
+    tag += f" · {kind}" if kind else ""
+    line = _order_line(side, qty, price, market)
+    amt = _amount(qty, price if price is not None else quote_price, market)
+    if amt:
+        line += f" = {amt}" + (" (현재가 기준)" if price is None else "")
+    judged = "; ".join(reasons)
+    until = f" — {kst_hhmm(expires_at)} KST 까지" if expires_at else " (30분 안)"
     return render(
         tag,
         f"{account} · {label}",
-        [_order_line(side, qty, price, market), f"게이트: {'; '.join(reasons) or '한도 내'}"],
+        [line, f"리스크 판정: {judged}" if judged else "리스크 한도 통과"],
         opinion=opinion,
         market=market,
-        action=f"/approve {approval_id} 또는 /reject {approval_id} (30분 안)",
+        action=approve_hint(approval_id, env) + until,
     )
 
 
@@ -318,14 +361,6 @@ def hedge(
     )
 
 
-def hedge_approval(*, approval_id: int, account: str, market: str, label: str) -> str:
-    return render(
-        f"헤지 승인 요청 #{approval_id}",
-        f"{account} · {market} {label}",
-        action=f"/approve {approval_id} 또는 /reject {approval_id} (30분 안)",
-    )
-
-
 def scalp(
     *, leg: str, market: str, label: str, price: Any = None, reason: str = "", ret: Any = None
 ) -> str:
@@ -349,3 +384,24 @@ def fill_ambiguous(*, account: str, market: str, label: str, side: str, detail: 
     return render(
         "체결 매칭 모호", f"{account} · {market} {label}", [f"{SIDE.get(side, side)} — {detail}"]
     )
+
+
+def theme_heat(*, market: str, themes: list[dict]) -> str:
+    """테마 열기 상위 테마가 바뀌었을 때 (Phase 25)."""
+    lines = []
+    for th in themes:
+        names = ", ".join(
+            (f"{t['name']}({t['ticker']})" if t.get("name") else t["ticker"])
+            for t in (th.get("tickers") or [])[:3]
+        )
+        cat = "촉매 있음" if th.get("catalyst_ok") else "촉매 없음(커뮤니티뿐)"
+        lines.append(f"{th['rank']}. {theme_name(th['theme'])} · 점수 {th['score']:.2f} · {cat}")
+        if names:
+            lines.append(f"   {names}")
+    return render("테마 열기", market, lines)
+
+
+def theme_name(theme: str) -> str:
+    """'섹터:반도체' → '반도체(섹터)', 'kw:로봇' → '로봇(뉴스 키워드)'."""
+    kind, _, name = theme.partition(":")
+    return f"{name}({'섹터' if kind == '섹터' else '뉴스 키워드'})" if name else theme

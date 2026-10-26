@@ -251,3 +251,25 @@ def test_get_pages_follows_tr_cont(real_client, respx_mock):
     assert second.url.params["CTX_AREA_FK100"] == "FK1"
     assert second.url.params["CTX_AREA_NK100"] == "NK1"
     assert "tr_cont" not in route.calls[0].request.headers
+
+
+def test_post_gateway_5xx_or_non_json_is_unknown_not_failure(paper_client, respx_mock):
+    """전체 검토 O4: 주문 POST 의 게이트웨이 5xx(비JSON)·rt_cd 없는 본문은 '응답 없음'(unknown)."""
+    from trader.broker.errors import UNKNOWN_RESPONSE_CODE
+
+    route = respx_mock.post(PAPER + "/uapi/domestic-stock/v1/trading/order-cash")
+    route.mock(return_value=httpx.Response(502, text="<html>Bad Gateway</html>"))
+    with pytest.raises(KisApiError) as e:
+        paper_client.post("/uapi/domestic-stock/v1/trading/order-cash", "DOM_ORDER_BUY", {})
+    assert e.value.msg_cd == UNKNOWN_RESPONSE_CODE
+    route.mock(return_value=httpx.Response(200, json={"output": {}}))
+    with pytest.raises(KisApiError) as e:
+        paper_client.post("/uapi/domestic-stock/v1/trading/order-cash", "DOM_ORDER_BUY", {})
+    assert e.value.msg_cd == UNKNOWN_RESPONSE_CODE
+    # KIS 가 본문으로 준 거부는 그대로(진짜 실패)
+    route.mock(
+        return_value=httpx.Response(200, json={"rt_cd": "1", "msg_cd": "APBK0013", "msg1": "거부"})
+    )
+    with pytest.raises(KisApiError) as e:
+        paper_client.post("/uapi/domestic-stock/v1/trading/order-cash", "DOM_ORDER_BUY", {})
+    assert e.value.msg_cd == "APBK0013"

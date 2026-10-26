@@ -132,3 +132,32 @@ def test_claim_next_prefers_priority_then_fifo(conn):
     hi = jobs.enqueue(conn, "fills_sync", {}, source="cli", now=NOW, priority=5)
     assert jobs.claim_next(conn, now=NOW)["id"] == hi
     assert jobs.claim_next(conn, now=NOW)["id"] == tr
+
+
+def test_enqueue_concurrent_same_request_inserts_once(project):
+    """전체 검토 P5: 두 연결이 동시에 같은 요청을 넣어도 한 건만 들어간다."""
+    import threading
+
+    from trader.ledger import db
+
+    c0 = db.connect()
+    db.init_schema(c0)
+    c0.close()
+    results, barrier = [], threading.Barrier(4)
+
+    def worker():
+        c = db.connect()
+        try:
+            barrier.wait()
+            results.append(jobs.enqueue(c, "ml_train", {}, source="web"))
+        except jobs.DuplicateRequest:
+            results.append("dup")
+        finally:
+            c.close()
+
+    ths = [threading.Thread(target=worker) for _ in range(4)]
+    for t in ths:
+        t.start()
+    for t in ths:
+        t.join()
+    assert sum(1 for r in results if r != "dup") == 1 and results.count("dup") == 3

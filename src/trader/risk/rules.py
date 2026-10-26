@@ -42,6 +42,9 @@ class Portfolio:
     # Phase 17 H: 섹터 상한용 종목→섹터(없으면 섹터 규칙 생략), 헤지 ETF(종목 수·섹터 계산에서 제외)
     sector_of: Callable[[str], str | None] | None = None
     hedge_tickers: frozenset[str] = frozenset()
+    # Phase 25: 오늘 상위 테마 종목→그 종목이 속한 상위 테마들(scan/theme.theme_of_map, 섹터·키워드
+    # 테마가 겹칠 수 있다). 없으면 테마 규칙 생략
+    theme_of: Callable[[str], list[str] | None] | None = None
 
     def equity_positions(self) -> dict[str, Position]:
         """헤지 ETF 를 뺀 일반 보유 종목."""
@@ -83,6 +86,52 @@ def _trading_days_between(start: date, end: date, holidays: set[date] | None = N
     return n
 
 
+def _theme_rejections(
+    decision: Decision,
+    portfolio: Portfolio,
+    lim: RiskLimits,
+    *,
+    change_pct: float | None,
+    current_value: Decimal,
+    order_amount: Decimal,
+) -> list[str]:
+    """테마 매매 안전장치(Phase 25). 일반 BUY/ADD 에서만 부른다. 거부 사유 목록."""
+    out: list[str] = []
+    if change_pct is not None and change_pct >= lim.chase_limit_pct:
+        out.append(
+            f"당일 등락률 {change_pct:+.1%} ≥ +{lim.chase_limit_pct:.0%}: "
+            "급등 추격 — 신규 매수 금지"
+        )
+    theme_of = portfolio.theme_of
+    themes = list(theme_of(decision.ticker) or []) if theme_of is not None else []
+    if not themes:
+        return out
+    if decision.horizon_days > lim.theme_max_horizon_days or decision.take_profit is None:
+        out.append(
+            f"테마 종목('{themes[0]}')은 보유 {lim.theme_max_horizon_days}일 이하·익절가 필수 "
+            f"(결정: {decision.horizon_days}일, 익절가 {decision.take_profit or '없음'})"
+        )
+    nav = portfolio.nav
+    if nav > 0:
+        # 종목이 속한 상위 테마마다 따로 본다(섹터 테마와 키워드 테마가 겹치면 둘 다 상한 대상)
+        for theme in themes:
+            others = sum(
+                (
+                    p.eval_amount
+                    for t, p in portfolio.equity_positions().items()
+                    if t != decision.ticker and theme in (theme_of(t) or [])  # type: ignore[misc]
+                ),
+                Decimal(0),
+            )
+            after = (others + current_value + order_amount) / nav
+            if after > Decimal(str(lim.max_theme_pct)):
+                out.append(
+                    f"테마 '{theme}' 비중이 주문 뒤 {float(after):.0%} 로 상한 "
+                    f"{lim.max_theme_pct:.0%} 초과"
+                )
+    return out
+
+
 def evaluate(
     decision: Decision,
     portfolio: Portfolio,
@@ -99,6 +148,7 @@ def evaluate(
     hedge_max_weight: float | None = None,
     agent_tilt: int = 0,
     is_scalp: bool = False,
+    change_pct: float | None = None,
 ) -> RiskVerdict:
     """regime(bull|neutral|bear)·is_hedge 는 Phase 17 H: neutral 은 신규 매수 한도 축소, bear 는
     일반 BUY/ADD 거부(SELL·TRIM·손절·헤지만 통과). 헤지 주문은 비용·보유기간·주 2회·중복·종목 수·
@@ -106,7 +156,10 @@ def evaluate(
     agent_tilt(Phase 22)는 전략가 제안의 기울기(+1 RISK_ON / −1 RISK_OFF): 국면 한도를 한 칸
     옮기고, bear 에서 +1 이면 신규 매수를 10%·2종목 한도로 조건부 허용한다.
     is_scalp(Phase 23)는 분 단위 단타: 최소 보유·주 2회·기대수익 규칙을 면제하고(당일 청산 전제)
-    비중·현금·중복·종목 수·섹터·일일손실·bear 거부는 그대로 본다."""
+    비중·현금·중복·종목 수·섹터·일일손실·bear 거부는 그대로 본다.
+    change_pct·theme_of(Phase 25 테마 매매 안전장치, 일반 BUY/ADD 만 — 헤지·손절·단타 면제):
+    당일 등락률 ≥ chase_limit_pct 면 신규 매수 금지, 오늘 상위 테마 종목이면 같은 테마 합계
+    ≤ max_theme_pct 와 보유 ≤ theme_max_horizon_days·익절가 필수."""
     acct = portfolio.account_id
     if decision.action == "HOLD":
         return RiskVerdict(
@@ -234,6 +287,15 @@ def evaluate(
                     f"섹터 '{sector}' 비중이 주문 뒤 {float(after):.0%} 로 상한 "
                     f"{lim.max_sector_pct:.0%} 초과"
                 )
+        if not is_scalp:
+            rejected += _theme_rejections(
+                decision,
+                portfolio,
+                lim,
+                change_pct=change_pct,
+                current_value=current_value,
+                order_amount=Decimal(qty) * (order_price if order_price is not None else price),
+            )
         if portfolio.today_pnl_pct <= lim.daily_loss_stop_pct:
             rejected.append(
                 f"일일 손실 {portfolio.today_pnl_pct:.2%} 이 한도 {lim.daily_loss_stop_pct:.0%} "

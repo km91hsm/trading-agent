@@ -32,7 +32,9 @@ class FakeMarket:
         industries: dict[str, str] | None = None,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
         flows: dict[str, list] | None = None,
+        ranks: dict[str, list] | None = None,
     ) -> None:
+        self.ranks = ranks or {}  # "volume"|"fluct"|"flow" → [RankRow] (Phase 25)
         self.prices = prices or {}
         self.flows = flows or {}  # ticker → [InvestorFlow] (날짜 오름차순)
         self.industries = industries or {}
@@ -47,6 +49,18 @@ class FakeMarket:
         self.calls.append(name)
         if name in self.fail:
             raise KisApiError("FAKE", f"가짜 실패 주입: {name}")
+
+    def volume_rank_kr(self, limit: int = 30) -> list:
+        self._record("volume_rank_kr")
+        return list(self.ranks.get("volume", []))[:limit]
+
+    def fluctuation_rank_kr(self, limit: int = 30) -> list:
+        self._record("fluctuation_rank_kr")
+        return list(self.ranks.get("fluct", []))[:limit]
+
+    def foreign_institution_kr(self, limit: int = 30) -> list:
+        self._record("foreign_institution_kr")
+        return list(self.ranks.get("flow", []))[:limit]
 
     def get_industry_kr(self, ticker: str) -> str | None:
         self._record("get_industry_kr")

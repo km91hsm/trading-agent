@@ -9,6 +9,9 @@ risk:
   stop_loss_pct: -0.15
   min_cash_pct: 0.0
   max_sector_pct: 0.40     # 같은 섹터(config/sectors.yaml) 합계 상한. BUY/ADD 뒤 초과면 거부. 헤지 ETF 는 제외
+  max_theme_pct: 0.20      # 같은 테마(오늘 상위 테마, Phase 25) 합계 상한. BUY/ADD 뒤 초과면 거부
+  chase_limit_pct: 0.10    # 당일 등락률이 이 이상이면 신규 매수(BUY·ADD) 금지 — 급등 추격 방지
+  theme_max_horizon_days: 10  # 오늘 상위 테마 종목의 BUY·ADD 는 보유 10일 이하·익절가 필수
   # 보유기간 프로필(Phase 23). 결정의 horizon_days 로 short(≤10 거래일)·mid(11~40)·long(>40) 을 고른다.
   #   move_pct: 평단 대비 이만큼 움직이면 재평가 트리거 / reeval_interval_min: 같은 종목 재평가 최소 간격
   #   periodic_check_min: 시간 단위 정기 재평가(단기만, 0 = 없음; 변동이 move_pct/2 이상일 때만, 운영일 ≤ 6회)
@@ -114,3 +117,10 @@ scalp:
   judge_timeout_s: 45        # 이 시간 안에 판정이 안 오면 버림(진입 안 함)
   judge_max_drift_pct: 0.003 # 판정을 기다리는 사이 신호가보다 0.3% 넘게 움직이면 버림
   judge_hold_every_min: 5    # 보유 중 유지/조기 청산 조언 주기(조언은 조기 청산만 — 손절·마감은 파이썬)
+
+theme:                   # 테마 열기 감지(Phase 25) — 감지·알림·scout 입력만, 매매는 분석 세션→게이트
+  enabled: true
+  interval_s: 1800       # 데몬 <시장>_theme 주기(장중만)
+  top_n: 3               # 알림·scout·게이트가 보는 상위 테마 수
+  min_cluster_titles: 3  # 키워드 테마: 오늘 새 뉴스 제목 공출현 최소 건수
+  weights: {news: 0.35, rank: 0.25, flow: 0.15, saveticker: 0.10, vol: 0.15}

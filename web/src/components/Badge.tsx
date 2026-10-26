@@ -1,7 +1,7 @@
 // 의미 배지. env(모의/실전)·mode(자동/승인/끔)·status(주문·승인 상태)·action(결정)·pending(대기/주의 문구).
 import { termLabel } from "../glossary";
 
-type Kind = "env" | "mode" | "status" | "action" | "pending" | "ok" | "neutral";
+type Kind = "env" | "mode" | "status" | "action" | "pending" | "danger" | "ok" | "neutral";
 
 const ENV_LABEL: Record<string, string> = { paper: "모의", real: "실전" };
 

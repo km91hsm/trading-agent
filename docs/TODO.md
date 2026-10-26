@@ -342,13 +342,22 @@
 ## Phase 24 웹 보고서·실시간·사용률 (`docs/superpowers/plans/2026-10-26-phase24-25.md` 단계 1~3)
 - [x] 단계 1(PR [#23](https://github.com/km91hsm/trading-agent/pull/23) 머지) 웹 보고서 형식·전체/계좌 분리·섹터·목표가 (`feat/phase24-1-web-report`): 섹터 원인 진단(보유 행 없음·대시보드 블록 없음), 보유 행 `plan`(목표가·손절·지정가·보유기간·거리), `/api/portfolio/overview`(시장 × 모의/실전 합산), `report.ts`·`StageReport`(JsonView 는 '원본 보기'), 계좌 선택기 '전체' (2026-10-26)
 - [x] 단계 2(PR [#24](https://github.com/km91hsm/trading-agent/pull/24) 머지) 실시간 시세·종목명 검색 (`feat/phase24-2-live-quotes`): `/api/quotes`(정규장만, 5초 캐시, 레이트리미터·stale 폴백), 보이는 탭 10초 폴링(`live.ts`), `/api/names/search`, 차트 URL·자동완성·⌘K (2026-10-26)
-- [x] 단계 3 구독 사용률·세션 상한·텔레그램 문구 (`feat/phase24-3-usage-telegram`): stream-json `rate_limit_event` → 원장 `llm_rate_limits`(v17), 상한 40→80 + 사용률 감속(80% 재평가만·95% 중지), `notify/messages.py`(최종 의견 블록·'종목명(코드)'·골든 테스트) (2026-10-26)
+- [x] 단계 3(PR [#25](https://github.com/km91hsm/trading-agent/pull/25) 머지) 구독 사용률·세션 상한·텔레그램 문구 (`feat/phase24-3-usage-telegram`): stream-json `rate_limit_event` → 원장 `llm_rate_limits`(v17), 상한 40→80 + 사용률 감속(80% 재평가만·95% 중지), `notify/messages.py`(최종 의견 블록·'종목명(코드)'·골든 테스트) (2026-10-26)
 - [ ] 결정 대기(사용자): 2~4주 `llm_rate_limits`·`agent_calls` 통계로 `llm.daily_session_cap` 고정값 재설정
 - [ ] 이연: KIS 실시간 웹소켓(지금은 보이는 종목 10초 조회)
 
 ## Phase 25 테마·LLM 판정자·공시·리밸런스 (같은 플랜 단계 4~7)
-- [ ] 단계 4 테마 열기 감지·안전장치 (`feat/phase25-4-theme`, 머지 전 사용자 확인)
+- [ ] 단계 4 테마 열기 감지·안전장치 (`feat/phase25-4-theme`, 머지 전 사용자 확인): KIS 순위 3종(관대한 파서), `scan/theme.py`, 원장 v18 `theme_heat`, 데몬 `<시장>_theme`·알림·CLI·API·대시보드, scout 규칙 1 완화, 게이트(+10% 추격 금지·테마 20%·테마 종목 10일·익절가) — 구현·테스트 완료, PR 확인 대기
+- [ ] 실기(사용자 확인 대기): 장중 `uv run trader theme show --live --market KR` 의 `signals.ranks` 가 0 이 아닌지(순위 API 파라미터·필드명 확인), 대시보드 '테마 열기' 블록과 `[테마 열기]` 알림
+- [ ] 결정 대기(사용자): 2~4주 뒤 `theme_heat.fwd_ret_5d`(상위 테마 사후 초과수익)로 `theme.weights`·`top_n`·`chase_limit_pct` 조정
 - [ ] 단계 5 분 단위 LLM 판정자 (`feat/phase25-5-scalp-judge`, 머지 전 사용자 확인): `quick.ask_json`·`scalp-judge`(haiku)·`ScalpVerdict/ScalpAdvice`·엔진 비동기 판정(다음 틱 회수·0.3% 이탈·시간 초과·재시작=진입 없음·클램프)·보유 조언·GO vs NO_GO 리포트 — 구현·테스트 완료, PR 확인 대기
 - [ ] 결정 대기(사용자): 단타를 켠 뒤(`scalp.enabled`) 1~2주 `scalp report --live` 의 GO/NO_GO 사후 수익을 보고 `scalp.judge` 를 켤지
 - [ ] 단계 6 승인 지문·공시 중요도 (`feat/phase25-6-approval-disclosure`)
 - [ ] 단계 7 주간 리밸런스·세금 로트 (`feat/phase25-7-rebalance-tax`, 머지 전 사용자 확인)
+
+
+## 전체 검토 (2026-10-26, `docs/reviews/2026-10-26-full-review.md` — Claude 4 + Codex 2 교차검증)
+- [x] 보완 1차(비주문): W1 실전 승인 확인 우회, W2 unknown 승인 안내, W3·W4·W6·W7·W11 '전체' 대시보드 범위·실전 표식·오래된 점검·시장 현지 날짜, T1·T2 텔레그램 승인 요청·실전 확인어·명령 안내, P1 재평가·복기 cancel, P3 novel_items 잠금, P5 enqueue 경합, P10 로그 소음, L4 퀀트 모델 시장 (2026-10-26)
+- [x] 보완 2차(주문 경로): O1 US NAV 원화 혼입(실기 확인 포함), O2 재호가가 손절·헤지 재제출, O3 filled TRIM 이 재평가 SELL 차단, O4 POST 5xx·비JSON → unknown, O5 일시정지·off 계좌의 손절 전 SELL 취소, O9 risk_check 만 남은 재개, O11 대체된 결정의 승인 실행, O13 청산 때 미체결 BUY 취소, O14 −2x 판정 count, O15 off/dry-run 손절 플래그, O16 음수 가격 검증, O17 만료 승인 예약, L5 손절 단조 유지 (2026-10-26)
+- [ ] 결정 대기(사용자): L1 섀도 포트폴리오·readiness 기준, L2·L3 메모리 채점 재설계, L8 전략가 이중 반영 중 하나, L9 사이징을 파이썬 위험 예산으로, L11 토론 대칭, L17 비용 절감, O8 실행 키·O10 예상 포트폴리오·O12 승인 때 게이트 재판정, O6·O7 단타 청산(기본 꺼짐)
+- [ ] 보완 4차(프로세스·웹 나머지): P2 재평가 전용 레인, P4 데몬 잠금 인수 경쟁, P7 수집 타임아웃, P8 heavy_wanted 카운터, P9 derive 락 양보, P11 Windows 교체 재시도, P12 보존 정리, P13 레이트 스토어 연결, W5 SSE 상태 변경 감지, W8 실시간 거리 재계산, W9 모바일 행 상세, W10 키보드 행, W12 용어 충돌, T3 문구 어투·단타 알림 요약, `(market, received_at)` 뉴스 인덱스

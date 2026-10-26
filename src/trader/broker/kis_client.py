@@ -233,4 +233,14 @@ class KisClient:
         return merged or {}
 
     def post(self, path: str, tr_name: str, body: dict[str, Any]) -> dict:
-        return self._request("POST", path, tr_name, json=body)
+        """POST(주문·취소). 게이트웨이 5xx 비JSON·rt_cd 없는 본문은 서버가 요청을 처리했을 수 있어
+        '실패'가 아니라 응답 없음(UNKNOWN_RESPONSE_CODE)으로 올린다 — executor 가 unknown 으로 남겨
+        중복 방지 조건이 살아 있게(전체 검토 O4). KIS 가 본문으로 준 거부(msg_cd)는 그대로."""
+        try:
+            return self._request("POST", path, tr_name, json=body)
+        except KisApiError as e:
+            if e.msg_cd == "INVALID_JSON" or e.msg_cd.startswith("HTTP5"):
+                raise KisApiError(
+                    UNKNOWN_RESPONSE_CODE, f"응답 해석 불가({e.msg_cd}): {e.msg1}", e.tr_id
+                ) from None
+            raise

@@ -63,3 +63,18 @@ def test_call_meta():
         agent="trader", model="opus", session_id=None, cost_usd=None, duration_ms=None
     )
     assert m.model_dump()["agent"] == "trader"
+
+
+def test_decision_prices_must_be_positive():
+    """전체 검토 O16: 음수·0 가격은 스키마에서 거부."""
+    import pytest
+    from helpers_agents import ok_decision
+    from pydantic import ValidationError
+
+    from trader.agents.schemas import Decision
+
+    for field in ("stop_loss", "take_profit", "limit_price"):
+        for bad in (-1.0, 0.0):
+            with pytest.raises(ValidationError):
+                Decision(**ok_decision(**{field: bad}))
+    assert Decision(**ok_decision(stop_loss=None, take_profit=None)).stop_loss is None
