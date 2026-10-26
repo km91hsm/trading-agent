@@ -359,6 +359,10 @@ def build_jobs(schedule: ScheduleConfig, settings: Settings, *, markets: list[st
     jobs.append(Job("ops_check", "ops_check", interval_s=OPS_CHECK_S))  # 운영 점검(Phase 23 A)
     jobs.append(Job("balance_refresh", "balance_refresh", interval_s=BALANCE_REFRESH_S))
     jobs.append(Job("saveticker", "saveticker", interval_s=SAVETICKER_WATCH_S))
+    jobs.append(Job("ledger_backup", "ledger_backup", cron={"hour": 17, "minute": 10}))
+    jobs.append(
+        Job("paper_review", "paper_review", cron={"hour": 9, "minute": 0, "day_of_week": "sat"})
+    )
     if settings.llm.usage_probe.enabled:
         jobs.append(
             Job("usage_probe", "usage_probe", interval_s=settings.llm.usage_probe.interval_min * 60)
@@ -1545,6 +1549,29 @@ def _saveticker_body(deps: DaemonDeps) -> dict:
     return out
 
 
+def _backup_body(deps: DaemonDeps) -> dict:
+    """원장 백업(매일 17:10 KST, Stock D-075): 사본 1개 + 보존 규칙 정리. 실패는 run_job 이 기록."""
+    from trader.ledger import backup
+
+    out = backup.backup(state=deps.state, now=deps.now())
+    removed = backup.prune(out.parent, today=deps.now().astimezone(KST).date())
+    return {"file": out.name, "pruned": removed}
+
+
+def _paper_review_body(deps: DaemonDeps) -> dict:
+    """모의 체결 대 가정 주간 점검(토 09:00 KST): 지난 7일 결정 주문 체결률·슬리피지 → 텔레그램."""
+    from trader.ledger import paper_review
+
+    conn = deps.conn_factory()
+    try:
+        r = paper_review.weekly(conn, deps.accounts, today=deps.now().astimezone(KST).date())
+    finally:
+        conn.close()
+    if any(it["terminal"] for it in r["items"]) or r["alerts"]:
+        deps.notifier.send(paper_review.message(r))
+    return {"items": len(r["items"]), "alerts": len(r["alerts"])}
+
+
 def _stop_saveticker(deps: DaemonDeps) -> None:
     """데몬 종료 때 이 데몬이 띄운 수집 서비스를 정리한다(서비스 → 수집 작업 → 브라우저 순)."""
     from trader.saveticker import automation
@@ -2114,7 +2141,13 @@ def _reflect_body(deps: DaemonDeps) -> dict:
         try:
             from trader.ledger import shadow
 
-            shadow_matured = shadow.mature(conn, state=deps.state, today=_today(deps))
+            index_tables = {
+                m: shadow.index_table(deps.market_client, deps.settings.hedge, m)
+                for m in deps.settings.markets
+            }
+            shadow_matured = shadow.mature(
+                conn, state=deps.state, today=_today(deps), index_tables=index_tables
+            )
         except Exception as e:  # noqa: BLE001 - 섀도 만기 실패가 반성을 막지 않는다
             logger.warning("섀도 포트폴리오 만기 실패: %s", e)
             shadow_matured = None
@@ -2291,7 +2324,10 @@ def _shadow_record(deps: DaemonDeps, market: str, analyzed: dict | None = None) 
     try:
         conn = deps.conn_factory()
         try:
-            shadow.record(conn, market=market, day=today, scan=scan, now=deps.now())
+            index = shadow.index_table(deps.market_client, deps.settings.hedge, market)
+            shadow.record(
+                conn, market=market, day=today, scan=scan, now=deps.now(), index=index
+            )
         finally:
             conn.close()
     except Exception as e:  # noqa: BLE001 - 측정 실패가 분석 잡을 실패로 만들지 않는다
@@ -2395,6 +2431,10 @@ def job_body(
         return lambda: _usage_probe_body(deps)
     if job.kind == "saveticker":
         return lambda: _saveticker_body(deps)
+    if job.kind == "ledger_backup":
+        return lambda: _backup_body(deps)
+    if job.kind == "paper_review":
+        return lambda: _paper_review_body(deps)
     if job.kind == "reconcile":
         return lambda: market_job(
             deps, job.market or "KR", "reconcile", lambda: _reconcile_body(deps, job.market)

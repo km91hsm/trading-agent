@@ -1,4 +1,4 @@
-"""텔레그램 명령 (/approve /reject /status /pause /resume /mode /watch /run). CLI·데몬 공용.
+"""텔레그램 명령 (/approve /reject /status /pause /resume /mode /watch /run /kill). CLI·데몬 공용.
 
 실전 계좌 모드는 텔레그램으로 off(하향)만 바꿀 수 있다. 상향은 CLI `control mode` 만."""
 
@@ -42,7 +42,8 @@ def approval_line(a: dict, env: str | None = None) -> str:
 
 HELP_LINE = (
     "/status · /approve <id> [실전] · /reject <id> · /pause · /resume · "
-    "/mode <계좌> <auto|approve|off> · /watch add|remove|list <종목> · /run <작업> [KR|US] [종목]"
+    "/mode <계좌> <auto|approve|off> · /watch add|remove|list <종목> · "
+    "/run <작업> [KR|US] [종목] · /kill(신규 매수 중단, 해제는 CLI)"
 )
 
 
@@ -78,6 +79,12 @@ def _control_command(ectx: Any, name: str, arg: str | None) -> str:
     if name == "resume":
         control.set_flag(conn, "paused", False)
         return messages.event("재개", "주문을 다시 내요")
+    if name == "kill":
+        # 켜기만 한다 — 해제는 원인 메모와 함께 CLI 로만(Stock D-049)
+        from trader.risk import killswitch
+
+        killswitch.engage(conn, reason="텔레그램 /kill", source="telegram")
+        return messages.killswitch_on("텔레그램 /kill")
     if name == "mode":
         parts = (arg or "").split()
         if len(parts) != 2:
@@ -210,7 +217,7 @@ def _handle_command(ectx: Any, conn: Any, cmd: tuple[str, str | None], echo: Cal
             )
             echo(f"status → 미승인 {len(pending)}건")
             return
-        if name in ("pause", "resume", "mode", "watch"):
+        if name in ("pause", "resume", "mode", "watch", "kill"):
             ectx.notifier.send(_control_command(ectx, name, arg))
             echo(f"{name} {arg or ''}".strip())
             return

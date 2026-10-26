@@ -113,6 +113,7 @@ def _refresh(
                     market,
                     run_store.run_date_for(market, now),
                     memory_settings=settings.memory,
+                    killswitch_pct=settings.risk.killswitch_drawdown_pct,
                 )
             out["refreshed"].append(a.id)
         except (KisApiError, ValueError) as e:

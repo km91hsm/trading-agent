@@ -957,6 +957,7 @@ def _execute_and_record(
         skip_accounts=skip_accounts,
         extra_note=extra_note,
         change_pct=change_pct,
+        trade_block=_trade_block(inputs),
     )
     memory_entry_id = _record_memory(
         ctx, decision, market, date, round_no=resume_round or 0, decided_at=decided_at
@@ -1115,6 +1116,16 @@ def _requote(
     note = f"재시세 {price}→{fresh}"
     logger.info("%s %s %s (입력 %s)", market, ticker, note, asof_raw)
     return fresh, note, pct
+
+
+def _trade_block(inputs: dict) -> str | None:
+    """00_inputs 시세의 종목상태·시장경고·임시정지로 본 매매 제한 사유(Stock D-030)."""
+    from trader.risk import tradability
+
+    try:
+        return tradability.block_reason(inputs["technical"]["quote"]["data"])
+    except (KeyError, TypeError):
+        return None
 
 
 def _quote_price(inputs: dict) -> Decimal | None:

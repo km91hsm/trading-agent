@@ -954,12 +954,20 @@ def _daemon_features_fn(secrets: config.Secrets, universe, market_client):
     return run
 
 
-def _daemon_snapshot_fn(secrets: config.Secrets, universe, market_client):
-    """데몬 reflect 잡 앞에서 매일 피처 스냅샷을 찍는 함수 (시세 클라이언트 없으면 None)."""
+def _daemon_snapshot_fn(secrets: config.Secrets, universe, market_client, notifier=None):
+    """데몬 reflect 잡 앞에서 매일 피처 스냅샷을 찍는 함수 (시세 클라이언트 없으면 None).
+    수정주가 소급 변경으로 재백필한 종목은 알린다(Stock D-034)."""
     if market_client is None:
         return None
+    from trader.notify import messages
+
     features_fn = _daemon_features_fn(secrets, universe, market_client)
-    return lambda markets: features_fn("snapshot", markets)
+
+    def on_adjusted(market: str, tickers: list[str]) -> None:
+        if notifier is not None:
+            notifier.send(messages.adjusted_prices(market, tickers))
+
+    return lambda markets: features_fn("snapshot", markets, on_adjusted=on_adjusted)
 
 
 @app.command("daemon")
@@ -1026,7 +1034,9 @@ def _daemon_deps(*, dry_run: bool = False):
         input_deps=_build_input_deps(secrets, sources_cfg),
         web_app_factory=web_app,
         dry_run=dry_run,
-        snapshot_fn=_daemon_snapshot_fn(secrets, universe, market_client),
+        snapshot_fn=_daemon_snapshot_fn(
+            secrets, universe, market_client, notifier=make_notifier(secrets)
+        ),
         features_fn=_daemon_features_fn(secrets, universe, market_client),
     )
 
@@ -1394,6 +1404,10 @@ def control_show() -> None:
     conn, accounts = _control_conn()
     try:
         typer.echo(f"일시정지: {'예' if control.is_paused(conn) else '아니오'}")
+        from trader.risk import killswitch
+
+        ks = killswitch.reason(conn)
+        typer.echo(f"킬스위치: {'켜짐 — ' + ks if ks else '꺼짐'}")
         from trader.orchestrator.executor import effective_mode
 
         for a in accounts:
@@ -1446,6 +1460,54 @@ def control_pause() -> None:
     finally:
         conn.close()
     typer.echo("일시정지: 예")
+
+
+@app.command("paper-review")
+@_config_errors
+def paper_review_cmd(days: int = typer.Option(7, "--days", min=1, max=90)) -> None:
+    """모의 계좌 결정 주문의 체결률·지정가 대비 슬리피지를 비용 가정과 비교한다(읽기 전용, JSON)."""
+    import json
+    from datetime import timedelta
+
+    from trader.ledger import paper_review
+
+    boot = _boot(settings=True, accounts=True, conn=True)
+    try:
+        today = datetime.now(config.KST).date()
+        r = paper_review.compute(
+            boot.conn, boot.accounts, since=today - timedelta(days=days), until=today
+        )
+    finally:
+        boot.conn.close()
+    typer.echo(json.dumps(r, ensure_ascii=False, indent=1))
+
+
+@control_app.command("killswitch")
+@_config_errors
+def control_killswitch(
+    action: str = typer.Argument(..., help="on | off | show"),
+    note: str = typer.Option("", "--note", help="off 때 원인 메모(10자 이상)"),
+) -> None:
+    """누적 손실 킬스위치(신규 매수 중단). off 는 원인 메모가 필요하고 기준 NAV 를 다시 잡는다."""
+    from trader.risk import killswitch
+
+    conn, _ = _control_conn()
+    try:
+        if action == "on":
+            killswitch.engage(conn, reason=note or "수동(CLI)", source="cli")
+        elif action == "off":
+            try:
+                killswitch.release(conn, note=note)
+            except ValueError as e:
+                typer.echo(f"오류: {e}", err=True)
+                raise typer.Exit(code=1) from e
+        elif action != "show":
+            typer.echo("오류: on | off | show", err=True)
+            raise typer.Exit(code=1)
+        r = killswitch.reason(conn)
+        typer.echo(f"킬스위치: {'켜짐 — ' + r if r else '꺼짐'}")
+    finally:
+        conn.close()
 
 
 @control_app.command("resume")

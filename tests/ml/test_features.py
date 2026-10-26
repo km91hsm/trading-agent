@@ -681,3 +681,88 @@ def test_atomic_replace_retries_permission_error(tmp_path, monkeypatch):
     monkeypatch.setattr(fsutil.os, "replace", lambda a, b: (_ for _ in ()).throw(PermissionError()))
     with pytest.raises(PermissionError):
         fsutil.atomic_replace(src, dst, attempts=2, delay_s=0)
+
+
+# --- 수정주가 소급 변경 감지(Stock D-034·D-064·D-070) ------------------------------------
+
+
+def test_snapshot_detects_adjusted_history_and_rebackfills(project):
+    """분할·병합이 나면 KIS 는 과거 일봉 전체를 새 기준으로 다시 준다. 저장 종가와 0.5% 넘게
+    다르면 그 종목만 재백필해 피처 스토어에 가격 절벽이 남지 않게 한다."""
+    from helpers_sources import T0
+
+    from trader.ml import dataset
+
+    uni = Universe(kr=["005930", "000660"])
+    features.backfill(market_client=FakeMarket(), dart=FakeDart(), universe=uni, markets=["KR"])
+
+    class Split(FakeMarket):
+        def get_daily_kr(self, ticker, days=100):
+            got = super().get_daily_kr(ticker, days=days)
+            if ticker != "005930":
+                return got
+            # 액면분할 1:2 — 마지막 봉만 그대로, 과거는 절반
+            return [c.model_copy(update={"close": c.close / 2}) for c in got[:-1]] + got[-1:]
+
+    seen = []
+    features.snapshot(
+        market_client=Split(),
+        dart=FakeDart(),
+        universe=uni,
+        markets=["KR"],
+        asof=T0,
+        now=lambda: T0,
+        on_adjusted=lambda market, tickers: seen.append((market, tickers)),
+    )
+    assert seen == [("KR", ["005930"])]
+    df = dataset.load_all(market="KR")
+    old = df[(df.ticker == "005930")].sort_values("date").iloc[0]
+    first = FakeMarket().get_daily_kr("005930", days=1000)[0]
+    assert float(old["close"]) == pytest.approx(float(first.close) / 2)
+
+
+def test_rebackfill_keeps_observed_columns_and_ignores_single_bar(project):
+    """재백필은 수급·건수 같은 관측 열을 지우지 않고, 한두 봉 차이(장중 스냅샷 종가)는 수정주가로
+    보지 않는다."""
+    from helpers_sources import T0
+
+    from trader.ml import dataset
+
+    uni = Universe(kr=["005930"])
+    features.backfill(market_client=FakeMarket(), dart=FakeDart(), universe=uni, markets=["KR"])
+    df = dataset.load_all(market="KR")
+    last = df.sort_values("date").iloc[-2]
+    row = df[(df.date == last["date"]) & (df.ticker == "005930")].copy()
+    row["flow_foreign_20d"] = 1234.0
+    features.write_rows(row.assign(date=row["date"].dt.date)[features.FEATURE_COLUMNS])
+
+    class OneBar(FakeMarket):
+        def get_daily_kr(self, ticker, days=100):
+            got = super().get_daily_kr(ticker, days=days)
+            got[-2] = got[-2].model_copy(update={"close": got[-2].close * 2})
+            return got
+
+    seen = []
+    features.snapshot(
+        market_client=OneBar(),
+        dart=FakeDart(),
+        universe=uni,
+        markets=["KR"],
+        asof=T0,
+        now=lambda: T0,
+        on_adjusted=lambda m, t: seen.append(t),
+    )
+    assert seen == []
+    kept = features._keep_observed(
+        features.history_rows(
+            ticker="005930",
+            market="KR",
+            candles=FakeMarket().get_daily_kr("005930", days=1000),
+            ratios_by_year={},
+        ),
+        None,
+        "KR",
+        "005930",
+    )
+    hit = kept[kept.date == last["date"].date()]
+    assert float(hit["flow_foreign_20d"].iloc[0]) == 1234.0

@@ -33,6 +33,11 @@ class Quote(BaseModel):
     change_pct: float
     volume: int
     asof: datetime  # 조회 시각 (UTC)
+    # 국내만: 종목상태(iscd_stat_cls_code)·시장경고(mrkt_warn_cls_code)·임시정지 — 매매 불가 판정
+    # (`risk/tradability`, Stock D-030). US·모르면 None
+    status_code: str | None = None
+    warn_code: str | None = None
+    halted: bool | None = None
 
 
 class Candle(BaseModel):

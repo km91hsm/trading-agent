@@ -192,6 +192,9 @@ class RiskLimits(BaseModel):
     max_theme_pct: float = Field(default=0.20, gt=0, le=1)
     chase_limit_pct: float = Field(default=0.10, gt=0)  # 당일 등락률 ≥ 이 값이면 신규 매수 금지
     theme_max_horizon_days: int = Field(default=10, ge=1)
+    # 누적 손실 킬스위치(Stock D-049): (계좌·시장) NAV 가 시작(또는 해제 시점) 대비 이 비율 넘게
+    # 빠지면 신규 매수 중단, 해제는 사람만(`trader control killswitch off --note`). 0 이면 끔
+    killswitch_drawdown_pct: float = Field(default=0.15, ge=0, lt=1)
 
     @field_validator("horizon_profiles")
     @classmethod
@@ -431,6 +434,9 @@ class AccountConfig(BaseModel):
     markets: list[Market] = Field(default_factory=lambda: ["KR", "US"])
     mode: Mode
     initial_capital: Decimal | None = None
+    # 실전 자본 상한(Stock D-074): 시장(통화)별로 사이징에 쓰는 NAV·가능금액을 이 금액까지로 자른다.
+    # 사람이 단계적으로 올린다(자동 증액 없음). 없으면 상한 없음
+    capital_cap: dict[Market, Decimal] | None = None
 
 
 class _AccountsFile(BaseModel):

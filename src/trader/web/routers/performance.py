@@ -84,7 +84,8 @@ def shadow_report(request: Request, market: str | None = None) -> dict:
     deps = deps_of(request)
     with closing(deps.conn_factory()) as conn:
         pairs = {
-            b: shadow.paired_stats(conn, b=b, market=m) for b in ("candidates_1n", "quant_topn")
+            b: shadow.paired_stats(conn, b=b, market=m)
+            for b in ("candidates_1n", "quant_topn", "index_hold", "index_trend")
         }
         by_date: dict[str, dict] = {}
         for r in shadow.rows(conn, market=m):

@@ -385,6 +385,18 @@ def _entry_legs(results: list[dict]) -> dict[str, dict]:
     return out
 
 
+def _trade_block(ctx: ScalpContext, market: str, ticker: str) -> str | None:
+    """단타 진입 전 매매 제한 종목(관리·경고·정지, Stock D-030) — 국내만, 조회 실패는 None."""
+    if market != "KR" or ctx.market_client is None:
+        return None
+    from trader.risk import tradability
+
+    try:
+        return tradability.block_reason(ctx.market_client.get_price_kr(ticker))
+    except Exception:  # noqa: BLE001 - 판정 보조: 실패하면 게이트의 다른 규칙만
+        return None
+
+
 def _quote(ctx: ScalpContext, market: str, ticker: str, exchange: str | None) -> Decimal:
     return (
         ctx.market_client.get_price_kr(ticker).price
@@ -521,6 +533,7 @@ def _enter(
         decision_id=None,
         skip_accounts=skip,
         scalp_leg="entry",
+        trade_block=_trade_block(ctx, market, c["ticker"]),
     )
     legs = _entry_legs(results)
     if not legs:

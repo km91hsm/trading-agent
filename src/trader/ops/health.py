@@ -122,7 +122,20 @@ def _disclosure(conn, settings, accounts, now) -> list[Item]:
 
 
 def _loss(conn, settings, accounts, now) -> list[Item]:
+    from trader.risk import killswitch
+
     out: list[Item] = []
+    ks = killswitch.reason(conn)
+    if ks:
+        out.append(
+            Item(
+                "loss.killswitch",
+                "critical",
+                f"킬스위치 켜짐 — 신규 매수 중단: {ks}. 해제는 "
+                "`trader control killswitch off --note` (원인 메모)",
+                link="/settings",
+            )
+        )
     for a in accounts:
         for m in a.markets:
             d = run_date_for(m, now)
