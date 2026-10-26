@@ -153,6 +153,15 @@ def event(tag: str, text: str = "", *lines: str) -> str:
     return render(tag, text, lines)
 
 
+def adjusted_prices(market: str, tickers: list[str]) -> str:
+    """수정주가 소급 변경 감지 → 해당 종목 재백필(피처·라벨 절벽 방지)."""
+    return event(
+        "수정주가 변경",
+        f"{market} {len(tickers)}종목 과거 일봉을 다시 받았어요",
+        ", ".join(tickers[:10]) + (" …" if len(tickers) > 10 else ""),
+    )
+
+
 def killswitch_on(reason: str) -> str:
     """킬스위치 켜짐: 신규 매수 중단(매도·손절·헤지는 계속), 해제는 사람만."""
     return event(

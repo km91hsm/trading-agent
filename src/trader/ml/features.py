@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 import os
 from collections.abc import Callable
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -466,8 +466,10 @@ def backfill(
     edgar: Any | None = None,
     state: Path | None = None,
     progress: Callable[[str], None] = lambda s: None,
+    only: list[tuple[str, str | None]] | None = None,
 ) -> int:
     """유니버스 전 종목의 과거 피처를 재구성해 저장한다. 종목 실패는 로그 후 계속. 반환은 행 수.
+    `only=[(코드, 거래소)]` 면 그 종목만(수정주가 재백필, 시장은 `markets[0]`).
 
     비율은 KR 은 DART(`dart`), US 는 EDGAR(`edgar`) 연도별 값이며 클라이언트가 None 이면 NaN."""
     days = min(years * 252, MAX_DAYS)
@@ -497,7 +499,10 @@ def backfill(
         frames.clear()
         total += len(batch)
 
-    for ticker, market, exchange in _targets(universe, markets):
+    targets = (
+        [(t, markets[0], ex) for t, ex in only] if only is not None else _targets(universe, markets)
+    )
+    for ticker, market, exchange in targets:
         try:
             candles = (
                 market_client.get_daily_kr(ticker, days=days)
@@ -570,10 +575,15 @@ def snapshot(
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
     progress: Callable[[str], None] = lambda s: None,
     tickers: list[tuple[str, str | None]] | None = None,
+    on_adjusted: Callable[[str, list[str]], None] | None = None,
 ) -> int:
     """오늘 행(종목당 1행)을 저장한다. 뉴스·커뮤니티 건수는 같은 날 00_inputs 에서 센다.
     `tickers=[(코드, 거래소)]` 를 주면 유니버스 대신 그 종목만(유니버스 밖 발굴 종목의 당일 1회
-    스냅샷, Phase 21) — 시장은 `markets[0]`."""
+    스냅샷, Phase 21) — 시장은 `markets[0]`.
+
+    수정주가 감지(Stock D-034·D-064·D-070): 분할·병합이 나면 KIS 는 과거 일봉을 새 기준으로 다시
+    준다. 받은 일봉의 최근 `ADJUST_WINDOW` 봉(마지막 봉 제외)이 저장 종가와 `ADJUST_TOL` 넘게
+    다르면 그 종목만 `backfill` 로 다시 쓰고(가격 절벽·라벨 오염 방지) `on_adjusted(시장, 종목)`."""
     asof = asof or now()
     if now() - asof > MAX_PAST:
         raise ConfigError(
@@ -584,6 +594,8 @@ def snapshot(
         targets = [(t, markets[0], ex) for t, ex in tickers]
     else:
         targets = _targets(universe, markets)
+    stored = _stored_closes(state, {m for _, m, _ in targets}, since=asof.date() - timedelta(400))
+    adjusted: dict[str, list[tuple[str, str | None]]] = {}
     for ticker, market, exchange in targets:
         try:
             candles = (
@@ -593,6 +605,8 @@ def snapshot(
             )
             if not candles:
                 raise ValueError("일봉 없음")
+            if _history_changed(candles, stored.get((market, ticker), {})):
+                adjusted.setdefault(market, []).append((ticker, exchange))
             if int(candles[-1].volume) <= 0:
                 # 개장 전 스텁 봉: 전날 날짜로 다시 쓰면 어제 행을 오늘 건수로 덮어쓴다 → 건너뜀
                 progress(f"{market} {ticker}: 오늘 봉 미완성(거래량 0), 생략")
@@ -618,8 +632,62 @@ def snapshot(
         except Exception as e:  # noqa: BLE001
             logger.warning("스냅샷 실패 %s %s: %s", market, ticker, type(e).__name__)
             progress(f"{market} {ticker}: 실패 ({type(e).__name__})")
-    if not rows:
-        return 0
-    df = pd.DataFrame(rows)[FEATURE_COLUMNS]
-    write_rows(df, state)
-    return len(df)
+    written = 0
+    if rows:
+        df = pd.DataFrame(rows)[FEATURE_COLUMNS]
+        write_rows(df, state)
+        written = len(df)
+    for market, items in adjusted.items():
+        names = [t for t, _ in items]
+        logger.warning("수정주가 변경 감지 %s %s — 재백필", market, ", ".join(names))
+        progress(f"{market} 수정주가 변경: {', '.join(names)} 재백필")
+        backfill(
+            market_client=market_client,
+            dart=dart,
+            universe=universe,
+            markets=[market],  # type: ignore[list-item]
+            edgar=edgar,
+            state=state,
+            progress=progress,
+            only=items,
+        )
+        if on_adjusted is not None:
+            on_adjusted(market, names)
+    return written
+
+
+ADJUST_TOL = 0.005
+ADJUST_WINDOW = 30
+
+
+def _history_changed(candles: list[Candle], stored: dict[date, float]) -> bool:
+    """최근 ADJUST_WINDOW 봉(마지막 봉 제외 — 장중이면 아직 변한다)이 저장 종가와 다른가."""
+    for c in candles[-ADJUST_WINDOW - 1 : -1]:
+        s = stored.get(c.date)
+        if s and s > 0 and abs(float(c.close) / s - 1) > ADJUST_TOL:
+            return True
+    return False
+
+
+def _stored_closes(
+    state: Path | None, markets: set[str], *, since: date
+) -> dict[tuple[str, str], dict[date, float]]:
+    """(시장, 종목) → {날짜: 저장 종가}. 스토어가 비었거나 읽기 실패면 빈 맵(감지 생략)."""
+    from trader.ml import dataset  # dataset 이 features 를 가져다 쓴다(순환 방지)
+
+    out: dict[tuple[str, str], dict[date, float]] = {}
+    for m in markets:
+        try:
+            df = dataset.load_all(state, market=m, since=since)
+        except Exception as e:  # noqa: BLE001 - 감지는 보조: 실패해도 스냅샷은 간다
+            logger.warning("저장 종가 읽기 실패 %s: %s", m, e)
+            continue
+        if df.empty:
+            continue
+        for t, part in df[["ticker", "date", "close"]].groupby("ticker"):
+            out[(m, str(t))] = {
+                pd.Timestamp(d).date(): float(c)
+                for d, c in zip(part["date"], part["close"], strict=True)
+                if pd.notna(c)
+            }
+    return out

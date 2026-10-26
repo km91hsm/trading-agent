@@ -401,3 +401,11 @@
 - [x] `broker/kis_ws`(프레임 묶음·부호·핑퐁·제어)·`KisAuth.approval_key`·`web/live_quotes.QuoteHub`(임차·백오프·거절)·`/api/quotes` 허브 우선 + `stream`·프런트 1초 주기, 실기: 접속키 발급·`SUBSCRIBE SUCCESS`/`UNSUBSCRIBE SUCCESS` 확인(장 밖) (2026-10-27)
 - [ ] 실기(사용자 확인 대기, 장중): 대시보드를 열어 둔 채 국내 보유·관심 종목 현재가가 1초 단위로 바뀌는지, 표 머리 '실시간 n종목 · 체결 즉시', `state/logs` 에 '실시간 시세 접속'·끊김 재접속 로그
 - [ ] 다음 후보: 지수(KOSPI·KOSDAQ `H0UPCNT0`) 상단 표시, 호가 10단(`H0STASP0`), 체결통보(`H0STCNI0`, HTS ID·AES 복호화)로 체결 즉시 잔고 갱신
+
+## Stock 교훈 1차 — 안전장치·판단 근거 (2026-10-27, `docs/superpowers/plans/2026-10-27-stock-lessons-1.md`, 사용자 결정 '웹 수동 주문 제외 전부')
+- [x] 원장 백업(매일 17:10, 14일 + 월요일 8개)·누적 손실 킬스위치(−15%, 해제는 CLI·메모)·실전 자본 상한(`capital_cap`)·매매 제한 종목 차단·지수 섀도 기준선(`index_hold`·`index_trend`)·모의 체결 대 가정 주간 점검·수정주가 소급 변경 감지 재백필·생존 편향 경고 (2026-10-27)
+- [ ] 실기(사용자 확인 대기): 데몬을 켠 날 17:10 뒤 `state/backups/trader-*.db` 생성, 토요일 09:00 `[모의 체결 점검]` 알림, 성과 페이지에 '지수 보유'·'지수 추세' 행(만기 5거래일 뒤부터 숫자)
+- [ ] 실기(사용자 확인 대기): 관리·경고 종목 현재가 응답에 `iscd_stat_cls_code`·`mrkt_warn_cls_code`·`temp_stop_yn` 이 실제로 오는지(`00_inputs.technical.quote.data`)
+- [ ] 결정 대기(사용자, 실전 전): `config/accounts.yaml` 실전 계좌 `capital_cap` 첫 금액(예: KR 300만·US 2000달러)
+- [ ] 운영 규칙(Stock D-120): `scalp.enabled` 를 켜기 전 수개월 분봉 재생·비용 반영·보류 구간 1회 검증(코드 강제 없음)
+- [ ] 다음 단계: 시점 기준 유니버스(그날까지의 거래대금 상위 N + 상장폐지 포함)로 ML 재학습 — 생존 편향 제거

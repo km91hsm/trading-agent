@@ -252,3 +252,11 @@ def test_promotion_alpha_mode_uses_market_specific_threshold():
     assert train.promotion_decision(m, cfg)[0] is True  # 시장 미지정은 기본값
     assert cfg.models.quant.min_alpha_for("US") == 0.005
     assert cfg.models.quant.min_alpha_for("KR") == 0.003
+
+
+def test_train_reports_survivorship_caveat(project):
+    """Stock D-037: 현재 구성 종목으로 과거를 학습하면 알파가 부풀려진다 — 결과·메타에 경고."""
+    _write(signal=True)
+    r = train.train_quant(fast_cfg(), now=lambda: NOW)
+    assert r["caveats"] and "생존 편향" in r["caveats"][0]
+    assert "생존 편향" in registry.latest("quant")[1]["caveats"][0]

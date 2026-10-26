@@ -954,12 +954,20 @@ def _daemon_features_fn(secrets: config.Secrets, universe, market_client):
     return run
 
 
-def _daemon_snapshot_fn(secrets: config.Secrets, universe, market_client):
-    """데몬 reflect 잡 앞에서 매일 피처 스냅샷을 찍는 함수 (시세 클라이언트 없으면 None)."""
+def _daemon_snapshot_fn(secrets: config.Secrets, universe, market_client, notifier=None):
+    """데몬 reflect 잡 앞에서 매일 피처 스냅샷을 찍는 함수 (시세 클라이언트 없으면 None).
+    수정주가 소급 변경으로 재백필한 종목은 알린다(Stock D-034)."""
     if market_client is None:
         return None
+    from trader.notify import messages
+
     features_fn = _daemon_features_fn(secrets, universe, market_client)
-    return lambda markets: features_fn("snapshot", markets)
+
+    def on_adjusted(market: str, tickers: list[str]) -> None:
+        if notifier is not None:
+            notifier.send(messages.adjusted_prices(market, tickers))
+
+    return lambda markets: features_fn("snapshot", markets, on_adjusted=on_adjusted)
 
 
 @app.command("daemon")
@@ -1026,7 +1034,9 @@ def _daemon_deps(*, dry_run: bool = False):
         input_deps=_build_input_deps(secrets, sources_cfg),
         web_app_factory=web_app,
         dry_run=dry_run,
-        snapshot_fn=_daemon_snapshot_fn(secrets, universe, market_client),
+        snapshot_fn=_daemon_snapshot_fn(
+            secrets, universe, market_client, notifier=make_notifier(secrets)
+        ),
         features_fn=_daemon_features_fn(secrets, universe, market_client),
     )
 

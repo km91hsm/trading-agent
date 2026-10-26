@@ -110,6 +110,15 @@ def prepare_dataset(
     return df, cols, None
 
 
+# Stock D-037 교훈: "지금 구성 종목" 으로 고른 과거는 상장폐지·편출 종목이 빠져 알파가 부풀려진다
+# (Stock 은 연 +6% 가 선택 편향이었음을 재측정에서 확인). 시점 기준 유니버스 전까지는 경고로 남긴다
+SURVIVORSHIP_CAVEAT = (
+    "생존 편향: 학습 종목이 현재 universe.yaml 구성(오늘의 KOSPI 200 등)이라 과거에 빠진·상장폐지 "
+    "종목이 없다 — 워크포워드 알파가 실제보다 클 수 있다. 승격 판단은 섀도 포트폴리오"
+    "(지수 기준선)와 함께 본다"
+)
+
+
 def train_quant(
     cfg: MlConfig,
     *,
@@ -166,6 +175,7 @@ def train_quant(
         "backend": model.backend,
         "params": {k: v for k, v in kwargs.items() if k != "backend"},
         "label": cfg.label.model_dump(),
+        "caveats": [SURVIVORSHIP_CAVEAT],
     }
     version = registry.save(NAME, model, meta, state=state, now=now)
     if promoted:
@@ -180,4 +190,5 @@ def train_quant(
         "rows": int(len(labeled)),
         "features": cols,
         "backend": model.backend,
+        "caveats": [SURVIVORSHIP_CAVEAT],
     }
