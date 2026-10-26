@@ -2,6 +2,8 @@
 
 from datetime import UTC, date, datetime
 
+import pytest
+
 from trader.broker.models import RankRow
 from trader.config import Settings
 from trader.scan import theme
@@ -133,3 +135,23 @@ def test_theme_of_map_today_only(conn):
         "222222": "섹터:반도체",
     }
     assert theme.theme_of_map(conn, "KR", date(2026, 10, 27), top_n=3) == {}
+
+
+def test_mature_fills_forward_return(conn, monkeypatch):
+    import pandas as pd
+
+    from trader.memory import outcomes
+
+    conn.execute(
+        "INSERT INTO theme_heat(market, date, observed_at, theme, rank, score, catalyst_ok, "
+        "tickers_json, components_json) VALUES ('KR','2026-10-01','x','섹터:반도체',1,0.9,1,"
+        "?, '{}')",
+        ('["111111"]',),
+    )
+    days = pd.date_range("2026-10-01", periods=8, freq="B").date
+    table = pd.DataFrame({"111111": [100.0] * 5 + [110.0] * 3, "222222": [100.0] * 8}, index=days)
+    monkeypatch.setattr(outcomes, "_close_table", lambda *a, **k: table)
+    assert theme.mature(conn, "KR", state=None, today=date(2026, 10, 26)) == 1
+    v = conn.execute("SELECT fwd_ret_5d FROM theme_heat").fetchone()[0]
+    assert v == pytest.approx(0.1 - 0.05)  # 종목 +10%, 1/N(두 종목 평균) +5%
+    assert theme.mature(conn, "KR", state=None, today=date(2026, 10, 26)) == 0

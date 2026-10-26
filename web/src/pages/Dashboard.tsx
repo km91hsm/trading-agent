@@ -20,6 +20,8 @@ import { type ScalpResp, scalpChip } from "../pipeline";
 import type { OpsResp } from "../ops";
 import { Advisory } from "../components/Advisory";
 import { OverviewBlock } from "../components/OverviewBlock";
+import { ThemeHeatBlock } from "../components/ThemeHeatBlock";
+import type { ThemeResp } from "../themeHeat";
 import { buildTape, gateFor, marketPhase, type TapeRow } from "../tape";
 import type {
   Approval,
@@ -111,6 +113,7 @@ export function Dashboard() {
   const usage = useLoad(() => getJson<UsageResp>("/api/system/usage"), [tRuns, minute]);
   const daemon = useLoad(() => getJson<DaemonStatus>("/api/system/daemon"), [tick, minute]);
   const regime = useLoad(() => getJson<RegimeResp>("/api/system/regime"), [tRuns]);
+  const themeKR = useLoad(() => getJson<ThemeResp>("/api/system/theme", { market: "KR" }), [tRuns, minute]);
   const scalp = useLoad(() => getJson<ScalpResp>("/api/system/scalp"), [tRuns]);
   const ops = useLoad(() => getJson<OpsResp>("/api/system/ops"), [tRuns, tOrders]);
   const models = useLoad(() => getJson<ModelsResp>("/api/ml/models"), [tJobs]);
@@ -302,6 +305,7 @@ export function Dashboard() {
       </div>
 
       <OverviewBlock data={overview.data} maxSectorPct={Number(settings.data?.risk?.max_sector_pct ?? 0.4)} accountCount={accounts.length} />
+      <ThemeHeatBlock data={themeKR.data} market="KR" />
 
       <div className="cols">
         <div>

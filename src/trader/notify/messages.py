@@ -349,3 +349,24 @@ def fill_ambiguous(*, account: str, market: str, label: str, side: str, detail: 
     return render(
         "체결 매칭 모호", f"{account} · {market} {label}", [f"{SIDE.get(side, side)} — {detail}"]
     )
+
+
+def theme_heat(*, market: str, themes: list[dict]) -> str:
+    """테마 열기 상위 테마가 바뀌었을 때 (Phase 25)."""
+    lines = []
+    for th in themes:
+        names = ", ".join(
+            (f"{t['name']}({t['ticker']})" if t.get("name") else t["ticker"])
+            for t in (th.get("tickers") or [])[:3]
+        )
+        cat = "촉매 있음" if th.get("catalyst_ok") else "촉매 없음(커뮤니티뿐)"
+        lines.append(f"{th['rank']}. {theme_name(th['theme'])} · 점수 {th['score']:.2f} · {cat}")
+        if names:
+            lines.append(f"   {names}")
+    return render("테마 열기", market, lines)
+
+
+def theme_name(theme: str) -> str:
+    """'섹터:반도체' → '반도체(섹터)', 'kw:로봇' → '로봇(뉴스 키워드)'."""
+    kind, _, name = theme.partition(":")
+    return f"{name}({'섹터' if kind == '섹터' else '뉴스 키워드'})" if name else theme

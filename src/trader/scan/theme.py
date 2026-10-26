@@ -366,3 +366,79 @@ def theme_of_map(conn: sqlite3.Connection, market: str, d: date, top_n: int) -> 
         for t in th.get("members") or [x["ticker"] for x in th.get("tickers") or []]:
             out.setdefault(t, th["theme"])
     return out
+
+
+# --- 기록·알림 (데몬 <시장>_theme) ---------------------------------------------------------
+
+
+def record(conn: sqlite3.Connection, heat: dict, *, top_n: int) -> str | None:
+    """오늘 결과를 `control.theme_heat:<market>` 과 원장 `theme_heat`(테마별 그날 최고 점수 1행,
+    사후 검증용)에 남긴다. 상위 top_n 테마 집합이 직전과 달라졌을 때만 알림 문구를 돌려준다."""
+    from trader.control import control
+    from trader.notify import messages
+
+    market = heat["market"]
+    control.set_flag(conn, f"{FLAG}:{market}", heat)
+    for th in heat.get("themes") or []:
+        conn.execute(
+            "INSERT INTO theme_heat(market, date, observed_at, theme, rank, score, catalyst_ok, "
+            "tickers_json, components_json) VALUES (?,?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(market, date, theme) DO UPDATE SET observed_at=excluded.observed_at, "
+            "rank=excluded.rank, score=MAX(score, excluded.score), "
+            "catalyst_ok=MAX(catalyst_ok, excluded.catalyst_ok), "
+            "tickers_json=excluded.tickers_json, components_json=excluded.components_json",
+            (
+                market,
+                heat["date"],
+                heat["observed_at"],
+                th["theme"],
+                th["rank"],
+                th["score"],
+                int(bool(th.get("catalyst_ok"))),
+                json.dumps(th.get("members") or [], ensure_ascii=False),
+                json.dumps(th.get("components") or {}, ensure_ascii=False),
+            ),
+        )
+    conn.commit()
+    now_top = [th["theme"] for th in top(heat, top_n)]
+    key = f"{TOP_FLAG}:{market}"
+    prev = control.get_flag(conn, key) or {}
+    same_day = prev.get("date") == heat["date"]
+    if same_day and set(prev.get("themes") or []) == set(now_top):
+        return None
+    control.set_flag(conn, key, {"date": heat["date"], "themes": now_top})
+    if not now_top:
+        return None
+    return messages.theme_heat(market=market, themes=top(heat, top_n))
+
+
+def mature(conn: sqlite3.Connection, market: str, *, state: Path | None, today: date) -> int:
+    """만기(5거래일) 지난 테마 판정에 구성 종목 평균 수익 − 1/N 벤치마크를 `fwd_ret_5d` 로 채운다
+    (reflect 잡, 멱등). 피처 스토어 종가가 없으면 비워 둔다 — 만기 봉이 today 이하일 때만."""
+    from trader.memory import outcomes
+
+    rows = conn.execute(
+        "SELECT id, date, tickers_json FROM theme_heat WHERE market=? AND fwd_ret_5d IS NULL "
+        "AND date <= ? ORDER BY date",
+        (market, (today - timedelta(days=7)).isoformat()),
+    ).fetchall()
+    if not rows:
+        return 0
+    since = date.fromisoformat(rows[0]["date"]) - timedelta(days=3)
+    table = outcomes._close_table(state, market, since=since, until=today)
+    n = 0
+    for r in rows:
+        start = date.fromisoformat(r["date"])
+        rets = []
+        for t in json.loads(r["tickers_json"] or "[]"):
+            got = outcomes.window_return(table, t, start, 5, end_before=today)
+            if got is not None:
+                rets.append(got[0] - got[1])
+        if rets:
+            conn.execute(
+                "UPDATE theme_heat SET fwd_ret_5d=? WHERE id=?",
+                (round(sum(rets) / len(rets), 6), r["id"]),
+            )
+            n += 1
+    conn.commit()
+    return n

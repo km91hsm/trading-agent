@@ -277,6 +277,9 @@ def build_jobs(schedule: ScheduleConfig, settings: Settings, *, markets: list[st
         jobs.append(Job(f"{lo}_monitor", "monitor", m, interval_s=ms.monitor.interval_s))
         # 분 단위 단타(Phase 23 S): monitor 와 별도 60초 잡, 장중 창·모의 전용·기본 끔(body 가 판단)
         jobs.append(Job(f"{lo}_scalp", "scalp", m, interval_s=SCALP_INTERVAL_S))
+        # 테마 열기 감지(Phase 25): 장중 창만, 가벼운 잡(KIS 순위 3회 + 원장 읽기)
+        if settings.theme.enabled:
+            jobs.append(Job(f"{lo}_theme", "theme", m, interval_s=settings.theme.interval_s))
         # 야간 KIS 대조(Phase 21): 체결 동기화 뒤, 시장 현지 시각. 가벼운 잡(heavy 락 밖)
         rt = _hm(getattr(schedule.reconcile, lo))
         jobs.append(
@@ -1163,6 +1166,35 @@ def _monitor_body(deps: DaemonDeps, market: str) -> dict:
         conn.close()
 
 
+def _theme_body(deps: DaemonDeps, market: str) -> dict:
+    """테마 열기 감지 1회(Phase 25). 결과를 control·원장에 남기고 상위 테마가 바뀔 때만 알림."""
+    from trader.orchestrator.run_store import run_date_for
+    from trader.scan import theme
+    from trader.sources import saveticker
+
+    root = None
+    if deps.sources_cfg is not None:
+        root = saveticker.resolve_dir(deps.sources_cfg.news.saveticker_dir)
+    conn = deps.conn_factory()
+    try:
+        heat = theme.compute(
+            conn,
+            deps.settings,
+            market=market,
+            today=run_date_for(market, deps.now()),
+            now=deps.now(),
+            market_client=deps.market_client,
+            saveticker_root=root,
+            state=deps.state,
+        )
+        msg = theme.record(conn, heat, top_n=deps.settings.theme.top_n)
+    finally:
+        conn.close()
+    if msg:
+        deps.notifier.send(msg)
+    return {"themes": len(heat["themes"]), "alerted": bool(msg), **heat["signals"]}
+
+
 def _scalp_body(deps: DaemonDeps, market: str) -> dict:
     """분 단위 단타 1틱(Phase 23 S). 꺼져 있으면 skipped(잡 표에는 보인다). 창·paused 는 engine 이
     다시 보고, 세션·heavy 락과 무관하다."""
@@ -1654,6 +1686,13 @@ def _reflect_body(deps: DaemonDeps) -> dict:
     try:
         matured = outcomes.mature(conn, state=deps.state, today=_today(deps))
         views_matured = _mature_market_views(deps, conn)
+        for m in deps.settings.markets:  # 테마 열기 판정 사후 검증(Phase 25) — 실패는 경고만
+            try:
+                from trader.scan import theme as theme_mod
+
+                theme_mod.mature(conn, m, state=deps.state, today=_today(deps))
+            except Exception as e:  # noqa: BLE001
+                logger.warning("테마 판정 채점 실패 %s: %s", m, e)
         sessions = 0
         errors: list[str] = []
         for market in deps.settings.markets:
@@ -1859,6 +1898,10 @@ def job_body(
     if job.kind == "scalp":
         return lambda: monitor_job(
             deps, job.market or "KR", lambda: _scalp_body(deps, job.market or "KR")
+        )
+    if job.kind == "theme":
+        return lambda: monitor_job(
+            deps, job.market or "KR", lambda: _theme_body(deps, job.market or "KR")
         )
     if job.kind == "telegram_poll":
         return lambda: _telegram_body(deps)
