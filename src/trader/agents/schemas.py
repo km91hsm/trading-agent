@@ -223,6 +223,31 @@ class HedgeProposal(BaseModel):
     invalidation_conditions: list[str]
 
 
+class ScalpVerdict(BaseModel):
+    """분 단위 판정자(scalp-judge, Phase 25) 진입 판정. 청산 파라미터는 파이썬이 설정값으로
+    클램프한다(손절을 넓히거나 보유를 늘릴 수 없다)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    go: bool
+    size: Literal["full", "half"] = "full"
+    take_profit_pct: float = Field(gt=0, le=0.05)
+    stop_pct: float = Field(gt=0, le=0.03)
+    max_hold_min: int = Field(ge=1, le=120)
+    reason: str = Field(max_length=300)
+    confidence: float = Field(ge=0, le=1)
+
+
+class ScalpAdvice(BaseModel):
+    """보유 중 단타의 5분 조언(Phase 25). exit 이면 다음 틱 조기 청산 — 늦추는 조언은 없다."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    action: Literal["hold", "exit"]
+    reason: str = Field(max_length=300)
+    confidence: float = Field(ge=0, le=1)
+
+
 class CallMeta(BaseModel):
     """LLM 호출 기록 (체크포인트 `call` 필드)."""
 

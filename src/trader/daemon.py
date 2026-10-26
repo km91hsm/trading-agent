@@ -406,6 +406,7 @@ class DaemonDeps:
     # 무거운 잡(scan_analyze·reflect·ml_train·대기열 요청)은 한 번에 하나. cron 은 기다리고
     # 대기열 틱은 잠겨 있으면 claim 하지 않는다
     heavy_lock: threading.Lock = field(default_factory=threading.Lock)
+    scalp_judge: Any | None = None  # Phase 25 단타 판정자(scalp.judge 일 때 _scalp_body 가 만든다)
     # cron 잡이 heavy 락을 기다리는 중이면 선다. 대기열의 긴 잡(백필)은 진행 콜백에서 이것을 보고
     # 락을 잠시 내놓는다(종목 경계) — 아침 scan 이 백필 뒤로 수 시간 밀리지 않도록
     heavy_wanted: threading.Event = field(default_factory=threading.Event)
@@ -1163,6 +1164,35 @@ def _monitor_body(deps: DaemonDeps, market: str) -> dict:
         conn.close()
 
 
+def _scalp_judge(deps: DaemonDeps):
+    """판정자 스레드 풀은 데몬 수명 동안 하나(재시작이면 제출 중 판정은 버려진다 = 진입 안 함).
+    판정 스레드는 원장 연결을 따로 연다(SQLite 연결은 스레드 사이에 공유하지 않는다)."""
+    from trader.orchestrator import quick
+    from trader.scalp import engine as scalp_engine
+
+    if deps.scalp_judge is None:
+        cfg = deps.settings.scalp
+
+        def ask(payload: dict, schema: type):
+            conn = deps.conn_factory()
+            try:
+                return quick.ask_json(
+                    deps.settings,
+                    conn,
+                    agent="scalp-judge",
+                    payload=payload,
+                    schema=schema,
+                    cap=cfg.judge_daily_cap,
+                    timeout_s=cfg.judge_timeout_s,
+                    now=deps.now,
+                )
+            finally:
+                conn.close()
+
+        deps.scalp_judge = scalp_engine.ScalpJudge(ask)
+    return deps.scalp_judge
+
+
 def _scalp_body(deps: DaemonDeps, market: str) -> dict:
     """분 단위 단타 1틱(Phase 23 S). 꺼져 있으면 skipped(잡 표에는 보인다). 창·paused 는 engine 이
     다시 보고, 세션·heavy 락과 무관하다."""
@@ -1189,6 +1219,7 @@ def _scalp_body(deps: DaemonDeps, market: str) -> dict:
             state=deps.state,
             dry_run=deps.dry_run,
             exchanges={u.symbol: u.exchange for u in (deps.universe.us if deps.universe else [])},
+            judge=_scalp_judge(deps) if deps.settings.scalp.judge else None,
         )
         return scalp_engine.tick(ctx, market=market, today=run_date_for(market, deps.now()))
     finally:

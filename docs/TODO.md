@@ -348,6 +348,7 @@
 
 ## Phase 25 테마·LLM 판정자·공시·리밸런스 (같은 플랜 단계 4~7)
 - [ ] 단계 4 테마 열기 감지·안전장치 (`feat/phase25-4-theme`, 머지 전 사용자 확인)
-- [ ] 단계 5 분 단위 LLM 판정자 (`feat/phase25-5-scalp-judge`, 머지 전 사용자 확인)
+- [ ] 단계 5 분 단위 LLM 판정자 (`feat/phase25-5-scalp-judge`, 머지 전 사용자 확인): `quick.ask_json`·`scalp-judge`(haiku)·`ScalpVerdict/ScalpAdvice`·엔진 비동기 판정(다음 틱 회수·0.3% 이탈·시간 초과·재시작=진입 없음·클램프)·보유 조언·GO vs NO_GO 리포트 — 구현·테스트 완료, PR 확인 대기
+- [ ] 결정 대기(사용자): 단타를 켠 뒤(`scalp.enabled`) 1~2주 `scalp report --live` 의 GO/NO_GO 사후 수익을 보고 `scalp.judge` 를 켤지
 - [ ] 단계 6 승인 지문·공시 중요도 (`feat/phase25-6-approval-disclosure`)
 - [ ] 단계 7 주간 리밸런스·세금 로트 (`feat/phase25-7-rebalance-tax`, 머지 전 사용자 확인)

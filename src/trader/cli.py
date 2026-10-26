@@ -2319,16 +2319,39 @@ def scalp_backtest(
 def scalp_report(
     market: str = typer.Option("KR", "--market", help="KR|US"),
     days: int = typer.Option(5, "--days", min=1, max=60, help="최근 운영일 수"),
+    live: bool = typer.Option(
+        False, "--live", help="오늘 NO_GO 판정의 가상 수익을 당일 분봉으로 계산(실전 시세 키)"
+    ),
 ) -> None:
-    """단타 상태 파일(state/scalp/<date>/<market>.json)로 승률·사유별 집계를 JSON 으로."""
+    """단타 상태 파일(state/scalp/<date>/<market>.json)로 승률·사유별 집계 + 판정자 GO vs NO_GO
+    사후 비교(Phase 25)를 JSON 으로."""
     import json
+    from datetime import UTC, datetime
 
+    from trader.orchestrator.run_store import run_date_for
     from trader.scalp import engine as scalp_engine
 
     configure(paths.state_dir())
     settings = config.load_settings()
-    out = scalp_engine.report(paths.state_dir(), market=market, days=days)
+    ms = config.load_schedule()
+    ms = ms.kr if market == "KR" else ms.us
+    judge = {"cfg": settings.scalp, "close_hm": ms.monitor.end, "minutes_fn": None}
+    if live:  # 오늘 NO_GO 신호의 가상 수익 — KIS 당일 분봉(실전 시세 키)
+        mc = _build_market(config.load_secrets())
+        judge["minutes_fn"] = (
+            (lambda t: mc.get_minute_kr(t, count=400))
+            if market == "KR"
+            else (lambda t: mc.get_minute_us(t, "NAS", count=400))
+        )
+    out = scalp_engine.report(
+        paths.state_dir(),
+        market=market,
+        days=days,
+        today=run_date_for(market, datetime.now(UTC)),
+        judge=judge,
+    )
     out["enabled"] = settings.scalp.enabled
+    out["judge_enabled"] = settings.scalp.judge
     typer.echo(json.dumps(out, ensure_ascii=False, default=str))
 
 

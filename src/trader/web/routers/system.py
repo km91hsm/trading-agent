@@ -152,9 +152,12 @@ def scalp_status(request: Request, market: str | None = None) -> dict:
             "open": st.get("open") or [],
             "closed": st.get("closed") or [],
             "halted": st.get("halted"),
+            "pending": sorted((st.get("pending") or {}).keys()),  # 판정 대기(Phase 25)
+            "judge": scalp_engine.judge_summary(deps.state, market=m, days=[d], cfg=cfg),
         }
     return {
         "enabled": cfg.enabled,
+        "judge": cfg.judge,
         "max_weight_pct": cfg.max_weight_pct,
         "max_positions": cfg.max_positions,
         "markets": today_by,
