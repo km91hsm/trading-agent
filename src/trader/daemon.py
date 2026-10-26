@@ -522,6 +522,7 @@ class DaemonDeps:
     # 대기열 틱은 잠겨 있으면 claim 하지 않는다
     heavy_lock: threading.Lock = field(default_factory=threading.Lock)
     scalp_judge: Any | None = None  # Phase 25 단타 판정자(scalp.judge 일 때 _scalp_body 가 만든다)
+    notice_listeners: list[Any] = field(default_factory=list)  # 체결통보 리스너(env 별)
     saveticker_proc: Any | None = None  # 이 데몬이 띄운 세이브티커 수집 서비스(Popen)
     saveticker_home: Path | None = None  # 그 서비스의 수집 폴더(종료 때 남은 작업 정리)
     saveticker_pruned: date | None = None  # 수집 폴더 보관 기간 정리를 한 날(운영일 1회)
@@ -1712,6 +1713,22 @@ def _paper_review_body(deps: DaemonDeps) -> dict:
     if any(it["terminal"] for it in r["items"]) or r["alerts"]:
         deps.notifier.send(paper_review.message(r))
     return {"items": len(r["items"]), "alerts": len(r["alerts"])}
+
+
+def notice_handler(conn_factory: Callable[[], sqlite3.Connection]) -> Callable[[str], None]:
+    """체결통보 → 작업 대기열 `fills_sync`(빠른 레인). 이미 대기·실행 중이면 그것으로 충분하다."""
+
+    def on_notice(env: str) -> None:
+        conn = conn_factory()
+        try:
+            rid = jobq.enqueue(conn, "fills_sync", {}, source=f"notice:{env}")
+            logger.info("체결통보(%s) → 체결 동기화 요청 #%s", env, rid)
+        except jobq.DuplicateRequest:
+            pass
+        finally:
+            conn.close()
+
+    return on_notice
 
 
 def _stop_saveticker(deps: DaemonDeps) -> None:
@@ -2939,6 +2956,8 @@ def run(
         logger.info("데몬 시작: 잡 %d개, web=%s", len(jobs), web)
         if install_signals:
             _install_signals(scheduler, deps.stop_event)
+        for listener in deps.notice_listeners:  # 체결통보(Stock D-060): 데몬 수명 동안
+            listener.start()
         try:
             scheduler.start()
         except (KeyboardInterrupt, SystemExit):
@@ -2950,6 +2969,8 @@ def run(
             deps.stop_event.set()
             deps.scalp_judge.shutdown()
         _stop_saveticker(deps)
+        for listener in deps.notice_listeners:
+            listener.stop()
         lock.release()
 
 

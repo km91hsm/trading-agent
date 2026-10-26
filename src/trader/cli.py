@@ -1038,7 +1038,35 @@ def _daemon_deps(*, dry_run: bool = False):
             secrets, universe, market_client, notifier=make_notifier(secrets)
         ),
         features_fn=_daemon_features_fn(secrets, universe, market_client),
+        notice_listeners=_notice_listeners(settings, secrets, accounts, db.connect),
     )
+
+
+def _notice_listeners(settings, secrets, accounts, conn_factory) -> list:
+    """계좌 env 마다 체결통보 리스너(HTS ID·앱키가 있을 때만). 없으면 빈 목록(정기 동기화만)."""
+    from trader import daemon as daemon_mod
+    from trader.orchestrator.notice import NoticeListener
+
+    hts = (secrets.KIS_HTS_ID or "").strip()
+    if not settings.fill_notice or not hts:
+        return []
+    out = []
+    for env in sorted({a.env for a in accounts}):
+        try:
+            auth = _build_client(secrets, env).auth
+        except config.ConfigError as e:
+            logging.getLogger("trader.cli").warning("체결통보 생략(%s): %s", env, e)
+            continue
+        out.append(
+            NoticeListener(
+                env=env,
+                hts_id=hts,
+                approval=auth.approval_key,
+                invalidate=auth.invalidate_approval,
+                on_notice=daemon_mod.notice_handler(conn_factory),
+            )
+        )
+    return out
 
 
 @app.command("init")
