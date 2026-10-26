@@ -30,6 +30,14 @@ def runtime() -> Path:
     return paths.state_dir() / "external" / "saveticker" / "runtime"
 
 
+def sqlite_diagnostics(exc) -> dict:
+    import sqlite3
+
+    if isinstance(exc, sqlite3.Error):
+        return {key: getattr(exc, key, None) for key in ("sqlite_errorcode", "sqlite_errorname")}
+    return {}
+
+
 def _print(value):
     typer.echo(json.dumps(value, ensure_ascii=False))
 
@@ -289,12 +297,14 @@ def run_cmd(
         heartbeat("stopped")
     except Exception as exc:
         # Playwright 오류에는 폼 입력이 들어갈 수 있으므로 메시지는 절대 출력하지 않는다.
+        diagnostics = dict(adapter.diagnostics) if adapter else {}
+        diagnostics.update(sqlite_diagnostics(exc))
         heartbeat(
             "error",
             error_type=type(exc).__name__,
             workers=last_workers,
             stage=adapter.stage if adapter else "browser_start",
-            diagnostics=adapter.diagnostics if adapter else {},
+            diagnostics=diagnostics,
         )
         typer.echo(
             f"수집 중단: {type(exc).__name__} (runner.json의 단계·HTTP 상태를 확인하세요)", err=True

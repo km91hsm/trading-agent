@@ -57,3 +57,17 @@ def test_operational_layout_separates_data_from_runtime(project):
 
     assert root() == project / "state" / "external" / "saveticker" / "data"
     assert runtime() == project / "state" / "external" / "saveticker" / "runtime"
+
+
+def test_sqlite_diagnostics_preserve_code_without_error_message():
+    import sqlite3
+
+    from trader.sources.saveticker.cli import sqlite_diagnostics
+
+    with sqlite3.connect(":memory:") as db:
+        try:
+            db.execute("SELECT private_secret_column")
+        except sqlite3.Error as exc:
+            result = sqlite_diagnostics(exc)
+    assert result == {"sqlite_errorcode": 1, "sqlite_errorname": "SQLITE_ERROR"}
+    assert "private_secret_column" not in str(result)
