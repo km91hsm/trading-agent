@@ -23,6 +23,7 @@ from trader.broker.models import drop_incomplete_tail as drop_incomplete_tail  #
 from trader.config import ConfigError, SectorMap, Universe, load_sectors
 from trader.platform import paths
 from trader.platform.filelock import locked
+from trader.platform.fsutil import atomic_replace
 from trader.sources import indicators
 from trader.sources.base import MAX_PAST as _MAX_PAST
 from trader.sources.dart import ANNUAL, basic_ratios
@@ -256,14 +257,22 @@ def _write_day_file(
     part = _coerce(add_sector_relative(part, sectors) if derive else part)
     tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")  # 프로세스마다 다른 임시 이름
     part.reset_index(drop=True).to_parquet(tmp, index=False)
-    tmp.replace(path)
+    atomic_replace(tmp, path)
 
 
-def read_part(path: Path, **kw: Any) -> pd.DataFrame | None:
+def read_part(path: Path, *, strict: bool = False, **kw: Any) -> pd.DataFrame | None:
     """날짜 파일 하나를 읽는다. 깨진 파일(쓰기 중 종료 등)은 경고 후 None — 한 파일 때문에 scan 이
-    죽지 않는다. 피처 스토어 읽기는 모두 이 함수를 지난다."""
+    죽지 않는다. 피처 스토어 읽기는 모두 이 함수를 지난다.
+    strict=True(쓰기 직전 합치기용)면 **읽기 실패(OSError: 다른 프로세스가 연 파일·권한)는 올린다**
+    — None 으로 돌려 '깨진 파일' 로 보고 새 행만으로 덮으면 그날 다른 종목 행이 사라진다(검토 P11).
+    파일 내용이 깨진 경우(파싱 오류)만 None."""
     try:
         return pd.read_parquet(path, **kw)
+    except OSError as e:
+        if strict:
+            raise
+        logger.warning("피처 파일을 읽지 못해 건너뜀 %s: %s: %s", path.name, type(e).__name__, e)
+        return None
     except Exception as e:  # noqa: BLE001 - pyarrow 오류 종류가 많다
         logger.warning("피처 파일을 읽지 못해 건너뜀 %s: %s: %s", path.name, type(e).__name__, e)
         return None
@@ -328,7 +337,7 @@ def write_rows(
             path = d / f"{pd.Timestamp(day).date().isoformat()}.parquet"
             if path.exists():
                 # 이전 Phase 파일은 열이 적을 수 있다 (latest_rows 와 같은 reindex)
-                raw = read_part(path)
+                raw = read_part(path, strict=True)  # 읽기 실패는 올린다(덮어쓰기 금지)
                 if raw is not None:  # 깨진 파일은 새 행으로 덮는다
                     old = _coerce(raw.reindex(columns=FEATURE_COLUMNS))
                     old = old[~old["ticker"].isin(part["ticker"])]
@@ -352,15 +361,17 @@ def rederive(
     sectors = sectors if sectors is not None else load_sectors()
     files = sorted(paths) if paths is not None else sorted(fdir.glob("*.parquet"))
     n = 0
-    with _store_lock(state):
-        for path in files:
+    for path in files:
+        # 파일마다 락을 잡고 놓는다: 진행 콜백(데몬은 여기서 heavy 락을 양보)이 파일 락을 쥔 채
+        # 불리면 그사이 도는 reflect 스냅샷이 LockTimeout 으로 실패한다(전체 검토 P9)
+        with _store_lock(state):
             raw = read_part(path)
             if raw is None:
                 continue
             part = _coerce(raw.reindex(columns=FEATURE_COLUMNS))
             _write_day_file(path, part, sectors)
-            progress(f"{path.stem}: {len(part)}행")
-            n += 1
+        progress(f"{path.stem}: {len(part)}행")
+        n += 1
     return n
 
 

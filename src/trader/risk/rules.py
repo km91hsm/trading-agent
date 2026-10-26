@@ -45,10 +45,24 @@ class Portfolio:
     # Phase 25: 오늘 상위 테마 종목→그 종목이 속한 상위 테마들(scan/theme.theme_of_map, 섹터·키워드
     # 테마가 겹칠 수 있다). 없으면 테마 규칙 생략
     theme_of: Callable[[str], list[str] | None] | None = None
+    # 검토 O10: 오늘 체결 전 BUY 주문 + pending 승인의 종목별 금액(예상 포트폴리오). 종목 수·섹터·
+    # 테마 합계에서 보유처럼 더한다. 현금 차감은 today_order_amount 가 이미 하므로 여기서 빼지 않음
+    pending_buys: dict[str, Decimal] = field(default_factory=dict)
 
     def equity_positions(self) -> dict[str, Position]:
         """헤지 ETF 를 뺀 일반 보유 종목."""
         return {t: p for t, p in self.positions.items() if t not in self.hedge_tickers}
+
+    def pending_equity_buys(self) -> dict[str, Decimal]:
+        """헤지 ETF 를 뺀 체결 전 매수 금액."""
+        return {t: v for t, v in self.pending_buys.items() if t not in self.hedge_tickers}
+
+    def exposure(self) -> dict[str, Decimal]:
+        """예상 포트폴리오의 종목별 금액: 일반 보유 평가금액 + 체결 전 매수 금액."""
+        out = {t: p.eval_amount for t, p in self.equity_positions().items()}
+        for t, v in self.pending_equity_buys().items():
+            out[t] = out.get(t, Decimal(0)) + v
+        return out
 
 
 class RiskVerdict(BaseModel):
@@ -112,18 +126,20 @@ def _theme_rejections(
             f"(결정: {decision.horizon_days}일, 익절가 {decision.take_profit or '없음'})"
         )
     nav = portfolio.nav
+    exposure = portfolio.exposure()  # 체결 전 매수까지 더한 예상 포트폴리오(검토 O10)
     if nav > 0:
         # 종목이 속한 상위 테마마다 따로 본다(섹터 테마와 키워드 테마가 겹치면 둘 다 상한 대상)
         for theme in themes:
             others = sum(
                 (
-                    p.eval_amount
-                    for t, p in portfolio.equity_positions().items()
+                    v
+                    for t, v in exposure.items()
                     if t != decision.ticker and theme in (theme_of(t) or [])  # type: ignore[misc]
                 ),
                 Decimal(0),
             )
-            after = (others + current_value + order_amount) / nav
+            mine = portfolio.pending_equity_buys().get(decision.ticker, Decimal(0))
+            after = (others + current_value + mine + order_amount) / nav
             if after > Decimal(str(lim.max_theme_pct)):
                 out.append(
                     f"테마 '{theme}' 비중이 주문 뒤 {float(after):.0%} 로 상한 "
@@ -284,22 +300,30 @@ def evaluate(
             reasons.append(
                 "하락 국면(bear)이지만 전략가 RISK_ON(확신 기준 이상): 축소 한도로 조건부 허용"
             )
+        # 종목 수·섹터는 예상 포트폴리오(보유 + 체결 전 매수·승인 대기)로 본다(검토 O10) — 아침에
+        # 미체결 BUY 5건이 걸린 채 6번째가 들어오던 구멍. 현금은 today_order_amount 가 이미 뺐다
         equities = portfolio.equity_positions()
-        if held is None and len(equities) >= lim.max_positions:
-            rejected.append(f"보유 종목 수 {len(equities)} 이 상한 {lim.max_positions} 에 도달")
+        exposure = portfolio.exposure()
+        n_pending = len(set(exposure) - set(equities))
+        if ticker not in exposure and len(exposure) >= lim.max_positions:
+            tail = f"(체결 전 매수 {n_pending} 포함)" if n_pending else ""
+            rejected.append(
+                f"보유 종목 수 {len(exposure)}{tail} 이 상한 {lim.max_positions} 에 도달"
+            )
         if portfolio.sector_of is not None and nav > 0:
             sector = portfolio.sector_of(ticker) or "기타"
             others = sum(
                 (
-                    p.eval_amount
-                    for t, p in equities.items()
+                    v
+                    for t, v in exposure.items()
                     if t != ticker and (portfolio.sector_of(t) or "기타") == sector
                 ),
                 Decimal(0),
             )
+            mine = portfolio.pending_equity_buys().get(ticker, Decimal(0))
             # 반감·수량 절사 뒤의 실제 주문금액으로 본다(buy_value 는 반감 전 가능금액)
             order_amount = Decimal(qty) * (order_price if order_price is not None else price)
-            after = (others + current_value + order_amount) / nav
+            after = (others + current_value + mine + order_amount) / nav
             if after > Decimal(str(lim.max_sector_pct)):
                 rejected.append(
                     f"섹터 '{sector}' 비중이 주문 뒤 {float(after):.0%} 로 상한 "
