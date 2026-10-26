@@ -90,6 +90,7 @@ export function stageSummary(key: StageKey, items: Array<{ file: string; data: u
       return `${rounds.size}라운드 · ${items.length}턴`;
     }
     case "25_research_summary":
+      if (d0.skipped_debate) return "토론 생략 · 애널리스트 합의";
       return d0.sycophantic ? "붕괴 · r0 우선" : `정상 수렴${d0.preferred ? ` · ${String(d0.preferred)}` : ""}`;
     case "30_decision":
     case "31_decision":

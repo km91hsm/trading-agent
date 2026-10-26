@@ -333,6 +333,26 @@ def test_fake_session_writes_all_stages(project, conn, accounts, monkeypatch):
     assert conn.execute("SELECT status FROM agent_calls").fetchone()["status"] == "ok"
 
 
+def test_fake_skips_debate_on_analyst_consensus(project, conn, accounts, monkeypatch):
+    """애널리스트 4명이 같은 방향·높은 확신이면 FAKE 도 토론 없이 결정한다 (L17)."""
+    from helpers_agents import ok_report
+
+    monkeypatch.setenv("FAKE_CLAUDE", "1")
+    d = _inputs()
+    for role in ("technical", "fundamental", "news_macro", "sentiment"):
+        payload = ok_report(role=role, signal="BUY", confidence=0.8)
+        run_store.write_checkpoint(
+            d, f"10_analyst_{role}", {"schema_version": 1, "data": payload, "call": None}
+        )
+    res = run_session(spec(), Settings(), conn, accounts, agents_dir=REPO_AGENTS, now=lambda: T0)
+    assert res.ok
+    stages = list_checkpoints(d)
+    assert not any(s.startswith("20_debate_") for s in stages)
+    assert read_checkpoint(d, "25_research_summary")["data"]["skipped_debate"] is True
+    assert "30_decision" in stages
+    assert res.stages_written[:1] == ["25_research_summary"]
+
+
 def test_fake_skips_existing(project, conn, accounts, monkeypatch):
     monkeypatch.setenv("FAKE_CLAUDE", "1")
     d = _inputs()

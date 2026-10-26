@@ -154,6 +154,10 @@ function inputs(d: Rec): ReportBlock[] {
 }
 
 function research(d: Rec): ReportBlock[] {
+  if (d.skipped_debate) {
+    // 애널리스트 4명이 같은 방향·높은 확신이면 토론 없이 트레이더로 간다(전체 검토 L17)
+    return [{ title: "토론 요약", lead: "토론 생략 — 애널리스트 합의", rows: [["사유", str(d.reason) || DASH]] }];
+  }
   const issues = texts(d.issues);
   return [
     {

@@ -426,7 +426,18 @@ def decision_trace(
     debate.sort(key=lambda x: (int(x.get("round") or 0), str(x.get("side"))))
     rs = data("25_research_summary")
     research = (
-        {k: rs.get(k) for k in ("rounds", "gap_round0", "gap_final", "sycophantic", "preferred")}
+        {
+            k: rs.get(k)
+            for k in (
+                "rounds",
+                "gap_round0",
+                "gap_final",
+                "sycophantic",
+                "preferred",
+                "skipped_debate",
+                "reason",
+            )
+        }
         if rs
         else None
     )

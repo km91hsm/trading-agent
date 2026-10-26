@@ -1324,3 +1324,83 @@ def test_resume_reruns_account_whose_order_never_went_out(ctx, project):
     r = tools.submit_decision(ctx, ticker="005930", market="KR", date=D, payload=ok_decision())
     assert r["resumed_execution"] is True
     assert [e["account_id"] for e in r["executions"]] == ["paper-main"]
+
+
+# --- 합의 시 토론 생략 (L17) -----------------------------------------------------
+
+ROLES4 = ("technical", "fundamental", "news_macro", "sentiment")
+
+
+def _write_reports(ctx, signals, conf=0.8):
+    for role, sig in zip(ROLES4, signals, strict=True):
+        r = tools.checkpoint_write(
+            ctx,
+            ticker="005930",
+            market="KR",
+            date=D,
+            stage=f"10_analyst_{role}",
+            payload=ok_report(role=role, signal=sig, confidence=conf),
+            agent=f"analyst-{role}",
+        )
+        assert r["ok"], r
+
+
+def test_summarize_skips_debate_on_consensus(ctx, project):
+    _inputs(project)
+    _write_reports(ctx, ["BUY"] * 4)
+    r = tools.checkpoint_summarize(ctx, ticker="005930", market="KR", date=D)
+    assert r["ok"] and r["skipped_debate"] is True and r["reason"]
+    s = read_checkpoint(run_dir(D, "KR", "005930"), "25_research_summary")["data"]
+    assert s["skipped_debate"] is True and s["sycophantic"] is None
+    # 트레이더 묶음은 생략 요약을 그대로 싣는다
+    b = tools.checkpoint_bundle(ctx, ticker="005930", market="KR", date=D, kind="trader")
+    assert b["ok"] and b["data"]["research_summary"]["skipped_debate"] is True
+    # submit-decision 전제조건(리포트 2개 + 25_research_summary)은 그대로 통과
+    r = tools.submit_decision(ctx, ticker="005930", market="KR", date=D, payload=ok_decision())
+    assert r["ok"], r
+    assert ctx.conn.execute("SELECT COUNT(*) FROM debate_turns").fetchone()[0] == 0
+
+
+def test_summarize_requires_debate_without_consensus(ctx, project):
+    _inputs(project)
+    _write_reports(ctx, ["BUY", "BUY", "BUY", "SELL"])
+    r = tools.checkpoint_summarize(ctx, ticker="005930", market="KR", date=D)
+    assert r["ok"] is False and r["debate_required"] is True
+    assert read_checkpoint(run_dir(D, "KR", "005930"), "25_research_summary") is None
+
+
+def test_summarize_low_confidence_requires_debate(ctx, project):
+    _inputs(project)
+    _write_reports(ctx, ["BUY"] * 4, conf=0.6)
+    r = tools.checkpoint_summarize(ctx, ticker="005930", market="KR", date=D)
+    assert r["ok"] is False and r["debate_required"] is True
+
+
+def test_summarize_skip_disabled_requires_debate(ctx, project):
+    from trader.config import DebateCfg
+
+    ctx.settings = Settings(debate=DebateCfg(skip_on_consensus=False))
+    _inputs(project)
+    _write_reports(ctx, ["BUY"] * 4)
+    r = tools.checkpoint_summarize(ctx, ticker="005930", market="KR", date=D)
+    assert r["ok"] is False and r["debate_required"] is True
+
+
+def test_summarize_with_debate_turns_uses_debate_even_on_consensus(ctx, project):
+    """토론 턴이 이미 있으면(합의여도) 수렴 감시를 포함한 정상 요약을 만든다."""
+    _inputs(project)
+    _write_reports(ctx, ["BUY"] * 4)
+    for side in ("bull", "bear"):
+        tools.checkpoint_write(
+            ctx,
+            ticker="005930",
+            market="KR",
+            date=D,
+            stage=f"20_debate_r0_{side}",
+            payload=ok_turn(side),
+            agent="r",
+        )
+    r = tools.checkpoint_summarize(ctx, ticker="005930", market="KR", date=D)
+    assert r["ok"] and not r.get("skipped_debate")
+    s = read_checkpoint(run_dir(D, "KR", "005930"), "25_research_summary")["data"]
+    assert "skipped_debate" not in s and isinstance(s["sycophantic"], bool)
