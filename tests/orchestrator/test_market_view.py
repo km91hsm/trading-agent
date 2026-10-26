@@ -276,6 +276,6 @@ def test_build_inputs_includes_saveticker_snapshot_when_folder_exists(project, c
     shutil.copytree(FIXTURES / "saveticker", project / "state" / "external" / "saveticker")
     late = T0.replace(year=2026, month=10, day=25, hour=3)
     inp = market_view.build_inputs(conn, "US", D, settings=Settings(), asof=late, now=lambda: late)
-    assert inp["saveticker"]["trends"][0]["keyword"] == "트럼프"
+    assert "trends" not in inp["saveticker"] and inp["saveticker"]["movers"]["gain"]
     assert inp["saveticker"]["report"]["report_date"] == "2026-10-23"
     assert "saveticker" not in inp["errors"]
