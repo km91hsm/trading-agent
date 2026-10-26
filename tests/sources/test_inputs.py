@@ -886,7 +886,7 @@ def test_sentiment_saveticker_section_from_local_dir(project, monkeypatch):
     assert sec["error"] is None and sec["data"]["mentions"]["community_top5"][0]["tickers"] == [
         "QQQ"
     ]
-    assert sec["data"]["trends"][0]["keyword"] == "트럼프"
+    assert "trends" not in sec["data"] and sec["data"]["index"]
     d2 = build_inputs(
         ticker="005930",
         market="KR",
