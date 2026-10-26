@@ -149,8 +149,9 @@ def test_expected_return_below_cost_rejected():
     # 왕복 30bp × 2 = 0.6% 미만 기대수익 거부: 70000 → take_profit 70300 (0.43%)
     v = _eval(ok_decision(take_profit=70300.0))
     assert v.approved is False and any("기대수익" in r for r in v.reasons)
-    v = _eval(ok_decision(take_profit=None, limit_price=None))  # 기대수익 미상이면 통과
-    assert v.approved
+    # 검토 L9: 익절가가 없으면 이제 통과하지 않는다(손절·익절 둘 다 필요)
+    v = _eval(ok_decision(take_profit=None, limit_price=None))
+    assert not v.approved and any("손절가와 익절가가 모두 필요" in r for r in v.reasons)
 
 
 def test_low_confidence_halves():
@@ -161,7 +162,7 @@ def test_low_confidence_halves():
 def test_us_market_order_forced_limit():
     v = _eval(
         ok_decision(
-            ticker="AAPL", order_type="MARKET", limit_price=None, take_profit=None, stop_loss=180.0
+            ticker="AAPL", order_type="MARKET", limit_price=None, take_profit=240.0, stop_loss=180.0
         ),
         price="200",
         market="US",
@@ -510,8 +511,10 @@ def test_theme_ticker_requires_short_horizon_and_take_profit():
     v = _eval(ok_decision(take_profit=None), pf)
     assert not v.approved and any("익절가" in r for r in v.reasons)
     assert _eval(ok_decision(horizon_days=10), pf).approved
-    # 테마 종목이 아니면 긴 보유·익절가 없음도 통과(기존 규칙대로)
-    assert _eval(ok_decision(horizon_days=30, take_profit=None)).approved
+    # 테마 종목이 아니면 긴 보유는 통과(익절가 필수는 이제 모든 BUY 규칙 — 검토 L9)
+    assert _eval(ok_decision(horizon_days=30)).approved
+    v = _eval(ok_decision(horizon_days=30, take_profit=None))
+    assert not any("보유 10일 이하" in r for r in v.reasons)
 
 
 def test_theme_cap_checks_every_overlapping_theme():
@@ -520,3 +523,32 @@ def test_theme_cap_checks_every_overlapping_theme():
     pf = _portfolio(positions={"000660": _pos("000660", 15, "100000")}, theme_of=themes.get)
     v = _eval(ok_decision(target_weight=0.1), pf)  # 로봇 15% + 10% = 25% > 20%
     assert not v.approved and any("kw:로봇" in r and "초과" in r for r in v.reasons)
+
+
+# --- 검토 L9: 손절·익절 필수, 확신 가중 기대값, 1회 손실 한도 -----------------------------
+
+
+def test_buy_requires_both_stop_and_take_profit():
+    v = _eval(ok_decision(stop_loss=None))
+    assert not v.approved and any("모두 필요" in r for r in v.reasons)
+
+
+def test_negative_expected_value_rejected_even_if_target_far_enough():
+    # 현재 70000, 익절 +2%(71400)·손절 −20%(56000), 확신 0.6 → EV = 0.6×2% − 0.4×20% < 0
+    v = _eval(ok_decision(take_profit=71400.0, stop_loss=56000.0, limit_price=None))
+    assert not v.approved and any("기대값" in r for r in v.reasons)
+
+
+def test_risk_per_trade_caps_quantity_by_stop_distance():
+    # NAV 1000만 × 2% = 20만 원 위험, 손절까지 70000−69000 = 1000원 → 최대 200주(1400만 아님 →
+    # 목표 비중 25%=250만/70000=35주가 더 작으니 35주). 손절을 가깝게 두면 비중이 그대로,
+    # 손절을 멀리(−20%) 두면 20만/14000=14주로 줄어든다
+    near = _eval(
+        ok_decision(target_weight=0.25, stop_loss=69000.0, take_profit=80000.0, limit_price=None)
+    )
+    far = _eval(
+        ok_decision(target_weight=0.25, stop_loss=56000.0, take_profit=95000.0, limit_price=None)
+    )
+    assert near.approved and near.adjusted_qty == 35
+    assert far.approved and far.adjusted_qty == 14
+    assert any("1회 손실 한도" in r for r in far.reasons)

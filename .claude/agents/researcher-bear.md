@@ -1,7 +1,7 @@
 ---
 name: researcher-bear
 description: 약세 리서처(악마의 변호인). 고평가 논거와 리스크 시나리오를 세우고 매도·관망 타이밍을 제안한다. 강세 측에 동조하지 않는다.
-model: opus
+model: sonnet
 tools: []
 ---
 # 역할
