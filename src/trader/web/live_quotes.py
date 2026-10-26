@@ -188,9 +188,9 @@ class QuoteHub:
             logger.warning("실시간 시세 연결 끊김: %s", type(e).__name__)
             self._drop(backoff=True)
             return False
-        # 실제로 받은 뒤에야 백오프를 푼다(접속 직후 끊기는 장애에서 1초 반복 방지)
-        self._attempt = 0
-        self._handle(raw if isinstance(raw, str) else raw.decode("utf-8", "replace"))
+        # 정상 응답을 받은 뒤에야 백오프를 푼다(접속 직후 끊김·접속키 거절 반복이면 간격이 는다)
+        if self._handle(raw if isinstance(raw, str) else raw.decode("utf-8", "replace")):
+            self._attempt = 0
         return True
 
     def _open_connection(self) -> bool:
@@ -224,10 +224,11 @@ class QuoteHub:
             with self._lock:
                 self._subs.add(t)
 
-    def _handle(self, raw: str) -> None:
+    def _handle(self, raw: str) -> bool:
+        """정상 응답이면 True(백오프 해제), 접속키·해제 거절로 연결을 버렸으면 False."""
         if kis_ws.is_pingpong(raw):
             self._conn.send(raw)  # 돌려주지 않으면 서버가 끊는다
-            return
+            return True
         problem = kis_ws.control_problem(raw)
         if problem is not None:
             _, key, msg = problem
@@ -236,9 +237,9 @@ class QuoteHub:
                 logger.warning("실시간 접속키 거절 — 새 키로 다시 접속합니다")
                 self._invalidate()
                 self._drop(backoff=True)  # 거절이 반복되면 키 재발급도 간격을 늘린다
-                return
+                return False
             if "already" in low or not key:
-                return
+                return True
             with self._lock:
                 registered = key in self._subs
             if not registered:
@@ -246,13 +247,13 @@ class QuoteHub:
                 # 맞춘다(41칸 한도를 넘기지 않게)
                 logger.info("실시간 구독 해제 거절 %s: %s — 다시 접속합니다", key, msg)
                 self._drop(backoff=True)
-                return
+                return False
             logger.info("실시간 구독 거절 %s: %s", key, msg)
             with self._lock:
                 self._rejected[key] = self._clock()
                 self._subs.discard(key)
                 self._ticks.pop(key, None)
-            return
+            return True
         stamp, at = self._now().isoformat(), self._clock()
         for rec in kis_ws.parse_frame(raw):
             with self._lock:
@@ -267,6 +268,7 @@ class QuoteHub:
                             "source": "ws",
                         },
                     )
+        return True
 
     def _drop(self, *, backoff: bool) -> None:
         self._disconnect()

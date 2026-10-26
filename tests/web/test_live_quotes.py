@@ -80,7 +80,7 @@ def test_subscribes_requested_and_serves_ticks():
     assert got == {
         "005930": {
             "price": "71600",
-            "change_pct": 1.25,
+            "change_pct": 0.0125,
             "asof": NOW.isoformat(),
             "stale": False,
             "source": "ws",
@@ -273,3 +273,33 @@ def test_stop_prevents_restart_and_closes():
     hub._autostart = True
     hub.request(["005930"])
     assert hub._thread is None  # 내려간 앱에서 다시 띄우지 않는다
+
+
+def test_repeated_approval_rejection_backs_off():
+    """접속키 거절이 매번 오면 재발급·재접속 간격이 1·2·4초로 늘어난다(1초 반복 금지)."""
+
+    def rejecting():
+        c = FakeConn()
+        c.inbox.append(
+            json.dumps(
+                {
+                    "header": {"tr_id": "H0STCNT0", "tr_key": "005930"},
+                    "body": {"rt_cd": "1", "msg1": "invalid approval : NOT FOUND"},
+                }
+            )
+        )
+        return c
+
+    hub, clock, made, invalidated = make_hub(
+        conns=[rejecting() for _ in range(5)], keys=[f"ak-{i}" for i in range(10)]
+    )
+    connects = []
+    for t in range(0, 12):
+        clock[0] = float(t)
+        hub.request(["005930"])
+        before = len(made)
+        hub.step()
+        if len(made) > before:
+            connects.append(t)
+        hub.step()  # 거절 수신
+    assert connects[:4] == [0, 1, 3, 7]

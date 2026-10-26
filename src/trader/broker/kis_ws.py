@@ -69,8 +69,9 @@ def control_problem(raw: str) -> tuple[str, str, str] | None:
 
 
 def _signed_pct(value: str, sign: str) -> float | None:
+    """KIS 등락률(%) → 비율(REST `KisMarket.get_price_kr` 와 같은 단위, 1.25% → 0.0125)."""
     try:
-        v = float(value.strip())
+        v = float(value.strip()) / 100
     except (TypeError, ValueError):
         return None
     return -abs(v) if sign.strip() in _DOWN else v

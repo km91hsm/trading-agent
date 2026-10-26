@@ -20,8 +20,8 @@ def test_parse_frame_splits_batched_records_and_signs():
     raw = frame(trade_values("005930", 71500), trade_values("000660", 180000, "5", "2.10"))
     rows = kis_ws.parse_frame(raw)
     assert [(r["ticker"], r["price"], r["change_pct"]) for r in rows] == [
-        ("005930", "71500", 1.25),
-        ("000660", "180000", -2.10),  # 부호 4·5 는 하락(값이 양수로 와도)
+        ("005930", "71500", 0.0125),  # REST 와 같은 비율 단위
+        ("000660", "180000", -0.021),  # 부호 4·5 는 하락(값이 양수로 와도)
     ]
 
 
