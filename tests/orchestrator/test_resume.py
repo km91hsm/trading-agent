@@ -249,3 +249,36 @@ def test_reevaluate_news_trigger_without_price_uses_inputs_quote(conn, monkeypat
     )
     assert res.ok and "31_decision_r1" in list_checkpoints(run_dir(D, "KR", "005930"))
     assert conn.execute("SELECT handled_at FROM triggers WHERE id=?", (tid,)).fetchone()[0]
+
+
+def test_trigger_priced_resume_skips_chase_check_on_morning_change_pct(conn):
+    """트리거 가격 재평가는 아침 시세의 등락률(+12%)로 급등 추격을 판정하지 않는다(PR #26 리뷰)."""
+    from trader.orchestrator import run_store
+
+    ctx, accounts, brokers = _prepare(conn)
+    d = run_dir(D, "KR", "005930")
+    inputs = run_store.read_checkpoint(d, "00_inputs")
+    inputs["technical"]["quote"]["data"]["change_pct"] = 0.12
+    run_store.write_checkpoint(d, "00_inputs", inputs)
+    repo.insert_trigger(
+        conn,
+        market="KR",
+        ticker="005930",
+        kind="move_7pct",
+        detail={},
+        price=Decimal("72000"),
+        decision_id=repo.decision_id(conn, D, "KR", "005930"),
+        account_id="paper-main",
+        created_at=NOW.isoformat(),
+    )
+    r = tools.submit_decision(
+        ctx,
+        ticker="005930",
+        market="KR",
+        date=D,
+        stage="31_decision_r1",
+        payload=ok_decision(action="ADD", target_weight=0.2, limit_price=72000.0),
+    )
+    assert r["ok"], r
+    rc = run_store.read_checkpoint(d, "41_risk_check_r1_paper-main")["data"]
+    assert not any("급등 추격" in x for x in rc["reasons"])

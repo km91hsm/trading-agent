@@ -353,18 +353,20 @@ def top(heat: dict | None, n: int) -> list[dict]:
     return list((heat or {}).get("themes") or [])[:n]
 
 
-def theme_of_map(conn: sqlite3.Connection, market: str, d: date, top_n: int) -> dict[str, str]:
-    """오늘 상위 테마의 종목 → 테마 (게이트의 테마 상한·테마 종목 조건 용).
-    오늘 결과가 없으면 {}."""
+def theme_of_map(
+    conn: sqlite3.Connection, market: str, d: date, top_n: int
+) -> dict[str, list[str]]:
+    """오늘 상위 테마의 종목 → 그 종목이 속한 상위 테마들(순위순, 게이트의 테마 상한·테마 종목
+    조건 용 — 섹터·키워드 테마가 겹치면 모두). 오늘 결과가 없으면 {}."""
     from trader.control import control
 
     heat = control.get_flag(conn, f"{FLAG}:{market}")
     if not heat or heat.get("date") != d.isoformat():
         return {}
-    out: dict[str, str] = {}
+    out: dict[str, list[str]] = {}
     for th in top(heat, top_n):
         for t in th.get("members") or [x["ticker"] for x in th.get("tickers") or []]:
-            out.setdefault(t, th["theme"])
+            out.setdefault(t, []).append(th["theme"])
     return out
 
 
@@ -383,10 +385,19 @@ def record(conn: sqlite3.Connection, heat: dict, *, top_n: int) -> str | None:
         conn.execute(
             "INSERT INTO theme_heat(market, date, observed_at, theme, rank, score, catalyst_ok, "
             "tickers_json, components_json) VALUES (?,?,?,?,?,?,?,?,?) "
-            "ON CONFLICT(market, date, theme) DO UPDATE SET observed_at=excluded.observed_at, "
-            "rank=excluded.rank, score=MAX(score, excluded.score), "
-            "catalyst_ok=MAX(catalyst_ok, excluded.catalyst_ok), "
-            "tickers_json=excluded.tickers_json, components_json=excluded.components_json",
+            # 그날 최고 점수 관측 한 벌(점수·종목·성분·시각·순위)을 함께 둔다 — 사후 채점이
+            # 최고 점수와 다른 묶음의 수익을 잇지 않게
+            "ON CONFLICT(market, date, theme) DO UPDATE SET "
+            "observed_at=CASE WHEN excluded.score > score THEN excluded.observed_at "
+            "ELSE observed_at END, "
+            "rank=CASE WHEN excluded.score > score THEN excluded.rank ELSE rank END, "
+            "catalyst_ok=CASE WHEN excluded.score > score THEN excluded.catalyst_ok "
+            "ELSE catalyst_ok END, "
+            "tickers_json=CASE WHEN excluded.score > score THEN excluded.tickers_json "
+            "ELSE tickers_json END, "
+            "components_json=CASE WHEN excluded.score > score THEN excluded.components_json "
+            "ELSE components_json END, "
+            "score=MAX(score, excluded.score)",
             (
                 market,
                 heat["date"],

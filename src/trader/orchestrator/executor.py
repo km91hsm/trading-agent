@@ -54,7 +54,7 @@ class ExecContext:
     sectors: Any | None = None  # config.SectorMap (섹터 상한). None 이면 첫 사용 때 load_sectors()
 
 
-def _theme_of(ctx: ExecContext, market: str, d: date) -> Callable[[str], str | None] | None:
+def _theme_of(ctx: ExecContext, market: str, d: date) -> Callable[[str], list[str] | None] | None:
     """게이트의 테마 규칙용 종목→오늘 상위 테마(Phase 25, `scan/theme.theme_of_map`). 꺼졌거나
     오늘 결과가 없으면 None. 실패는 경고만(테마 규칙만 빠진다)."""
     if not ctx.settings.theme.enabled:
@@ -495,7 +495,7 @@ def _execute_account(
     extra_note: str | None = None,
     agent_tilt: int = 0,
     is_scalp: bool = False,
-    theme_of: Callable[[str], str | None] | None = None,
+    theme_of: Callable[[str], list[str] | None] | None = None,
     change_pct: float | None = None,
 ) -> dict:
     """계좌 하나의 판정·기록·(모드별) 주문. 반환은 results 항목 하나."""

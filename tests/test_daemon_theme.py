@@ -82,4 +82,6 @@ def test_theme_map_uses_recorded_members(conn, project):
         conn, FakeMarket(ranks={"volume": [RankRow(ticker="111111", rank=1)]}), now=lambda: NOW
     )
     daemon._theme_body(deps, "KR")
-    assert theme.theme_of_map(conn, "KR", date(2026, 10, 26), top_n=3) == {"111111": "섹터:반도체"}
+    assert theme.theme_of_map(conn, "KR", date(2026, 10, 26), top_n=3) == {
+        "111111": ["섹터:반도체"]
+    }

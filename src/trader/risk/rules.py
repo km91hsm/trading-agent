@@ -42,8 +42,9 @@ class Portfolio:
     # Phase 17 H: 섹터 상한용 종목→섹터(없으면 섹터 규칙 생략), 헤지 ETF(종목 수·섹터 계산에서 제외)
     sector_of: Callable[[str], str | None] | None = None
     hedge_tickers: frozenset[str] = frozenset()
-    # Phase 25: 오늘 상위 테마 종목→테마(scan/theme.theme_of_map). 없으면 테마 규칙 생략
-    theme_of: Callable[[str], str | None] | None = None
+    # Phase 25: 오늘 상위 테마 종목→그 종목이 속한 상위 테마들(scan/theme.theme_of_map, 섹터·키워드
+    # 테마가 겹칠 수 있다). 없으면 테마 규칙 생략
+    theme_of: Callable[[str], list[str] | None] | None = None
 
     def equity_positions(self) -> dict[str, Position]:
         """헤지 ETF 를 뺀 일반 보유 종목."""
@@ -101,30 +102,33 @@ def _theme_rejections(
             f"당일 등락률 {change_pct:+.1%} ≥ +{lim.chase_limit_pct:.0%}: "
             "급등 추격 — 신규 매수 금지"
         )
-    theme = portfolio.theme_of(decision.ticker) if portfolio.theme_of is not None else None
-    if not theme:
+    theme_of = portfolio.theme_of
+    themes = list(theme_of(decision.ticker) or []) if theme_of is not None else []
+    if not themes:
         return out
     if decision.horizon_days > lim.theme_max_horizon_days or decision.take_profit is None:
         out.append(
-            f"테마 종목('{theme}')은 보유 {lim.theme_max_horizon_days}일 이하·익절가 필수 "
+            f"테마 종목('{themes[0]}')은 보유 {lim.theme_max_horizon_days}일 이하·익절가 필수 "
             f"(결정: {decision.horizon_days}일, 익절가 {decision.take_profit or '없음'})"
         )
     nav = portfolio.nav
     if nav > 0:
-        others = sum(
-            (
-                p.eval_amount
-                for t, p in portfolio.equity_positions().items()
-                if t != decision.ticker and portfolio.theme_of(t) == theme
-            ),
-            Decimal(0),
-        )
-        after = (others + current_value + order_amount) / nav
-        if after > Decimal(str(lim.max_theme_pct)):
-            out.append(
-                f"테마 '{theme}' 비중이 주문 뒤 {float(after):.0%} 로 상한 "
-                f"{lim.max_theme_pct:.0%} 초과"
+        # 종목이 속한 상위 테마마다 따로 본다(섹터 테마와 키워드 테마가 겹치면 둘 다 상한 대상)
+        for theme in themes:
+            others = sum(
+                (
+                    p.eval_amount
+                    for t, p in portfolio.equity_positions().items()
+                    if t != decision.ticker and theme in (theme_of(t) or [])  # type: ignore[misc]
+                ),
+                Decimal(0),
             )
+            after = (others + current_value + order_amount) / nav
+            if after > Decimal(str(lim.max_theme_pct)):
+                out.append(
+                    f"테마 '{theme}' 비중이 주문 뒤 {float(after):.0%} 로 상한 "
+                    f"{lim.max_theme_pct:.0%} 초과"
+                )
     return out
 
 

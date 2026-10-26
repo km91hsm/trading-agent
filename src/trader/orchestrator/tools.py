@@ -826,6 +826,9 @@ def submit_decision(
         trig = repo.latest_trigger_price(ctx.conn, market, ticker, date)
         if trig is not None:
             price = trig
+            change_pct = (
+                None  # 트리거 가격의 등락률은 모른다 — 아침 시세 값으로 추격 판정하지 않는다
+            )
         elif price is not None:  # 뉴스 재평가(가격 없는 트리거)는 재수집 입력 + 재시세
             price, requote, change_pct = _requote(ctx, inputs, market, ticker, price)
     elif price is not None:

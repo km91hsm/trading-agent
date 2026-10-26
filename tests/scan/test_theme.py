@@ -131,8 +131,8 @@ def test_theme_of_map_today_only(conn):
         },
     )
     assert theme.theme_of_map(conn, "KR", date(2026, 10, 26), top_n=1) == {
-        "111111": "섹터:반도체",
-        "222222": "섹터:반도체",
+        "111111": ["섹터:반도체"],
+        "222222": ["섹터:반도체"],
     }
     assert theme.theme_of_map(conn, "KR", date(2026, 10, 27), top_n=3) == {}
 
@@ -155,3 +155,51 @@ def test_mature_fills_forward_return(conn, monkeypatch):
     v = conn.execute("SELECT fwd_ret_5d FROM theme_heat").fetchone()[0]
     assert v == pytest.approx(0.1 - 0.05)  # 종목 +10%, 1/N(두 종목 평균) +5%
     assert theme.mature(conn, "KR", state=None, today=date(2026, 10, 26)) == 0
+
+
+def test_theme_of_map_keeps_overlapping_memberships(conn):
+    from trader.control import control
+
+    control.set_flag(
+        conn,
+        "theme_heat:KR",
+        {
+            "date": "2026-10-26",
+            "themes": [
+                {"theme": "섹터:반도체", "members": ["111111"], "tickers": []},
+                {"theme": "kw:로봇", "members": ["111111", "222222"], "tickers": []},
+            ],
+        },
+    )
+    m = theme.theme_of_map(conn, "KR", date(2026, 10, 26), top_n=2)
+    assert m["111111"] == ["섹터:반도체", "kw:로봇"] and m["222222"] == ["kw:로봇"]
+
+
+def test_record_keeps_peak_score_with_its_basket(conn):
+    """같은 날 낮은 점수로 다시 계산돼도 최고 점수 행의 종목·성분은 그대로(PR #26 리뷰)."""
+
+    def heat(score, members, at):
+        return {
+            "market": "KR",
+            "date": "2026-10-26",
+            "observed_at": at,
+            "themes": [
+                {
+                    "theme": "kw:로봇",
+                    "rank": 1,
+                    "score": score,
+                    "members": members,
+                    "components": {"news": score},
+                    "catalyst_ok": True,
+                    "tickers": [],
+                }
+            ],
+        }
+
+    theme.record(conn, heat(0.9, ["A"], "t1"), top_n=3)
+    theme.record(conn, heat(0.1, ["B"], "t2"), top_n=3)
+    r = conn.execute("SELECT score, tickers_json, observed_at FROM theme_heat").fetchone()
+    assert (r["score"], r["tickers_json"], r["observed_at"]) == (0.9, '["A"]', "t1")
+    theme.record(conn, heat(0.95, ["C"], "t3"), top_n=3)
+    r = conn.execute("SELECT score, tickers_json FROM theme_heat").fetchone()
+    assert (r["score"], r["tickers_json"]) == (0.95, '["C"]')
