@@ -360,25 +360,54 @@ def test_portfolio_position_plan_distances(client, conn):
 
 
 def test_portfolio_overview_per_market(client, conn):
-    """Phase 24: 전체 계좌 합산은 시장(통화)별, 같은 종목은 합치고 평단은 가중."""
+    """Phase 24: 전체 계좌 합산은 시장(통화) × 모의/실전별. 보유·비중·섹터의 분모도 환경별."""
     _snap(conn, "paper-main", "KR", "005930", 2, "90", "100", "1000", "800")
     _snap(conn, "real-main", "KR", "005930", 1, "120", "100", "500", "400")
     _snap(conn, "paper-main", "US", "AAPL", 1, "10", "12", "100", "88")
+    conn.execute(
+        "INSERT INTO decisions(date, market, ticker, action, json, created_at) "
+        "VALUES ('2026-10-24','KR','005930','BUY','{\"horizon_days\": 5}',"
+        "'2026-10-24T00:00:00+00:00')"
+    )
     conn.commit()
     r = client.get("/api/portfolio/overview").json()
-    kr, us = r["markets"]["KR"], r["markets"]["US"]
-    assert Decimal(kr["nav"]) == Decimal("1500") and Decimal(us["nav"]) == Decimal("100")
-    (pos,) = kr["positions"]
-    assert pos["qty"] == 3 and Decimal(pos["avg_price"]) == Decimal("100")
-    assert sorted(pos["accounts"]) == ["paper-main", "real-main"]
-    assert Decimal(kr["pnl"]) == Decimal("0")
-    assert [p["ticker"] for p in us["positions"]] == ["AAPL"]
+    kr, us = r["markets"]["KR"]["envs"], r["markets"]["US"]["envs"]
+    assert Decimal(kr["paper"]["nav"]) == Decimal("1000")
+    assert Decimal(kr["real"]["nav"]) == Decimal("500")
+    assert Decimal(us["paper"]["nav"]) == Decimal("100") and "real" not in us
+    (pp,) = kr["paper"]["positions"]
+    (rp,) = kr["real"]["positions"]
+    assert pp["qty"] == 2 and rp["qty"] == 1 and rp["accounts"] == ["real-main"]
+    assert pp["weight"] == pytest.approx(0.2) and rp["weight"] == pytest.approx(0.2)
+    assert pp["horizon"] == "short" and pp["horizon_days"] == 5  # 보유기간 열이 읽는 최상위 필드
+    assert Decimal(rp["pnl"]) == Decimal("-20")
     assert r["accounts_missing_snapshot"] == {"KR": [], "US": []}  # real-main 은 KR 전용
-    # 모의·실전은 섞지 않는다: 환경별 소계
-    assert Decimal(kr["by_env"]["paper"]["nav"]) == Decimal("1000")
-    assert Decimal(kr["by_env"]["real"]["nav"]) == Decimal("500")
-    assert kr["by_env"]["real"]["accounts"] == ["real-main"]
-    assert kr["sectors"][0]["sector"] in {"기타", "현금", "반도체"}
+    assert r["configured"] == 2
+
+
+def test_portfolio_overview_same_ticker_merged_within_env(client, conn):
+    """같은 환경의 같은 종목은 합치고 평단은 수량 가중."""
+    from trader.ledger import views
+
+    class A:
+        def __init__(self, id, env):
+            self.id, self.env, self.markets = id, env, ["KR"]
+
+    _snap(conn, "p1", "KR", "005930", 2, "90", "100", "1000", "800")
+    _snap(conn, "p2", "KR", "005930", 1, "120", "100", "500", "400")
+    conn.commit()
+    r = views.account_overview(
+        conn, [A("p1", "paper"), A("p2", "paper")], sector_of=None, hedge_tickers=lambda m: set()
+    )
+    (pos,) = r["markets"]["KR"]["envs"]["paper"]["positions"]
+    assert pos["qty"] == 3 and Decimal(pos["avg_price"]) == Decimal("100")
+
+
+def test_portfolio_overview_no_snapshots_lists_missing(client, conn):
+    r = client.get("/api/portfolio/overview").json()
+    assert r["markets"]["KR"]["envs"] == {}
+    assert sorted(r["accounts_missing_snapshot"]["KR"]) == ["paper-main", "real-main"]
+    assert r["configured"] == 2
 
 
 def test_names_search_endpoint(client, conn):

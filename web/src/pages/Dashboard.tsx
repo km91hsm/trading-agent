@@ -62,7 +62,9 @@ export function Dashboard() {
   // '전체' 선택이면 게이트 열의 기준 계좌는 첫 계좌, 보유는 전체 합산(overview)을 쓴다 (Phase 24)
   const primaryId = accountId || accounts[0]?.id || "";
   const acct = accounts.find((a) => a.id === primaryId);
+  // 화면에 보일 시장(합산이면 모든 계좌의 합집합)과 대표 계좌가 실제로 가진 시장(계좌 단위 요청은 이것만 — 없는 시장은 400)
   const markets = accountId ? (acct?.markets ?? []) : (["KR", "US"] as const).filter((m) => accounts.some((a) => a.markets.includes(m)));
+  const acctMarkets = acct?.markets ?? [];
   const otherAccounts = accounts.filter((a) => a.id !== primaryId);
   const [now, setNow] = useState(() => new Date());
   useEffect(() => setNow(new Date()), [tick]); // 원장 이벤트마다 시각·운영일을 다시 잡는다
@@ -78,12 +80,12 @@ export function Dashboard() {
   const [sel, setSel] = useState<string | null>(null);
 
   const pfKR = useLoad(
-    () => (primaryId && markets.includes("KR") ? getJson<Portfolio>(withAccount("/api/portfolio?market=KR", primaryId)) : null),
-    [primaryId, markets.join(), tRuns, tOrders],
+    () => (primaryId && acctMarkets.includes("KR") ? getJson<Portfolio>(withAccount("/api/portfolio?market=KR", primaryId)) : null),
+    [primaryId, acctMarkets.join(), tRuns, tOrders],
   );
   const pfUS = useLoad(
-    () => (primaryId && markets.includes("US") ? getJson<Portfolio>(withAccount("/api/portfolio?market=US", primaryId)) : null),
-    [primaryId, markets.join(), tRuns, tOrders],
+    () => (primaryId && acctMarkets.includes("US") ? getJson<Portfolio>(withAccount("/api/portfolio?market=US", primaryId)) : null),
+    [primaryId, acctMarkets.join(), tRuns, tOrders],
   );
   const decisions = useLoad(() => getJson<Decision[]>("/api/decisions", { days: "2" }), [tDecisions]);
   const checks = useLoad(() => (primaryId ? getJson<RiskCheck[]>(withAccount("/api/risk-checks", primaryId)) : null), [primaryId, tRuns, tDecisions]);
@@ -114,19 +116,21 @@ export function Dashboard() {
   const models = useLoad(() => getJson<ModelsResp>("/api/ml/models"), [tJobs]);
   const rl = useLoad(() => getJson<RlResp>("/api/rl/experiments"), [tJobs]);
   const perfKR = useLoad(
-    () => (primaryId && markets.includes("KR") ? getJson<PerformanceReport>(withAccount("/api/performance?market=KR&days=30", primaryId)) : null),
-    [primaryId, markets.join(), tRuns],
+    () => (primaryId && acctMarkets.includes("KR") ? getJson<PerformanceReport>(withAccount("/api/performance?market=KR&days=30", primaryId)) : null),
+    [primaryId, acctMarkets.join(), tRuns],
   );
   const perfUS = useLoad(
-    () => (primaryId && markets.includes("US") ? getJson<PerformanceReport>(withAccount("/api/performance?market=US&days=30", primaryId)) : null),
-    [primaryId, markets.join(), tRuns],
+    () => (primaryId && acctMarkets.includes("US") ? getJson<PerformanceReport>(withAccount("/api/performance?market=US&days=30", primaryId)) : null),
+    [primaryId, acctMarkets.join(), tRuns],
   );
 
   const overview = useLoad(() => getJson<Overview>("/api/portfolio/overview"), [tRuns, tOrders, tApprovals]);
+  // 시세표의 '보유' 표시: 계좌를 고르면 그 계좌, '전체'면 모든 계좌·환경의 보유 종목(종목별 한 줄)
+  const allHeld = (["KR", "US"] as const).flatMap((m) => Object.values(overview.data?.markets[m]?.envs ?? {}).flatMap((e) => e?.positions ?? []));
   const positions = accountId
     ? [...(pfKR.data?.snapshot?.positions ?? []), ...(pfUS.data?.snapshot?.positions ?? [])]
-    : [...(overview.data?.markets.KR?.positions ?? []), ...(overview.data?.markets.US?.positions ?? [])];
-  const navOf = (m: "KR" | "US") => (accountId ? (m === "KR" ? pfKR : pfUS).data?.snapshot?.nav : overview.data?.markets[m]?.nav);
+    : allHeld.filter((p, i) => allHeld.findIndex((x) => x.market === p.market && x.ticker === p.ticker) === i);
+  const navOf = (m: "KR" | "US") => (m === "KR" ? pfKR : pfUS).data?.snapshot?.nav;
   const tape = useMemo(
     () =>
       buildTape({

@@ -1,6 +1,6 @@
 // 전체 계좌 합산(/api/portfolio/overview)과 보유 행 계획 열 — 행 변환 순수 함수 (Phase 24).
 import { fmtMoney } from "./format";
-import type { Market, Overview, OverviewMarket, PositionPlan } from "./types";
+import type { Market, Overview, OverviewEnv, PositionPlan } from "./types";
 
 export const ALL_ACCOUNTS = "all";
 
@@ -42,22 +42,18 @@ export type OverviewRow = {
   pnlPct: number | null;
   holdings: number;
   accounts: number;
-  missing: string[];
-  data: OverviewMarket;
+  data: OverviewEnv;
 };
 
-/** 시장 × 모의/실전 머리 행. 통화가 달라 시장끼리, 가짜 돈과 진짜 돈이라 모의·실전끼리 더하지 않는다
- * (PRODUCT.md 원칙 3). 모의가 먼저. 보유 종목 수는 그 환경 계좌가 가진 합산 종목 수. */
+/** 시장 × 모의/실전 행. 통화가 달라 시장끼리, 가짜 돈과 진짜 돈이라 모의·실전끼리 더하지 않는다
+ * (PRODUCT.md 원칙 3) — 보유·섹터도 행마다 따로다. 모의가 먼저. */
 export function overviewRows(o: Overview | null | undefined): OverviewRow[] {
   if (!o) return [];
   const out: OverviewRow[] = [];
   for (const m of ["KR", "US"] as Market[]) {
-    const d = o.markets[m];
-    if (!d) continue;
     for (const env of ["paper", "real"] as const) {
-      const e = d.by_env?.[env];
+      const e = o.markets[m]?.envs?.[env];
       if (!e) continue;
-      const mine = new Set(e.accounts);
       out.push({
         market: m,
         env,
@@ -65,12 +61,20 @@ export function overviewRows(o: Overview | null | undefined): OverviewRow[] {
         cash: fmtMoney(e.cash, m),
         pnl: fmtMoney(e.pnl, m),
         pnlPct: e.pnl_pct,
-        holdings: d.positions.filter((p) => (p.accounts ?? []).some((a) => mine.has(a))).length,
+        holdings: e.positions.length,
         accounts: e.accounts.length,
-        missing: o.accounts_missing_snapshot[m] ?? [],
-        data: d,
+        data: e,
       });
     }
   }
   return out;
+}
+
+/** 스냅샷이 아직 없는 계좌 "KR: a, b · US: c". 없으면 "". */
+export function missingText(o: Overview | null | undefined): string {
+  if (!o) return "";
+  return (["KR", "US"] as Market[])
+    .filter((m) => (o.accounts_missing_snapshot[m] ?? []).length)
+    .map((m) => `${m}: ${(o.accounts_missing_snapshot[m] ?? []).join(", ")}`)
+    .join(" · ");
 }

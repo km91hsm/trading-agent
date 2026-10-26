@@ -134,6 +134,94 @@ def attach_plans(conn: sqlite3.Connection, market: str, snap: dict | None) -> No
         p["weight"] = float(ev / nav) if nav > 0 else None
 
 
+def _env_block(
+    conn: sqlite3.Connection,
+    snaps: list[tuple],
+    market: str,
+    sector_of: Callable[[str], str | None] | None,
+    hedge: set[str],
+) -> dict:
+    """한 시장·한 환경(모의|실전) 계좌들의 합산: NAV·현금·평가손익·보유(같은 종목 합침, 수량 가중
+    평단)·섹터 비중. 비중·섹터의 분모는 이 환경의 NAV 뿐이다."""
+    nav = cash = cost = ev_sum = Decimal(0)
+    merged: dict[str, dict] = {}
+    accts = []
+    for a, snap in snaps:
+        nav += Decimal(str(snap["nav"] or 0))
+        cash += Decimal(str(snap["cash"] or 0))
+        accts.append(
+            {
+                "id": a.id,
+                "env": a.env,
+                "nav": snap["nav"],
+                "cash": snap["cash"],
+                "snapshot_date": snap["date"],
+            }
+        )
+        for p in snap["positions"]:
+            qty = int(p["qty"] or 0)
+            if qty <= 0:
+                continue
+            avg = Decimal(str(p["avg_price"] or 0))
+            ev = Decimal(str(p["eval_amount"] or 0))
+            g = merged.setdefault(
+                p["ticker"],
+                {
+                    "ticker": p["ticker"],
+                    "qty": 0,
+                    "cost": Decimal(0),
+                    "eval": Decimal(0),
+                    "current_price": p["current_price"],
+                    "accounts": [],
+                },
+            )
+            g["qty"] += qty
+            g["cost"] += avg * qty
+            g["eval"] += ev
+            g["accounts"].append(a.id)
+            cost += avg * qty
+            ev_sum += ev
+    positions = []
+    for g in sorted(merged.values(), key=lambda g: -g["eval"]):
+        avg = g["cost"] / g["qty"] if g["qty"] else Decimal(0)
+        pnl = g["eval"] - g["cost"]
+        plan = position_plan(repo.latest_decision(conn, market, g["ticker"]), g["current_price"])
+        positions.append(
+            {
+                "ticker": g["ticker"],
+                "market": market,
+                "qty": g["qty"],
+                "avg_price": str(avg),
+                "current_price": g["current_price"],
+                "eval_amount": str(g["eval"]),
+                "pnl": str(pnl),
+                "pnl_pct": float(pnl / g["cost"]) if g["cost"] else None,
+                "weight": float(g["eval"] / nav) if nav > 0 else None,
+                "accounts": g["accounts"],
+                "plan": plan,
+                # 계좌 표(`attach_plans`)와 같은 최상위 필드 — 보유기간 열이 읽는다
+                "horizon_days": plan["horizon_days"] if plan else None,
+                "horizon": plan["horizon"] if plan else None,
+            }
+        )
+    unmapped = [
+        p["ticker"]
+        for p in positions
+        if p["ticker"] not in hedge and not (sector_of and sector_of(p["ticker"]))
+    ]
+    pnl_all = ev_sum - cost
+    return {
+        "nav": str(nav),
+        "cash": str(cash),
+        "pnl": str(pnl_all),
+        "pnl_pct": float(pnl_all / cost) if cost else None,
+        "positions": positions,
+        "sectors": sector_weights(positions, nav, sector_of, hedge_tickers=hedge, cash=cash),
+        "unmapped": unmapped,
+        "accounts": accts,
+    }
+
+
 def account_overview(
     conn: sqlite3.Connection,
     accounts: list,
@@ -141,15 +229,15 @@ def account_overview(
     sector_of: Callable[[str, str], str | None] | None,
     hedge_tickers: Callable[[str], set[str]],
 ) -> dict:
-    """전체 계좌 합산(Phase 24). 통화가 달라 시장별로만 더한다. 같은 종목은 수량을 합치고 평단은
-    수량 가중. 스냅샷이 없는 계좌는 `accounts_missing_snapshot[시장]` 에 둔다."""
+    """전체 계좌 합산(Phase 24). 통화가 달라 시장별로, 가짜 돈과 진짜 돈이라 모의·실전(env)별로만
+    더한다(PRODUCT.md 원칙 3) — 보유·비중·섹터의 분모도 환경별 NAV. `markets[시장].envs[env]` 가
+    `_env_block`. 스냅샷이 없는 계좌는 `accounts_missing_snapshot[시장]`, 계좌 설정 수는
+    `configured`(스냅샷이 하나도 없는 새 설치와 계좌가 없는 설정을 구분)."""
     markets = [m for m in MARKETS if any(m in a.markets for a in accounts)]
-    out: dict = {"markets": {}, "accounts_missing_snapshot": {}}
+    out: dict = {"markets": {}, "accounts_missing_snapshot": {}, "configured": len(accounts)}
     for m in markets:
-        nav = cash = cost = ev_sum = Decimal(0)
-        merged: dict[str, dict] = {}
-        env_pnl: dict[str, list[Decimal]] = {}  # env -> [원가, 평가]
-        per_acct, missing = [], []
+        by_env: dict[str, list[tuple]] = {}
+        missing = []
         for a in accounts:
             if m not in a.markets:
                 continue
@@ -157,110 +245,15 @@ def account_overview(
             if snap is None:
                 missing.append(a.id)
                 continue
-            nav += Decimal(str(snap["nav"] or 0))
-            cash += Decimal(str(snap["cash"] or 0))
-            per_acct.append(
-                {
-                    "id": a.id,
-                    "env": a.env,
-                    "nav": snap["nav"],
-                    "cash": snap["cash"],
-                    "snapshot_date": snap["date"],
-                }
-            )
-            for p in snap["positions"]:
-                qty = int(p["qty"] or 0)
-                if qty <= 0:
-                    continue
-                avg = Decimal(str(p["avg_price"] or 0))
-                ev = Decimal(str(p["eval_amount"] or 0))
-                g = merged.setdefault(
-                    p["ticker"],
-                    {
-                        "ticker": p["ticker"],
-                        "market": m,
-                        "qty": 0,
-                        "cost": Decimal(0),
-                        "eval": Decimal(0),
-                        "current_price": p["current_price"],
-                        "accounts": [],
-                    },
-                )
-                g["qty"] += qty
-                g["cost"] += avg * qty
-                g["eval"] += ev
-                g["accounts"].append(a.id)
-                cost += avg * qty
-                ev_sum += ev
-                ec = env_pnl.setdefault(a.env, [Decimal(0), Decimal(0)])
-                ec[0] += avg * qty
-                ec[1] += ev
-        positions = []
-        for g in sorted(merged.values(), key=lambda g: -g["eval"]):
-            avg = g["cost"] / g["qty"] if g["qty"] else Decimal(0)
-            pnl = g["eval"] - g["cost"]
-            positions.append(
-                {
-                    "ticker": g["ticker"],
-                    "market": m,
-                    "qty": g["qty"],
-                    "avg_price": str(avg),
-                    "current_price": g["current_price"],
-                    "eval_amount": str(g["eval"]),
-                    "pnl": str(pnl),
-                    "pnl_pct": float(pnl / g["cost"]) if g["cost"] else None,
-                    "weight": float(g["eval"] / nav) if nav > 0 else None,
-                    "accounts": g["accounts"],
-                    "plan": position_plan(
-                        repo.latest_decision(conn, m, g["ticker"]), g["current_price"]
-                    ),
-                }
-            )
-        hedge = hedge_tickers(m)
+            by_env.setdefault(a.env, []).append((a, snap))
         smap = (lambda t, _m=m: sector_of(t, _m)) if sector_of else None
-        unmapped = [
-            p["ticker"]
-            for p in positions
-            if p["ticker"] not in hedge and not (smap and smap(p["ticker"]))
-        ]
-        pnl_all = ev_sum - cost
-        # 모의·실전은 섞지 않는다(PRODUCT.md 원칙 3): 환경별 소계를 따로 둔다
-        by_env: dict[str, dict] = {}
-        for row in per_acct:
-            e = by_env.setdefault(
-                row["env"], {"nav": Decimal(0), "cash": Decimal(0), "accounts": []}
-            )
-            e["nav"] += Decimal(str(row["nav"] or 0))
-            e["cash"] += Decimal(str(row["cash"] or 0))
-            e["accounts"].append(row["id"])
+        hedge = hedge_tickers(m)
         out["markets"][m] = {
-            "by_env": {
-                k: {
-                    "nav": str(v["nav"]),
-                    "cash": str(v["cash"]),
-                    "accounts": v["accounts"],
-                    "pnl": str(
-                        env_pnl.get(k, [Decimal(0), Decimal(0)])[1]
-                        - env_pnl.get(k, [Decimal(0), Decimal(0)])[0]
-                    ),
-                    "pnl_pct": (
-                        float((env_pnl[k][1] - env_pnl[k][0]) / env_pnl[k][0])
-                        if k in env_pnl and env_pnl[k][0]
-                        else None
-                    ),
-                }
-                for k, v in by_env.items()
-            },
-            "nav": str(nav),
-            "cash": str(cash),
-            "pnl": str(pnl_all),
-            "pnl_pct": float(pnl_all / cost) if cost else None,
-            "positions": positions,
-            "sectors": sector_weights(positions, nav, smap, hedge_tickers=hedge, cash=cash)
-            if per_acct
-            else [],
-            "unmapped": unmapped,
-            "accounts": per_acct,
+            "envs": {
+                env: _env_block(conn, by_env[env], m, smap, hedge)
+                for env in ("paper", "real")
+                if env in by_env
+            }
         }
         out["accounts_missing_snapshot"][m] = missing
     out["pending_approvals"] = conn.execute(

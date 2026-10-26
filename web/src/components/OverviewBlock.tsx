@@ -1,27 +1,31 @@
-// 전체 계좌 합산 (Phase 24): 시장(통화)별 NAV·현금·평가손익·합산 보유·섹터. 시장끼리는 더하지 않는다.
+// 전체 계좌 합산 (Phase 24): 시장(통화) × 모의/실전별 NAV·현금·평가손익·보유·섹터.
+// 시장끼리, 모의·실전끼리는 더하지 않는다(PRODUCT.md 원칙 3) — 보유 비중·섹터의 분모도 그 행의 NAV.
 import { Link } from "react-router-dom";
-import { overviewRows } from "../overview";
 import { useLiveQuotes } from "../hooks";
 import { applyQuotes, liveLabel } from "../live";
-import type { Market, Overview, OverviewMarket } from "../types";
+import { missingText, overviewRows, type OverviewRow } from "../overview";
+import type { Overview } from "../types";
 import { Badge } from "./Badge";
-import { Delta, Table, Td, Th } from "./Table";
 import { EmptyState } from "./EmptyState";
 import { Section } from "./Section";
 import { SectorTable } from "./Sectors";
+import { Delta, Table, Td, Th } from "./Table";
 import { PositionsTable } from "./Tables";
 
-/** 시장 하나의 합산 보유: 장중이면 실시간 시세로 현재가·평가를 갱신한다. */
-function MarketHoldings({ market, data }: { market: Market; data: OverviewMarket }) {
+const ENV_LABEL = { paper: "모의", real: "실전" } as const;
+
+/** 한 시장·환경의 보유: 장중이면 실시간 시세로 현재가·평가를 갱신한다. */
+function EnvHoldings({ row }: { row: OverviewRow }) {
+  const { market, data } = row;
   const live = useLiveQuotes(market, data.positions.map((p) => p.ticker));
   const applied = applyQuotes(data.positions, live?.quotes, data.cash);
   return (
     <>
       <h3 className="sub-h">
-        {market} 보유 · 모든 계좌 (계좌 열로 모의·실전 구분){live ? <span className="muted"> · {liveLabel(live, applied.liveCount)}</span> : null}
+        {market} {ENV_LABEL[row.env]} 보유{live ? <span className="muted"> · {liveLabel(live, applied.liveCount)}</span> : null}
       </h3>
       {data.positions.length ? (
-        <PositionsTable rows={applied.positions} nav={applied.liveCount && applied.nav !== null ? String(applied.nav) : data.nav} showAccounts />
+        <PositionsTable rows={applied.positions} nav={applied.liveCount && applied.nav !== null ? String(applied.nav) : data.nav} showAccounts={data.accounts.length > 1} />
       ) : (
         <p className="muted">보유 없음 — 전액 현금이에요. 매수가 체결되면 다음 판정·잔고 새로고침 때 잡혀요.</p>
       )}
@@ -29,64 +33,74 @@ function MarketHoldings({ market, data }: { market: Market; data: OverviewMarket
   );
 }
 
+function MissingNote({ data }: { data: Overview }) {
+  const text = missingText(data);
+  if (!text) return null;
+  return (
+    <p className="note">
+      <span className="pend">잔고 미확인 — {text}.</span> 아직 잔고를 한 번도 읽지 않은 계좌예요. <Link to="/account">계좌 상세</Link>에서 계좌를 골라 잔고
+      새로고침을 누르면 합산에 들어가요.
+    </p>
+  );
+}
+
 export function OverviewBlock({ data, maxSectorPct, accountCount }: { data: Overview | null; maxSectorPct: number; accountCount: number }) {
-  const rows = overviewRows(data);
   if (!data) return null;
-  if (!rows.length) return <EmptyState title="계좌가 없어요" hint="config/accounts.yaml 에 계좌를 넣으면 여기서 합산해 보여 줘요." />;
+  const rows = overviewRows(data);
+  if (!data.configured) return <EmptyState title="계좌가 없어요" hint="config/accounts.yaml 에 계좌를 넣으면 여기서 합산해 보여 줘요." />;
   return (
     <Section title="전체 계좌" aside={`${accountCount}개 계좌 · 시장(통화)·모의/실전별 합산`}>
-      <Table dense responsive caption="시장별 합산">
-        <thead>
-          <tr>
-            <Th core>시장·환경</Th>
-            <Th num core>순자산</Th>
-            <Th num>현금</Th>
-            <Th num core>평가손익</Th>
-            <Th num>보유</Th>
-            <Th>스냅샷</Th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((r) => (
-            <tr key={`${r.market}:${r.env}`}>
-              <Td core>
-                {r.market} <Badge kind="env" value={r.env} />
-              </Td>
-              <Td num core>
-                <strong>{r.nav}</strong>
-              </Td>
-              <Td num>{r.cash}</Td>
-              <Td num core>
-                {r.pnl} {r.pnlPct !== null ? <Delta value={r.pnlPct * 100} pct /> : null}
-              </Td>
-              <Td num>{r.holdings}종목</Td>
-              <Td>
-                {r.accounts}개 계좌
-                {r.missing.length ? <span className="pend"> · 잔고 미확인 {r.missing.join(", ")}</span> : null}
-              </Td>
+      {rows.length ? (
+        <Table dense responsive caption="시장·환경별 합산">
+          <thead>
+            <tr>
+              <Th core>시장·환경</Th>
+              <Th num core>순자산</Th>
+              <Th num>현금</Th>
+              <Th num core>평가손익</Th>
+              <Th num>보유</Th>
+              <Th>계좌</Th>
             </tr>
-          ))}
-        </tbody>
-      </Table>
-      {rows.some((r) => r.missing.length) && (
-        <p className="note">
-          잔고 미확인 계좌는 아직 잔고를 한 번도 읽지 않았어요. <Link to="/account">계좌 상세</Link>에서 계좌를 골라 잔고 새로고침을 누르면 합산에 들어가요.
-        </p>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={`${r.market}:${r.env}`}>
+                <Td core>
+                  {r.market} <Badge kind="env" value={r.env} />
+                </Td>
+                <Td num core>
+                  <strong>{r.nav}</strong>
+                </Td>
+                <Td num>{r.cash}</Td>
+                <Td num core>
+                  {r.pnl} {r.pnlPct !== null ? <Delta value={r.pnlPct * 100} pct /> : null}
+                </Td>
+                <Td num>{r.holdings}종목</Td>
+                <Td>{r.data.accounts.map((a) => a.id).join(", ")}</Td>
+              </tr>
+            ))}
+          </tbody>
+        </Table>
+      ) : (
+        <p className="muted">아직 잔고 스냅샷이 있는 계좌가 없어요.</p>
       )}
+      <MissingNote data={data} />
       {data.pending_approvals > 0 && (
         <p className="pend">
           승인 대기 {data.pending_approvals}건 — <Link to="/orders">주문/승인</Link>
         </p>
       )}
-      <p className="note">섹터 합계가 상한({Math.round(maxSectorPct * 100)}%)을 넘기면 리스크 게이트가 그 섹터의 신규·추가 매수를 거부해요. 헤지 ETF·현금은 상한 대상이 아니에요.</p>
-      {rows.filter((r, i) => rows.findIndex((x) => x.market === r.market) === i).map((r) => (
-        <div key={r.market} className="cols-2">
+      {rows.length > 0 && (
+        <p className="note">섹터 합계가 상한({Math.round(maxSectorPct * 100)}%)을 넘기면 리스크 게이트가 그 섹터의 신규·추가 매수를 거부해요(계좌마다 따로 판정). 헤지 ETF·현금은 상한 대상이 아니에요.</p>
+      )}
+      {rows.map((r) => (
+        <div key={`${r.market}:${r.env}`} className="cols-2">
           <div>
-            <MarketHoldings market={r.market} data={r.data} />
+            <EnvHoldings row={r} />
           </div>
           <div>
             <h3 className="sub-h">
-              {r.market} 섹터 비중 · 모든 계좌{r.data.unmapped.length ? <span className="muted"> · 섹터 미분류 {r.data.unmapped.join(", ")}</span> : null}
+              {r.market} {ENV_LABEL[r.env]} 섹터 비중{r.data.unmapped.length ? <span className="muted"> · 섹터 미분류 {r.data.unmapped.join(", ")}</span> : null}
             </h3>
             <SectorTable rows={r.data.sectors} market={r.market} maxSectorPct={maxSectorPct} note={false} />
           </div>
