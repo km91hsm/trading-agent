@@ -36,8 +36,11 @@ from trader.risk import stance as stance_mod
 logger = logging.getLogger("trader.executor")
 
 APPROVAL_TTL = timedelta(minutes=30)
+# 선점했지만 브로커로 보내지도 승인 요청을 만들지도 못한 실행 키를 넘겨받는 나이(검토 O8)
+EXEC_KEY_STALE = timedelta(minutes=10)
 QUOTE_PRICE_KEY = "quote_price"  # approvals.order_json 에 덧붙이는 요청 시 현재가
 STAGE_KEY = "order_stage"  # approvals.order_json 에 덧붙이는 주문 체크포인트 이름(50_ 외일 때)
+EXEC_KEY_KEY = "exec_key"  # approvals.order_json 에 덧붙이는 실행 키(검토 O8, 승인 실행이 이어 씀)
 NAME_KEY = "name"  # approvals.order_json 에 덧붙이는 종목명 (표시용, OrderRequest 에는 없다)
 
 
@@ -210,6 +213,21 @@ def _label(ctx: ExecContext, market: str, ticker: str) -> str:
     return names.display(ctx.conn, _cache_dir(ctx), market, ticker)
 
 
+def _balance(broker: Any, market: str) -> tuple[list, Any]:
+    get_balance = getattr(broker, "get_balance", None)
+    if get_balance is not None:  # KR 은 잔고 API 1회로 보유·예수금을 함께 (모의 2/s)
+        return get_balance(market)
+    return broker.get_positions(market), broker.get_cash(market)
+
+
+def _nav_of(pos_list: list, cash: Any) -> Decimal:
+    """NAV: 잔고 응답의 총평가(tot_evlu_amt)가 있으면 그것. 예수금(dnca_tot_amt) + 평가 합은 체결 뒤
+    2영업일(결제 전) 동안 매수분을 이중 계산해 일일손실 −5% 오탐·비중 과대를 만들었다."""
+    if getattr(cash, "nav", None):
+        return cash.nav
+    return cash.total + sum((p.eval_amount for p in pos_list), Decimal(0))
+
+
 def build_portfolio(
     conn: sqlite3.Connection,
     broker: Any,
@@ -223,18 +241,11 @@ def build_portfolio(
 ) -> rules.Portfolio:
     """브로커 잔고·현금 + 원장 집계로 Portfolio 를 만들고 positions_snapshot 을 남긴다.
     now 가 있으면 만료된 승인 요청은 현금 예약에서 뺀다(전체 검토 O17)."""
-    get_balance = getattr(broker, "get_balance", None)
-    if get_balance is not None:  # KR 은 잔고 API 1회로 보유·예수금을 함께 (모의 2/s)
-        pos_list, cash = get_balance(market)
-    else:
-        pos_list, cash = broker.get_positions(market), broker.get_cash(market)
+    pos_list, cash = _balance(broker, market)
     positions = {p.ticker: p for p in pos_list}
     for p in positions.values():  # 잔고 응답의 종목명은 추가 호출 없이 얻는 이름이다
         repo.upsert_ticker_name(conn, p.market, p.ticker, getattr(p, "name", None), "balance")
-    # NAV: 잔고 응답의 총평가(tot_evlu_amt)가 있으면 그것. 예수금(dnca_tot_amt) + 평가 합은 체결 뒤
-    # 2영업일(결제 전) 동안 매수분을 이중 계산해 일일손실 −5% 오탐·비중 과대를 만들었다
-    eval_sum = sum((p.eval_amount for p in positions.values()), Decimal(0))
-    nav = cash.nav if getattr(cash, "nav", None) else cash.total + eval_sum
+    nav = _nav_of(pos_list, cash)
     prev = repo.latest_nav_before(conn, account.id, today, market=market)
     today_pnl = float(nav / prev - 1) if prev else 0.0
     if account.env == "paper":
@@ -273,6 +284,13 @@ def build_portfolio(
             today,
             market=market,
             exclude_filled=True,
+            now=now.isoformat() if now is not None else None,
+        ),
+        pending_buys=repo.pending_buy_amounts(
+            conn,
+            account.id,
+            today,
+            market=market,
             now=now.isoformat() if now is not None else None,
         ),
         held_since=repo.held_since(conn, account.id, tickers=list(positions)),
@@ -604,6 +622,36 @@ def _execute_account(
             )
         if rl_prop is not None and decision_id is not None:
             verdict = _rl_record(ctx, account, decision, decision_id, rl_prop, verdict)
+        # 실행 키 선점(검토 O8): 위의 중복 확인과 주문 사이에서 다른 프로세스(데몬 재평가 ↔ 수동
+        # 재실행)가 같은 주문·승인 요청을 동시에 내지 않게, 주문(또는 승인 요청)이 나갈 판정이면
+        # PRIMARY KEY 를 먼저 잡는다
+        exec_key: str | None = None
+        if verdict.approved and mode != "off" and not dry_run and not paused:
+            exec_key = _exec_key(
+                decision_id,
+                account.id,
+                verdict.side,
+                order_stage,
+                decision.ticker,
+                date,
+                is_stop_loss=is_stop_loss,
+            )
+            now = ctx.now()
+            if not repo.claim_exec_key(
+                ctx.conn,
+                exec_key,
+                now=now.isoformat(),
+                stale_before=(now - EXEC_KEY_STALE).isoformat(),
+            ):
+                exec_key = None
+                verdict = verdict.model_copy(
+                    update={
+                        "approved": False,
+                        "adjusted_qty": 0,
+                        "reasons": verdict.reasons
+                        + ["다른 프로세스가 같은 주문을 실행 중이거나 이미 냄(실행 키 선점됨)"],
+                    }
+                )
         if paused and verdict.approved:
             note = (note + "; " if note else "") + "일시정지 중: 판정만 기록, 주문·승인 요청 없음"
         if regime != "bull" and not is_hedge:
@@ -627,42 +675,57 @@ def _execute_account(
             "order": None,
             "approval_id": None,
         }
-        write_checkpoint(d, f"{risk_stage}_{account.id}", _wrap(verdict.model_dump(mode="json")))
-        if decision_id is not None:
-            repo.insert_risk_check(
-                ctx.conn,
-                decision_id=decision_id,
-                account_id=account.id,
-                approved=verdict.approved,
-                adjusted_qty=verdict.adjusted_qty,
-                reasons=verdict.reasons,
+        try:
+            write_checkpoint(
+                d, f"{risk_stage}_{account.id}", _wrap(verdict.model_dump(mode="json"))
             )
-        if not verdict.approved or mode == "off" or dry_run or paused:
-            return entry
-        # 알림의 '최종 의견' (손절·헤지·단타는 파이썬 결정이라 붙이지 않는다)
-        opinion = (
-            None if is_stop_loss or is_hedge or is_scalp else messages.DecisionBrief.of(decision)
-        )
-        request = OrderRequest(
-            ticker=decision.ticker,
-            market=market,  # type: ignore[arg-type]
-            side=verdict.side,  # type: ignore[arg-type]
-            qty=verdict.adjusted_qty,
-            order_type=verdict.order_type,  # type: ignore[arg-type]
-            price=verdict.price,
-            exchange=exchange,
-        )
+            if decision_id is not None:
+                repo.insert_risk_check(
+                    ctx.conn,
+                    decision_id=decision_id,
+                    account_id=account.id,
+                    approved=verdict.approved,
+                    adjusted_qty=verdict.adjusted_qty,
+                    reasons=verdict.reasons,
+                )
+            if not verdict.approved or mode == "off" or dry_run or paused:
+                return entry
+            # 알림의 '최종 의견' (손절·헤지·단타는 파이썬 결정이라 붙이지 않는다)
+            opinion = (
+                None
+                if is_stop_loss or is_hedge or is_scalp
+                else messages.DecisionBrief.of(decision)
+            )
+            request = OrderRequest(
+                ticker=decision.ticker,
+                market=market,  # type: ignore[arg-type]
+                side=verdict.side,  # type: ignore[arg-type]
+                qty=verdict.adjusted_qty,
+                order_type=verdict.order_type,  # type: ignore[arg-type]
+                price=verdict.price,
+                exchange=exchange,
+            )
+        except BaseException:
+            if exec_key is not None:  # 주문 전 실패: 키를 놓아 다음 실행이 다시 낼 수 있게
+                repo.release_exec_key(ctx.conn, exec_key)
+            raise
         if mode == "approve" and not is_stop_loss:
-            entry["approval_id"] = _request_approval(
-                ctx,
-                account,
-                decision_id,
-                request,
-                verdict,
-                quote_price=price,
-                order_stage=order_stage,
-                opinion=opinion,
-            )
+            try:
+                entry["approval_id"] = _request_approval(
+                    ctx,
+                    account,
+                    decision_id,
+                    request,
+                    verdict,
+                    quote_price=price,
+                    order_stage=order_stage,
+                    opinion=opinion,
+                    exec_key=exec_key,
+                )
+            except BaseException:
+                if exec_key is not None and not repo.exec_key_has_approval(ctx.conn, exec_key):
+                    repo.release_exec_key(ctx.conn, exec_key)  # 요청 행을 못 만들었다
+                raise
         else:
             entry["order"] = _place(
                 ctx,
@@ -675,8 +738,29 @@ def _execute_account(
                 price,
                 order_stage=order_stage,
                 opinion=opinion,
+                exec_key=exec_key,
             )
         return entry
+
+
+def _exec_key(
+    decision_id: int | None,
+    account_id: str,
+    side: str | None,
+    order_stage: str,
+    ticker: str,
+    d: date,
+    *,
+    is_stop_loss: bool = False,
+) -> str:
+    """실행 키(검토 O8). 결정 주문은 `결정|계좌|방향|주문단계`, 손절은 `stop|계좌|종목|현지일`
+    (결정과 무관하게 하루 1회 — monitor 의 당일 조건과 같은 단위). 결정 행이 없는 주문(단타·
+    리밸런스)은 `주문단계|계좌|종목|방향|운영일`."""
+    if is_stop_loss:
+        return f"stop|{account_id}|{ticker}|{d.isoformat()}"
+    if decision_id is None:
+        return f"{order_stage}|{account_id}|{ticker}|{side}|{d.isoformat()}"
+    return f"{decision_id}|{account_id}|{side}|{order_stage}"
 
 
 def _request_approval(
@@ -689,6 +773,7 @@ def _request_approval(
     quote_price: Decimal | None = None,
     order_stage: str = "50_order",
     opinion: messages.DecisionBrief | None = None,
+    exec_key: str | None = None,
 ) -> int:
     """승인 요청 저장. 시장가는 금액을 모르므로 요청 시 현재가(quote_price)를 함께 남겨
     승인 뒤 주문의 amount(가능금액 차감)로 쓴다. 주문 체크포인트 이름(order_stage: 재평가 51_·
@@ -700,6 +785,8 @@ def _request_approval(
         order[QUOTE_PRICE_KEY] = str(quote_price)
     if order_stage != "50_order":
         order[STAGE_KEY] = order_stage
+    if exec_key is not None:
+        order[EXEC_KEY_KEY] = exec_key
     shown = _label(ctx, request.market, request.ticker)
     name = names.resolve(ctx.conn, _cache_dir(ctx), request.market, request.ticker)
     if name and name != request.ticker:
@@ -713,6 +800,8 @@ def _request_approval(
         expires_at=(now + APPROVAL_TTL).isoformat(),
         fingerprint=approval_fingerprint(account.id, decision_id, order),
     )
+    if exec_key is not None:
+        repo.bind_exec_key(ctx.conn, exec_key, approval_id=aid)
     ctx.notifier.send(
         messages.approval_request(
             approval_id=aid,
@@ -744,8 +833,13 @@ def _place(
     quote_price: Decimal | None = None,
     order_stage: str = "50_order",
     opinion: messages.DecisionBrief | None = None,
+    exec_key: str | None = None,
 ) -> dict:
+    """exec_key(검토 O8)가 있으면 브로커가 거부·실패한 주문은 키를 놓고(KIS 에 주문 없음 → 재시도
+    허용), 접수·unknown 은 키를 남겨 주문 행에 묶는다."""
     shown = _label(ctx, request.market, request.ticker)
+    if exec_key is not None:
+        repo.mark_exec_key_sent(ctx.conn, exec_key, sent_at=ctx.now().isoformat())
     try:
         result = broker.place_order(request)
         status = "accepted" if result.accepted else "rejected"
@@ -775,12 +869,17 @@ def _place(
         result = OrderResult(order_no=None, accepted=False, message=f"INVALID: {e}")
         status = "failed"
         logger.warning("주문 요청 오류 %s %s: %s", account.id, request.ticker, e)
+    if exec_key is not None and status in ("rejected", "failed"):
+        try:
+            repo.release_exec_key(ctx.conn, exec_key)
+        except Exception as e:  # noqa: BLE001 - 키가 남으면 재시도만 막힌다(중복 주문은 아님)
+            logger.warning("실행 키 해제 실패 %s: %s", exec_key, e)
     sizing_price = request.price if request.price is not None else quote_price
     # orders 행은 멱등의 근거(has_open_order_or_approval)라 접수 뒤 반드시 남아야 한다.
     # 기록이 실패하면 접수번호를 알림·CRITICAL 로그에 남기고 올린다
     # (조용히 묻히면 재실행 때 같은 주문을 다시 낸다).
     try:
-        repo.insert_order(
+        order_id = repo.insert_order(
             ctx.conn,
             decision_id=decision_id,
             account_id=account.id,
@@ -827,6 +926,11 @@ def _place(
             ),
         )
         raise OrderBookkeepingError(result.order_no, e) from e
+    if exec_key is not None and status in ("accepted", "unknown"):
+        try:
+            repo.bind_exec_key(ctx.conn, exec_key, order_id=order_id)
+        except Exception as e:  # noqa: BLE001 - 키 자체는 이미 잡혀 있다(묶음은 추적용)
+            logger.warning("실행 키 묶기 실패 %s: %s", exec_key, e)
     payload = {
         "request": request.model_dump(mode="json"),
         "result": result.model_dump(mode="json"),
@@ -951,6 +1055,7 @@ def approve(ctx: ExecContext, approval_id: int) -> dict:
     raw_quote = order.pop(QUOTE_PRICE_KEY, None)
     quote_price = Decimal(str(raw_quote)) if raw_quote is not None else None
     order_stage = str(order.pop(STAGE_KEY, None) or "50_order")
+    exec_key = order.pop(EXEC_KEY_KEY, None)
     request = OrderRequest.model_validate(order)
     dec = repo.get_decision(ctx.conn, a["decision_id"], hydrate=True) if a["decision_id"] else None
     # 요청 뒤 재평가가 같은 결정을 HOLD·반대 방향으로 바꿨으면 옛 요청을 실행하지 않는다(검토 O11)
@@ -972,6 +1077,16 @@ def approve(ctx: ExecContext, approval_id: int) -> dict:
             "ok": False,
             "error": f"계좌 {account.id} 브로커 없음(앱키 미설정): 요청은 pending 유지",
         }
+    if request.side == "BUY" and (dec or {}).get("source") != "hedge":
+        why, err = _approval_recheck(ctx, account, broker, request.market)
+        if err:
+            return {"ok": False, "error": f"{err}: 요청은 pending 유지"}
+        if why:
+            repo.decide_approval(ctx.conn, approval_id, "expired", decided_at=ctx.now().isoformat())
+            return {
+                "ok": False,
+                "error": f"승인 요청 #{approval_id} 실행 직전 재판정: {why} (요청은 만료 처리)",
+            }
     # 조건부 UPDATE: 다른 프로세스(telegram poll ↔ approvals approve)가 먼저 처리했으면 주문 없음
     if not repo.decide_approval(
         ctx.conn, approval_id, "approved", decided_at=ctx.now().isoformat()
@@ -989,6 +1104,7 @@ def approve(ctx: ExecContext, approval_id: int) -> dict:
             quote_price,
             order_stage=order_stage,
             opinion=messages.DecisionBrief.of((dec or {}).get("data")),
+            exec_key=exec_key,
         )
     except OrderBookkeepingError as e:  # 접수 뒤 기록 실패: approved 로 굳지 않게 failed 로 남긴다
         repo.decide_approval(ctx.conn, approval_id, "failed", expect="approved")
@@ -1001,6 +1117,31 @@ def approve(ctx: ExecContext, approval_id: int) -> dict:
         # unknown(응답 없음)은 KIS 에 접수됐을 수 있어 failed 로 적지 않는다 — 운영자가 재주문함
         repo.decide_approval(ctx.conn, approval_id, "failed", expect="approved")
     return {"ok": bool(result["accepted"]), "approval_id": approval_id, "order": result}
+
+
+def _approval_recheck(
+    ctx: ExecContext, account: AccountConfig, broker: Any, market: str
+) -> tuple[str | None, str | None]:
+    """승인 실행 직전 최소 재판정(검토 O12, BUY 만). 요청 뒤 30분 안에 bear 로 바뀌었거나(전략가
+    RISK_ON 기울기 없이) 일일 손실 한도에 닿았으면 (사유, None). 수량은 다시 계산하지 않는다 —
+    전체 게이트 재판정은 요청 때 한 번이고, 여기서는 매수를 막는 상태 전환만 본다.
+    잔고를 못 읽으면 (None, 오류) — 판정할 수 없으니 실행하지도 만료시키지도 않는다."""
+    from trader.orchestrator.run_store import run_date_for
+
+    today = run_date_for(market, ctx.now())
+    if regime_state(ctx, market) == "bear" and _agent_tilt(ctx, market, today) <= 0:
+        return "하락 국면(bear) 전환 — 신규 매수 금지", None
+    try:
+        pos_list, cash = _balance(broker, market)
+    except (KisApiError, ValueError) as e:
+        return None, f"잔고 조회 실패로 재판정 불가({e})"
+    prev = repo.latest_nav_before(ctx.conn, account.id, today, market=market)
+    if prev:
+        pnl = float(_nav_of(pos_list, cash) / prev - 1)
+        stop = ctx.settings.risk.daily_loss_stop_pct
+        if pnl <= stop:
+            return f"일일 손실 {pnl:.2%} 이 한도 {stop:.0%} 초과 — 신규 매수 금지", None
+    return None, None
 
 
 def reject(ctx: ExecContext, approval_id: int) -> dict:

@@ -342,6 +342,18 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
             )""",
         ],
     ),
+    (
+        21,  # 전체 검토 O8: 실행 키 선점 — 두 프로세스가 같은 주문을 동시에 내지 않게(PRIMARY KEY)
+        [
+            """CREATE TABLE IF NOT EXISTS exec_keys (
+                key TEXT PRIMARY KEY,
+                created_at TEXT NOT NULL,
+                order_id INTEGER,
+                approval_id INTEGER,
+                sent_at TEXT
+            )""",
+        ],
+    ),
 ]
 
 

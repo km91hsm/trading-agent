@@ -559,34 +559,96 @@ def today_buy_tickers(
     return {r["ticker"] for r in conn.execute(sql, args).fetchall()}
 
 
-def today_order_amount(
+def claim_exec_key(conn: sqlite3.Connection, key: str, *, now: str, stale_before: str) -> bool:
+    """실행 키 선점(검토 O8). 처음 넣은 프로세스만 True — 살아 있는 키가 있으면(다른 프로세스가 같은
+    주문을 실행 중이거나 냈다) False. 중복 확인(has_open_order_or_approval)과 주문 사이 경합을 닫음.
+
+    이미 있는 키도 아래면 조건부 UPDATE 한 번으로 넘겨받는다(영구 차단 방지):
+    - 묶인 주문이 죽었다(취소·거부·실패·만료 — 손절 지정가 취소 뒤 재손절, 마감 소멸 뒤 재제출)
+    - 브로커로 보내지 않았고(sent_at 없음) 승인 요청도 아닌데 stale_before 보다 오래됐다(선점 뒤
+      주문 전에 프로세스가 죽음)
+    - 승인 요청 키인데 그 요청이 거절·만료·실패로 닫혔다
+    보냈는데 주문 행이 없는 키(접수 뒤 기록 실패)는 넘겨받지 않는다 — 수동 대조 대상."""
+    try:
+        conn.execute("INSERT INTO exec_keys(key, created_at) VALUES (?, ?)", (key, now))
+    except sqlite3.IntegrityError:
+        conn.rollback()
+    else:
+        conn.commit()
+        return True
+    cur = conn.execute(
+        "UPDATE exec_keys SET created_at=?, order_id=NULL, approval_id=NULL, sent_at=NULL "
+        "WHERE key=? AND ("
+        f"(order_id IS NOT NULL AND order_id IN (SELECT id FROM orders WHERE status IN "
+        f"({dead_status_sql()}))) "
+        "OR (order_id IS NULL AND sent_at IS NULL AND ("
+        "(approval_id IS NULL AND created_at < ?) "
+        "OR approval_id IN (SELECT id FROM approvals WHERE status IN "
+        "('rejected','expired','failed') OR (status='pending' AND expires_at <= ?)))))",
+        (now, key, stale_before, now),
+    )
+    conn.commit()
+    return cur.rowcount == 1
+
+
+def bind_exec_key(
+    conn: sqlite3.Connection,
+    key: str,
+    *,
+    order_id: int | None = None,
+    approval_id: int | None = None,
+) -> None:
+    """키를 주문 행(접수·unknown) 또는 승인 요청에 묶는다."""
+    if order_id is not None:
+        conn.execute("UPDATE exec_keys SET order_id=? WHERE key=?", (order_id, key))
+    if approval_id is not None:
+        conn.execute("UPDATE exec_keys SET approval_id=? WHERE key=?", (approval_id, key))
+    conn.commit()
+
+
+def mark_exec_key_sent(conn: sqlite3.Connection, key: str, *, sent_at: str) -> None:
+    """브로커 호출 직전에 남긴다 — 이후로는 응답이 없어도 주문이 KIS 에 있을 수 있다."""
+    conn.execute("UPDATE exec_keys SET sent_at=? WHERE key=?", (sent_at, key))
+    conn.commit()
+
+
+def exec_key_has_approval(conn: sqlite3.Connection, key: str) -> bool:
+    row = conn.execute("SELECT approval_id FROM exec_keys WHERE key=?", (key,)).fetchone()
+    return row is not None and row["approval_id"] is not None
+
+
+def release_exec_key(conn: sqlite3.Connection, key: str) -> None:
+    """브로커가 거부·실패한 주문(KIS 에 주문 없음)·주문 전 예외의 키를 지운다(재시도 허용)."""
+    conn.execute("DELETE FROM exec_keys WHERE key=?", (key,))
+    conn.commit()
+
+
+def _buy_amounts_today(
     conn: sqlite3.Connection,
     account_id: str,
     d: date,
-    market: str | None = None,
+    market: str | None,
     *,
-    exclude_filled: bool = False,
-    now: str | None = None,
-) -> Decimal:
-    """운영일 d(시장 현지 하루)의 누적 매수 주문금액. 통화가 달라 market 으로 거른다.
-    exclude_filled=True 면 체결 완료 주문은 빼고 미체결(accepted·partial·unknown)만 더한다 —
-    주문가능금액(D+2 정산 반영)이 체결분을 이미 뺐을 때 이중 차감을 막는다."""
+    exclude_filled: bool,
+    now: str | None,
+) -> list[tuple[str, Decimal]]:
+    """운영일 d 의 살아 있는 BUY 주문 + 만료 전 pending BUY 승인의 (종목, 금액) 목록."""
     lo, hi = day_bounds(d, market)
     excluded = dead_status_sql() + (",'filled'" if exclude_filled else "")
     sql = (
-        "SELECT qty, price, amount FROM orders WHERE account_id=? AND side='BUY' "
+        "SELECT ticker, qty, price, amount FROM orders WHERE account_id=? AND side='BUY' "
         f"AND status NOT IN ({excluded}) AND created_at >= ? AND created_at < ?"
     )
     args: list = [account_id, lo, hi]
     if market:
         sql += " AND market=?"
         args.append(market)
-    total = Decimal(0)
+    out: list[tuple[str, Decimal]] = []
     for r in conn.execute(sql, args).fetchall():
         if r["amount"] is not None:
-            total += _dec(r["amount"])
+            out.append((r["ticker"], _dec(r["amount"])))
         else:
-            total += Decimal(r["qty"]) * _dec(r["price"])
+            out.append((r["ticker"], Decimal(r["qty"]) * _dec(r["price"])))
     # pending 승인 요청도 현금을 예약한다 — 승인이 누적되면 가능금액을 넘겨 과매수하기 때문
     sql = (
         "SELECT order_json FROM approvals WHERE account_id=? AND status='pending' "
@@ -603,8 +665,48 @@ def today_order_amount(
         o = json.loads(r["order_json"])
         price = o.get("price") if o.get("price") is not None else o.get("quote_price")
         if price is not None:
-            total += Decimal(int(o.get("qty") or 0)) * _dec(price)
-    return total
+            out.append((str(o.get("ticker")), Decimal(int(o.get("qty") or 0)) * _dec(price)))
+    return out
+
+
+def pending_buy_amounts(
+    conn: sqlite3.Connection,
+    account_id: str,
+    d: date,
+    market: str | None = None,
+    *,
+    now: str | None = None,
+) -> dict[str, Decimal]:
+    """체결 전 BUY 주문(accepted·partial·unknown) + pending 승인의 종목별 금액(검토 O10 예상
+    포트폴리오). 체결 완료 주문은 브로커 잔고에 이미 보유로 잡히므로 뺀다(partial 은 주문 전체
+    금액 — 체결분이 보유와 겹쳐 보수적으로 센다)."""
+    out: dict[str, Decimal] = {}
+    for t, v in _buy_amounts_today(conn, account_id, d, market, exclude_filled=True, now=now):
+        out[t] = out.get(t, Decimal(0)) + v
+    return out
+
+
+def today_order_amount(
+    conn: sqlite3.Connection,
+    account_id: str,
+    d: date,
+    market: str | None = None,
+    *,
+    exclude_filled: bool = False,
+    now: str | None = None,
+) -> Decimal:
+    """운영일 d(시장 현지 하루)의 누적 매수 주문금액. 통화가 달라 market 으로 거른다.
+    exclude_filled=True 면 체결 완료 주문은 빼고 미체결(accepted·partial·unknown)만 더한다 —
+    주문가능금액(D+2 정산 반영)이 체결분을 이미 뺐을 때 이중 차감을 막는다."""
+    return sum(
+        (
+            v
+            for _, v in _buy_amounts_today(
+                conn, account_id, d, market, exclude_filled=exclude_filled, now=now
+            )
+        ),
+        Decimal(0),
+    )
 
 
 def trades_this_week(
