@@ -33,7 +33,7 @@ SCREEN_AGENTS: tuple[str, ...] = ("scout", "screener")
 DISCOVER_AGENTS: tuple[str, ...] = ("scout",)
 REFLECT_AGENTS: tuple[str, ...] = ("reflector",)
 # Phase 25: 서브에이전트 없이 단발 claude -p(`orchestrator/quick.ask_json`)로 부르는 판정자
-QUICK_AGENTS: tuple[str, ...] = ("scalp-judge",)
+QUICK_AGENTS: tuple[str, ...] = ("scalp-judge", "briefing")
 # Phase 18 시장 세션: 거시 애널리스트 1 + 리서처 토론 + 전략가(헤지 비중 제안)
 MARKET_AGENTS: tuple[str, ...] = (
     "analyst-market",
@@ -103,6 +103,7 @@ def schema_model_for(name: str) -> type | None:
         "reflector": schemas.Reflection,
         "strategist": schemas.HedgeProposal,
         "scalp-judge": schemas.ScalpVerdict,
+        "briefing": schemas.Briefing,
     }.get(name)
 
 

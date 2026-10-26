@@ -43,7 +43,7 @@ def approval_line(a: dict, env: str | None = None) -> str:
 HELP_LINE = (
     "/status · /approve <id> [실전] · /reject <id> · /pause · /resume · "
     "/mode <계좌> <auto|approve|off> · /watch add|remove|list <종목> · "
-    "/run <작업> [KR|US] [종목] · /kill(신규 매수 중단, 해제는 CLI)"
+    "/run <작업> [KR|US] [종목] · /daily · /kill(신규 매수 중단, 해제는 CLI)"
 )
 
 
@@ -190,6 +190,23 @@ def poll_once(ectx: Any, receiver: Any, *, echo: Callable[[str], None] = lambda 
 def _handle_command(ectx: Any, conn: Any, cmd: tuple[str, str | None], echo: Callable) -> None:
     name, arg = cmd
     if True:
+        if name == "daily":
+            from trader.ledger import daily_report
+            from trader.orchestrator.run_store import run_date_for
+
+            r = daily_report.compute(
+                conn,
+                ectx.accounts,
+                markets=sorted({m for a in ectx.accounts for m in a.markets}),
+                today_of=lambda m: run_date_for(m, ectx.now()),
+            )
+            ectx.notifier.send(
+                daily_report.message(r)
+                if r["items"]
+                else messages.event("일일 리포트", "오늘 잔고 스냅샷이 아직 없어요")
+            )
+            echo("daily")
+            return
         if name == "status":
             pending = repo.pending_approvals(conn)
             modes = ", ".join(_mode_label(conn, a) for a in ectx.accounts)

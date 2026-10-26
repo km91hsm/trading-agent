@@ -219,7 +219,7 @@ def candidates(ctx: ScalpContext, market: str, today: date, st: dict) -> list[di
             held |= {p.ticker for p in b.get_positions(market)}
         except (KisApiError, ValueError) as e:
             logger.warning("단타 보유 조회 실패 %s: %s", a.id, e)
-    hedge = set(ctx.settings.hedge.tickers(market)) if ctx.settings.hedge.enabled else set()
+    hedge = ctx.settings.excluded_tickers(market)
     open_t = {o["ticker"] for o in st.get("open") or []}
     done = set(st.get("done") or []) | set(st.get("pending") or {})
     picked = [

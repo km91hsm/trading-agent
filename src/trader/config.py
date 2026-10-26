@@ -314,6 +314,44 @@ class UsageThrottle(BaseModel):
     max_age_h: float = Field(6.0, gt=0)
 
 
+class BriefingCfg(BaseModel):
+    """아침 브리핑(Stock docs/06): 밤사이 미국장·거시·뉴스·보유 영향을 5줄로(haiku 단발 1회)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    time: str = "07:20"  # KST, 평일(KR 휴장일 제외)
+    daily_cap: int = Field(default=1, ge=0, le=5)
+    timeout_s: int = Field(default=120, ge=10, le=600)
+
+
+class CashParkCfg(BaseModel):
+    """노는 현금 단기금리 ETF 운용(Stock D-115, **기본 끔**): 하락 국면이라 신규 매수가 막힌 동안만
+    남는 현금(`reserve_pct` 는 남김)을 `ticker` 로 사고, 국면이 풀리면 판다. 국내만."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    ticker: str = "357870"  # TIGER CD금리투자KIS(합성)
+    # NAV 대비 현금으로 남길 몫(조건부 매수·헤지)
+    reserve_pct: float = Field(default=0.20, ge=0, le=1)
+    min_amount: Decimal = Decimal("500000")  # 이보다 적으면 사지 않는다(수수료)
+
+
+class BlackoutCfg(BaseModel):
+    """권리 일정 블랙아웃(Stock D-113, **기본 끔**): 예탁원 확정 기준일 `before` 일 전 ~ `after`
+    일 뒤 신규 매수 금지(매도는 무관). 수집은 켜져 있으면 데몬이 매일 한다."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    kinds: list[Literal["paidin", "bonus", "rev_split", "merger_split"]] = Field(
+        default_factory=lambda: ["paidin", "bonus", "rev_split", "merger_split"]
+    )
+    before_days: int = Field(default=5, ge=0, le=30)
+    after_days: int = Field(default=2, ge=0, le=30)
+
+
 class UsageProbe(BaseModel):
     """구독 사용률 확인(웹 실시간): 데몬이 interval_min 마다 haiku 단발 `claude -p` 1회로 5시간·7일
     사용률과 초기화 시각을 관측한다. 최근 skip_if_recent_min 안에 다른 관측(세션)이 있으면 건너뛰고,
@@ -346,6 +384,10 @@ class WebSettings(BaseModel):
 
     bind: str = "127.0.0.1"
     port: int = 8787
+    # 폰 접속(Stock D-054): `tailscale serve` 가 tailnet 이름으로 넘겨 주는 요청만. 비면 로컬만.
+    # hosts: tailnet 주소(예: mymac.tail1234.ts.net), users: 허용할 Tailscale-User-Login(비면 거부)
+    tailscale_hosts: list[str] = Field(default_factory=list)
+    tailscale_users: list[str] = Field(default_factory=list)
     # 국내 현재가를 KIS 웹소켓으로(`web/live_quotes`, 화면 1초 갱신). 끄면 10초 REST 폴링
     realtime_ws: bool = True
 
@@ -415,6 +457,18 @@ class Settings(BaseModel):
     memory: MemorySettings = Field(default_factory=MemorySettings)
     discovery: DiscoveryCfg = Field(default_factory=DiscoveryCfg)  # Phase 23 장중 뉴스 발굴
     scalp: ScalpCfg = Field(default_factory=ScalpCfg)  # Phase 23 분 단위 단타(모의 전용, 기본 끔)
+    briefing: BriefingCfg = Field(default_factory=BriefingCfg)  # 아침 브리핑(Stock docs/06)
+    cash_park: CashParkCfg = Field(default_factory=CashParkCfg)  # 현금 단기금리 ETF(기본 끔)
+    event_blackout: BlackoutCfg = Field(default_factory=BlackoutCfg)  # 권리 일정 블랙아웃(기본 끔)
+
+    def excluded_tickers(self, market: str) -> set[str]:
+        """분석·monitor·종목 수·섹터 계산에서 뺄 운용 상품: 헤지 ETF(켜져 있으면) + 현금 단기금리
+        ETF(cash_park 켜져 있고 KR). 헤지 진입·해제가 볼 종목은 `hedge.tickers` 그대로."""
+        out = set(self.hedge.tickers(market)) if self.hedge.enabled else set()
+        if self.cash_park.enabled and market == "KR":
+            out.add(self.cash_park.ticker)
+        return out
+
     theme: ThemeCfg = Field(default_factory=ThemeCfg)  # Phase 25 테마 열기 감지
     rebalance: RebalanceCfg = Field(default_factory=RebalanceCfg)  # Phase 25 주간 리밸런스
     # 보존 정리(검토 P12): reflect 잡이 이 일수보다 오래된 runs 폴더·날짜 플래그·잡 기록 삭제

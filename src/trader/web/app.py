@@ -77,10 +77,40 @@ def create_app(deps: WebDeps) -> FastAPI:
         title="trader", docs_url="/api/docs", openapi_url="/api/openapi.json", lifespan=lifespan
     )
     app.state.deps = deps
+    # 폰 접속(Stock D-054): `tailscale serve` 가 tailnet 이름으로 넘겨 주는 요청은 허용 로그인만.
+    # uvicorn 은 루프백에만 열고(tailscale serve 가 127.0.0.1 로 넘긴다), 제어 API 는 토큰 그대로
+    ts_hosts = {h.lower() for h in deps.settings.web.tailscale_hosts}
+    ts_users = {u.lower() for u in deps.settings.web.tailscale_users}
+
+    @app.middleware("http")
+    async def tailscale_gate(request: Request, call_next):
+        if not ts_hosts:
+            return await call_next(request)
+        host = (request.headers.get("host") or "").split(":")[0].lower()
+        client = request.client.host if request.client else ""
+        # 프록시를 거친 요청은 Host 와 무관하게 사용자 검사(Host: localhost 로 바꿔 우회 못 하게,
+        # Codex 리뷰) — tailscale serve 는 Tailscale-User-Login·X-Forwarded-For 를 붙인다
+        proxied = host in ts_hosts or any(
+            request.headers.get(h)
+            for h in ("tailscale-user-login", "x-forwarded-for", "forwarded", "x-real-ip")
+        )
+        if proxied:
+            login = (request.headers.get("tailscale-user-login") or "").lower()
+            if client not in ("127.0.0.1", "::1") or not login or login not in ts_users:
+                return JSONResponse({"detail": "tailnet 허용 사용자가 아닙니다"}, status_code=403)
+        return await call_next(request)
+
     # 로컬 전용: DNS 리바인딩으로 토큰 없는 조회 API 를 읽지 못하게 Host 를 제한한다
     app.add_middleware(
         TrustedHostMiddleware,
-        allowed_hosts=["127.0.0.1", "localhost", "[::1]", "testserver", *deps.extra_hosts],
+        allowed_hosts=[
+            "127.0.0.1",
+            "localhost",
+            "[::1]",
+            "testserver",
+            *deps.extra_hosts,
+            *sorted(ts_hosts),
+        ],
     )
     routers = (
         system.router,

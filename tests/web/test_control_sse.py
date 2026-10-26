@@ -348,8 +348,13 @@ def test_sse_snapshot_covers_live_screens(conn, project):
 
     _t.sleep(0.002)
     repo.snapshot_positions(
-        conn, account_id="paper-main", d=date(2026, 10, 26), market="KR",
-        nav=Decimal(101), cash=Decimal(101), positions=[],
+        conn,
+        account_id="paper-main",
+        d=date(2026, 10, 26),
+        market="KR",
+        nav=Decimal(101),
+        cash=Decimal(101),
+        positions=[],
     )
     s1b = sse.snapshot(conn, state, now)
     assert s1b["positions"] != s1["positions"]

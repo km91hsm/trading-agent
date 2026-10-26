@@ -211,3 +211,10 @@ def test_telegram_kill_engages_only(conn):
     commands.poll_once(ctx, Recv(["/kill"]))
     assert killswitch.reason(conn) == "텔레그램 /kill"
     assert sent.msgs[-1].startswith("[킬스위치]") and "control killswitch off" in sent.msgs[-1]
+
+
+def test_telegram_daily_without_snapshot(conn):
+    sent = Sent()
+    ctx = _ctx(conn, sent)
+    commands.poll_once(ctx, Recv(["/daily"]))
+    assert sent.msgs[-1].startswith("[일일 리포트]") and "스냅샷" in sent.msgs[-1]

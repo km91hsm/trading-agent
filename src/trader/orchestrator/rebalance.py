@@ -112,9 +112,7 @@ def run(
         return {"skipped": "rebalance.enabled=false"}
     if control.get_flag(ctx.conn, done_key(market, today)):
         return {"skipped": "오늘 이미 실행"}
-    hedge = (
-        frozenset(ctx.settings.hedge.tickers(market)) if ctx.settings.hedge.enabled else frozenset()
-    )
+    hedge = frozenset(ctx.settings.excluded_tickers(market))
     exclude = set(hedge) | _scalp_open(ctx, market, today)
     accounts = [a for a in ctx.accounts if market in a.markets and a.id in ctx.brokers]
     need: dict[tuple[str, str], set[str]] = {}  # (action, ticker) → 계좌들

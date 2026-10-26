@@ -305,6 +305,20 @@ def build_jobs(schedule: ScheduleConfig, settings: Settings, *, markets: list[st
             )
         )
         jobs.append(Job(f"{lo}_monitor", "monitor", m, interval_s=ms.monitor.interval_s))
+        # 장 마감 일일 리포트(Stock D-095): 시장 현지 16:20, 휴장일은 market_job 이 건너뛴다
+        jobs.append(
+            Job(
+                f"{lo}_daily_report",
+                "daily_report",
+                m,
+                cron={
+                    "hour": 16,
+                    "minute": 20,
+                    "day_of_week": "mon-fri",
+                    "timezone": str(MARKET_TZ[m]),  # schedule 의 US tz 는 KST 라 현지 마감 기준으로
+                },
+            )
+        )
         # 분 단위 단타(Phase 23 S): monitor 와 별도 60초 잡, 장중 창·모의 전용·기본 끔(body 가 판단)
         jobs.append(Job(f"{lo}_scalp", "scalp", m, interval_s=SCALP_INTERVAL_S))
         # 테마 열기 감지(Phase 25): 장중 창만, 가벼운 잡(KIS 순위 3회 + 원장 읽기)
@@ -360,6 +374,25 @@ def build_jobs(schedule: ScheduleConfig, settings: Settings, *, markets: list[st
     jobs.append(Job("balance_refresh", "balance_refresh", interval_s=BALANCE_REFRESH_S))
     jobs.append(Job("saveticker", "saveticker", interval_s=SAVETICKER_WATCH_S))
     jobs.append(Job("ledger_backup", "ledger_backup", cron={"hour": 17, "minute": 10}))
+    if "KR" in markets:  # 권리 일정 수집(블랙아웃이 꺼져 있어도 모아 둔다 — 켤 때 바로 쓰게)
+        jobs.append(
+            Job(
+                "ksd_events",
+                "ksd_events",
+                "KR",
+                cron={"hour": 7, "minute": 5, "day_of_week": "mon-fri"},
+            )
+        )
+    if settings.briefing.enabled and "KR" in markets:
+        bt = _hm(settings.briefing.time)
+        jobs.append(
+            Job(
+                "morning_briefing",
+                "briefing",
+                "KR",
+                cron={"hour": bt.hour, "minute": bt.minute, "day_of_week": "mon-fri"},
+            )
+        )
     jobs.append(
         Job("paper_review", "paper_review", cron={"hour": 9, "minute": 0, "day_of_week": "sat"})
     )
@@ -1025,6 +1058,39 @@ def _market_view_body(deps: DaemonDeps, market: str) -> dict:
     return out
 
 
+def _cash_park_body(deps: DaemonDeps) -> dict:
+    """현금 단기금리 ETF(기본 끔, Stock D-115): monitor 틱에서 헤지 뒤, 운영일 1회·KR·일시정지
+    보류."""
+    from trader.orchestrator import cash_park
+    from trader.orchestrator.executor import ExecContext, regime_state
+    from trader.orchestrator.run_store import run_date_for
+
+    if deps.market_client is None:
+        return {"skipped": "시세 클라이언트 없음"}
+    conn = deps.conn_factory()
+    try:
+        if control.is_paused(conn):
+            return {"skipped": "일시정지"}
+        ectx = ExecContext(
+            settings=deps.settings,
+            accounts=deps.accounts,
+            conn=conn,
+            brokers=deps.brokers,
+            notifier=deps.notifier,
+            state=deps.state,
+            now=deps.now,
+        )
+        return cash_park.run(
+            ectx,
+            market_client=deps.market_client,
+            today=run_date_for("KR", deps.now()),
+            regime=regime_state(ectx, "KR"),
+            dry_run=deps.dry_run,
+        )
+    finally:
+        conn.close()
+
+
 def _hedge_body(deps: DaemonDeps, market: str) -> dict:
     """monitor 첫 창 안 틱에서 운영일 1회: bear 면 인버스 진입, 벗어났으면 해제(paused 면 보류)."""
     from trader.orchestrator import hedge as hedge_mod
@@ -1233,6 +1299,13 @@ def _monitor_body(deps: DaemonDeps, market: str) -> dict:
         logger.exception("헤지 실행 실패 %s", market)
         deps.notifier.send(messages.failure("헤지 실패", f"{market}", e))
         hedge = {"error": f"{type(e).__name__}: {e}"}
+    park: dict | None = None
+    if market == "KR" and deps.settings.cash_park.enabled:
+        try:
+            park = _cash_park_body(deps)
+        except Exception as e:  # noqa: BLE001 - 현금 운용 실패가 손절 점검을 막지 않는다
+            logger.exception("현금 운용 실패")
+            park = {"error": f"{type(e).__name__}: {e}"}
     rep: dict | None = None
     try:
         rep = _reprice_body(deps, market)
@@ -1259,6 +1332,8 @@ def _monitor_body(deps: DaemonDeps, market: str) -> dict:
         out = monitor_mod.monitor_once(ctx, market=market, today=run_date_for(market, deps.now()))
         if hedge and "skipped" not in hedge:
             out["hedge"] = hedge
+        if park and "skipped" not in park:
+            out["cash_park"] = park
         if rep and "skipped" not in rep:
             out["reprice"] = rep
         return out
@@ -1558,6 +1633,73 @@ def _backup_body(deps: DaemonDeps) -> dict:
     return {"file": out.name, "pruned": removed}
 
 
+def _ksd_body(deps: DaemonDeps) -> dict:
+    """예탁원 권리 일정 수집(평일 07:05 KST) → control.ksd_events:KR. 시세 없으면 생략."""
+    from trader.risk import blackout
+
+    if deps.market_client is None or not hasattr(deps.market_client, "ksd_schedule"):
+        return {"skipped": "시세 클라이언트 없음"}
+    r = blackout.collect(
+        deps.market_client, deps.settings.event_blackout, today=deps.now().astimezone(KST).date()
+    )
+    conn = deps.conn_factory()
+    try:
+        blackout.store(conn, r)
+    finally:
+        conn.close()
+    return {"events": len(r["events"]), "errors": r["errors"]}
+
+
+def _briefing_body(deps: DaemonDeps) -> dict:
+    """아침 브리핑(평일 07:20 KST, KR 휴장일·일시정지 제외) → 텔레그램. 사람이 읽는 요약 전용."""
+    from trader.orchestrator import briefing
+    from trader.sources import saveticker
+
+    root = None
+    if deps.sources_cfg is not None:
+        root = saveticker.resolve_dir(deps.sources_cfg.news.saveticker_dir)
+    conn = deps.conn_factory()
+    try:
+        return briefing.run(
+            conn,
+            deps.settings,
+            deps.accounts,
+            now=deps.now(),
+            notifier=deps.notifier,
+            market_client=deps.market_client,
+            saveticker_root=root,
+            cancel=deps.stop_event,
+        )
+    finally:
+        conn.close()
+
+
+def _daily_report_body(deps: DaemonDeps, market: str) -> dict:
+    """장 마감 일일 리포트 → 텔레그램(오늘 스냅샷이 있는 계좌만, 없으면 조용히). 먼저 체결을
+    동기화한다 — US 마감(16:20 ET)은 정기 체결 동기화(07:10 KST)보다 앞서 실현손익·미결이 빈다."""
+    from trader.ledger import daily_report
+    from trader.orchestrator.run_store import run_date_for
+
+    try:
+        _fills_body(deps)
+    except Exception as e:  # noqa: BLE001 - 동기화 실패여도 리포트는 원장 값으로
+        logger.warning("일일 리포트 전 체결 동기화 실패 %s: %s", market, e)
+
+    conn = deps.conn_factory()
+    try:
+        r = daily_report.compute(
+            conn,
+            deps.accounts,
+            markets=[market],
+            today_of=lambda m: run_date_for(m, deps.now()),
+        )
+    finally:
+        conn.close()
+    if r["items"]:
+        deps.notifier.send(daily_report.message(r))
+    return {"items": len(r["items"])}
+
+
 def _paper_review_body(deps: DaemonDeps) -> dict:
     """모의 체결 대 가정 주간 점검(토 09:00 KST): 지난 7일 결정 주문 체결률·슬리피지 → 텔레그램."""
     from trader.ledger import paper_review
@@ -1803,7 +1945,7 @@ def _disclosure_trigger(deps: DaemonDeps, conn: sqlite3.Connection, market: str,
     can_run = not control.is_paused(conn) and _in_market_window(deps, market)
     today = run_date_for(market, deps.now())
     cache = _cache_dir(deps)
-    hedge = set(deps.settings.hedge.tickers(market)) if deps.settings.hedge.enabled else set()
+    hedge = deps.settings.excluded_tickers(market)
     queued = []
     for r in fresh:
         for t in r["tickers"]:
@@ -1879,7 +2021,7 @@ def _news_trigger(deps: DaemonDeps, conn: sqlite3.Connection, market: str, unive
     burst = discovery_mod.news_burst(
         novel, universe_tickers=uni, held=held, min_items=cfg.min_items
     )
-    hedge = set(deps.settings.hedge.tickers(market)) if deps.settings.hedge.enabled else set()
+    hedge = deps.settings.excluded_tickers(market)
     for ticker, items in burst["tickers"].items():
         if ticker in hedge:
             continue
@@ -2089,7 +2231,7 @@ def _discover_body(deps: DaemonDeps, market: str) -> dict:
         queued = []
         for c in found.get("candidates") or []:
             t = c.get("ticker")
-            if not t or t in set(deps.settings.hedge.tickers(market)):
+            if not t or t in deps.settings.excluded_tickers(market):
                 continue
             rid = _news_reanalyze(
                 deps, conn, market, t, [], today, universe, exchange=c.get("exchange")
@@ -2325,9 +2467,7 @@ def _shadow_record(deps: DaemonDeps, market: str, analyzed: dict | None = None) 
         conn = deps.conn_factory()
         try:
             index = shadow.index_table(deps.market_client, deps.settings.hedge, market)
-            shadow.record(
-                conn, market=market, day=today, scan=scan, now=deps.now(), index=index
-            )
+            shadow.record(conn, market=market, day=today, scan=scan, now=deps.now(), index=index)
         finally:
             conn.close()
     except Exception as e:  # noqa: BLE001 - 측정 실패가 분석 잡을 실패로 만들지 않는다
@@ -2412,6 +2552,17 @@ def job_body(
     if job.kind == "rebalance":
         return lambda: market_job(
             deps, job.market or "KR", "rebalance", lambda: _rebalance_body(deps, job.market or "KR")
+        )
+    if job.kind == "ksd_events":
+        return lambda: _ksd_body(deps)
+    if job.kind == "briefing":
+        return lambda: market_job(deps, "KR", "briefing", lambda: _briefing_body(deps))
+    if job.kind == "daily_report":
+        return lambda: market_job(
+            deps,
+            job.market or "KR",
+            "daily_report",
+            lambda: _daily_report_body(deps, job.market or "KR"),
         )
     if job.kind == "theme":
         return lambda: monitor_job(
@@ -2674,7 +2825,15 @@ def _start_web(app: Any, host: str, port: int, *, notifier: Any = None) -> threa
 
     # 접근 로그는 실시간 시세 폴링(10초)마다 줄이 쌓여 끈다(전체 검토 P10)
     server = uvicorn.Server(
-        uvicorn.Config(app, host=host, port=port, log_level="info", access_log=False)
+        uvicorn.Config(
+            app,
+            host=host,
+            port=port,
+            log_level="info",
+            access_log=False,
+            # X-Forwarded-For 로 접속 주소를 바꾸지 않는다(Tailscale 게이트가 실제 피어를 본다)
+            proxy_headers=False,
+        )
     )
 
     def run() -> None:

@@ -133,7 +133,7 @@ def _classify(conn, market: str, tickers: dict, settings: Any, market_client: An
     from trader.config import load_sectors
     from trader.scan import sector_suggest
 
-    hedge = set(settings.hedge.tickers(market)) if settings.hedge.enabled else set()
+    hedge = settings.excluded_tickers(market)
     try:
         smap = load_sectors()
     except Exception:  # noqa: BLE001 - 섹터 맵이 깨졌으면 분류를 건너뛴다

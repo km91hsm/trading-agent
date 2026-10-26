@@ -163,8 +163,7 @@ def run_screen(
     if universe is not None and market == "US":
         for u in getattr(universe, "us", []) or []:
             exch.setdefault(u.symbol, u.exchange)
-    hedge_cfg = settings.hedge
-    hedge_tickers = set(hedge_cfg.tickers(market)) if hedge_cfg.enabled else set()
+    hedge_tickers = settings.excluded_tickers(market)  # 헤지 ETF + 현금 단기금리 ETF
     targets: list[dict] = []
     seen: set[str] = set()
 

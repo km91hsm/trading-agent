@@ -43,3 +43,25 @@ def test_paper_review_job_weekly_message(conn, project):
     conn.commit()
     daemon._paper_review_body(deps)
     assert sent and sent[-1].startswith("[모의 체결 점검]")
+
+
+def test_daily_report_jobs_per_market(conn, project):
+    jobs = {j.id: j for j in daemon.build_jobs(SCHED, Settings(), markets=["KR", "US"])}
+    assert jobs["kr_daily_report"].cron["timezone"] == "Asia/Seoul"
+    assert jobs["us_daily_report"].cron["timezone"] == "America/New_York"
+    deps = _deps(conn, None, now=lambda: NOW)
+    sent = []
+    deps.notifier.send = lambda text, **kw: sent.append(text) or True
+    assert daemon._daily_report_body(deps, "KR") == {"items": 0} and sent == []
+
+
+def test_briefing_job_and_body(conn, project, monkeypatch):
+    jobs = {j.id: j for j in daemon.build_jobs(SCHED, Settings(), markets=["KR"])}
+    assert jobs["morning_briefing"].cron == {"hour": 7, "minute": 20, "day_of_week": "mon-fri"}
+    off = Settings(briefing={"enabled": False})
+    assert "morning_briefing" not in {j.id for j in daemon.build_jobs(SCHED, off, markets=["KR"])}
+    monkeypatch.setenv("FAKE_CLAUDE", "1")
+    deps = _deps(conn, None, now=lambda: NOW)
+    sent = []
+    deps.notifier.send = lambda text, **kw: sent.append(text) or True
+    assert daemon._briefing_body(deps) == {"lines": 1} and sent[-1].startswith("[아침 브리핑]")

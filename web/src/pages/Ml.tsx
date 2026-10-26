@@ -55,6 +55,7 @@ type ShadowRow = {
 };
 type ShadowResp = { rows: ShadowRow[] };
 type Detail = Model & {
+  caveats?: string[];
   importances: Record<string, number>;
   features: string[];
   metrics: Metrics & { folds: Array<{ index: number; train_rows: number; test_rows: number; accuracy: number; baseline: number; alpha: number }> };
@@ -252,6 +253,12 @@ export function MlPage() {
           ) : detail.data ? (
             <>
               <p className="note">{detail.data.promote_reason}</p>
+              {/* Stock D-037: 현재 구성 종목으로 과거를 학습하면 알파가 부풀려진다(옛 모델 메타에는 없어 기본 문구) */}
+              <p className="note">
+                <span className="badge badge-pending">주의</span>{" "}
+                {(detail.data.caveats ?? [])[0] ??
+                  "생존 편향: 학습 종목이 지금의 universe 구성이라 과거에 빠진 종목이 없어요 — 알파가 실제보다 클 수 있어요."}
+              </p>
               <h3 className="sub-h">폴드별 성능</h3>
               <Table dense caption="폴드별 성능">
                 <thead>

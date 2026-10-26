@@ -320,6 +320,46 @@ class KisMarket:
         flows.sort(key=lambda f: f.date)
         return flows[-days:] if days > 0 else flows
 
+    # --- 예탁원 권리 일정 (Stock D-108·D-113, 블랙아웃용) ------------------------
+
+    _KSD = {
+        "paidin": ("KSD_PAIDIN", {"GB1": "1"}),
+        "bonus": ("KSD_BONUS", {}),
+        "merger_split": ("KSD_MERGER_SPLIT", {}),
+        "rev_split": ("KSD_REV_SPLIT", {"MARKET_GB": "0"}),
+    }
+
+    def ksd_schedule(self, kind: str, start: date, end: date) -> list[dict]:
+        """기준일이 start~end 인 권리 일정 [{ticker, kind, date, name}] (연속조회 CTS)."""
+        name, extra = self._KSD[kind]
+        data = self._client.get_pages(
+            path(name),
+            name,
+            {
+                "CTS": "",
+                "F_DT": start.strftime("%Y%m%d"),
+                "T_DT": end.strftime("%Y%m%d"),
+                "SHT_CD": "",
+                **extra,
+            },
+            ctx_keys=("CTS", "CTS"),
+            output_key="output1",
+        )
+        out = []
+        for r in _rows(data.get("output1") or data.get("output")):
+            raw, sym = str(r.get("record_date") or "").strip(), str(r.get("sht_cd") or "").strip()
+            if len(raw) != 8 or not raw.isdigit() or not sym:
+                continue
+            out.append(
+                {
+                    "ticker": sym,
+                    "kind": kind,
+                    "date": _ymd(raw).isoformat(),
+                    "name": str(r.get("isin_name") or "").strip() or None,
+                }
+            )
+        return out
+
     # --- 순위 (Phase 25 테마 열기, 응답 필드명 미확인 → 관대한 파서) -----------------
 
     _RANK_PARAMS = {

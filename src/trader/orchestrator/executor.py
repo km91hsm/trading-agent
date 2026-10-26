@@ -424,6 +424,8 @@ def execute(
     change_pct: float | None = None,
     max_qty: dict[str, int] | None = None,
     trade_block: str | None = None,
+    is_park: bool = False,
+    park_max_weight: float | None = None,
 ) -> list[dict]:
     """계좌마다 판정·기록·(모드별) 주문. 계좌 하나의 실패가 다른 계좌를 막지 않는다.
     scalp_leg(Phase 23 S, "entry"|"exit")는 분 단위 단타: 결정 행 없이(decision_id None 유지 —
@@ -441,12 +443,14 @@ def execute(
     is_stop_loss 면 보유기간·주 2회 규칙을 면제하고 approve 계좌도 승인 없이 즉시 낸다(사후 통보).
     resume_round 는 재평가(31_decision_r<n>) 라운드로, 판정·주문 체크포인트 이름에 들어간다.
     is_hedge 는 국면 헤지(인버스 ETF, Phase 17 H): 체크포인트 46_/56_, 게이트 면제, RL 비대상.
+    is_park 는 현금 단기금리 ETF 운용(`orchestrator/cash_park`, Stock D-115): 결정 행 없이 48_/58_,
+    게이트는 헤지처럼 면제하고 비중 상한만 park_max_weight.
     """
     d = run_dir(date, market, decision.ticker, ctx.state)
     is_scalp = scalp_leg is not None
     # 단타·주간 리밸런스는 파이썬이 만든 결정이라 결정 행이 없다(decision_id=None 유지 — 오늘 LLM
     # 결정 행에 묶으면 그 결정의 멱등 조건이 리밸런스 주문을 막거나 반대로 섞인다)
-    if decision_id is None and not is_scalp and not is_rebalance:
+    if decision_id is None and not is_scalp and not is_rebalance and not is_park:
         decision_id = repo.decision_id(ctx.conn, date, market, decision.ticker)
     # 손절·재평가는 오늘 분석의 40_/50_ 체크포인트를 덮어쓰지 않도록 별도 이름을 쓴다
     if is_stop_loss:
@@ -459,11 +463,20 @@ def execute(
         risk_stage, order_stage = "43_rebalance", "53_order_rebalance"
     elif is_hedge:
         risk_stage, order_stage = "46_hedge", "56_order_hedge"
+    elif is_park:  # 현금 단기금리 ETF(Stock D-115, 기본 끔)
+        risk_stage, order_stage = "48_park", "58_order_park"
     elif resume_round is not None:
         risk_stage, order_stage = f"41_risk_check_r{resume_round}", f"51_order_r{resume_round}"
     else:
         risk_stage, order_stage = "40_risk_check", "50_order"
     paused = control.is_paused(ctx.conn)
+    if market == "KR" and decision.action in ("BUY", "ADD") and not is_hedge and not is_park:
+        # 권리 일정 블랙아웃(기본 끔, Stock D-113): 모든 매수 경로(분석·리밸런스·단타)가 지난다
+        from trader.risk import blackout
+
+        ev = blackout.reason(ctx.conn, decision.ticker, date, ctx.settings.event_blackout)
+        if ev:
+            trade_block = f"{trade_block} · {ev}" if trade_block else ev
     results: list[dict] = []
     bookkeeping_error: OrderBookkeepingError | None = None
     rl_base = _RlBase()
@@ -479,7 +492,7 @@ def execute(
     regime = regime_state(ctx, market)
     hedge_cfg = ctx.settings.hedge
     agent_tilt = _agent_tilt(ctx, market, date)
-    hedge_tickers = frozenset(hedge_cfg.tickers(market)) if hedge_cfg.enabled else frozenset()
+    hedge_tickers = frozenset(ctx.settings.excluded_tickers(market))
     sector_of = _sector_of(ctx, market)
     theme_of = _theme_of(ctx, market, date)
     for account in ctx.accounts:
@@ -498,7 +511,7 @@ def execute(
                     exchange=exchange,
                     dry_run=dry_run,
                     is_stop_loss=is_stop_loss,
-                    is_hedge=is_hedge,
+                    is_hedge=is_hedge or is_park,
                     decision_id=decision_id,
                     risk_stage=risk_stage,
                     order_stage=order_stage,
@@ -516,6 +529,7 @@ def execute(
                     change_pct=change_pct,
                     max_qty=None if max_qty is None else max_qty.get(account.id),
                     trade_block=trade_block,
+                    park_max_weight=park_max_weight if is_park else None,
                 )
             )
         except OrderBookkeepingError as e:  # 접수 뒤 기록 실패: 다른 계좌를 마친 뒤 올린다
@@ -575,6 +589,7 @@ def _execute_account(
     change_pct: float | None = None,
     max_qty: int | None = None,
     trade_block: str | None = None,
+    park_max_weight: float | None = None,
 ) -> dict:
     """계좌 하나의 판정·기록·(모드별) 주문. 반환은 results 항목 하나."""
     if True:  # 들여쓰기 유지(execute 루프 본문을 그대로 옮김)
@@ -617,7 +632,11 @@ def _execute_account(
                 ),
                 regime=regime,
                 is_hedge=is_hedge,
-                hedge_max_weight=hedge_cfg.max_weight_pct if is_hedge else None,
+                hedge_max_weight=(
+                    park_max_weight
+                    if park_max_weight is not None
+                    else (hedge_cfg.max_weight_pct if is_hedge else None)
+                ),
                 agent_tilt=agent_tilt,
                 is_scalp=is_scalp,
                 change_pct=change_pct,
