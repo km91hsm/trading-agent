@@ -4,6 +4,7 @@ import { Badge } from "../components/Badge";
 import { EmptyState } from "../components/EmptyState";
 import { Glyph } from "../components/Glyph";
 import { StageReport } from "../components/StageReport";
+import { fileChipLabel } from "../report";
 import { Section } from "../components/Section";
 import { Skeleton } from "../components/Skeleton";
 import { ErrorBox } from "../components/Tables";
@@ -227,7 +228,7 @@ function StagePlates({
                   onClick={() => onPick(f)}
                   title={f}
                 >
-                  {st.files.length > 1 ? f.replace(/^\d\d_[a-z_]+?_(?=[^_]+$)/, "").replace(/^(bull|bear)$/, (m) => (m === "bull" ? "강세" : "약세")) : "열기"}
+                  {st.files.length > 1 ? fileChipLabel(f) : "열기"}
                 </button>
               ))}
             </div>

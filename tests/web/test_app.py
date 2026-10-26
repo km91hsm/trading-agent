@@ -374,4 +374,8 @@ def test_portfolio_overview_per_market(client, conn):
     assert Decimal(kr["pnl"]) == Decimal("0")
     assert [p["ticker"] for p in us["positions"]] == ["AAPL"]
     assert r["accounts_missing_snapshot"] == {"KR": [], "US": []}  # real-main 은 KR 전용
+    # 모의·실전은 섞지 않는다: 환경별 소계
+    assert Decimal(kr["by_env"]["paper"]["nav"]) == Decimal("1000")
+    assert Decimal(kr["by_env"]["real"]["nav"]) == Decimal("500")
+    assert kr["by_env"]["real"]["accounts"] == ["real-main"]
     assert kr["sectors"][0]["sector"] in {"기타", "현금", "반도체"}

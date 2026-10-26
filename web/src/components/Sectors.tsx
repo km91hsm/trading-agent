@@ -15,7 +15,7 @@ function Bar({ pct, cap, over, exempt, label }: { pct: number; cap: number; over
   );
 }
 
-export function SectorTable({ rows, market, maxSectorPct }: { rows: SectorRow[]; market: string; maxSectorPct: number }) {
+export function SectorTable({ rows, market, maxSectorPct, note = true }: { rows: SectorRow[]; market: string; maxSectorPct: number; note?: boolean }) {
   if (!rows.length) return <EmptyState title="섹터 비중이 없어요" hint="스냅샷이 찍히면 보유 종목을 config/sectors.yaml 섹터로 묶어 보여 줘요." />;
   const views = sectorRows(rows, maxSectorPct);
   const cap = capLinePct(maxSectorPct);
@@ -53,7 +53,7 @@ export function SectorTable({ rows, market, maxSectorPct }: { rows: SectorRow[];
           ))}
         </tbody>
       </Table>
-      <p className="note">같은 섹터 합계가 상한을 넘기면 리스크 게이트가 그 섹터의 신규 매수·추가 매수를 거부해요. 헤지 ETF 와 현금은 상한 대상이 아니에요.</p>
+      {note && <p className="note">같은 섹터 합계가 상한을 넘기면 리스크 게이트가 그 섹터의 신규 매수·추가 매수를 거부해요. 헤지 ETF 와 현금은 상한 대상이 아니에요.</p>}
     </>
   );
 }

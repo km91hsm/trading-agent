@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { AccountPicker } from "../components/AccountPicker";
 import { getJson, postJson, withAccount } from "../api";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { Section } from "../components/Section";
@@ -42,6 +43,15 @@ export function OrdersPage() {
   const trace = useLoad(() => (traceId ? getJson<TraceResp>(`/api/decisions/${traceId}/trace`) : null), [traceId]);
   const warn = unknownLine(orders.data ?? []);
 
+  if (!accountId)
+    return (
+      <>
+        <header className="page-h">
+          <h1>주문/승인</h1>
+        </header>
+        <AccountPicker purpose="주문·승인" />
+      </>
+    );
   return (
     <>
       <header className="page-h">

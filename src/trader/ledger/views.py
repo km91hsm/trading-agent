@@ -118,7 +118,8 @@ def position_plan(decision: dict | None, current_price) -> dict | None:
 
 
 def attach_plans(conn: sqlite3.Connection, market: str, snap: dict | None) -> None:
-    """스냅샷 보유 행에 `plan`·`weight`(평가/NAV) 와 하위 호환 `horizon`·`horizon_days` 를 붙인다."""
+    """스냅샷 보유 행에 `plan`·`weight`(평가/NAV) 와 하위 호환 `horizon`·`horizon_days` 를
+    붙인다."""
     if not snap:
         return
     nav = Decimal(str(snap.get("nav") or 0))
@@ -147,6 +148,7 @@ def account_overview(
     for m in markets:
         nav = cash = cost = ev_sum = Decimal(0)
         merged: dict[str, dict] = {}
+        env_pnl: dict[str, list[Decimal]] = {}  # env -> [원가, 평가]
         per_acct, missing = [], []
         for a in accounts:
             if m not in a.markets:
@@ -190,6 +192,9 @@ def account_overview(
                 g["accounts"].append(a.id)
                 cost += avg * qty
                 ev_sum += ev
+                ec = env_pnl.setdefault(a.env, [Decimal(0), Decimal(0)])
+                ec[0] += avg * qty
+                ec[1] += ev
         positions = []
         for g in sorted(merged.values(), key=lambda g: -g["eval"]):
             avg = g["cost"] / g["qty"] if g["qty"] else Decimal(0)
@@ -219,7 +224,33 @@ def account_overview(
             if p["ticker"] not in hedge and not (smap and smap(p["ticker"]))
         ]
         pnl_all = ev_sum - cost
+        # 모의·실전은 섞지 않는다(PRODUCT.md 원칙 3): 환경별 소계를 따로 둔다
+        by_env: dict[str, dict] = {}
+        for row in per_acct:
+            e = by_env.setdefault(
+                row["env"], {"nav": Decimal(0), "cash": Decimal(0), "accounts": []}
+            )
+            e["nav"] += Decimal(str(row["nav"] or 0))
+            e["cash"] += Decimal(str(row["cash"] or 0))
+            e["accounts"].append(row["id"])
         out["markets"][m] = {
+            "by_env": {
+                k: {
+                    "nav": str(v["nav"]),
+                    "cash": str(v["cash"]),
+                    "accounts": v["accounts"],
+                    "pnl": str(
+                        env_pnl.get(k, [Decimal(0), Decimal(0)])[1]
+                        - env_pnl.get(k, [Decimal(0), Decimal(0)])[0]
+                    ),
+                    "pnl_pct": (
+                        float((env_pnl[k][1] - env_pnl[k][0]) / env_pnl[k][0])
+                        if k in env_pnl and env_pnl[k][0]
+                        else None
+                    ),
+                }
+                for k, v in by_env.items()
+            },
             "nav": str(nav),
             "cash": str(cash),
             "pnl": str(pnl_all),

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { AccountPicker } from "../components/AccountPicker";
 import { LineSeries, createChart, type IChartApi, type Time } from "lightweight-charts";
 import { getJson, withAccount } from "../api";
 import { chartOptions, chartPalette } from "../chart";
@@ -63,6 +64,15 @@ export function PerformancePage() {
   const m = rep.data?.metrics;
   const b = rep.data?.benchmarks;
   const dist = Object.entries(rep.data?.decision_distribution ?? {});
+  if (!accountId)
+    return (
+      <>
+        <header className="page-h">
+          <h1>성과</h1>
+        </header>
+        <AccountPicker purpose="성과" />
+      </>
+    );
   return (
     <>
       <header className="page-h">

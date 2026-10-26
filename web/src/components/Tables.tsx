@@ -1,6 +1,7 @@
 // 원장 표 네 개 (포지션·주문·승인·리스크 판정) — 시세표 열 문법(Table 원시요소)으로.
 import { useMemo } from "react";
 import { fmtDate, fmtDelta, fmtMoney, fmtTime, minutesLeft } from "../format";
+import { planCells } from "../overview";
 import type { Approval, Order, Position, RiskCheck } from "../types";
 import { Badge } from "./Badge";
 import { EmptyState } from "./EmptyState";
@@ -28,7 +29,7 @@ export function horizonText(p: Pick<Position, "horizon" | "horizon_days">): stri
   return p.horizon_days ? `${label} ${p.horizon_days}일` : label;
 }
 
-export function PositionsTable({ rows, nav }: { rows: Position[]; nav?: string | null }) {
+export function PositionsTable({ rows, nav, showAccounts = false }: { rows: Position[]; nav?: string | null; showAccounts?: boolean }) {
   if (!rows.length) return <EmptyState title="보유 종목이 없어요" hint="매수가 체결되면 다음 판정 때 스냅샷에 잡혀요." />;
   const navN = nav ? Number(nav) : NaN;
   return (
@@ -43,12 +44,18 @@ export function PositionsTable({ rows, nav }: { rows: Position[]; nav?: string |
           <Th num core>평단 대비</Th>
           <Th num>평가금액</Th>
           <Th num core>비중</Th>
+          <Th num>목표 비중</Th>
+          <Th num>익절가</Th>
+          <Th num>손절가</Th>
+          <Th num>지정가</Th>
+          {showAccounts && <Th>계좌</Th>}
         </tr>
       </thead>
       <tbody>
         {rows.map((p) => {
           const d = fmtDelta(p.current_price, p.avg_price);
           const ev = p.eval_amount ? Number(p.eval_amount) : NaN;
+          const plan = planCells(p.plan, p.market);
           return (
             <tr key={`${p.market}:${p.ticker}`}>
               <Td core>
@@ -67,6 +74,11 @@ export function PositionsTable({ rows, nav }: { rows: Position[]; nav?: string |
                 <Num value={p.eval_amount} market={p.market} />
               </Td>
               <Td num core>{Number.isFinite(navN) && navN > 0 && Number.isFinite(ev) ? `${((ev / navN) * 100).toFixed(1)}%` : "—"}</Td>
+              <Td num>{plan?.target ?? "—"}</Td>
+              <Td num className={plan?.tpClass}>{plan?.takeProfit ?? "—"}</Td>
+              <Td num className={plan?.stopClass}>{plan?.stop ?? "—"}</Td>
+              <Td num>{plan?.limit ?? "—"}</Td>
+              {showAccounts && <Td>{(p.accounts ?? []).join(", ")}</Td>}
             </tr>
           );
         })}

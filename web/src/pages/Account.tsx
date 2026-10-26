@@ -10,9 +10,10 @@ import { ApprovalsTable, ErrorBox, OrdersTable, PositionsTable } from "../compon
 import { CsvLink } from "../components/CsvLink";
 import { Term } from "../components/Term";
 import { useToast } from "../components/Toast";
-import { fmtMoney } from "../format";
+import { fmtMoney, fmtPct } from "../format";
+import { AccountPicker } from "../components/AccountPicker";
 import { useApp, useLoad } from "../hooks";
-import type { Market, Portfolio } from "../types";
+import type { Market, PerformanceReport, Portfolio } from "../types";
 
 export function AccountPage() {
   const { accountId, accounts, token, tick } = useApp();
@@ -36,10 +37,23 @@ export function AccountPage() {
   };
   const snap = pf.data?.snapshot ?? null;
   const stance = acct?.stance_by_market[market];
+  const perf = useLoad(
+    () => (accountId ? getJson<PerformanceReport>(withAccount(`/api/performance?market=${market}&days=30`, accountId)) : null),
+    [accountId, market, tick],
+  );
+  if (!accountId)
+    return (
+      <>
+        <header className="page-h">
+          <h1>계좌 상세</h1>
+        </header>
+        <AccountPicker purpose="보유·주문·섹터·성과" />
+      </>
+    );
   return (
     <>
       <header className="page-h">
-        <h1>계좌</h1>
+        <h1>계좌 상세</h1>
         <p className="sub">
           {acct ? (
             <>
@@ -85,6 +99,8 @@ export function AccountPage() {
             <dd>{stance ? <Term k={`stance.${stance}`} /> : "—"}</dd>
             <dt>미승인</dt>
             <dd>{acct?.pending_approvals ?? 0}건</dd>
+            <dt>30일 수익</dt>
+            <dd>{perf.data ? `${fmtPct(perf.data.metrics.return)} · MDD ${fmtPct(perf.data.metrics.mdd)}` : "—"}</dd>
           </dl>
         ) : (
           <EmptyState title="아직 스냅샷이 없어요" hint="잔고 새로고침을 누르거나, 분석이 한 번 돌면 판정 때 찍혀요." />

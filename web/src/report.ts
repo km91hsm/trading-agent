@@ -34,22 +34,8 @@ const price = (v: unknown): string => {
 };
 const texts = (v: unknown): string[] => arr(v).map((x) => (typeof x === "string" ? x : str(rec(x).claim) || str(rec(x).text) || str(rec(x).title))).filter(Boolean);
 
-export const SIGNAL_LABEL: Record<string, string> = {
-  STRONG_BUY: "강한 매수",
-  BUY: "매수",
-  NEUTRAL: "중립",
-  SELL: "매도",
-  STRONG_SELL: "강한 매도",
-  UNKNOWN: "판단 불가",
-};
-export const STANCE_LABEL: Record<string, string> = { BULLISH: "강세", NEUTRAL: "중립", BEARISH: "약세", RISK_ON: "위험 선호", RISK_OFF: "위험 회피" };
-const VALUATION_LABEL: Record<string, string> = { UNDERVALUED: "저평가", FAIR: "적정", OVERVALUED: "고평가", UNKNOWN: "판단 불가" };
-const TIMING_LABEL: Record<string, string> = { NOW: "지금", CONDITIONAL: "조건부", WAIT: "대기" };
-const ROLE_LABEL: Record<string, string> = { technical: "차트", fundamental: "회사가치", news_macro: "뉴스·거시", sentiment: "투자자 분위기", quant: "퀀트", market: "거시·시장" };
-const HORIZON_LABEL: Record<string, string> = { short: "단기", mid: "중기", long: "장기" };
-const SECTION_LABEL: Record<string, string> = { technical: "시세·차트", fundamental: "재무·공시", news_macro: "뉴스·거시", sentiment: "수급·커뮤니티" };
-
-const label = (map: Record<string, string>, v: unknown) => map[str(v)] ?? (str(v) || DASH);
+/** 용어는 glossary.ts 하나 — 'signal.BUY' 같은 키로 찾고, 없으면 원값. */
+const label = (prefix: string, v: unknown) => (str(v) ? termLabel(`${prefix}.${str(v)}`).replace(`${prefix}.`, "") : DASH);
 const acctOf = (stage: string) => stage.replace(/^\d\d_[a-z_]+?_(?=[^_]+$)/, "");
 
 function analyst(d: Rec, title: string): ReportBlock[] {
@@ -58,10 +44,10 @@ function analyst(d: Rec, title: string): ReportBlock[] {
       title,
       lead: str(d.summary) || undefined,
       rows: [
-        ["신호", label(SIGNAL_LABEL, d.signal)],
+        ["신호", label("signal", d.signal)],
         ["점수", num(d.score) === null ? DASH : (num(d.score) as number).toFixed(2)],
         ["확신", conf(d.confidence)],
-        ["관점", label(HORIZON_LABEL, d.horizon)],
+        ["관점", label("horizon", d.horizon)],
       ],
       list: texts(d.bullets),
     },
@@ -81,10 +67,10 @@ function debate(d: Rec): ReportBlock[] {
     {
       title: `${side} 리서처 · 라운드 ${str(d.round) || "0"}`,
       rows: [
-        ["입장", label(STANCE_LABEL, d.stance)],
-        ["밸류에이션", label(VALUATION_LABEL, d.valuation_view)],
+        ["입장", label("view", d.stance)],
+        ["밸류에이션", label("valuation", d.valuation_view)],
         ["확신", conf(d.conviction)],
-        ["타이밍", [label(TIMING_LABEL, t.action), str(t.condition), str(t.price_zone)].filter((x) => x && x !== DASH).join(" · ") || DASH],
+        ["타이밍", [label("timing", t.action), str(t.condition), str(t.price_zone)].filter((x) => x && x !== DASH).join(" · ") || DASH],
       ],
     },
     { title: "논거", list: texts(d.arguments) },
@@ -100,7 +86,7 @@ function decision(d: Rec, title: string): ReportBlock[] {
       title,
       lead: `${termLabel(`action.${str(d.action)}`)} · 목표 비중 ${pct(d.target_weight)} · 확신 ${conf(d.confidence)}`,
       rows: [
-        ["주문 방식", str(d.order_type) === "MARKET" ? "시장가" : `지정가 ${price(d.limit_price)}`],
+        ["주문 방식", str(d.order_type) === "MARKET" ? "시장가" : num(d.limit_price) === null ? "현재가 지정가" : `지정가 ${price(d.limit_price)}`],
         ["익절가", price(d.take_profit)],
         ["손절가", price(d.stop_loss)],
         ["보유 기간", num(d.horizon_days) === null ? DASH : `${num(d.horizon_days)}일`],
@@ -152,7 +138,8 @@ function inputs(d: Rec): ReportBlock[] {
   const meta = rec(d.meta);
   const q = rec(rec(rec(d.technical).quote).data);
   const rows: [string, string][] = [];
-  for (const [key, name] of Object.entries(SECTION_LABEL)) {
+  for (const key of ["technical", "fundamental", "news_macro", "sentiment"]) {
+    const name = termLabel(`section.${key}`);
     const sec = rec(d[key]);
     rows.push([name, Object.keys(sec).join(", ") || DASH]);
   }
@@ -188,7 +175,7 @@ function quant(d: Rec): ReportBlock[] {
   return [
     {
       title: "퀀트 모델",
-      lead: `${label(SIGNAL_LABEL, d.signal)} · 상승 ${pct(d.p_up)} · 보합 ${pct(d.p_flat)} · 하락 ${pct(d.p_down)}`,
+      lead: `${label("signal", d.signal)} · 상승 ${pct(d.p_up)} · 보합 ${pct(d.p_flat)} · 하락 ${pct(d.p_down)}`,
       rows: [
         ["모델", str(d.model) || DASH],
         ["기간", num(d.horizon_days) === null ? DASH : `${num(d.horizon_days)}거래일`],
@@ -204,7 +191,7 @@ function calibration(d: Rec): ReportBlock[] {
     {
       title: "신호 보정",
       lead: d.active ? `활성 · 만기 결정 ${str(d.n_decisions)}건` : `비활성 · 만기 결정 ${str(d.n_decisions)} / ${str(d.min_decisions)}건`,
-      rows: Object.entries(roles).map(([k, v]) => [label(ROLE_LABEL, k), `적중 ${pct(rec(v).hit_rate)} (n=${str(rec(v).n)})`]),
+      rows: Object.entries(roles).map(([k, v]) => [label("role", k), `적중 ${pct(rec(v).hit_rate)} (n=${str(rec(v).n)})`]),
     },
   ];
 }
@@ -213,7 +200,7 @@ function hedgeProposal(d: Rec): ReportBlock[] {
   return [
     {
       title: "전략가 제안",
-      lead: `${label(STANCE_LABEL, d.stance)} · 헤지 비중 ${pct(d.hedge_weight)} · 확신 ${conf(d.confidence)}`,
+      lead: `${label("view", d.stance)} · 헤지 비중 ${pct(d.hedge_weight)} · 확신 ${conf(d.confidence)}`,
       rows: [
         ["레버리지", d.leveraged ? "예" : "아니오"],
         ["단타 허용", d.scalp_ok === false ? "아니오" : "예"],
@@ -274,7 +261,7 @@ export function stageReport(stage: string, data: unknown): ReportBlock[] {
   if (!Object.keys(d).length) return [];
   if (stage === "00_inputs") return inputs(d);
   if (stage === "05_quant") return quant(d);
-  if (stage.startsWith("10_analyst_")) return analyst(d, `${label(ROLE_LABEL, d.role ?? stage.slice(11))} 애널리스트`);
+  if (stage.startsWith("10_analyst_")) return analyst(d, `${label("role", d.role ?? stage.slice(11))} 애널리스트`);
   if (stage.startsWith("20_debate_") || stage.startsWith("_market_debate_")) return debate(d);
   if (stage === "25_research_summary" || stage === "_market_summary") return research(d);
   if (stage === "30_decision") return decision(d, "트레이더 결정");
@@ -326,4 +313,14 @@ export function settingsBlocks(data: unknown): ReportBlock[] {
     }
   }
   return scalars.length ? [{ title: "기본", rows: scalars }, ...out] : out;
+}
+
+/** 판 안의 파일 버튼 이름: '20_debate_r0_bear' → 'r0 약세', '10_analyst_news_macro' → '뉴스·거시', 계좌 접미는 계좌 id. */
+export function fileChipLabel(file: string): string {
+  const deb = /^\d\d_(?:market_)?debate_r(\d+)_(bull|bear)$/.exec(file);
+  if (deb) return `r${deb[1]} ${deb[2] === "bull" ? "강세" : "약세"}`;
+  if (file.startsWith("10_analyst_")) return label("role", file.slice("10_analyst_".length));
+  const re = /^31_decision_(r\d+)$/.exec(file);
+  if (re) return re[1];
+  return file.replace(/^\d\d_[a-z_]+?_(?=[^_]+$)/, "").replace(/^\d\d_[a-z_]+?_(r\d+_)?/, "");
 }

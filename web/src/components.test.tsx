@@ -94,6 +94,7 @@ function fakeState(over: Partial<AppState> = {}): AppState {
       { id: "real-main", env: "real", markets: ["KR"], mode: "off", yaml_mode: "off", stance_by_market: {}, nav_by_market: {}, pending_approvals: 2 },
     ],
     accountId: "paper-main",
+    selection: "paper-main",
     setAccountId: () => {},
     token: null,
     setToken: () => {},
@@ -133,6 +134,10 @@ describe("Shell", () => {
     expect(out).toContain("조회 전용");
     expect(out).toContain("KR 정규장 · US 개장 전");
     expect(out).toContain("본문");
+  });
+  it("계좌 선택기에 '전체' 합산 옵션이 있고 기본 선택이 될 수 있다", () => {
+    const out = render({ accountId: "", selection: "all" });
+    expect(out).toContain('<option value="all" selected="">전체 (2개 합산)</option>');
   });
   it("토큰이 있으면 제어 가능 배지", () => {
     expect(render({ token: "T" })).toContain("제어 가능");

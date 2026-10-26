@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { genericBlocks, settingsBlocks, stageReport } from "./report";
+import { fileChipLabel, genericBlocks, settingsBlocks, stageReport } from "./report";
 
 describe("stageReport", () => {
   it("애널리스트: 신호·확신·근거 2개", () => {
@@ -113,5 +113,14 @@ describe("settingsBlocks", () => {
     expect(b[0]).toEqual({ title: "기본", rows: [["debate_rounds", "1"], ["markets", "KR, US"]] });
     expect(b[1].title).toBe("리스크 한도 (risk)");
     expect(b[1].rows).toContainEqual(["horizon_profiles", "short=…"]);
+  });
+});
+
+describe("fileChipLabel", () => {
+  it("사람이 읽는 파일 버튼 이름", () => {
+    expect(fileChipLabel("20_debate_r0_bear")).toBe("r0 약세");
+    expect(fileChipLabel("10_analyst_news_macro")).toBe("뉴스·거시");
+    expect(fileChipLabel("40_risk_check_paper-main")).toBe("paper-main");
+    expect(fileChipLabel("31_decision_r2")).toBe("r2");
   });
 });

@@ -5,6 +5,7 @@ import { useApp } from "../hooks";
 import { marketPhase } from "../tape";
 import type { Theme } from "../theme";
 import { MOBILE_TABS, NAV } from "../nav";
+import { ALL_ACCOUNTS } from "../overview";
 import { Badge } from "./Badge";
 import { CommandPalette } from "./CommandPalette";
 import { Glyph, type GlyphName } from "./Glyph";
@@ -14,7 +15,7 @@ const THEME_GLYPH: Record<Theme, GlyphName> = { light: "sun", dark: "moon", syst
 const THEME_LABEL: Record<Theme, string> = { light: "라이트", dark: "다크", system: "시스템" };
 
 export function Shell({ children, now }: { children: ReactNode; now?: Date }) {
-  const { accounts, accountId, setAccountId, token, events, connected, theme, setTheme } = useApp();
+  const { accounts, accountId, selection, setAccountId, token, events, connected, theme, setTheme } = useApp();
   const [open, setOpen] = useState(false);
   const loc = useLocation();
   // 경로가 바뀔 때마다 장 상태를 다시 계산한다 (초 단위 갱신은 필요 없다)
@@ -41,7 +42,8 @@ export function Shell({ children, now }: { children: ReactNode; now?: Date }) {
         </NavLink>
         <label className="acct" data-env={env}>
           <span className="sr-only">계좌</span>
-          <select value={accountId} onChange={(e) => setAccountId(e.target.value)} aria-label="계좌 선택">
+          <select value={selection} onChange={(e) => setAccountId(e.target.value)} aria-label="계좌 선택">
+            {accounts.length > 0 && <option value={ALL_ACCOUNTS}>전체 ({accounts.length}개 합산)</option>}
             {accounts.map((a) => (
               <option key={a.id} value={a.id}>
                 {a.id} · {a.env === "real" ? "실전" : "모의"} · {a.mode}

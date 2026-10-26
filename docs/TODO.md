@@ -340,7 +340,7 @@
 - [ ] 이연: ⌘K 팔레트의 종목명 검색은 `/api/names` 가 이미 받은 이름만 본다(원장·캐시) — 전체 상장 검색은 종목 마스터가 생기면
 
 ## Phase 24 웹 보고서·실시간·사용률 (`docs/superpowers/plans/2026-10-26-phase24-25.md` 단계 1~3)
-- [ ] 단계 1 웹 보고서 형식·전체/계좌 분리·섹터·목표가 (`feat/phase24-1-web-report`): 섹터 원인 진단, 보유 행 `plan`(목표가·손절·지정가·보유기간·거리), `/api/portfolio/overview`(시장별 합산), `report.ts`·`StageReport`(JsonView 는 '원본 보기'), 계좌 선택기 '전체'
+- [x] 단계 1 웹 보고서 형식·전체/계좌 분리·섹터·목표가 (`feat/phase24-1-web-report`): 섹터 원인 진단(보유 행 없음·대시보드 블록 없음), 보유 행 `plan`(목표가·손절·지정가·보유기간·거리), `/api/portfolio/overview`(시장 × 모의/실전 합산), `report.ts`·`StageReport`(JsonView 는 '원본 보기'), 계좌 선택기 '전체' (2026-10-26)
 - [ ] 단계 2 실시간 시세·종목명 검색 (`feat/phase24-2-live-quotes`): `/api/quotes`(장중만, TTL 캐시, 레이트리미터), 리더 탭 폴링, `/api/names/search`, 차트 URL·⌘K
 - [ ] 단계 3 구독 사용률·세션 상한·텔레그램 문구 (`feat/phase24-3-usage-telegram`): stream-json `rate_limit_event` → 원장, 상한 80 + 사용률 감속, `notify/messages.py`
 - [ ] 결정 대기(사용자): 2~4주 `llm_rate_limits`·`agent_calls` 통계로 `llm.daily_session_cap` 고정값 재설정

@@ -878,3 +878,23 @@ tr.danger td:first-child {
   color: var(--ink-2);
   font-size: var(--t-xs);
 }
+
+/* 계좌 고르기 (Phase 24) */
+.picker-list {
+  list-style: none;
+  padding: 0;
+  display: grid;
+  gap: var(--s-2);
+  grid-template-columns: repeat(auto-fill, minmax(16rem, 1fr));
+}
+.picker-card {
+  width: 100%;
+  display: grid;
+  gap: var(--s-1);
+  text-align: left;
+  justify-items: start;
+  padding: var(--s-3);
+}
+.picker-id {
+  font-weight: 600;
+}
