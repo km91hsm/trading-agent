@@ -12,7 +12,8 @@ import { Term } from "../components/Term";
 import { useToast } from "../components/Toast";
 import { fmtMoney, fmtPct } from "../format";
 import { AccountPicker } from "../components/AccountPicker";
-import { useApp, useLoad } from "../hooks";
+import { useApp, useLiveQuotes, useLoad } from "../hooks";
+import { applyQuotes, liveLabel } from "../live";
 import type { Market, PerformanceReport, Portfolio } from "../types";
 
 export function AccountPage() {
@@ -37,6 +38,8 @@ export function AccountPage() {
   };
   const snap = pf.data?.snapshot ?? null;
   const stance = acct?.stance_by_market[market];
+  const live = useLiveQuotes(market, (snap?.positions ?? []).map((p) => p.ticker));
+  const applied = applyQuotes(snap?.positions ?? [], live?.quotes, snap?.cash);
   const perf = useLoad(
     () => (accountId ? getJson<PerformanceReport>(withAccount(`/api/performance?market=${market}&days=30`, accountId)) : null),
     [accountId, market, tick],
@@ -89,7 +92,8 @@ export function AccountPage() {
               <Term k="nav" />
             </dt>
             <dd className="num-l">
-              <strong className="big">{fmtMoney(snap.nav, market)}</strong>
+              <strong className="big">{fmtMoney(applied.liveCount && applied.nav !== null ? applied.nav : snap.nav, market)}</strong>
+              {applied.liveCount ? <span className="muted"> 실시간</span> : null}
             </dd>
             <dt>현금</dt>
             <dd>{fmtMoney(snap.cash, market)}</dd>
@@ -112,11 +116,12 @@ export function AccountPage() {
           aside={
             <span className="row tight">
               {`${snap?.positions.length ?? 0}종목`}
+              {live && <span className="muted">{liveLabel(live, applied.liveCount)}</span>}
               {accountId && <CsvLink href={withAccount(`/api/portfolio?market=${market}`, accountId)} />}
             </span>
           }
         >
-          {pf.loading && !pf.data ? <Skeleton rows={3} cols={7} /> : <PositionsTable rows={snap?.positions ?? []} nav={snap?.nav} />}
+          {pf.loading && !pf.data ? <Skeleton rows={3} cols={7} /> : <PositionsTable rows={applied.positions} nav={applied.liveCount && applied.nav !== null ? String(applied.nav) : snap?.nav} />}
         </Section>
         <Section title="섹터 비중" aside={`상한 ${Math.round((pf.data?.max_sector_pct ?? 0.4) * 100)}% · 헤지·현금 제외`}>
           {pf.loading && !pf.data ? (

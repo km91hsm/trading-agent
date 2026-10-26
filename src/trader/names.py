@@ -89,3 +89,72 @@ def display(conn: sqlite3.Connection | None, cache_dir: Path, market: str, ticke
     except Exception as e:  # noqa: BLE001
         logger.debug("종목명 조회 실패 %s %s: %s", market, ticker, e)
         return label(ticker, None)
+
+
+_SOURCE_RANK = {"held": 0, "watch": 1, "universe": 2, "ledger": 3, "listed": 4}
+
+
+def _norm(s: str) -> str:
+    return "".join(s.split()).casefold()
+
+
+def search(
+    conn: sqlite3.Connection | None,
+    cache_dir: Path,
+    q: str,
+    *,
+    market: str | None = None,
+    universe: dict[tuple[str, str], str | None] | None = None,
+    held: set[tuple[str, str]] | None = None,
+    watch: set[tuple[str, str]] | None = None,
+    limit: int = 20,
+) -> list[dict]:
+    """종목 코드·이름 부분 일치 검색 (Phase 24). 대상은 보유·관심·유니버스·원장 이름·캐시(상장 전체).
+    순서: 코드 접두 > 이름 접두 > 이름 부분 > 코드 부분, 같으면 보유 > 관심 > 유니버스 > 원장 > 상장.
+    네트워크 없음. 빈 질의는 빈 목록."""
+    nq = _norm(q)
+    if not nq:
+        return []
+    universe = universe or {}
+    held, watch = held or set(), watch or set()
+    ledger = repo.ticker_names(conn) if conn is not None else {}
+    names_map: dict[tuple[str, str], str] = {**load_cache_names(cache_dir), **ledger}
+    keys = set(names_map) | set(universe) | held | watch
+    scored = []
+    for m, t in keys:
+        if market and m != market:
+            continue
+        name = names_map.get((m, t)) or ""
+        nt, nn = t.casefold(), _norm(name)
+        if nt.startswith(nq):
+            rank = 0
+        elif nn.startswith(nq):
+            rank = 1
+        elif nq in nn:
+            rank = 2
+        elif nq in nt:
+            rank = 3
+        else:
+            continue
+        if (m, t) in held:
+            source = "held"
+        elif (m, t) in watch:
+            source = "watch"
+        elif (m, t) in universe:
+            source = "universe"
+        elif (m, t) in ledger:
+            source = "ledger"
+        else:
+            source = "listed"
+        scored.append((rank, _SOURCE_RANK[source], len(name), t, m, name, source))
+    scored.sort()
+    return [
+        {
+            "market": m,
+            "ticker": t,
+            "name": name or None,
+            "exchange": universe.get((m, t)),
+            "source": src,
+        }
+        for _, _, _, t, m, name, src in scored[:limit]
+    ]

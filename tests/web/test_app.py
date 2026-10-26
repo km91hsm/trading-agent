@@ -379,3 +379,18 @@ def test_portfolio_overview_per_market(client, conn):
     assert Decimal(kr["by_env"]["real"]["nav"]) == Decimal("500")
     assert kr["by_env"]["real"]["accounts"] == ["real-main"]
     assert kr["sectors"][0]["sector"] in {"기타", "현금", "반도체"}
+
+
+def test_names_search_endpoint(client, conn):
+    """Phase 24 단계 2: 이름 부분 일치 검색, 보유 우선."""
+    from trader.ledger import repo
+
+    repo.upsert_ticker_name(conn, "KR", "005930", "삼성전자", "inputs")
+    repo.upsert_ticker_name(conn, "KR", "009150", "삼성전기", "inputs")
+    _snap(conn, "paper-main", "KR", "009150", 1, "100", "100", "1000", "900")
+    conn.commit()
+    rows = client.get("/api/names/search", params={"q": "삼성", "market": "KR"}).json()
+    assert [r["ticker"] for r in rows][:2] == ["009150", "005930"]
+    assert rows[0]["source"] == "held"
+    assert client.get("/api/names/search", params={"q": ""}).json() == []
+    assert client.get("/api/names/search", params={"q": "a", "market": "XX"}).status_code == 400

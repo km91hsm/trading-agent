@@ -3,6 +3,8 @@ import { getJson, subscribeEvents, tokenStore, type EventSnapshot } from "./api"
 import { changedKeys } from "./events";
 import { groupByMarket, missingKeys, type NameMap } from "./names";
 import { applyTheme, themeStore, watchSystemTheme, type Theme } from "./theme";
+import { CLOSED_RECHECK_MS, LIVE_INTERVAL_MS, nextDelay, type QuotesResp } from "./live";
+import type { SearchHit } from "./nav";
 import { ALL_ACCOUNTS } from "./overview";
 import type { Account } from "./types";
 
@@ -229,4 +231,61 @@ export function useLoad<T>(fn: () => Promise<T> | null, deps: unknown[]): Loaded
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [...deps, n]);
   return { data, error, loading, reload: () => setN((x) => x + 1) };
+}
+
+/** 종목 코드·이름 검색 (Phase 24, /api/names/search). 300ms 디바운스, 빈 질의는 []. 실패는 [] (보조 기능). */
+export function useNameSearch(q: string, market?: string, delayMs = 300): SearchHit[] {
+  const [hits, setHits] = useState<SearchHit[]>([]);
+  useEffect(() => {
+    const query = q.trim();
+    if (!query) {
+      setHits([]);
+      return;
+    }
+    let alive = true;
+    const id = window.setTimeout(() => {
+      getJson<SearchHit[]>("/api/names/search", market ? { q: query, market, limit: "12" } : { q: query, limit: "12" })
+        .then((rows) => alive && setHits(rows))
+        .catch(() => alive && setHits([]));
+    }, delayMs);
+    return () => {
+      alive = false;
+      window.clearTimeout(id);
+    };
+  }, [q, market, delayMs]);
+  return hits;
+}
+
+/** 보이는 종목의 실시간 시세 (Phase 24). 장중 10초, 장 밖 5분마다 세션만 확인, 가려진 탭은 쉰다.
+ * tickers 는 'AAPL:NAS' 처럼 거래소 접미를 붙여도 된다. 종목이 없으면 부르지 않는다. */
+export function useLiveQuotes(market: string, tickers: string[]): QuotesResp | null {
+  const [resp, setResp] = useState<QuotesResp | null>(null);
+  const key = tickers.slice(0, 20).join(",");
+  useEffect(() => {
+    setResp(null);
+    if (!key) return;
+    let alive = true;
+    let timer: number | undefined;
+    const run = () => {
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+        timer = window.setTimeout(run, LIVE_INTERVAL_MS);
+        return;
+      }
+      getJson<QuotesResp>("/api/quotes", { market, tickers: key })
+        .then((r) => {
+          if (!alive) return;
+          setResp(r);
+          timer = window.setTimeout(run, nextDelay(r));
+        })
+        .catch(() => {
+          if (alive) timer = window.setTimeout(run, CLOSED_RECHECK_MS); // 서버 오류면 천천히
+        });
+    };
+    run();
+    return () => {
+      alive = false;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [market, key]);
+  return resp;
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { chordTarget, flatNav, MOBILE_TABS, NAV, paletteItems, recentFeatures } from "./nav";
+import { chartPath, chordTarget, flatNav, MOBILE_TABS, NAV, paletteItems, parseChartQuery, recentFeatures } from "./nav";
 
 describe("nav (메뉴 한 곳)", () => {
   it("묶음 셋·경로 중복 없음·모바일 탭 4칸", () => {
@@ -22,5 +22,22 @@ describe("nav (메뉴 한 곳)", () => {
     expect(chordTarget("o")).toBe("/orders");
     expect(chordTarget("D")).toBe("/");
     expect(chordTarget("z")).toBeNull();
+  });
+});
+
+describe("종목 검색 연결 (Phase 24)", () => {
+  it("서버 검색 결과가 차트 이동 후보가 된다(보유 표시, US 거래소)", () => {
+    const items = paletteItems("삼성", {}, [
+      { market: "KR", ticker: "009150", name: "삼성전기", exchange: null, source: "held" },
+      { market: "US", ticker: "SSNLF", name: "Samsung", exchange: "NYS", source: "listed" },
+    ]);
+    const t = items.filter((i) => i.kind === "ticker");
+    expect(t[0]).toMatchObject({ label: "삼성전기 차트", hint: "KR 009150 · 보유", to: "/chart?market=KR&ticker=009150" });
+    expect(t[1].to).toBe("/chart?market=US&ticker=SSNLF&exchange=NYS");
+  });
+  it("차트 URL 질의를 읽는다", () => {
+    expect(parseChartQuery(new URLSearchParams("market=US&ticker=TSLA&exchange=NYS"))).toEqual({ ticker: "TSLA", market: "US", exchange: "NYS" });
+    expect(parseChartQuery(new URLSearchParams(""))).toEqual({ ticker: "005930", market: "KR", exchange: "NAS" });
+    expect(chartPath("KR", "005930")).toBe("/chart?market=KR&ticker=005930");
   });
 });

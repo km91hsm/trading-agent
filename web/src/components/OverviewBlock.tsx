@@ -1,13 +1,33 @@
 // 전체 계좌 합산 (Phase 24): 시장(통화)별 NAV·현금·평가손익·합산 보유·섹터. 시장끼리는 더하지 않는다.
 import { Link } from "react-router-dom";
 import { overviewRows } from "../overview";
-import type { Overview } from "../types";
+import { useLiveQuotes } from "../hooks";
+import { applyQuotes, liveLabel } from "../live";
+import type { Market, Overview, OverviewMarket } from "../types";
 import { Badge } from "./Badge";
 import { Delta, Table, Td, Th } from "./Table";
 import { EmptyState } from "./EmptyState";
 import { Section } from "./Section";
 import { SectorTable } from "./Sectors";
 import { PositionsTable } from "./Tables";
+
+/** 시장 하나의 합산 보유: 장중이면 실시간 시세로 현재가·평가를 갱신한다. */
+function MarketHoldings({ market, data }: { market: Market; data: OverviewMarket }) {
+  const live = useLiveQuotes(market, data.positions.map((p) => p.ticker));
+  const applied = applyQuotes(data.positions, live?.quotes, data.cash);
+  return (
+    <>
+      <h3 className="sub-h">
+        {market} 보유 · 모든 계좌 (계좌 열로 모의·실전 구분){live ? <span className="muted"> · {liveLabel(live, applied.liveCount)}</span> : null}
+      </h3>
+      {data.positions.length ? (
+        <PositionsTable rows={applied.positions} nav={applied.liveCount && applied.nav !== null ? String(applied.nav) : data.nav} showAccounts />
+      ) : (
+        <p className="muted">보유 없음 — 전액 현금이에요. 매수가 체결되면 다음 판정·잔고 새로고침 때 잡혀요.</p>
+      )}
+    </>
+  );
+}
 
 export function OverviewBlock({ data, maxSectorPct, accountCount }: { data: Overview | null; maxSectorPct: number; accountCount: number }) {
   const rows = overviewRows(data);
@@ -62,12 +82,7 @@ export function OverviewBlock({ data, maxSectorPct, accountCount }: { data: Over
       {rows.filter((r, i) => rows.findIndex((x) => x.market === r.market) === i).map((r) => (
         <div key={r.market} className="cols-2">
           <div>
-            <h3 className="sub-h">{r.market} 보유 · 모든 계좌 (계좌 열로 모의·실전 구분)</h3>
-            {r.data.positions.length ? (
-              <PositionsTable rows={r.data.positions} nav={r.data.nav} showAccounts />
-            ) : (
-              <p className="muted">보유 없음 — 전액 현금이에요. 매수가 체결되면 다음 판정·잔고 새로고침 때 잡혀요.</p>
-            )}
+            <MarketHoldings market={r.market} data={r.data} />
           </div>
           <div>
             <h3 className="sub-h">
