@@ -2333,9 +2333,14 @@ def scalp_report(
 
     configure(paths.state_dir())
     settings = config.load_settings()
-    ms = config.load_schedule()
-    ms = ms.kr if market == "KR" else ms.us
-    judge = {"cfg": settings.scalp, "close_hm": ms.monitor.end, "minutes_fn": None}
+    from trader import market_hours
+
+    try:  # 장중 감시 창의 끝(마감 청산 기준). schedule.yaml 이 없으면 정규장 마감
+        sched = config.load_schedule()
+        close_hm = (sched.kr if market == "KR" else sched.us).monitor.end
+    except config.ConfigError:
+        close_hm = market_hours.REGULAR[market][1]
+    judge = {"cfg": settings.scalp, "close_hm": close_hm, "minutes_fn": None}
     if live:  # 오늘 NO_GO 신호의 가상 수익 — KIS 당일 분봉(실전 시세 키)
         mc = _build_market(config.load_secrets())
         judge["minutes_fn"] = (
