@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { missingText, overviewRows, planCell, planCells } from "./overview";
+import { mergeHoldings, missingText, overviewRows, planCell, planCells } from "./overview";
 import type { Overview, OverviewEnv } from "./types";
 
 const env = (nav: string, accounts: string[]): OverviewEnv => ({
@@ -46,5 +46,13 @@ describe("overview", () => {
     );
     expect(c).toMatchObject({ target: "20%", limit: "—", tpClass: "up", stopClass: "dn" });
     expect(planCells(null, "KR")).toBeNull();
+  });
+});
+
+describe("mergeHoldings (전체 검토 W4)", () => {
+  it("같은 시장·종목은 수량·평가를 합치고 계좌를 모은다", () => {
+    const p = (qty: number, ev: string, acct: string) => ({ ticker: "005930", market: "KR", qty, avg_price: "1", current_price: "1", eval_amount: ev, accounts: [acct] });
+    const [m] = mergeHoldings([p(10, "100", "paper-main"), p(5, "50", "real-main")]);
+    expect(m).toMatchObject({ qty: 15, eval_amount: "150", accounts: ["paper-main", "real-main"] });
   });
 });

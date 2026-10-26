@@ -415,19 +415,12 @@ def _execute(
                     label=executor._label(ctx, market, inst.symbol),
                     qty=r["qty"],
                     detail=(
-                        f"국면 {state.get('state')} {state.get('count')}/3 · "
+                        f"국면 {messages.REGIME.get(str(state.get('state')), state.get('state'))} "
+                        f"{state.get('count')}/3 · "
                         f"접수번호 {o.get('order_no')}"
                     ),
                 ),
             )
-        elif r.get("approval_id"):
-            executor._notify_quietly(
-                ctx,
-                messages.hedge_approval(
-                    approval_id=r["approval_id"],
-                    account=r["account_id"],
-                    market=market,
-                    label=executor._label(ctx, market, inst.symbol),
-                ),
-            )
+        # 승인 요청은 executor 가 '[승인 요청 #n · 실전 · 헤지]'(금액·만료 포함)로 이미 보낸다 —
+        # 여기서 또 보내면 같은 요청이 두 번 온다(전체 검토 T1·T3)
     return results

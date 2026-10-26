@@ -22,7 +22,9 @@ export function Shell({ children, now }: { children: ReactNode; now?: Date }) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const phase = useMemo(() => marketPhase(now ?? new Date()), [now, loc.pathname]);
   const acct = accounts.find((a) => a.id === accountId);
-  const env = acct?.env ?? "paper";
+  // '전체'(기본)에서 실전 계좌가 섞여 있으면 실전 표식을 유지한다 — 모의처럼 보이지 않게(전체 검토 W6)
+  const hasReal = accounts.some((a) => a.env === "real");
+  const env = acct?.env ?? (hasReal ? "real" : "paper");
   return (
     <div className="shell" data-env={env}>
       <header className="topbar">
@@ -51,7 +53,7 @@ export function Shell({ children, now }: { children: ReactNode; now?: Date }) {
             ))}
             {!accounts.length && <option value="">계좌 없음</option>}
           </select>
-          {acct && <Badge kind="env" value={acct.env} />}
+          {acct ? <Badge kind="env" value={acct.env} /> : hasReal ? <Badge kind="env" value="real" title="전체 합산에 실전 계좌가 들어 있어요" /> : null}
         </label>
         <span className="phase muted">{phase.label}</span>
         <span className="spacer" />

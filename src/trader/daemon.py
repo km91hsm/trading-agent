@@ -1083,6 +1083,10 @@ def _reevaluate_request(deps: DaemonDeps, p: dict) -> dict:
         if trig["kind"] == "news":
             # 뉴스 재평가(Phase 23): 트레이더가 새 뉴스를 보도록 00_inputs 를 다시 수집한다
             _recollect(deps, market, p["ticker"], p.get("exchange"))
+        if (
+            deps.stop_event.is_set()
+        ):  # 재수집(최대 수 분) 사이 종료 요청이 왔으면 세션을 띄우지 않는다
+            return {"skipped": "종료 중"}
         res = resume.reevaluate(
             deps.settings,
             conn,
@@ -1103,6 +1107,7 @@ def _reevaluate_request(deps: DaemonDeps, p: dict) -> dict:
             state=deps.state,
             session_runner=deps.session_runner or run_session,
             notifier=deps.notifier,
+            cancel=deps.stop_event,
         )
         for tid in p.get("trigger_ids") or []:
             repo.mark_trigger_handled(
@@ -1674,6 +1679,7 @@ def _reflect_body(deps: DaemonDeps) -> dict:
                     dry_run=True,
                     brokers=deps.brokers,
                     notifier=deps.notifier,
+                    cancel=deps.stop_event,
                 )
             except Exception as e:  # noqa: BLE001 - 한 시장의 실패가 다른 시장을 막지 않는다
                 logger.exception("reflect 실패 %s", market)
@@ -2093,7 +2099,10 @@ def _start_web(app: Any, host: str, port: int, *, notifier: Any = None) -> threa
     로그와 알림으로 드러낸다(트레이 모드는 stderr 가 보이지 않는다)."""
     import uvicorn
 
-    server = uvicorn.Server(uvicorn.Config(app, host=host, port=port, log_level="info"))
+    # 접근 로그는 실시간 시세 폴링(10초)마다 줄이 쌓여 끈다(전체 검토 P10)
+    server = uvicorn.Server(
+        uvicorn.Config(app, host=host, port=port, log_level="info", access_log=False)
+    )
 
     def run() -> None:
         try:

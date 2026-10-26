@@ -1,6 +1,6 @@
 // 전체 계좌 합산(/api/portfolio/overview)과 보유 행 계획 열 — 행 변환 순수 함수 (Phase 24).
 import { fmtMoney } from "./format";
-import type { Market, Overview, OverviewEnv, PositionPlan } from "./types";
+import type { Market, Overview, OverviewEnv, Position, PositionPlan } from "./types";
 
 export const ALL_ACCOUNTS = "all";
 
@@ -77,4 +77,27 @@ export function missingText(o: Overview | null | undefined): string {
     .filter((m) => (o.accounts_missing_snapshot[m] ?? []).length)
     .map((m) => `${m}: ${(o.accounts_missing_snapshot[m] ?? []).join(", ")}`)
     .join(" · ");
+}
+
+
+/** '전체' 시세표용 보유: 같은 시장·종목을 모든 계좌·환경에서 합친다(수량·평가 합, 계좌 목록 합집합).
+ * 한 계좌의 수량만 남기던 버그(전체 검토 W4) 대신 합계를 보이고 출처는 accounts 로 남긴다. */
+export function mergeHoldings(rows: Position[]): Position[] {
+  const by = new Map<string, Position>();
+  for (const p of rows) {
+    const k = `${p.market}:${p.ticker}`;
+    const cur = by.get(k);
+    if (!cur) {
+      by.set(k, { ...p, accounts: [...(p.accounts ?? [])] });
+      continue;
+    }
+    const ev = Number(cur.eval_amount ?? 0) + Number(p.eval_amount ?? 0);
+    by.set(k, {
+      ...cur,
+      qty: cur.qty + p.qty,
+      eval_amount: String(ev),
+      accounts: Array.from(new Set([...(cur.accounts ?? []), ...(p.accounts ?? [])])),
+    });
+  }
+  return [...by.values()];
 }

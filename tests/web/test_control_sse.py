@@ -223,3 +223,22 @@ def test_sse_snapshot_excludes_agent_calls_and_stream_reuses_connection(deps, mo
 
     events = anyio.run(run)
     assert len(events) == 3 and opened["n"] == 1
+
+
+def test_web_approve_unknown_response_is_not_reported_as_rejection(client, deps):
+    """전체 검토 W2: 응답 없는(unknown) 승인 주문은 502 '브로커 거부'가 아니라 200 + 경고."""
+    from trader.broker.errors import UNKNOWN_RESPONSE_CODE, KisApiError
+    from trader.broker.fake import FakeBroker
+
+    class Timeout(FakeBroker):
+        def place_order(self, req):
+            raise KisApiError(UNKNOWN_RESPONSE_CODE, "ReadTimeout", "TTTC0012U")
+
+    aid = _pending_approval(deps)
+    old = deps.brokers["paper-main"]
+    deps.brokers["paper-main"] = Timeout(old.account, cash=old.cash)
+    r = client.post("/api/control/approve", json={"approval_id": aid}, headers=AUTH)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["unknown"] is True and "다시 누르지" in body["message"]
+    assert body["order"]["status"] == "unknown"
