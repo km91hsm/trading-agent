@@ -70,3 +70,26 @@ def test_performance_report_is_cached_until_inputs_change(client, conn, monkeypa
     conn.commit()
     assert client.get(url).status_code == 200
     assert n["calls"] == 2
+
+
+def test_api_performance_shadow_pairs(client, conn):
+    r = client.get("/api/performance/shadow?market=KR").json()
+    assert r["pairs"]["candidates_1n"]["n"] == 0 and r["recent"] == [] and r["min_pairs"] == 20
+    for strat, ret in (("llm", 0.03), ("candidates_1n", 0.01), ("quant_topn", 0.02)):
+        conn.execute(
+            "INSERT INTO shadow_portfolios(market, date, strategy, weights_json, created_at, "
+            "fwd_ret, matured_at) VALUES ('KR', '2026-10-01', ?, '{}', 'x', ?, 'x')",
+            (strat, ret),
+        )
+    conn.commit()
+    r = client.get("/api/performance/shadow?market=KR").json()
+    assert r["pairs"]["candidates_1n"]["n"] == 1
+    assert abs(r["pairs"]["candidates_1n"]["mean_diff"] - 0.02) < 1e-9
+    assert abs(r["pairs"]["quant_topn"]["mean_diff"] - 0.01) < 1e-9
+    assert r["recent"][0] == {
+        "date": "2026-10-01",
+        "llm": 0.03,
+        "candidates_1n": 0.01,
+        "quant_topn": 0.02,
+    }
+    assert client.get("/api/performance/shadow?market=US").json()["pairs"]["quant_topn"]["n"] == 0

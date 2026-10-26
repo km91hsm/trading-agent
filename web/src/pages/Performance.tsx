@@ -12,7 +12,8 @@ import { ErrorBox } from "../components/Tables";
 import { Term } from "../components/Term";
 import { fmtPct } from "../format";
 import { useApp, useLoad } from "../hooks";
-import type { Market, PerformanceBench, PerformanceReport } from "../types";
+import { shadowRows } from "../shadow";
+import type { Market, PerformanceBench, PerformanceReport, ShadowReport } from "../types";
 
 const pctNum = (v: number | null | undefined) => (v === null || v === undefined ? null : v * 100);
 
@@ -32,6 +33,8 @@ export function PerformancePage() {
         : null,
     [accountId, market, days, tick],
   );
+
+  const shadow = useLoad(() => getJson<ShadowReport>(`/api/performance/shadow?market=${market}`), [market, tick]);
 
   useEffect(() => {
     if (!box.current || !rep.data || rep.data.nav.length < 2) {
@@ -208,6 +211,50 @@ export function PerformancePage() {
         {rep.data && rep.data.nav.length < 2 && (
           <EmptyState title="곡선을 그릴 스냅샷이 아직 부족해요" hint="판정이 이틀 이상 쌓이면 표시됩니다." />
         )}
+      </Section>
+      <Section
+        title="LLM 종목 선택 효과"
+        aside={`${market} · 같은 날 같은 후보를 다르게 샀다면 · 5거래일 수익 차이 · 만기 ${shadow.data?.min_pairs ?? 20}쌍부터 판정`}
+      >
+        <ErrorBox error={shadow.error} />
+        {shadow.data && (
+          <Table dense caption="LLM 선택과 기준 전략의 5거래일 수익 차이">
+            <thead>
+              <tr>
+                <Th>비교 기준</Th>
+                <Th num>만기 쌍</Th>
+                <Th num>평균 차이</Th>
+                <Th num>95% 구간</Th>
+                <Th>판정</Th>
+              </tr>
+            </thead>
+            <tbody>
+              {shadowRows(shadow.data).map((r) => (
+                <tr key={r.key}>
+                  <Td>{r.label}</Td>
+                  <Td num>{r.n}</Td>
+                  <Td num>
+                    <Delta value={r.meanPct} pct />
+                  </Td>
+                  <Td num>
+                    {r.lowPct === null || r.highPct === null ? (
+                      "—"
+                    ) : (
+                      <>
+                        <Delta value={r.lowPct} pct /> ~ <Delta value={r.highPct} pct />
+                      </>
+                    )}
+                  </Td>
+                  <Td className={r.verdict === "부족" || r.verdict === "구분 안 됨" ? "muted" : undefined}>{r.verdict}</Td>
+                </tr>
+              ))}
+            </tbody>
+          </Table>
+        )}
+        <p className="muted">
+          실전 전환 준비도의 'LLM 알파' 는 같은 후보 균등 대비 95% 구간 하한이 0 보다 커야 통과해요. 계좌 수익률과 달리 시장 전체
+          움직임이 빠져 종목 선택만 남습니다.
+        </p>
       </Section>
     </>
   );

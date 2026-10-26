@@ -1817,6 +1817,13 @@ def _reflect_body(deps: DaemonDeps) -> dict:
                 theme_mod.mature(conn, m, state=deps.state, today=_today(deps))
             except Exception as e:  # noqa: BLE001
                 logger.warning("테마 판정 채점 실패 %s: %s", m, e)
+        try:
+            from trader.ledger import shadow
+
+            shadow_matured = shadow.mature(conn, state=deps.state, today=_today(deps))
+        except Exception as e:  # noqa: BLE001 - 섀도 만기 실패가 반성을 막지 않는다
+            logger.warning("섀도 포트폴리오 만기 실패: %s", e)
+            shadow_matured = None
         sessions = 0
         errors: list[str] = []
         for market in deps.settings.markets:
@@ -1856,6 +1863,7 @@ def _reflect_body(deps: DaemonDeps) -> dict:
         "features": features_n,
         "matured": len(matured),
         "views_matured": views_matured,
+        "shadow_matured": shadow_matured,
         "sessions": sessions,
         "errors": errors,
         "pruned": pr["deleted"],
@@ -1950,7 +1958,29 @@ def _scan_analyze_body(deps: DaemonDeps, market: str) -> dict:
     except Exception as e:  # noqa: BLE001 - scan 실패가 analyze 시도를 막지 않는다
         logger.exception("scan 실패 %s", market)
         scan_error = f"{type(e).__name__}: {e}"  # 알림은 _analyze_body 가 원인과 함께 1건만
-    return _analyze_body(deps, market, scan_error=scan_error)
+    out = _analyze_body(deps, market, scan_error=scan_error)
+    _shadow_record(deps, market)
+    return out
+
+
+def _shadow_record(deps: DaemonDeps, market: str) -> None:
+    """섀도 포트폴리오(전체 검토 L1): 오늘 scan 후보·LLM 결정으로 비교 포트폴리오 3개를 남긴다.
+    주문 없음, 실패해도 잡은 계속(경고만)."""
+    from trader.ledger import shadow
+    from trader.orchestrator.run_store import read_checkpoint, run_date_for
+
+    today = run_date_for(market, deps.now())
+    scan = read_checkpoint(run_store.market_dir(today, market, deps.state), "_scan")
+    if not scan:
+        return
+    try:
+        conn = deps.conn_factory()
+        try:
+            shadow.record(conn, market=market, day=today, scan=scan, now=deps.now())
+        finally:
+            conn.close()
+    except Exception as e:  # noqa: BLE001 - 측정 실패가 분석 잡을 실패로 만들지 않는다
+        logger.warning("섀도 포트폴리오 기록 실패 %s: %s", market, e)
 
 
 def _cache_dir(deps: DaemonDeps) -> Path:

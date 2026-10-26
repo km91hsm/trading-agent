@@ -1,7 +1,9 @@
 """실전 전환 준비도 점검 (스펙 §11 Phase 8 완료 기준). 읽기 전용: 모드를 바꾸지 않는다.
 
 항목: 모의 운영일(FAKE 제외 analyze ok 날짜 수) ≥ 20, 28일 runs 오류율 ≤ 10%, 주문 실패율 ≤ 10%,
-30일 수익률 ≥ 1/N 벤치마크, MDD ≥ −10%, 보정 활성(정보), 만료된 미결 승인 0건.
+LLM 알파(섀도 포트폴리오 llm − 같은 날 후보 1/N, 만기 쌍 ≥ 20 이고 95% 신뢰구간 하한 > 0),
+MDD ≥ −10%, 보정 활성(정보), 만료된 미결 승인 0건. 30일 수익률 − 유니버스 1/N 은 정보로만 남긴다
+(계좌 NAV 는 대부분 현금이라 시장 베타와 섞여 선택 능력을 재지 못한다 — 전체 검토 L1).
 """
 
 from __future__ import annotations
@@ -11,7 +13,7 @@ from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 
 from trader.config import KST, AccountConfig, Settings
-from trader.ledger import performance
+from trader.ledger import performance, shadow
 from trader.memory import store
 
 MIN_PAPER_DAYS = 20
@@ -20,6 +22,7 @@ MAX_FAILED_RATE = 0.10
 MIN_MDD = -0.10
 WINDOW_DAYS = 28
 DEFAULT_MIN_DECISIONS = 60
+MIN_SHADOW_PAIRS = 20
 
 
 def _item(key: str, ok: bool, value, threshold, note: str = "") -> dict:
@@ -112,12 +115,29 @@ def check(
             notes.append(f"{a.id}/{m}: 수익률 {met['return']:+.2%} vs 1/N {bench:+.2%}")
     if excess:
         items.append(
-            _item("return_vs_benchmark", min(excess) >= 0, min(excess), 0.0, "; ".join(notes))
+            _item("return_vs_benchmark", True, min(excess), 0.0, "정보: " + "; ".join(notes))
         )
         items.append(_item("mdd", min(mdds) >= MIN_MDD, min(mdds), MIN_MDD))
     else:
-        items.append(_item("return_vs_benchmark", False, None, 0.0, "NAV 스냅샷 2일 이상 필요"))
+        note = "정보: NAV 스냅샷 2일 이상 필요"
+        items.append(_item("return_vs_benchmark", True, None, 0.0, note))
         items.append(_item("mdd", False, None, MIN_MDD, "NAV 스냅샷 2일 이상 필요"))
+
+    ps = shadow.paired_stats(conn)
+    items.append(
+        _item(
+            "llm_alpha",
+            ps["n"] >= MIN_SHADOW_PAIRS and (ps["ci_low"] or 0) > 0,
+            ps["ci_low"],
+            0.0,
+            f"섀도 llm − 후보 1/N 만기 {ps['n']}쌍 (기준 {MIN_SHADOW_PAIRS}), 평균 "
+            + (
+                f"{ps['mean_diff']:+.2%}, 95% 구간 [{ps['ci_low']:+.2%}, {ps['ci_high']:+.2%}]"
+                if ps["n"]
+                else "-"
+            ),
+        )
+    )
 
     min_dec = _min_decisions()
     matured = store.matured_count(conn)

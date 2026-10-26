@@ -326,6 +326,22 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
             "ALTER TABLE news_items ADD COLUMN severity TEXT",
         ],
     ),
+    (
+        20,  # 전체 검토 L1: 섀도 포트폴리오(LLM 선택 vs 같은 후보 1/N·정량 상위) — ledger/shadow
+        [
+            """CREATE TABLE IF NOT EXISTS shadow_portfolios (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                market TEXT NOT NULL,
+                date TEXT NOT NULL,
+                strategy TEXT NOT NULL,
+                weights_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                fwd_ret REAL,
+                matured_at TEXT,
+                UNIQUE(market, date, strategy)
+            )""",
+        ],
+    ),
 ]
 
 

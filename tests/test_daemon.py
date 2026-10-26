@@ -711,6 +711,25 @@ def test_scan_analyze_body_runs_scan_then_analyze(conn, monkeypatch):
     assert order == [("scan", "KR"), ("analyze", "KR")] and r["targets"] == 2
 
 
+def test_scan_analyze_body_records_shadow_portfolios(conn, monkeypatch):
+    """전체 검토 L1: analyze 뒤 오늘 _scan 후보·LLM 결정으로 섀도 포트폴리오 3개를 남긴다."""
+    from trader.ledger import shadow
+    from trader.orchestrator.run_store import write_checkpoint
+
+    deps = _deps(conn, FakeMarket(), now=lambda: datetime(2026, 10, 8, 0, 0, tzinfo=UTC))
+    write_checkpoint(
+        run_store.market_dir(date(2026, 10, 8), "KR", create=True),
+        "_scan",
+        {"candidates": [{"ticker": "005930", "score": 0.5}], "analyze_targets": []},
+    )
+    monkeypatch.setattr(daemon, "_scan_body", lambda d, m: {})
+    monkeypatch.setattr(daemon, "_analyze_body", lambda d, m, **kw: {"targets": 0})
+    monkeypatch.setattr(daemon, "_market_view_body", lambda d, m: {"skipped": "test"})
+    daemon._scan_analyze_body(deps, "KR")
+    got = {r["strategy"]: r["weights"] for r in shadow.rows(conn, market="KR")}
+    assert got == {"candidates_1n": {"005930": 1.0}, "quant_topn": {"005930": 1.0}, "llm": {}}
+
+
 def test_scan_analyze_body_scan_failure_still_runs_analyze_and_notifies(conn, monkeypatch):
     """scan 이 예외로 죽어도 analyze 는 돈다 (보유 재분석은 _scan 없이는 못 하지만 _analyze_body 가
     알림·error 를 남긴다). scan 실패도 통보한다."""
