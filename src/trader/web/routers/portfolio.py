@@ -138,8 +138,8 @@ _ENSURE_LOCK = threading.Lock()
 @router.post("/ensure-fresh")
 def ensure_fresh(request: Request, market: str | None = None) -> dict:
     """페이지 접속 때(토큰 없음): 정규장이고 스냅샷이 2분보다 오래된 계좌만 브로커 잔고를 다시
-    읽는다 — 조회만, 주문 없음. 시장별 30초에 한 번만 실제로 돈다(그 사이 요청은 `throttled`). 결과는
-    SSE `positions` 로 화면에 반영된다. 섹터 미분류 보유 종목은 같은 자리에서 자동 분류."""
+    읽는다 — 조회만, 주문 없음. 시장별 30초에 한 번만 실제로 돈다(그 사이 요청은 `throttled`).
+    결과는 SSE `positions` 로 화면에 반영된다. 섹터 미분류 보유 종목은 같은 자리에서 자동 분류."""
     from trader.orchestrator import balance
 
     deps = deps_of(request)
