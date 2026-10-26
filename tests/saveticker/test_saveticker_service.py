@@ -15,7 +15,6 @@ def test_all_requested_rankings_and_calendar_months_are_scheduled():
         "market_loss_live",
         "calendar_2026-12",
         "calendar_2027-01",
-        "community_trends",
         "community_top5",
     } <= streams
     assert "community_posts" not in streams
@@ -230,10 +229,18 @@ def test_news_waits_for_delayed_body_and_ignores_carousel_and_comments():
                 setTimeout(()=>document.querySelector('#detail').insertAdjacentHTML('beforeend',
                 '<div class="gap-6 p-6"><p class="whitespace-pre-wrap">실제 본문</p></div>' +
                 '<div data-type="comment"><p>독자의 댓글</p></div>'),900);
+                setTimeout(()=>fetch('https://www.saveticker.com/api/news/detail'),900);
               } document.addEventListener('keydown',e=>{
                 if(e.key==='Escape')document.querySelector('#detail')?.remove()});</script>""")
             adapter = Browser(page, ("unused", "unused"), max_details=1)
             adapter.pace = lambda: None
+            page.route(
+                "https://www.saveticker.com/api/news/detail",
+                lambda route: route.fulfill(
+                    json={"title": "제목", "content": [{"children": [{"text": "실제 본문"}]}]},
+                    headers={"Access-Control-Allow-Origin": "*"},
+                ),
+            )
             rows = adapter._details([Item(id="n", title="제목", kind="news")])
             assert len(rows) == 1 and rows[0].body == "실제 본문"
             assert rows[0].detail_status == "ok"

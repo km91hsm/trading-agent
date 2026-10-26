@@ -47,7 +47,7 @@ def lane_for(view: View) -> str:
 
 
 def build_views(start_month: str, end_month: str) -> list[View]:
-    views = [View("community_trends", "community"), View("community_top5", "community")]
+    views = [View("community_top5", "community")]
     for kind, choices in [
         ("community", [("index", "지수"), ("gain", "상승"), ("loss", "하락")]),
         ("market", [("turnover", "거래대금"), ("gain", "상승"), ("loss", "하락")]),

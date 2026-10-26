@@ -13,7 +13,7 @@ from urllib.parse import urlsplit
 from dotenv import dotenv_values
 
 from trader.config import ConfigError
-from trader.sources.saveticker import dom
+from trader.sources.saveticker import dom, jsonfeed
 from trader.sources.saveticker.models import Attachment, Capture
 from trader.sources.saveticker.service import FatalCollectionError, View, accumulate
 from trader.sources.saveticker.store import atomic_json
@@ -68,7 +68,45 @@ class Browser:
         self.report_attempts = {}
         self.seen_streams = set()
         self.detail_requested = 0
+        self.json_responses = []
+        self.page.on("response", self._json_response)
         self.page.on("pageerror", self._page_error)
+
+    def _json_response(self, response):
+        if jsonfeed.route(response.url):
+            self.json_responses.append(response)
+            self.json_responses = self.json_responses[-200:]
+
+    def _json_rows(self, view):
+        if view.stream == "news_reports":
+            return dom.extract(self.html(), view.stream)
+        route = (
+            "news"
+            if view.stream == "news_all"
+            else "calendar"
+            if view.month
+            else "top5"
+            if view.stream == "community_top5"
+            else "index"
+            if "_index_" in view.stream
+            else "popular"
+        )
+        responses = [r for r in self.json_responses if jsonfeed.route(r.url) == route]
+        if route != "news":
+            responses = responses[-1:]
+        rows = {}
+        for response in responses:
+            if response.status in (401, 403, 429):
+                raise AccessDenied("json_access_denied")
+            if response.status != 200:
+                raise ValueError("json_response_failed")
+            value = response.json()
+            for item in jsonfeed.extract(
+                value, view.stream, month=view.month, regular=view.regular
+            ):
+                rows[item.id] = item
+        self.diagnostics["collection_method"] = "browser_json"
+        return list(rows.values())
 
     def _page_error(self, error):
         # 오류 원문 메시지/stack에는 토큰 URL이나 계정이 포함될 수 있다.
@@ -268,18 +306,36 @@ class Browser:
             self.detail_requested += 1
             try:
                 self.click(card.first)
-                self.page.get_by_role("heading", name=item.title, exact=True).wait_for(
+                self.page.get_by_role("heading", name=item.title, exact=True).first.wait_for(
                     timeout=10000
                 )
                 detail = item.model_copy(update={"detail_status": "pending"})
                 for _ in range(20):
-                    detail = dom.news_detail(self.html(), item)
+                    for response in reversed(self.json_responses):
+                        if jsonfeed.route(response.url) != "detail":
+                            continue
+                        if response.status in (401, 403, 429):
+                            raise AccessDenied("json_detail_access_denied")
+                        if response.status != 200:
+                            continue
+                        value = response.json()
+                        converted = jsonfeed.news_item(value, detail=True)
+                        if converted.title == item.title:
+                            detail = item.model_copy(
+                                update={
+                                    k: getattr(converted, k)
+                                    for k in ("body", "published_at", "detail_status")
+                                }
+                            )
+                            break
                     if detail.detail_status == "ok":
                         break
                     self.page.wait_for_timeout(250)
                 result.append(detail)
                 if detail.detail_status == "ok":
                     self.detail_cache[item.id] = (time.monotonic(), detail)
+            except FatalCollectionError:
+                raise
             except Exception as exc:
                 # 오류 메시지에는 민감한 URL/폼 내용이 있을 수 있어 타입만 보존한다.
                 self.diagnostics["detail_error_type"] = type(exc).__name__
@@ -441,12 +497,14 @@ class Browser:
         )
 
     def collect(self, view: View) -> Capture:
-        if view.stream == "community_posts" or view.stream.startswith("community_ticker-"):
+        if view.stream in {"community_posts", "community_trends"} or view.stream.startswith(
+            "community_ticker-"
+        ):
             raise ValueError("user_content_collection_disabled")
         self.stage = "collect_" + view.kind
         self.detail_requested = 0
-        if self.page.url != view.url or time.monotonic() - self.loaded_at >= 15:
-            self.goto(view.url)
+        self.json_responses = []
+        self.goto(view.url)
         self.page.wait_for_timeout(300)
         if dom.client_error_visible(self.html()):
             self.loaded_at = 0
@@ -478,7 +536,7 @@ class Browser:
         # 첫 렌더링보다 데이터 응답이 늦는 경우 빈 성공으로 덮지 않도록 대기한다.
         rows = []
         for _ in range(10):
-            rows = dom.extract(self.html(), view.stream, month=view.month)
+            rows = self._json_rows(view)
             if rows:
                 break
             self.page.wait_for_timeout(500)
@@ -505,7 +563,7 @@ class Browser:
         if view.kind == "news" and not view.tab:
 
             def read_batch():
-                batch = dom.extract(self.html(), view.stream)
+                batch = self._json_rows(view)
                 return (
                     self._reports(batch) if view.stream == "news_reports" else self._details(batch)
                 )
