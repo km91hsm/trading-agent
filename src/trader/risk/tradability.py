@@ -17,8 +17,10 @@ STATUS = {
 WARN = {"02": "투자경고", "03": "투자위험"}
 
 
-def block_reason(quote: dict[str, Any] | None) -> str | None:
-    """매수 금지 사유 한 줄, 없으면 None."""
+def block_reason(quote: Any) -> str | None:
+    """매수 금지 사유 한 줄, 없으면 None. `quote` 는 dict(00_inputs) 또는 `Quote` 객체."""
+    if quote is not None and not isinstance(quote, dict):
+        quote = {k: getattr(quote, k, None) for k in ("status_code", "warn_code", "halted")}
     if not isinstance(quote, dict):
         return None
     found: list[str] = []

@@ -18,22 +18,26 @@ from trader.risk import costs
 MIN_ORDERS = 5
 MIN_FILL_RATE = 0.80
 SLIP_MULT = 2.0
-TERMINAL = ("filled", "partial", "expired", "cancelled")
-OPEN = ("accepted", "unknown", "pending")
+# partial 은 잔량이 살아 있는 진행 중 상태다(마감 뒤 잔량은 expired 로 바뀐다)
+TERMINAL = ("filled", "expired", "cancelled")
+OPEN = ("accepted", "unknown", "pending", "partial")
 
 
 def _row(conn: sqlite3.Connection, account_id: str, market: str, lo: str, hi: str) -> dict:
     orders = conn.execute(
-        "SELECT o.id, o.side, o.price, o.status FROM orders o WHERE o.account_id=? AND o.market=? "
-        "AND o.decision_id IS NOT NULL AND o.created_at >= ? AND o.created_at < ?",
+        "SELECT o.id, o.side, o.qty, o.price, o.status FROM orders o "
+        "WHERE o.account_id=? AND o.market=? AND o.decision_id IS NOT NULL "
+        "AND o.created_at >= ? AND o.created_at < ?",
         (account_id, market, lo, hi),
     ).fetchall()
     terminal = [o for o in orders if o["status"] in TERMINAL]
     n_open = sum(1 for o in orders if o["status"] in OPEN)
-    filled, slips = 0, []
+    filled, slips, qty_ordered, qty_filled = 0, [], 0, 0
     for o in terminal:
+        qty_ordered += int(o["qty"] or 0)
         fills = conn.execute("SELECT qty, price FROM fills WHERE order_id=?", (o["id"],)).fetchall()
         qty = sum(int(f["qty"]) for f in fills)
+        qty_filled += qty
         if qty <= 0:
             continue
         filled += 1
@@ -50,6 +54,7 @@ def _row(conn: sqlite3.Connection, account_id: str, market: str, lo: str, hi: st
         "filled": filled,
         "open": n_open,
         "fill_rate": filled / len(terminal) if terminal else None,
+        "qty_fill_rate": qty_filled / qty_ordered if qty_ordered else None,
         "slippage_bp": sum(slips) / len(slips) if slips else None,
         "assumed_bp": costs.round_trip_bp(market) // 2,
     }

@@ -514,6 +514,8 @@ def backfill(
             fy_years = sorted({_effective_fy(c.date) for c in candles})
             ratios = _ratios_by_year(market, ticker, fy_years, dart=dart, edgar=edgar)
             df = history_rows(ticker=ticker, market=market, candles=candles, ratios_by_year=ratios)
+            if only is not None:
+                df = _keep_observed(df, state, market, ticker)
             frames.append(df)
             progress(f"{market} {ticker}: {len(df)}행")
             if len(frames) >= BACKFILL_CHUNK:
@@ -533,6 +535,32 @@ def backfill(
         n_files = rederive(state, paths=sorted(touched))
         progress(f"파생 열 계산: {n_files}개 날짜 파일")
     return total
+
+
+def _keep_observed(df: pd.DataFrame, state: Path | None, market: str, ticker: str) -> pd.DataFrame:
+    """재백필은 가격·지표만 새로 쓴다: `history_rows` 가 채우지 못하는 관측 열(수급·뉴스·커뮤니티
+    건수 등 — 새 표에서 전부 NaN)은 저장된 값을 같은 날짜에 되살린다(행 교체로 지워지지 않게)."""
+    from trader.ml import dataset
+
+    since = pd.Timestamp(df["date"].min()).date() if not df.empty else None
+    try:
+        old = dataset.load_all(state, market=market, since=since)
+    except Exception:  # noqa: BLE001 - 읽지 못하면 그대로(재백필이 우선)
+        return df
+    if old.empty:
+        return df
+    old = old[old["ticker"] == ticker]
+    if old.empty:
+        return df
+    old = old.assign(date=pd.to_datetime(old["date"]).dt.date).set_index("date")
+    out = df.copy()
+    keys = pd.to_datetime(out["date"]).dt.date
+    for col in out.columns:
+        if col in ("date", "ticker", "market") or col not in old.columns:
+            continue
+        if out[col].isna().all():
+            out[col] = keys.map(old[col]).to_numpy()
+    return out
 
 
 def counts_from_inputs(
@@ -658,15 +686,20 @@ def snapshot(
 
 ADJUST_TOL = 0.005
 ADJUST_WINDOW = 30
+# 분할·병합은 이벤트 전 모든 봉을 바꾼다 — 장중에 찍힌 스냅샷 종가와 확정 종가의 차이(한두 봉)를
+# 수정주가로 오인하지 않게 여러 봉이 함께 달라야 한다(Codex 리뷰)
+ADJUST_MIN_BARS = 3
 
 
 def _history_changed(candles: list[Candle], stored: dict[date, float]) -> bool:
-    """최근 ADJUST_WINDOW 봉(마지막 봉 제외 — 장중이면 아직 변한다)이 저장 종가와 다른가."""
+    """최근 ADJUST_WINDOW 봉(마지막 봉 제외 — 장중이면 아직 변한다) 중 ADJUST_MIN_BARS 봉 이상이
+    저장 종가와 ADJUST_TOL 넘게 다른가."""
+    n = 0
     for c in candles[-ADJUST_WINDOW - 1 : -1]:
         s = stored.get(c.date)
         if s and s > 0 and abs(float(c.close) / s - 1) > ADJUST_TOL:
-            return True
-    return False
+            n += 1
+    return n >= ADJUST_MIN_BARS
 
 
 def _stored_closes(

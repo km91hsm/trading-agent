@@ -225,3 +225,52 @@ def test_cli_killswitch_off_requires_note(conn, project):
         app, ["control", "killswitch", "off", "--note", "원인 확인 후 해제합니다 (테스트)"]
     )
     assert r.exit_code == 0 and "꺼짐" in r.output and killswitch.reason(conn) is None
+
+
+def test_capital_cap_uses_holdings_not_unsettled_cash(conn, project):
+    """미결제 예수금이 NAV 에 섞여도 투자금은 보유 평가액 — 상한 300만·보유 280만이면 20만만."""
+    acct = make_account("real-main", "real", "off").model_copy(
+        update={"capital_cap": {"KR": Decimal("3000000")}}
+    )
+    broker = FakeBroker(
+        acct,
+        positions=[_pos(qty=28, price="100000")],
+        cash={"KR": Cash(currency="KRW", available=Decimal(10_000_000), total=Decimal(10_000_000))},
+    )
+    pf = executor.build_portfolio(conn, broker, acct, "KR", D)
+    assert pf.cash_available == Decimal("200000")
+
+
+def test_killswitch_baseline_persists_first_positive_nav(conn):
+    """첫 스냅샷이 0 이어도 다음 양수 NAV 가 기준이고, 일별 upsert 로 첫날 값이 바뀌어도 처음 저장한
+    기준을 쓴다."""
+    _snap(conn, 0, "2026-09-01")
+    _snap(conn, 100, "2026-09-02")
+    assert not killswitch.observe(
+        conn, account_id="paper-main", market="KR", nav=Decimal(95), today=D, limit_pct=0.15
+    )
+    conn.execute("UPDATE positions_snapshot SET nav='60' WHERE date='2026-09-02'")
+    conn.commit()
+    assert killswitch.observe(
+        conn, account_id="paper-main", market="KR", nav=Decimal(80), today=D, limit_pct=0.15
+    )  # 100 대비 −20%
+    # 스냅샷이 전혀 없으면 지금 NAV 가 기준으로 저장된다
+    assert not killswitch.observe(
+        conn, account_id="other", market="US", nav=Decimal(1000), today=D, limit_pct=0.15
+    )
+    assert control.get_flag(conn, "killswitch_base:other:US")["nav"] == "1000"
+
+
+def test_block_reason_accepts_quote_object():
+    from trader.broker.models import Quote
+
+    q = Quote(
+        ticker="005930",
+        market="KR",
+        price=Decimal(1),
+        change_pct=0.0,
+        volume=1,
+        asof="2026-10-27T00:00:00+00:00",
+        status_code="58",
+    )
+    assert tradability.block_reason(q) == "거래정지"

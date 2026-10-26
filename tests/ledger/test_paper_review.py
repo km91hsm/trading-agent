@@ -78,3 +78,14 @@ def test_slippage_alert_over_twice_assumption(conn):
     assert any("슬리피지" in a for a in r["alerts"])
     text = paper_review.message(r)
     assert text.startswith("[모의 체결 점검]") and "paper-main KR" in text
+
+
+def test_partial_is_in_progress_and_qty_rate(conn):
+    for _ in range(5):
+        _order(conn, "BUY", 10000, "partial", [(1, 10000)])
+    _order(conn, "BUY", 10000, "filled", [(10, 10000)])
+    _order(conn, "BUY", 10000, "expired", [(4, 10000)])  # 마감에 잔량 소멸
+    r = paper_review.compute(conn, [PAPER], since=date(2026, 10, 20), until=date(2026, 10, 27))
+    (row,) = r["items"]
+    assert row["open"] == 5 and row["terminal"] == 2
+    assert abs(row["qty_fill_rate"] - 14 / 20) < 1e-9

@@ -287,7 +287,9 @@ def build_portfolio(
     sizing_nav, available = nav, cash.available
     cap = (account.capital_cap or {}).get(market)  # type: ignore[call-overload]
     if cap is not None and nav > cap:
-        invested = nav - cash.total
+        # 투자금은 보유 평가액 합계(미결제 예수금이 섞인 NAV − 현금으로 보면 결제 전 매수가 빠진다,
+        # Codex 리뷰). 체결 전 주문은 게이트가 today_order_amount 로 따로 뺀다
+        invested = sum((p.eval_amount for p in pos_list), Decimal(0))
         sizing_nav = Decimal(cap)
         available = max(Decimal(0), min(cash.available, Decimal(cap) - invested))
     return rules.Portfolio(

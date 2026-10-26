@@ -34,21 +34,37 @@ def reason(conn: sqlite3.Connection) -> str | None:
     return str(st.get("reason") or "킬스위치") if st.get("on") else None
 
 
-def _baseline(conn: sqlite3.Connection, account_id: str, market: str) -> Decimal | None:
-    base = control.get_flag(conn, _base_key(account_id, market))
-    raw = (base or {}).get("nav")
-    if raw is None:
-        row = conn.execute(
-            "SELECT nav FROM positions_snapshot WHERE account_id=? AND market=? "
-            "AND nav IS NOT NULL ORDER BY date, id LIMIT 1",
-            (account_id, market),
-        ).fetchone()
-        raw = row[0] if row is not None else None
+def _dec(raw) -> Decimal | None:
     try:
         v = Decimal(str(raw)) if raw is not None else None
     except InvalidOperation:
         return None
     return v if v is not None and v > 0 else None
+
+
+def _baseline(
+    conn: sqlite3.Connection, account_id: str, market: str, nav: Decimal
+) -> Decimal | None:
+    """기준 NAV. 처음 보는 (계좌·시장)이면 **한 번 저장**한다 — 스냅샷은 하루 1행 upsert 라 첫날
+    값이 장 마감 NAV 로 덮여 첫날 손실이 기준에서 사라진다(Codex 리뷰). 저장 전 기존 운영분은
+    가장 이른 양수 스냅샷 NAV(0 이 먼저 있어도 건너뛴다), 없으면 지금 NAV."""
+    key = _base_key(account_id, market)
+    stored = _dec((control.get_flag(conn, key) or {}).get("nav"))
+    if stored is not None:
+        return stored
+    first = None
+    for (raw,) in conn.execute(
+        "SELECT nav FROM positions_snapshot WHERE account_id=? AND market=? "
+        "AND nav IS NOT NULL ORDER BY date, id",
+        (account_id, market),
+    ):
+        first = _dec(raw)
+        if first is not None:
+            break
+    base = first if first is not None else _dec(nav)
+    if base is not None:
+        control.set_flag(conn, key, {"nav": str(base), "at": datetime.now(UTC).isoformat()})
+    return base
 
 
 def engage(conn: sqlite3.Connection, *, reason: str, source: str) -> None:
@@ -69,10 +85,10 @@ def observe(
     limit_pct: float,
 ) -> bool:
     """잔고를 볼 때마다 부른다. 이번에 새로 켰으면 True(알림은 호출부·운영 점검이 한다)."""
-    if limit_pct <= 0 or nav <= 0 or state(conn).get("on"):
+    if limit_pct <= 0 or nav <= 0:
         return False
-    base = _baseline(conn, account_id, market)
-    if base is None:
+    base = _baseline(conn, account_id, market, nav)  # 켜져 있어도 기준은 처음에 한 번 남긴다
+    if base is None or state(conn).get("on"):
         return False
     dd = float(nav / base - 1)
     if dd > -limit_pct:

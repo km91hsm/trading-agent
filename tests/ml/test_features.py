@@ -719,3 +719,50 @@ def test_snapshot_detects_adjusted_history_and_rebackfills(project):
     old = df[(df.ticker == "005930")].sort_values("date").iloc[0]
     first = FakeMarket().get_daily_kr("005930", days=1000)[0]
     assert float(old["close"]) == pytest.approx(float(first.close) / 2)
+
+
+def test_rebackfill_keeps_observed_columns_and_ignores_single_bar(project):
+    """재백필은 수급·건수 같은 관측 열을 지우지 않고, 한두 봉 차이(장중 스냅샷 종가)는 수정주가로
+    보지 않는다."""
+    from helpers_sources import T0
+
+    from trader.ml import dataset
+
+    uni = Universe(kr=["005930"])
+    features.backfill(market_client=FakeMarket(), dart=FakeDart(), universe=uni, markets=["KR"])
+    df = dataset.load_all(market="KR")
+    last = df.sort_values("date").iloc[-2]
+    row = df[(df.date == last["date"]) & (df.ticker == "005930")].copy()
+    row["flow_foreign_20d"] = 1234.0
+    features.write_rows(row.assign(date=row["date"].dt.date)[features.FEATURE_COLUMNS])
+
+    class OneBar(FakeMarket):
+        def get_daily_kr(self, ticker, days=100):
+            got = super().get_daily_kr(ticker, days=days)
+            got[-2] = got[-2].model_copy(update={"close": got[-2].close * 2})
+            return got
+
+    seen = []
+    features.snapshot(
+        market_client=OneBar(),
+        dart=FakeDart(),
+        universe=uni,
+        markets=["KR"],
+        asof=T0,
+        now=lambda: T0,
+        on_adjusted=lambda m, t: seen.append(t),
+    )
+    assert seen == []
+    kept = features._keep_observed(
+        features.history_rows(
+            ticker="005930",
+            market="KR",
+            candles=FakeMarket().get_daily_kr("005930", days=1000),
+            ratios_by_year={},
+        ),
+        None,
+        "KR",
+        "005930",
+    )
+    hit = kept[kept.date == last["date"].date()]
+    assert float(hit["flow_foreign_20d"].iloc[0]) == 1234.0

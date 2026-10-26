@@ -26,6 +26,7 @@ from trader.agents.schemas import Decision
 from trader.control import control
 from trader.ledger import repo
 from trader.orchestrator import executor
+from trader.risk import tradability
 
 logger = logging.getLogger("trader.rebalance")
 
@@ -161,6 +162,7 @@ def run(
                 q = quote_fn(ticker)
                 price = Decimal(str(getattr(q, "price", q)))
                 change_pct = getattr(q, "change_pct", None)
+                block = tradability.block_reason(q) if action == "ADD" else None
             except Exception as e:  # noqa: BLE001 - 시세 실패는 그 종목만 건너뛴다
                 logger.warning("리밸런스 시세 실패 %s: %s", ticker, e)
                 continue
@@ -201,6 +203,7 @@ def run(
                 skip_accounts=frozenset(all_ids - accts),
                 is_rebalance=True,
                 change_pct=change_pct,
+                trade_block=block,
             )
             orders.append(
                 {
