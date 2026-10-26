@@ -129,3 +129,15 @@ def test_liquidity_top_n_uses_past_only():
     early = out[out["date"] < "2026-09-15"]
     assert set(early["ticker"]) == {"A"}
     assert "C" in set(out[out["date"] >= "2026-09-20"]["ticker"])
+
+
+def test_reentry_just_outside_grace_is_new_interval(conn):
+    # 9/1 마지막 관측 → 9/8 재편입(7일 뒤): 유예(5일) 밖인 9/7 은 구성원이 아니다
+    pit.record(conn, market="KR", tickers=["A", "B"], day=date(2026, 9, 1))
+    for d in range(2, 31):
+        pit.record(
+            conn, market="KR", tickers=["B"] + (["A"] if d >= 8 else []), day=date(2026, 9, d)
+        )
+    out, _ = pit.apply(_df(), conn, PitCfg())
+    a_days = set(out[out.ticker == "A"]["date"].dt.day)
+    assert 7 not in a_days and 8 in a_days and 4 in a_days

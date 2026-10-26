@@ -26,7 +26,8 @@ logger = logging.getLogger("trader.ml")
 GRACE = timedelta(days=5)  # 기록이 하루이틀 빠져도(휴장·데몬 정지) 구성원으로 본다
 
 
-MERGE_GAP = timedelta(days=7)  # 기록 사이가 이보다 벌어지면(편출 뒤 재편입) 새 구간
+# 기록 사이가 유예(GRACE)보다 벌어지면 새 구간 — 병합이 유예 밖 날짜를 소급해 구성원으로 만들지 않게
+MERGE_GAP = GRACE
 
 
 def effective_day(market: str, now: datetime) -> date:
