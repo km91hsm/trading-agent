@@ -40,7 +40,7 @@ def _memory_steps(conn: sqlite3.Connection, market: str | None) -> pd.DataFrame:
     sql = (
         "SELECT decided_at, ticker, situation_vector, decision, price_return, horizon_days "
         "FROM memory_entries "
-        "WHERE price_return IS NOT NULL"
+        "WHERE price_return IS NOT NULL AND round=0"
     )
     args: list = []
     if market:

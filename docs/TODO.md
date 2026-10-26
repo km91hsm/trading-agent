@@ -366,3 +366,4 @@
 - [x] 보완 5차(묶음 C 주문 경로, 사용자 결정 2026-10-26): O8 실행 키 선점(원장 v21 `exec_keys`, 거부·실패면 해제), O10 예상 포트폴리오(체결 전 BUY·pending 승인을 종목 수·섹터·테마 합계에), O12 승인 직전 재판정(bear∧기울기≤0·일일 손실 → expired) (2026-10-26)
 - [ ] 결정 대기(사용자): L2·L3 메모리 채점 재설계, L17 비용 절감, O6·O7 단타 청산(기본 꺼짐)
 - [ ] 보완 4차(프로세스·웹 나머지): P2 재평가 전용 레인, P4 데몬 잠금 인수 경쟁, P7 수집 타임아웃, P8 heavy_wanted 카운터, P9 derive 락 양보, P11 Windows 교체 재시도, P12 보존 정리, P13 레이트 스토어 연결, W5 SSE 상태 변경 감지, W8 실시간 거리 재계산, W9 모바일 행 상세, W10 키보드 행, W12 용어 충돌, T3 문구 어투·단타 알림 요약, `(market, received_at)` 뉴스 인덱스
+- [x] 보완 5차 E(L2·L3, 사용자 결정 '재설계', `feat/review-memory-scoring`): 원장 v23 `memory_entries.round`(재평가 별도 엔트리, `UNIQUE(decision_id, round)`)·`held_at_decision`·`direction_score`·`avoided_loss`·`realized_pnl_pct`, 검색·보정 round 0 우선, 트레이더·복기 입력 방향 점수 기준 (2026-10-26)

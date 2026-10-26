@@ -1,7 +1,10 @@
 """신호 적중률 보정 (스펙 §9.3).
 
 - signal_hits: analyst_reports(신호) × memory_entries(결과) 조인. 신호 BUY/STRONG_BUY → +1,
-  SELL/STRONG_SELL → −1, 그 외 0. 결과 부호 = sign(realized_return 의 방향 무관 원수익).
+  SELL/STRONG_SELL → −1, 그 외 0. 결과 부호 = sign(price_return, 방향 무관 원수익 — 신호는 가격
+  방향 예측이다). 보고서는 아침 분석의 것이라 아침 라운드(round 0) 엔트리만 조인한다.
+- decision_quality: 결정의 판단 품질은 direction_score(memory/outcomes) 기준, 재평가 라운드는
+  REEVAL_WEIGHT 로 가중을 낮춘다(전체 검토 L3).
 - hit_rates: 역할별 적중률, 질의 벡터 코사인 이웃 k 개 적중률, bias(평균 신호 − 평균 결과 부호).
 - build_calibration: 결과 엔트리 수 < min_decisions 면 None (calibration_runs 에 비활성 기록).
 """
@@ -49,7 +52,7 @@ def signal_hits(conn: sqlite3.Connection) -> pd.DataFrame:
         "FROM memory_entries m JOIN analyst_reports a "
         "ON a.market = m.market AND a.ticker = m.ticker "
         "AND a.date = date(m.decided_at, '+9 hours') "
-        "WHERE m.outcome_at IS NOT NULL ORDER BY m.id, a.role"
+        "WHERE m.outcome_at IS NOT NULL AND m.round = 0 ORDER BY m.id, a.role"
     ).fetchall():
         eid = int(e["id"])
         if eid not in sign_cache:
@@ -70,6 +73,45 @@ def signal_hits(conn: sqlite3.Connection) -> pd.DataFrame:
             }
         )
     return pd.DataFrame(rows, columns=["decision_id", "role", "signal", "realized_sign", "vector"])
+
+
+def decision_quality(conn: sqlite3.Connection) -> dict | None:
+    """{n, hit_rate, avg_direction_score, avg_avoided_loss} — 아침 1, 재평가는 결정당 합
+    REEVAL_WEIGHT.
+
+    미보유 HOLD 의 direction_score 0 은 맞고 틀림이 없어 적중률 분모에서 뺀다."""
+    rows = conn.execute(
+        "SELECT decision_id, round, direction_score, avoided_loss FROM memory_entries "
+        "WHERE outcome_at IS NOT NULL AND direction_score IS NOT NULL"
+    ).fetchall()
+    if not rows:
+        return None
+    # 재평가 라운드는 결정 하나당 합쳐서 REEVAL_WEIGHT — 재평가가 잦은 결정이 집계를 지배하지 않게
+    n_re: dict = {}
+    for r in rows:
+        if int(r["round"] or 0) > 0:
+            n_re[r["decision_id"]] = n_re.get(r["decision_id"], 0) + 1
+    w = np.array(
+        [
+            1.0 if int(r["round"] or 0) == 0 else store.REEVAL_WEIGHT / n_re[r["decision_id"]]
+            for r in rows
+        ]
+    )
+    ds = np.array([float(r["direction_score"]) for r in rows])
+    scored = ds != 0
+    hit = float((w[scored] * (ds[scored] > 0)).sum() / w[scored].sum()) if scored.any() else None
+    av = [
+        (wi, float(r["avoided_loss"]))
+        for wi, r in zip(w, rows, strict=True)
+        if r["avoided_loss"] is not None
+    ]
+    avg_av = sum(a * b for a, b in av) / sum(a for a, _ in av) if av else None
+    return schemas.DecisionCalibration(
+        n=len(rows),
+        hit_rate=None if hit is None else round(hit, 4),
+        avg_direction_score=round(float((w * ds).sum() / w.sum()), 6),
+        avg_avoided_loss=None if avg_av is None else round(avg_av, 6),
+    ).model_dump()
 
 
 def _rate(sub: pd.DataFrame) -> tuple[float | None, int]:
@@ -118,7 +160,12 @@ def build_calibration(
         df = signal_hits(conn)
         roles = hit_rates(df, query_vector=query_vector)
         report = schemas.CalibrationReport(
-            asof=asof, n_decisions=n, active=True, min_decisions=min_decisions, roles=roles
+            asof=asof,
+            n_decisions=n,
+            active=True,
+            min_decisions=min_decisions,
+            roles=roles,
+            decisions=decision_quality(conn),
         ).model_dump()
     created_dt = now().astimezone(UTC)
     created = created_dt.isoformat()

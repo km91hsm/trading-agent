@@ -40,10 +40,11 @@ def simple_backtest(
     horizon_default: int = 5,
 ) -> dict:
     """{n, hit_rate, avg_return, avg_alpha, by_action, cutoff, decisions, skipped}."""
-    sql = "SELECT * FROM memory_entries"
+    # 결정 단위 백테스트라 아침 라운드만 (재평가 엔트리는 같은 결정의 장중 판단 — L2)
+    sql = "SELECT * FROM memory_entries WHERE round=0"
     args: list = []
     if market:
-        sql += " WHERE market=?"
+        sql += " AND market=?"
         args.append(market)
     rows = conn.execute(sql + " ORDER BY decided_at, id", args).fetchall()
     tables: dict = {}

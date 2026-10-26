@@ -47,8 +47,14 @@ def pending(conn: sqlite3.Connection, *, market: str | None = None, limit: int =
                 "decision": json.loads(r["decision"] or "{}"),
                 "situation_summary": r["situation_summary"],
                 "horizon_days": r["horizon_days"],
-                "realized_return": r["realized_return"],
-                "alpha_vs_benchmark": r["alpha_vs_benchmark"],
+                "round": r["round"],
+                "price_return": r["price_return"],
+                "held_at_decision": None
+                if r["held_at_decision"] is None
+                else bool(r["held_at_decision"]),
+                "direction_score": r["direction_score"],
+                "avoided_loss": r["avoided_loss"],
+                "realized_pnl_pct": r["realized_pnl_pct"],
                 "analyst_signals": signals,
             }
         )
