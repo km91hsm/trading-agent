@@ -3,7 +3,8 @@ import { getJson, postJson } from "../api";
 import { Badge } from "../components/Badge";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { Glyph } from "../components/Glyph";
-import { JsonView } from "../components/JsonView";
+import { StageReport } from "../components/StageReport";
+import { settingsBlocks } from "../report";
 import { Section } from "../components/Section";
 import { ErrorBox } from "../components/Tables";
 import { Term } from "../components/Term";
@@ -192,7 +193,7 @@ export function SettingsPage() {
           </Section>
           <Section title="설정 요약" aside="settings.yaml · 시크릿 없음">
             <ErrorBox error={settings.error} />
-            <div className="viewer">{settings.data && <JsonView value={settings.data} />}</div>
+            <div className="viewer">{settings.data && <StageReport data={settings.data} blocks={settingsBlocks(settings.data)} />}</div>
           </Section>
         </div>
       </div>

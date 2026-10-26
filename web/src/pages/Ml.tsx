@@ -284,7 +284,7 @@ export function MlPage() {
                 ))}
               </ul>
               <details>
-                <summary className="muted">메타 전체</summary>
+                <summary className="muted">원본 보기</summary>
                 <JsonView value={detail.data} depth={1} />
               </details>
             </>
