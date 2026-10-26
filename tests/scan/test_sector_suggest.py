@@ -195,3 +195,64 @@ def test_cli_universe_sectors_write_syncs_template_drift(project, monkeypatch):
     assert r.exit_code == 0, r.stdout
     assert load_sectors().kr == load_sectors(project / "templates" / "config" / "sectors.yaml").kr
     assert load_sectors().kr == {"005930": "반도체", "000660": "반도체", "105560": "금융"}
+
+
+# --- 자동 분류 캐시(웹 섹터 비중: yaml 에 없는 보유 종목) -----------------------------------
+
+
+def test_auto_classify_caches_only_missing_and_resolver_prefers_yaml(tmp_path):
+    """yaml 에 없는 보유 종목만 KIS 업종으로 분류해 캐시하고, 이미 캐시된 종목은 다시 조회하지
+    않는다. 해석기는 yaml → 자동 캐시 순이고 자동으로 정해진 종목을 기억한다."""
+    m = FakeMarket(industries={"357870": "전기전자", "440110": "알수없음"})
+    st = tmp_path / "state"
+    got = sector_suggest.auto_classify(
+        SECTORS, m, market="KR", tickers=["005930", "357870", "440110"], state=st
+    )
+    assert got == {"357870": "반도체"}
+    assert m.calls.count("get_industry_kr") == 2  # 005930 은 yaml 에 있어 조회 없음
+    # 다시 불러도 캐시(미분류 포함)가 있어 네트워크 0회
+    sector_suggest.auto_classify(SECTORS, m, market="KR", tickers=["357870", "440110"], state=st)
+    assert m.calls.count("get_industry_kr") == 2
+    r = sector_suggest.resolver(SECTORS, "KR", state=st)
+    assert r("005930") == "반도체" and r("357870") == "반도체" and r("440110") is None
+    assert r.auto_tickers == {"357870"}
+
+
+def test_auto_classify_tolerates_lookup_failure(tmp_path):
+    class Boom(FakeMarket):
+        def get_industry_kr(self, ticker):
+            raise RuntimeError("KIS 503")
+
+    got = sector_suggest.auto_classify(
+        SECTORS, Boom(), market="KR", tickers=["357870"], state=tmp_path
+    )
+    assert got == {}
+    # 실패는 캐시하지 않는다(다음 관측 때 다시 시도)
+    assert sector_suggest.load_auto(tmp_path).get("KR", {}) == {}
+
+
+def test_auto_classify_groups_etf_by_brand_name(tmp_path):
+    """KIS 가 업종을 주지 않는 ETF 는 운용사 상표 이름으로 'ETF' 로 묶는다(표시 전용)."""
+    m = FakeMarket(industries={})
+    got = sector_suggest.auto_classify(
+        SECTORS,
+        m,
+        market="KR",
+        tickers=["357870", "336260"],
+        state=tmp_path,
+        names={"357870": "TIGER CD금리투자KIS(합성)", "336260": "두산퓨얼셀"},
+    )
+    assert got == {"357870": "ETF"}
+
+
+def test_auto_classify_merges_concurrent_writers_and_skips_unknown_us_exchange(tmp_path):
+    """두 쓰기(데몬·웹)의 서로 다른 종목이 둘 다 남고, 거래소 모르는 US 빈 결과는 굳히지 않는다."""
+    m = FakeMarket(industries={"357870": "전기전자", "000660": "은행"})
+    sector_suggest.auto_classify(SECTORS, m, market="KR", tickers=["357870"], state=tmp_path)
+    sector_suggest.auto_classify(SECTORS, m, market="KR", tickers=["000660"], state=tmp_path)
+    kr = sector_suggest.load_auto(tmp_path)["KR"]
+    assert set(kr) == {"357870", "000660"}
+    sector_suggest.auto_classify(
+        SECTORS, FakeMarket(industries={}), market="US", tickers=["XYZ"], state=tmp_path
+    )
+    assert "XYZ" not in sector_suggest.load_auto(tmp_path).get("US", {})

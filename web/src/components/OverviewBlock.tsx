@@ -1,10 +1,9 @@
 // 전체 계좌 합산 (Phase 24): 시장(통화) × 모의/실전별 NAV·현금·평가손익·보유·섹터.
 // 시장끼리, 모의·실전끼리는 더하지 않는다(PRODUCT.md 원칙 3) — 보유 비중·섹터의 분모도 그 행의 NAV.
 import { Link } from "react-router-dom";
-import { useLiveQuotes } from "../hooks";
-import { applyQuotes, liveLabel } from "../live";
-import { missingText, overviewRows, type OverviewRow } from "../overview";
-import type { Overview } from "../types";
+import { applyQuotes, liveLabel, type QuotesResp } from "../live";
+import { liveSummary, missingText, overviewRows, type OverviewRow } from "../overview";
+import type { Market, Overview } from "../types";
 import { Badge } from "./Badge";
 import { EmptyState } from "./EmptyState";
 import { Section } from "./Section";
@@ -14,10 +13,11 @@ import { PositionsTable } from "./Tables";
 
 const ENV_LABEL = { paper: "모의", real: "실전" } as const;
 
-/** 한 시장·환경의 보유: 장중이면 실시간 시세로 현재가·평가를 갱신한다. */
-function EnvHoldings({ row }: { row: OverviewRow }) {
+export type LiveQuotes = Partial<Record<Market, QuotesResp | null>>;
+
+/** 한 시장·환경의 보유: 장중이면 실시간 시세로 현재가·평가를 갱신한다(시세는 페이지가 시장별로 한 번 받는다). */
+function EnvHoldings({ row, live }: { row: OverviewRow; live: QuotesResp | null | undefined }) {
   const { market, data } = row;
-  const live = useLiveQuotes(market, data.positions.map((p) => p.ticker));
   const applied = applyQuotes(data.positions, live?.quotes, data.nav);
   return (
     <>
@@ -44,7 +44,17 @@ function MissingNote({ data }: { data: Overview }) {
   );
 }
 
-export function OverviewBlock({ data, maxSectorPct, accountCount }: { data: Overview | null; maxSectorPct: number; accountCount: number }) {
+export function OverviewBlock({
+  data,
+  maxSectorPct,
+  accountCount,
+  quotes = {},
+}: {
+  data: Overview | null;
+  maxSectorPct: number;
+  accountCount: number;
+  quotes?: LiveQuotes;
+}) {
   if (!data) return null;
   const rows = overviewRows(data);
   if (!data.configured) return <EmptyState title="계좌가 없어요" hint="config/accounts.yaml 에 계좌를 넣으면 여기서 합산해 보여 줘요." />;
@@ -63,22 +73,26 @@ export function OverviewBlock({ data, maxSectorPct, accountCount }: { data: Over
             </tr>
           </thead>
           <tbody>
-            {rows.map((r) => (
+            {rows.map((r) => {
+              const s = liveSummary(r.data, r.market, quotes[r.market]?.quotes);
+              return (
               <tr key={`${r.market}:${r.env}`}>
                 <Td core>
                   {r.market} <Badge kind="env" value={r.env} />
+                  {s.live ? <span className="live-tag">실시간</span> : null}
                 </Td>
                 <Td num core>
-                  <strong>{r.nav}</strong>
+                  <strong>{s.nav}</strong>
                 </Td>
                 <Td num>{r.cash}</Td>
                 <Td num core>
-                  {r.pnl} {r.pnlPct !== null ? <Delta value={r.pnlPct * 100} pct /> : null}
+                  {s.pnl} {s.pnlPct !== null ? <Delta value={s.pnlPct * 100} pct /> : null}
                 </Td>
                 <Td num>{r.holdings}종목</Td>
                 <Td>{r.data.accounts.map((a) => a.id).join(", ")}</Td>
               </tr>
-            ))}
+              );
+            })}
           </tbody>
         </Table>
       ) : (
@@ -91,16 +105,16 @@ export function OverviewBlock({ data, maxSectorPct, accountCount }: { data: Over
         </p>
       )}
       {rows.length > 0 && (
-        <p className="note">섹터 합계가 상한({Math.round(maxSectorPct * 100)}%)을 넘기면 리스크 게이트가 그 섹터의 신규·추가 매수를 거부해요(계좌마다 따로 판정). 헤지 ETF·현금은 상한 대상이 아니에요.</p>
+        <p className="note">업종 합계가 상한({Math.round(maxSectorPct * 100)}%)을 넘기면 리스크 게이트가 그 업종의 신규·추가 매수를 거부해요(계좌마다 따로 판정). 헤지 ETF·현금은 상한 대상이 아니에요.</p>
       )}
       {rows.map((r) => (
         <div key={`${r.market}:${r.env}`} className="cols-2">
           <div>
-            <EnvHoldings row={r} />
+            <EnvHoldings row={r} live={quotes[r.market]} />
           </div>
           <div>
             <h3 className="sub-h">
-              {r.market} {ENV_LABEL[r.env]} 섹터 비중{r.data.unmapped.length ? <span className="muted"> · 섹터 미분류 {r.data.unmapped.join(", ")}</span> : null}
+              {r.market} {ENV_LABEL[r.env]} 업종 비중{r.data.unmapped.length ? <span className="muted"> · 업종 미분류 {r.data.unmapped.join(", ")}</span> : null}
             </h3>
             <SectorTable rows={r.data.sectors} market={r.market} maxSectorPct={maxSectorPct} note={false} />
           </div>

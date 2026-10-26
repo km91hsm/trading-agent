@@ -372,3 +372,8 @@
 - [x] 보완 4차 묶음 B(웹·문구): W5 SSE 테이블 지문, W8 `livePlan`, W9 `DetailRow`, W10 `RowButton`, W12 통과·관망·주문 없이 판정·`sideLabel`, T3 해요체·영문 코드 한글화(`regime_change`·`market_view`·`mode_changed`·`ml_trained`, `regime.line`)·단타 `scalp_digest`(`scalp.digest_every_min` 30분, 첫 묶음·중단·마감 즉시, 전송 실패면 재시도) (2026-10-26)
 - [ ] 실기(사용자 확인 대기): 데몬 재부팅·강제 종료 뒤 `state/daemon.lock.os` OS 잠금이 풀려 다음 기동이 되는지(macOS·Windows), Windows 에서 웹이 날짜 파일을 읽는 중 데몬 스냅샷 쓰기가 재시도로 성공하는지
 - [x] 보완 5차 E(L2·L3, 사용자 결정 '재설계', `feat/review-memory-scoring`): 원장 v23 `memory_entries.round`(재평가 별도 엔트리, `UNIQUE(decision_id, round)`)·`held_at_decision`·`direction_score`·`avoided_loss`·`realized_pnl_pct`, 검색·보정 round 0 우선, 트레이더·복기 입력 방향 점수 기준 (2026-10-26)
+
+## 웹 실시간·시계·업종 비중·사용량 (2026-10-26)
+- [x] 상단 1초 시계(KST·뉴욕·장 상태), 도움말 클릭 팝오버, 업종 비중 자동 분류(KIS 업종·ETF 상표, 표시용), 화면 전체 실시간(SSE 지문 확장·키별 재조회), 데몬 잔고 주기 갱신·접속 즉시 갱신(조회만), Claude 사용량 확인 잡(30분)·초기화 시각 표기 (2026-10-26)
+- [ ] 실기(사용자 확인 대기): 데몬을 켠 장중에 대시보드를 열어 둔 채 순자산·현재가가 10초마다, 잔고(현금·수량)가 5분 안에 새로고침 없이 바뀌는지, Claude 사용량 블록의 5시간 창 초기화 시각이 30분 안에 채워지는지(`llm_rate_limits` source=probe)
+- [ ] 결정 대기(사용자): 자동 분류된 보유 종목(업종 표의 '자동')을 `config/sectors.yaml` 에 굳혀 리스크 게이트 업종 상한에도 반영할지

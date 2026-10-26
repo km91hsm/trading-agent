@@ -131,3 +131,38 @@ def test_ask_json_not_counted_in_session_cap(conn):
 def test_fake_mode_is_conservative(conn, monkeypatch):
     monkeypatch.setenv("FAKE_CLAUDE", "1")
     assert _ask(conn, None).go is False
+
+
+def test_probe_usage_records_observation_outside_session_cap(conn, monkeypatch):
+    """사용량 확인: haiku 단발 호출의 rate_limit_event 를 source='probe' 로 남기고, 분석 세션 수에
+    들어가지 않는다. FAKE 면 호출 없음."""
+    seen: dict = {}
+    out = quick.probe_usage(
+        Settings(),
+        conn,
+        runner=_runner("ok", seen=seen),
+        claude_bin=Path("claude"),
+        now=lambda: NOW,
+    )
+    assert out == {"ok": True}
+    assert seen["cmd"][seen["cmd"].index("--model") + 1] == "haiku"
+    row = conn.execute("SELECT source, five_hour_util FROM llm_rate_limits").fetchone()
+    assert row["source"] == "probe" and abs(row["five_hour_util"] - 0.4) < 1e-9
+    assert conn.execute("SELECT agent, status FROM agent_calls").fetchone()[:] == (
+        "usage_probe",
+        "ok",
+    )
+    assert tools.sessions_today(conn, NOW) == 0
+    monkeypatch.setenv("FAKE_CLAUDE", "1")
+    assert quick.probe_usage(Settings(), conn, runner=_runner("ok")) == {"skipped": "FAKE"}
+
+
+def test_probe_usage_failure_is_recorded_not_raised(conn):
+    def boom(cmd, **kw):
+        raise subprocess.TimeoutExpired(cmd, 1)
+
+    out = quick.probe_usage(
+        Settings(), conn, runner=boom, claude_bin=Path("claude"), now=lambda: NOW
+    )
+    assert "error" in out
+    assert conn.execute("SELECT status FROM agent_calls").fetchone()[0] == "error"

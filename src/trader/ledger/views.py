@@ -237,6 +237,7 @@ def account_overview(
     *,
     sector_of: Callable[[str, str], str | None] | None,
     hedge_tickers: Callable[[str], set[str]],
+    sector_resolvers: dict[str, Callable[[str], str | None]] | None = None,
 ) -> dict:
     """전체 계좌 합산(Phase 24). 통화가 달라 시장별로, 가짜 돈과 진짜 돈이라 모의·실전(env)별로만
     더한다(PRODUCT.md 원칙 3) — 보유·비중·섹터의 분모도 환경별 NAV. `markets[시장].envs[env]` 가
@@ -255,7 +256,10 @@ def account_overview(
                 missing.append(a.id)
                 continue
             by_env.setdefault(a.env, []).append((a, snap))
-        smap = (lambda t, _m=m: sector_of(t, _m)) if sector_of else None
+        if sector_resolvers and m in sector_resolvers:  # yaml + 자동 분류 캐시('자동' 꼬리표)
+            smap = sector_resolvers[m]
+        else:
+            smap = (lambda t, _m=m: sector_of(t, _m)) if sector_of else None
         hedge = hedge_tickers(m)
         out["markets"][m] = {
             "envs": {
@@ -280,7 +284,9 @@ def sector_weights(
     cash: str | Decimal | None = None,
 ) -> list[dict]:
     """섹터별 평가금액·비중 (비중 내림차순). 모르는 종목은 '기타', 헤지 ETF 는 '헤지', 현금은
-    '현금' 행으로 합이 NAV 가 되게 한다. nav 가 없거나 0 이면 비중은 None."""
+    '현금' 행으로 합이 NAV 가 되게 한다. nav 가 없거나 0 이면 비중은 None.
+    sector_of 가 `auto_tickers`(자동 분류 캐시로 정해진 종목 집합, `sector_suggest.SectorResolver`)
+    를 가지면 그 종목이 든 행에 `auto: true` 를 붙인다."""
     nav_d = Decimal(str(nav)) if nav not in (None, "") else None
     buckets: dict[str, dict] = {}
     for p in positions:
@@ -295,6 +301,7 @@ def sector_weights(
     if cash not in (None, ""):
         buckets["현금"] = {"sector": "현금", "eval_amount": Decimal(str(cash)), "tickers": []}
     rows = sorted(buckets.values(), key=lambda b: (-b["eval_amount"], b["sector"]))
+    auto = getattr(sector_of, "auto_tickers", None) or set()
     out = []
     for b in rows:
         w = float(b["eval_amount"] / nav_d) if nav_d and nav_d > 0 else None
@@ -305,6 +312,7 @@ def sector_weights(
                 "weight": w,
                 "tickers": b["tickers"],
                 "count": len(b["tickers"]),
+                "auto": any(t in auto for t in b["tickers"]),
             }
         )
     return out

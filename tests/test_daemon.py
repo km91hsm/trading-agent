@@ -1046,3 +1046,81 @@ def test_lock_os_hold_blocks_second_even_if_pidfile_removed(project):
     b = daemon.Lock(p)
     assert b.acquire() is True
     b.release()
+
+
+def test_balance_refresh_only_in_regular_hours_and_classifies_new_holdings(conn, project):
+    """웹 실시간: 정규장인 시장만 잔고를 다시 읽어 스냅샷을 갱신하고(조회만), 섹터 맵에 없는
+    보유 종목은 KIS 업종으로 자동 분류해 캐시한다."""
+    from trader.broker.models import Position
+    from trader.scan import sector_suggest
+
+    closed = datetime(2026, 10, 24, 3, 0, tzinfo=UTC)  # 토요일
+    deps = _deps(conn, FakeMarket(industries={"999990": "IT 서비스"}), now=lambda: closed)
+    assert daemon._balance_body(deps) == {"skipped": "정규장 아님"}
+    open_kr = datetime(2026, 10, 26, 1, 0, tzinfo=UTC)  # 월 10:00 KST
+    deps.now = lambda: open_kr
+    deps.brokers["paper-main"].positions = [
+        Position(
+            ticker="999990",
+            market="KR",
+            qty=3,
+            avg_price=Decimal("1000"),
+            current_price=Decimal("1100"),
+            eval_amount=Decimal("3300"),
+            pnl_pct=10.0,
+        )
+    ]
+    out = daemon._balance_body(deps)
+    assert out["KR"]["refreshed"] == ["paper-main"] and not deps.brokers["paper-main"].orders
+    n = conn.execute("SELECT COUNT(*) FROM positions_snapshot WHERE ticker='999990'").fetchone()[0]
+    assert n == 1
+    auto = sector_suggest.load_auto(deps.state).get("KR", {})
+    assert "999990" in auto
+    assert any(
+        j.id == "balance_refresh" for j in daemon.build_jobs(SCHED, Settings(), markets=["KR"])
+    )
+
+
+def test_usage_probe_job_skips_when_recent_observation(conn, monkeypatch):
+    from trader.orchestrator import quick
+
+    now = datetime(2026, 10, 26, 3, 0, tzinfo=UTC)
+    from trader.config import LlmSettings
+
+    deps = _deps(conn, FakeMarket(), now=lambda: now)
+    deps.settings = Settings(llm=LlmSettings(usage_file=None))  # 이 PC 의 상태줄 파일에 기대지 않게
+    called = []
+    monkeypatch.setattr(quick, "probe_usage", lambda *a, **kw: called.append(1) or {"ok": True})
+    assert daemon._usage_probe_body(deps) == {"ok": True} and called == [1]
+    conn.execute(
+        "INSERT INTO llm_rate_limits(observed_at, source, five_hour_util, raw_json) "
+        "VALUES (?, 'session', 0.2, '{}')",
+        ((now - timedelta(minutes=2)).isoformat(),),
+    )
+    conn.commit()
+    assert "최근 관측" in daemon._usage_probe_body(deps)["skipped"] and called == [1]
+    jobs = {j.id: j for j in daemon.build_jobs(SCHED, Settings(), markets=["KR"])}
+    assert jobs["usage_probe"].interval_s == 30 * 60
+
+
+def test_usage_probe_skips_when_statusline_file_is_recent(conn, monkeypatch, tmp_path):
+    """원장 관측이 없어도 대화형 상태줄 파일이 방금 갱신됐으면 확인 호출을 하지 않는다."""
+    import json as _json
+
+    import pytest
+
+    from trader.config import LlmSettings
+    from trader.orchestrator import quick
+
+    now = datetime(2026, 10, 26, 3, 0, tzinfo=UTC)
+    f = tmp_path / "rate_limits.json"
+    f.write_text(
+        _json.dumps(
+            {"at": int(now.timestamp()) - 60, "rate_limits": {"five_hour": {"used_percentage": 10}}}
+        ),
+        encoding="utf-8",
+    )
+    deps = _deps(conn, FakeMarket(), now=lambda: now)
+    deps.settings = Settings(llm=LlmSettings(usage_file=str(f)))
+    monkeypatch.setattr(quick, "probe_usage", lambda *a, **kw: pytest.fail("호출하면 안 됨"))
+    assert "최근 관측" in daemon._usage_probe_body(deps)["skipped"]

@@ -15,7 +15,8 @@ import { Glyph } from "../components/Glyph";
 import { Section } from "../components/Section";
 import { Skeleton } from "../components/Skeleton";
 import { ErrorBox } from "../components/Tables";
-import { useApp, useLoad, useNameSearch } from "../hooks";
+import { useApp, useLoad, useNameSearch, useNow } from "../hooks";
+import { marketPhase } from "../tape";
 import { parseChartQuery } from "../nav";
 import { labelOf } from "../names";
 import type { ChartData, ChartInterval, Market } from "../types";
@@ -51,6 +52,10 @@ export function ChartPage() {
   const [showSma, setShowSma] = useState(true);
   const box = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
+  // 분봉은 정규장 동안 1분마다 새로고침 없이 다시 받는다(일봉은 조회 버튼으로)
+  const clock = useNow(60_000);
+  const ph = marketPhase(clock);
+  const liveMinute = q.interval === "1m" && (q.market === "US" ? ph.us : ph.kr) === "open" ? Math.floor(clock.getTime() / 60_000) : 0;
   const data = useLoad(() => {
     const minute = q.interval === "1m";
     const params: Record<string, string> = { ticker: q.ticker, market: q.market };
@@ -59,7 +64,7 @@ export function ChartPage() {
     if (q.market === "US") params.exchange = q.exchange;
     if (q.accountId) params.account_id = q.accountId;
     return getJson<ChartData>(minute ? "/api/charts/minute" : "/api/charts", params);
-  }, [q]); // 원장 이벤트(tick)마다 KIS 시세를 다시 받지 않는다. 조회 버튼으로만 갱신(분봉은 서버 60초 캐시).
+  }, [q, liveMinute]); // 원장 이벤트(tick)마다 KIS 시세를 다시 받지 않는다. 분봉만 장중 1분(서버 60초 캐시).
 
   useEffect(() => {
     if (!box.current || !data.data) return;

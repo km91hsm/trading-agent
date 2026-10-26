@@ -56,7 +56,7 @@ export function OrdersPage() {
   const pending = approvalRows.filter((a) => a.status === "pending");
   const realIds = accounts.filter((a) => a.env === "real").map((a) => a.id);
   const [traceId, setTraceId] = useState<number | null>(null);
-  const trace = useLoad(() => (traceId ? getJson<TraceResp>(`/api/decisions/${traceId}/trace`) : null), [traceId]);
+  const trace = useLoad(() => (traceId ? getJson<TraceResp>(`/api/decisions/${traceId}/trace`) : null), [traceId, tick]);
   const warn = unknownLine(orders.data ?? []);
 
   if (!accountId)

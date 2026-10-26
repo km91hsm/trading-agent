@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mergeAccountRows, mergeHoldings, missingText, overviewRows, partialText, planCell, planCells } from "./overview";
+import { liveSummary, mergeAccountRows, mergeHoldings, missingText, overviewRows, partialText, planCell, planCells } from "./overview";
 import type { Overview, OverviewEnv } from "./types";
 
 const env = (nav: string, accounts: string[]): OverviewEnv => ({
@@ -70,5 +70,30 @@ describe("mergeAccountRows", () => {
 
   it("모든 계좌가 실패하면 오류를 던진다(빈 원장으로 보이지 않게)", async () => {
     await expect(mergeAccountRows(["a"], () => Promise.reject(new Error("HTTP 500")))).rejects.toThrow("HTTP 500");
+  });
+});
+
+
+describe("liveSummary", () => {
+  const e = {
+    nav: "1000000",
+    cash: "500000",
+    pnl: "0",
+    pnl_pct: 0,
+    positions: [{ ticker: "005930", qty: 10, avg_price: "50000", current_price: "50000", eval_amount: "500000" }],
+    sectors: [],
+    unmapped: [],
+    accounts: [],
+  } as unknown as Parameters<typeof liveSummary>[0];
+  it("실시간 시세로 순자산·평가손익·손익률이 움직인다", () => {
+    const s = liveSummary(e, "KR", { "005930": { price: "55000", change_pct: 1, asof: "", stale: false } });
+    expect(s.live).toBe(true);
+    expect(s.nav).toContain("1,050,000");
+    expect(s.pnl).toContain("50,000");
+    expect(s.pnlPct).toBeCloseTo(0.1);
+  });
+  it("실시간 값이 없거나 stale 이면 서버 값 그대로", () => {
+    expect(liveSummary(e, "KR", null).live).toBe(false);
+    expect(liveSummary(e, "KR", { "005930": { price: "55000", change_pct: 1, asof: "", stale: true } }).nav).toContain("1,000,000");
   });
 });

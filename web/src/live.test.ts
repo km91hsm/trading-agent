@@ -65,7 +65,32 @@ describe("폴링 주기·표기", () => {
     expect(nextDelay({ session: "open", asof: "", quotes: {} })).toBe(LIVE_INTERVAL_MS);
     expect(nextDelay({ session: "closed", asof: "", quotes: {} })).toBe(CLOSED_RECHECK_MS);
     expect(nextDelay(null)).toBe(CLOSED_RECHECK_MS);
-    expect(liveLabel({ session: "closed", asof: "", quotes: {} }, 0)).toBe("장 마감 · 스냅샷 값");
+    expect(liveLabel({ session: "closed", asof: "", quotes: {} }, 0)).toBe("장 밖 · 마지막 잔고 기준");
     expect(liveLabel({ session: "open", asof: "", quotes: {} }, 2)).toBe("실시간 2종목 · 10초마다");
+  });
+});
+
+import { bumpsGlobalTick } from "./hooks";
+
+describe("bumpsGlobalTick", () => {
+  it("체크포인트·하트비트만 바뀌면 전역 재조회를 하지 않는다", () => {
+    expect(bumpsGlobalTick(["checkpoints"], false)).toBe(false);
+    expect(bumpsGlobalTick(["daemon", "checkpoints"], false)).toBe(false);
+    expect(bumpsGlobalTick(["positions"], false)).toBe(true);
+    expect(bumpsGlobalTick([], true)).toBe(true);
+  });
+});
+
+import { chunk, mergeQuotes } from "./hooks";
+
+describe("시세 나눠 받기", () => {
+  it("20개씩 나누고 응답을 합친다(하나라도 열렸으면 open)", () => {
+    expect(chunk(Array.from({ length: 45 }, (_, i) => i), 20).map((c) => c.length)).toEqual([20, 20, 5]);
+    const m = mergeQuotes([
+      { session: "closed", asof: "a", quotes: { A: { price: "1", change_pct: null, asof: "", stale: true } } },
+      { session: "open", asof: "b", quotes: { B: { price: "2", change_pct: 1, asof: "", stale: false } } },
+    ]);
+    expect(m.session).toBe("open");
+    expect(Object.keys(m.quotes).sort()).toEqual(["A", "B"]);
   });
 });

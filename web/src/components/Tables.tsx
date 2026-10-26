@@ -279,7 +279,7 @@ export function RiskChecksTable({ rows }: { rows: RiskCheck[] }) {
           <Th>판정</Th>
           <Th num>수량</Th>
           <Th>
-            사유 (<Term k="stance">전부 기록</Term>)
+            <Term k="reason" />
           </Th>
         </tr>
       </thead>

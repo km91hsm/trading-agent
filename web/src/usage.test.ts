@@ -44,3 +44,31 @@ describe("관측 출처·감속 문구 (Phase 24)", () => {
     expect(throttleText({ enabled: true, soft_pct: 0.8, hard_pct: 0.95, state: "ok", reason: null })).toBe("");
   });
 });
+
+import { ageSince, resetLine } from "./usage";
+
+describe("resetLine·ageSince", () => {
+  const now = new Date("2026-10-23T03:00:00Z"); // 12:00 KST
+  it("초기화 시각을 KST 절대 시각 + 남은 시간으로, 지나도 사라지지 않는다", () => {
+    expect(resetLine("2026-10-23T05:10:00Z", now)).toBe("14:10 초기화 · 2시간 10분 남음");
+    expect(resetLine("2026-10-23T03:30:00Z", now)).toBe("12:30 초기화 · 30분 남음");
+    expect(resetLine("2026-10-25T00:00:00Z", now)).toBe("10.25 09:00 초기화 · 45시간 0분 남음");
+    expect(resetLine("2026-10-27T03:00:00Z", now)).toBe("10.27 12:00 초기화 · 4일 남음");
+    expect(resetLine("2026-10-23T02:00:00Z", now)).toBe("11:00 초기화됨 · 다음 확인 때 새 창");
+    expect(resetLine(null, now)).toBeNull();
+  });
+  it("관측 경과는 클라이언트 시계 기준", () => {
+    expect(ageSince("2026-10-23T02:55:00Z", now)).toBe(300);
+    expect(ageSince(null, now)).toBeNull();
+  });
+});
+
+import { usageChip } from "./usage";
+
+describe("usageChip", () => {
+  it("관측 없는 창은 0% 대신 —", () => {
+    const base = { observed_at: null, age_s: null, spend_limit: null };
+    expect(usageChip({ ...base, five_hour: null, seven_day: { used_pct: 54, resets_at: null } })).toBe("5h — · 7d 54%");
+    expect(usageChip({ ...base, five_hour: { used_pct: 12.4, resets_at: null }, seven_day: null })).toBe("5h 12% · 7d —");
+  });
+});

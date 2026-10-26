@@ -80,6 +80,10 @@ llm:
     max_age_h: 6         # 이보다 오래된 관측은 무시(고정 상한만)
   market_session_cap: 2  # 시장 세션(거시·토론·전략가) 하루 상한. 큐로 다시 눌러도 이 수를 넘지 않는다
   usage_file: ~/.claude/rate_limits.json  # 대화형 claude 상태줄이 남기는 구독 사용률 관측 파일 (웹 대시보드)
+  usage_probe:           # 데몬이 주기적으로 haiku 단발 호출 1회로 사용률·초기화 시각 확인(웹 사용량 블록 실시간)
+    enabled: true
+    interval_min: 30     # 확인 주기
+    skip_if_recent_min: 5  # 최근 이 시간 안에 세션 관측이 있으면 건너뜀
 
 web:
   bind: 127.0.0.1

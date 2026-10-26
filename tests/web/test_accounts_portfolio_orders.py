@@ -110,3 +110,41 @@ def test_refresh_snapshots_under_market_run_date(project, conn):
     r = c.post("/api/portfolio/refresh?account_id=paper-main&market=US", headers=AUTH)
     assert r.status_code == 200, r.text
     assert r.json()["date"] == "2026-10-09"
+
+
+def test_ensure_fresh_refreshes_stale_snapshot_once_and_throttles(client, deps, conn):
+    """페이지 접속 갱신(토큰 없음): 정규장일 때만, 오래된 스냅샷만, 시장별 30초에 한 번(조회만)."""
+    from datetime import UTC, datetime
+
+    from trader.web.routers import portfolio as pf
+
+    pf._ENSURE_LAST.clear()
+    deps.now = lambda: datetime(2026, 10, 24, 3, 0, tzinfo=UTC)  # 토요일
+    assert client.post("/api/portfolio/ensure-fresh?market=KR").json()["skipped"] == "정규장 아님"
+    deps.now = lambda: datetime(2026, 10, 26, 1, 0, tzinfo=UTC)  # 월 10:00 KST
+    r = client.post("/api/portfolio/ensure-fresh?market=KR").json()
+    assert "paper-main" in r["refreshed"]
+    assert all(not b.orders for b in deps.brokers.values())  # 주문 없음
+    assert client.post("/api/portfolio/ensure-fresh?market=KR").json()["throttled"] is True
+    pf._ENSURE_LAST.clear()
+    r = client.post("/api/portfolio/ensure-fresh?market=KR").json()
+    assert "paper-main" in r["skipped"]  # 방금 갱신해 신선함
+    assert client.post("/api/portfolio/ensure-fresh?market=XX").status_code == 400
+
+
+def test_balance_refresh_skips_when_same_market_already_running(deps, conn):
+    """데몬 잡과 웹 접속 갱신이 같은 시장 잔고를 겹쳐 읽지 않는다(Codex 리뷰)."""
+    from datetime import UTC, datetime
+
+    from trader.orchestrator import balance
+
+    lock = balance._RUNNING["KR"]
+    lock.acquire()
+    try:
+        out = balance.refresh(
+            conn, accounts=deps.accounts, brokers=deps.brokers, market="KR",
+            settings=deps.settings, now=datetime(2026, 10, 26, 1, 0, tzinfo=UTC),
+        )
+    finally:
+        lock.release()
+    assert out["busy"] is True and out["refreshed"] == []

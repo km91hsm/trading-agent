@@ -311,6 +311,18 @@ class UsageThrottle(BaseModel):
     max_age_h: float = Field(6.0, gt=0)
 
 
+class UsageProbe(BaseModel):
+    """구독 사용률 확인(웹 실시간): 데몬이 interval_min 마다 haiku 단발 `claude -p` 1회로 5시간·7일
+    사용률과 초기화 시각을 관측한다. 최근 skip_if_recent_min 안에 다른 관측(세션)이 있으면 건너뛰고,
+    사용률이 감속 hard 이상이면 확인도 쉰다(사용량을 더 쓰지 않게)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    interval_min: int = Field(30, ge=5, le=360)
+    skip_if_recent_min: int = Field(5, ge=0, le=120)
+
+
 class LlmSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -323,6 +335,7 @@ class LlmSettings(BaseModel):
     market_session_cap: int = 2  # 하루 시장 세션(kind=market) 상한 (종목 분석 예산 보호)
     # 대화형 Claude Code 상태줄이 남기는 구독 사용률 관측 파일 (usage.py). 비우면 표시 안 함
     usage_file: str | None = "~/.claude/rate_limits.json"
+    usage_probe: UsageProbe = Field(default_factory=UsageProbe)
 
 
 class WebSettings(BaseModel):

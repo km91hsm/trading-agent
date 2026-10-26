@@ -1,10 +1,10 @@
 // 장중 실시간 시세 (Phase 24 단계 2): 보이는 종목만 /api/quotes 로 짧은 주기 조회 → 표의 현재가·평가·NAV 갱신.
 // 서버가 종목별 5초 캐시 + KIS 레이트리미터 안에서 부르므로 탭이 여럿이어도 KIS 호출은 늘지 않는다.
-// 장 밖(session: closed)이면 5분마다 세션만 다시 확인한다. 가려진 탭은 쉰다.
+// 장 밖(session: closed)이면 1분마다 세션만 다시 확인한다. 가려진 탭은 쉰다.
 import type { Position, PositionPlan } from "./types";
 
 export const LIVE_INTERVAL_MS = 10_000;
-export const CLOSED_RECHECK_MS = 300_000;
+export const CLOSED_RECHECK_MS = 60_000; // 장 밖: 1분마다 개장 여부만 확인(개장 순간을 빨리 잡는다)
 
 export type LiveQuote = { price: string; change_pct: number | null; asof: string; stale: boolean };
 export type QuotesResp = { session: "open" | "closed"; asof: string; quotes: Record<string, LiveQuote> };
@@ -60,7 +60,7 @@ export function applyQuotes(
   return { positions: out, nav: base === null ? null : base + (evalSum - snapEval), pnl: evalSum - cost, liveCount };
 }
 
-/** 다음 폴링까지 대기: 장중 10초, 장 밖 5분. */
+/** 다음 폴링까지 대기: 장중 10초, 장 밖 1분. */
 export function nextDelay(resp: QuotesResp | null): number {
   return resp?.session === "open" ? LIVE_INTERVAL_MS : CLOSED_RECHECK_MS;
 }
@@ -68,6 +68,6 @@ export function nextDelay(resp: QuotesResp | null): number {
 /** 표 머리에 붙일 짧은 표기. */
 export function liveLabel(resp: QuotesResp | null, liveCount: number): string {
   if (!resp) return "";
-  if (resp.session === "closed") return "장 마감 · 스냅샷 값";
+  if (resp.session === "closed") return "장 밖 · 마지막 잔고 기준";
   return liveCount ? `실시간 ${liveCount}종목 · 10초마다` : "실시간 대기";
 }

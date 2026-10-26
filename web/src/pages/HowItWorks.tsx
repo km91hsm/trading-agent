@@ -6,7 +6,7 @@ import { Table, Td, Th } from "../components/Table";
 import { HOW, type HowSection } from "../how";
 import { Link } from "react-router-dom";
 import { recentFeatures } from "../nav";
-import { useLoad } from "../hooks";
+import { useApp, useLoad } from "../hooks";
 import { jobLabel, scheduleText, type DaemonStatus } from "../jobs";
 import type { SystemSettings } from "../types";
 
@@ -27,8 +27,9 @@ function Steps({ s, models }: { s: HowSection; models: Record<string, string> })
 }
 
 export function HowItWorksPage() {
-  const settings = useLoad(() => getJson<SystemSettings>("/api/system/settings"), []);
-  const daemon = useLoad(() => getJson<DaemonStatus>("/api/system/daemon"), []);
+  const { tick } = useApp();
+  const settings = useLoad(() => getJson<SystemSettings>("/api/system/settings"), [tick]);
+  const daemon = useLoad(() => getJson<DaemonStatus>("/api/system/daemon"), [tick]);
   const models = settings.data?.models ?? {};
   const risk = settings.data?.risk ?? {};
   const pct = (k: string) => (typeof risk[k] === "number" ? `${Math.round((risk[k] as number) * 100)}%` : "—");

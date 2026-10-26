@@ -76,10 +76,16 @@ describe("Badge / EmptyState / Glyph / Term", () => {
     expect(out).toContain("<title>상승</title>");
     expect(html(<Glyph name="menu" />)).toContain('aria-hidden="true"');
   });
-  it("Term 은 라벨과 설명(title)을 단다", () => {
+  it("Term 은 눌러서 설명을 여는 버튼이다(abbr title 만으로는 클릭·터치가 안 됐다)", () => {
     const out = html(<Term k="stop_loss" />);
     expect(out).toContain("손절선");
-    expect(out).toContain("title=");
+    expect(out).toContain('<button type="button" class="term" aria-expanded="false"');
+    expect(out).not.toContain("<abbr");
+  });
+  it("설명이 없는 키는 버튼 없이 일반 글자", () => {
+    const out = html(<Term k="no.such.key">글자</Term>);
+    expect(out).toContain('class="term-plain"');
+    expect(out).not.toContain("<button");
   });
 });
 
@@ -117,7 +123,7 @@ describe("Shell", () => {
     html(
       <AppContext.Provider value={fakeState(over)}>
         <MemoryRouter>
-          <Shell now={new Date("2026-10-23T13:41:00+09:00")}>
+          <Shell>
             <p>본문</p>
           </Shell>
         </MemoryRouter>
@@ -127,12 +133,15 @@ describe("Shell", () => {
     expect(render({ accountId: "real-main" })).toContain('class="shell" data-env="real"');
     expect(render()).toContain('class="shell" data-env="paper"');
   });
-  it("미승인·일시정지 배지와 조회 전용 배지, 장 상태를 보여 준다", () => {
+  it("미승인·일시정지 배지와 조회 전용 배지, 상단 시계(KST·뉴욕·장 상태)를 보여 준다", () => {
     const out = render();
     expect(out).toContain("미승인 2");
     expect(out).toContain("일시정지");
     expect(out).toContain("조회 전용");
-    expect(out).toContain("KR 정규장 · US 개장 전");
+    expect(out).toContain('class="clock"');
+    expect(out).toContain("KST");
+    expect(out).toContain("뉴욕");
+    expect(out).toMatch(/KR (정규장|마감|개장 전|휴장) · US/);
     expect(out).toContain("본문");
   });
   it("계좌 선택기에 '전체' 합산 옵션이 있고 기본 선택이 될 수 있다", () => {
@@ -251,7 +260,7 @@ describe("섹터 비중 표", () => {
     expect(out).toContain("var(--ink-3)"); // 현금은 상한 대상 아님
   });
   it("비어 있으면 빈 상태", () => {
-    expect(html(<SectorTable market="KR" maxSectorPct={0.4} rows={[]} />)).toContain("섹터 비중이 없어요");
+    expect(html(<SectorTable market="KR" maxSectorPct={0.4} rows={[]} />)).toContain("업종 비중이 없어요");
   });
 });
 
@@ -261,5 +270,19 @@ describe("driftCell (Phase 25)", () => {
     expect(driftCell(6.24)).toEqual({ text: "+6.2%p", over: true });
     expect(driftCell(-3)).toEqual({ text: "-3.0%p", over: false });
     expect(driftCell(null)).toEqual({ text: "—", over: false });
+  });
+});
+
+describe("업종 비중 '자동' 꼬리표", () => {
+  it("자동 분류 행에 꼬리표와 게이트 안내", () => {
+    const out = html(
+      <SectorTable
+        market="KR"
+        maxSectorPct={0.4}
+        rows={[{ sector: "ETF", eval_amount: "8500000", weight: 0.85, tickers: ["357870"], count: 1, auto: true }]}
+      />,
+    );
+    expect(out).toContain('class="auto-tag"');
+    expect(out).toContain("config/sectors.yaml");
   });
 });

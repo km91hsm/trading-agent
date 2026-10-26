@@ -1,12 +1,12 @@
 // 앱 셸: 상단 바(브랜드·계좌·장 상태·상태 배지·테마) + 좌측 내비(좁으면 서랍) + 본문.
-import { useMemo, useState, type ReactNode } from "react";
-import { NavLink, useLocation } from "react-router-dom";
+import { useState, type ReactNode } from "react";
+import { NavLink } from "react-router-dom";
 import { useApp } from "../hooks";
-import { marketPhase } from "../tape";
 import type { Theme } from "../theme";
 import { MOBILE_TABS, NAV } from "../nav";
 import { ALL_ACCOUNTS } from "../overview";
 import { Badge } from "./Badge";
+import { Clock } from "./Clock";
 import { CommandPalette } from "./CommandPalette";
 import { Glyph, type GlyphName } from "./Glyph";
 
@@ -14,13 +14,9 @@ const THEME_NEXT: Record<Theme, Theme> = { light: "dark", dark: "system", system
 const THEME_GLYPH: Record<Theme, GlyphName> = { light: "sun", dark: "moon", system: "system" };
 const THEME_LABEL: Record<Theme, string> = { light: "라이트", dark: "다크", system: "시스템" };
 
-export function Shell({ children, now }: { children: ReactNode; now?: Date }) {
+export function Shell({ children }: { children: ReactNode }) {
   const { accounts, accountId, selection, setAccountId, token, events, connected, theme, setTheme } = useApp();
   const [open, setOpen] = useState(false);
-  const loc = useLocation();
-  // 경로가 바뀔 때마다 장 상태를 다시 계산한다 (초 단위 갱신은 필요 없다)
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  const phase = useMemo(() => marketPhase(now ?? new Date()), [now, loc.pathname]);
   const acct = accounts.find((a) => a.id === accountId);
   // '전체'(기본)에서 실전 계좌가 섞여 있으면 실전 표식을 유지한다 — 모의처럼 보이지 않게(전체 검토 W6)
   const hasReal = accounts.some((a) => a.env === "real");
@@ -55,7 +51,7 @@ export function Shell({ children, now }: { children: ReactNode; now?: Date }) {
           </select>
           {acct ? <Badge kind="env" value={acct.env} /> : hasReal ? <Badge kind="env" value="real" title="전체 합산에 실전 계좌가 들어 있어요" /> : null}
         </label>
-        <span className="phase muted">{phase.label}</span>
+        <Clock />
         <span className="spacer" />
         <div className="status-badges">
           {!connected && <Badge kind="pending" value="실시간 끊김" title="서버와의 실시간 연결(SSE)이 끊겨 재연결 중 — 1분마다 서버 생존을 확인해 표를 다시 읽어요" />}

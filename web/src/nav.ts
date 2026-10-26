@@ -11,7 +11,7 @@ export const NAV: NavGroup[] = [
       { to: "/", label: "대시보드", purpose: "오늘의 시세표·점검·잡·사용량", key: "d" },
       { to: "/today", label: "오늘의 실행", purpose: "스캔·장중 발굴·단타·종목별 단계 파일", key: "t" },
       { to: "/orders", label: "주문/승인", purpose: "승인 대기·주문·판정·결정 추적", key: "o" },
-      { to: "/account", label: "계좌", purpose: "보유·섹터·주문·승인", key: "a" },
+      { to: "/account", label: "계좌", purpose: "보유·업종·주문·승인", key: "a" },
       { to: "/compare", label: "계좌 비교", purpose: "모의·실전 나란히" },
     ],
   },

@@ -1,5 +1,6 @@
 // 전체 계좌 합산(/api/portfolio/overview)과 보유 행 계획 열 — 행 변환 순수 함수 (Phase 24).
 import { fmtMoney } from "./format";
+import { applyQuotes, type LiveQuote } from "./live";
 import type { Market, Overview, OverviewEnv, Position, PositionPlan } from "./types";
 
 export const ALL_ACCOUNTS = "all";
@@ -125,4 +126,19 @@ export async function mergeAccountRows<T extends { id: number }>(
 /** 일부 계좌만 실패했을 때 보일 문구. 없으면 null. */
 export function partialText(failed: string[], what: string): string | null {
   return failed.length ? `${failed.join(", ")} 계좌의 ${what}을 읽지 못해 합계에서 빠졌어요` : null;
+}
+
+
+export type LiveSummary = { nav: string; pnl: string; pnlPct: number | null; live: boolean };
+
+/** 시장·환경 합산 행에 실시간 시세를 입힌다(새로고침 없이 순자산·평가손익이 움직이게). NAV 는 브로커
+ * 총평가에 평가 변화분만 더하고(`applyQuotes`), 평가손익은 수량 × (현재가 − 평단) 합, 손익률은 원가 대비.
+ * 실시간 값이 하나도 없으면 서버 값 그대로(`live: false`). */
+export function liveSummary(e: OverviewEnv, market: Market, quotes: Record<string, LiveQuote> | null | undefined): LiveSummary {
+  const a = applyQuotes(e.positions, quotes, e.nav);
+  if (!a.liveCount || a.nav === null) {
+    return { nav: fmtMoney(e.nav, market), pnl: fmtMoney(e.pnl, market), pnlPct: e.pnl_pct, live: false };
+  }
+  const cost = e.positions.reduce((s, p) => s + Number(p.avg_price ?? 0) * p.qty, 0);
+  return { nav: fmtMoney(a.nav, market), pnl: fmtMoney(a.pnl, market), pnlPct: cost ? a.pnl / cost : null, live: true };
 }

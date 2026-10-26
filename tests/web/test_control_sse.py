@@ -212,11 +212,12 @@ def test_sse_snapshot_excludes_agent_calls_and_stream_reuses_connection(deps, mo
     deps.conn_factory = counting
     tick = {"n": 0}
 
-    def changing(conn):
+    def changing(conn, *a):
         tick["n"] += 1
         return {"tick": tick["n"]}
 
     monkeypatch.setattr(sse, "snapshot", changing)
+    monkeypatch.setattr(sse, "SHARED_TTL_S", 0)
 
     async def run():
         return [e async for e in sse.stream(deps, interval_s=0, max_events=3)]
@@ -294,8 +295,10 @@ def test_sse_snapshot_detects_status_changes_without_new_rows(conn):
     conn.commit()
     s1 = sse.snapshot(conn)
     assert s1["orders"] != s0["orders"]
-    conn.execute("INSERT INTO fills (order_id, account_id, qty, price, filled_at)"
-                 " VALUES (1,'paper-main',1,'100','t')")
+    conn.execute(
+        "INSERT INTO fills (order_id, account_id, qty, price, filled_at)"
+        " VALUES (1,'paper-main',1,'100','t')"
+    )
     conn.commit()
     s2 = sse.snapshot(conn)
     assert s2["orders"] != s1["orders"]  # 체결 적재도 주문 표 재조회 대상
@@ -304,3 +307,87 @@ def test_sse_snapshot_detects_status_changes_without_new_rows(conn):
     s3 = sse.snapshot(conn)
     assert s3["approvals"] != s2["approvals"] and s3["approvals_pending"] == 0
     assert sse.snapshot(conn) == s3  # 바뀐 게 없으면 같은 지문
+
+
+def test_sse_snapshot_covers_live_screens(conn, project):
+    """새로고침 없이 실시간: 잔고 스냅샷·사용률 관측·control 플래그·뉴스·데몬 하트비트·오늘
+    체크포인트가 바뀌면 지문이 바뀐다(키별로 그 블록만 다시 읽는다)."""
+    from datetime import UTC, datetime
+
+    from trader.web import sse
+
+    state = project / "state"
+    now = datetime(2026, 10, 26, 3, 0, tzinfo=UTC)
+    s0 = sse.snapshot(conn, state, now)
+    for k in (
+        "positions",
+        "usage",
+        "control",
+        "news",
+        "theme",
+        "market_views",
+        "shadow",
+        "memory",
+        "daemon",
+        "checkpoints",
+    ):
+        assert k in s0, k
+    repo.snapshot_positions(
+        conn,
+        account_id="paper-main",
+        d=date(2026, 10, 26),
+        market="KR",
+        nav=Decimal(100),
+        cash=Decimal(100),
+        positions=[],
+    )
+    s1 = sse.snapshot(conn, state, now)
+    assert s1["positions"] != s0["positions"]
+    # 같은 날·같은 종목을 다시 읽어 금액만 바뀌어도(UPDATE) 지문이 바뀐다(Codex 리뷰)
+    import time as _t
+
+    _t.sleep(0.002)
+    repo.snapshot_positions(
+        conn, account_id="paper-main", d=date(2026, 10, 26), market="KR",
+        nav=Decimal(101), cash=Decimal(101), positions=[],
+    )
+    s1b = sse.snapshot(conn, state, now)
+    assert s1b["positions"] != s1["positions"]
+    s1 = s1b
+    conn.execute(
+        "INSERT INTO llm_rate_limits(observed_at, source, raw_json) VALUES ('x', 'probe', '{}')"
+    )
+    conn.commit()
+    s2 = sse.snapshot(conn, state, now)
+    assert s2["usage"] != s1["usage"]
+    control.set_flag(conn, "regime:KR", {"state": "bear"})
+    s3 = sse.snapshot(conn, state, now)
+    assert s3["control"] != s2["control"]
+    control.set_flag(conn, "telegram_offset", 99)  # 폴링마다 바뀌는 키는 지문에서 뺀다
+    assert sse.snapshot(conn, state, now)["control"] == s3["control"]
+    d = state / "runs" / "2026-10-26" / "KR" / "005930"
+    d.mkdir(parents=True)
+    import os
+
+    os.utime(d, (2_000_000_000, 2_000_000_000))
+    assert sse.snapshot(conn, state, now)["checkpoints"] != s3["checkpoints"]
+
+
+def test_shared_snapshot_computes_once_for_many_connections(conn, monkeypatch):
+    """탭·연결이 여럿이어도 TTL 안에서는 지문을 한 번만 계산한다(Codex 리뷰: 연결 수 비례 비용)."""
+    from trader.web import sse
+
+    n = {"k": 0}
+
+    def counting(c, *a):
+        n["k"] += 1
+        return {"x": n["k"]}
+
+    monkeypatch.setattr(sse, "snapshot", counting)
+    monkeypatch.setattr(sse, "_SHARED", {"at": 0.0, "key": None, "snap": None})
+    a = sse.shared_snapshot(conn, None)
+    b = sse.shared_snapshot(conn, None)
+    assert a == b and n["k"] == 1
+    monkeypatch.setattr(sse, "SHARED_TTL_S", 0)
+    sse.shared_snapshot(conn, None)
+    assert n["k"] == 2

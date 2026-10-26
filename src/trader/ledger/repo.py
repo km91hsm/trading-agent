@@ -890,7 +890,9 @@ def snapshot_positions(
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(account_id, date, ticker) DO UPDATE SET qty=excluded.qty, "
             "avg_price=excluded.avg_price, current_price=excluded.current_price, "
-            "eval_amount=excluded.eval_amount, nav=excluded.nav, cash=excluded.cash",
+            # created_at = 마지막 관측 시각(같은 날 다시 읽으면 갱신 — 웹 실시간 지문·신선도)
+            "eval_amount=excluded.eval_amount, nav=excluded.nav, cash=excluded.cash, "
+            "created_at=excluded.created_at",
             (
                 account_id,
                 d.isoformat(),
