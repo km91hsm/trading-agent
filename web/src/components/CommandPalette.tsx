@@ -2,7 +2,7 @@
 // 'g' 뒤 한 키(d t o a c p h s)로도 이동한다(입력창에 포커스가 있으면 무시).
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { useApp } from "../hooks";
+import { useApp, useNameSearch } from "../hooks";
 import { chordTarget, paletteItems } from "../nav";
 
 function isTyping(e: KeyboardEvent): boolean {
@@ -18,7 +18,8 @@ export function CommandPalette() {
   const [idx, setIdx] = useState(0);
   const ref = useRef<HTMLDialogElement>(null);
   const chord = useRef<number | null>(null);
-  const items = paletteItems(q, names);
+  const hits = useNameSearch(open ? q : "");
+  const items = paletteItems(q, names, hits);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {

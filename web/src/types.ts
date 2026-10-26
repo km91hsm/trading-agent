@@ -44,10 +44,8 @@ export type PositionPlan = {
   dist_limit_pct: number | null;
 };
 
-export type OverviewEnv = { nav: string; cash: string; pnl: string; pnl_pct: number | null; accounts: string[] };
-
-export type OverviewMarket = {
-  by_env: Partial<Record<"paper" | "real", OverviewEnv>>;
+/** 한 시장·한 환경(모의|실전)의 합산 — 보유 비중·섹터의 분모도 이 환경 NAV (Phase 24). */
+export type OverviewEnv = {
   nav: string;
   cash: string;
   pnl: string;
@@ -58,10 +56,13 @@ export type OverviewMarket = {
   accounts: Array<{ id: string; env: string; nav: string; cash: string; snapshot_date: string }>;
 };
 
+export type OverviewMarket = { envs: Partial<Record<"paper" | "real", OverviewEnv>> };
+
 export type Overview = {
   markets: Partial<Record<Market, OverviewMarket>>;
   accounts_missing_snapshot: Partial<Record<Market, string[]>>;
   pending_approvals: number;
+  configured: number;
 };
 
 export type Snapshot = { date: string; nav: string; cash: string; positions: Position[] } | null;

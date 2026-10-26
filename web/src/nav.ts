@@ -67,8 +67,18 @@ export type PaletteItem = { kind: "page" | "ticker"; label: string; hint: string
 const KR_CODE = /^\d{6}$/;
 const US_SYMBOL = /^[A-Z]{1,5}$/;
 
-/** 팔레트 후보: 화면(라벨·목적 부분 일치) + 종목 코드(6자리 숫자·1~5자 대문자) → 차트. 이동 전용. */
-export function paletteItems(query: string, names: Record<string, string> = {}): PaletteItem[] {
+/** /api/names/search 결과 한 줄 (Phase 24). */
+export type SearchHit = { market: string; ticker: string; name: string | null; exchange: string | null; source: string };
+
+const SOURCE_HINT: Record<string, string> = { held: "보유", watch: "관심", universe: "유니버스", ledger: "", listed: "" };
+
+/** 차트 경로: US 는 거래소를 같이 넘긴다. */
+export function chartPath(market: string, ticker: string, exchange?: string | null): string {
+  return `/chart?market=${market}&ticker=${encodeURIComponent(ticker)}${market === "US" && exchange ? `&exchange=${exchange}` : ""}`;
+}
+
+/** 팔레트 후보: 화면(라벨·목적 부분 일치) + 종목 코드(6자리 숫자·1~5자 대문자) + 서버 이름 검색 결과 → 차트. 이동 전용. */
+export function paletteItems(query: string, names: Record<string, string> = {}, hits: SearchHit[] = []): PaletteItem[] {
   const q = query.trim();
   const out: PaletteItem[] = [];
   const lower = q.toLowerCase();
@@ -80,6 +90,12 @@ export function paletteItems(query: string, names: Record<string, string> = {}):
   const up = q.toUpperCase();
   if (KR_CODE.test(q)) out.unshift({ kind: "ticker", label: `${names[`KR:${q}`] ?? q} 차트`, hint: `KR ${q}`, to: `/chart?market=KR&ticker=${q}` });
   else if (US_SYMBOL.test(up) && q.length >= 2) out.unshift({ kind: "ticker", label: `${names[`US:${up}`] ?? up} 차트`, hint: `US ${up}`, to: `/chart?market=US&ticker=${up}` });
+  for (const h of hits) {
+    if (out.length >= 12) break;
+    if (out.some((o) => o.kind === "ticker" && o.to.includes(`ticker=${encodeURIComponent(h.ticker)}`))) continue;
+    const src = SOURCE_HINT[h.source] ?? "";
+    out.push({ kind: "ticker", label: `${h.name ?? h.ticker} 차트`, hint: `${h.market} ${h.ticker}${src ? ` · ${src}` : ""}`, to: chartPath(h.market, h.ticker, h.exchange) });
+  }
   if (q.length >= 2) {
     for (const [key, name] of Object.entries(names)) {
       if (name.toLowerCase().includes(lower) && out.length < 12) {
@@ -94,4 +110,12 @@ export function paletteItems(query: string, names: Record<string, string> = {}):
 /** 'g' 뒤 한 키 → 경로. 없으면 null. */
 export function chordTarget(key: string): string | null {
   return flatNav().find((i) => i.key === key.toLowerCase())?.to ?? null;
+}
+
+/** 차트 URL 질의 → 초기 상태. 없거나 이상하면 KR 005930 / NAS. */
+export function parseChartQuery(p: URLSearchParams): { ticker: string; market: "KR" | "US"; exchange: string } {
+  const market = p.get("market") === "US" ? "US" : "KR";
+  const ticker = (p.get("ticker") ?? "").trim() || (market === "US" ? "AAPL" : "005930");
+  const ex = p.get("exchange");
+  return { ticker, market, exchange: ex === "NYS" || ex === "AMS" ? ex : "NAS" };
 }

@@ -85,6 +85,14 @@ describe("stageReport", () => {
     expect(b[0].list).toEqual(["news_macro.news: 401"]);
   });
 
+  it("퀀트: relative_tercile 은 상대 순위로, absolute 는 오르내림으로", () => {
+    const rel = stageReport("05_quant", { signal: "BUY", p_up: 0.5, p_flat: 0.3, p_down: 0.2, label_mode: "relative_tercile", horizon_days: 5 });
+    expect(rel[0].title).toBe("퀀트 모델 (상대 순위)");
+    expect(rel[0].lead).toBe("매수 · 상위 1/3 50% · 중간 1/3 30% · 하위 1/3 20%");
+    const abs = stageReport("05_quant", { signal: "BUY", p_up: 0.5, p_flat: 0.3, p_down: 0.2, label_mode: "absolute" });
+    expect(abs[0].lead).toBe("매수 · 상승 50% · 보합 30% · 하락 20%");
+  });
+
   it("시장 단계: 전략가 제안", () => {
     const b = stageReport("_market_view", { stance: "RISK_OFF", hedge_weight: 0.1, confidence: 0.8, horizon_days: 5, rationale: "변동성 확대", invalidation_conditions: [] });
     expect(b[0].lead).toBe("위험 회피 · 헤지 비중 10% · 확신 0.80");

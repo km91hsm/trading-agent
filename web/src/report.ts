@@ -172,10 +172,17 @@ function research(d: Rec): ReportBlock[] {
 }
 
 function quant(d: Rec): ReportBlock[] {
+  // relative_tercile 라벨은 같은 날·시장 안 수익 순위의 상·중·하위 삼분위다 — 오르내림이 아니다
+  // (상위 삼분위여도 손실일 수 있다). absolute 만 상승·보합·하락.
+  const relative = str(d.label_mode) !== "absolute";
+  const [up, flat, down] = relative ? ["상위 1/3", "중간 1/3", "하위 1/3"] : ["상승", "보합", "하락"];
   return [
     {
-      title: "퀀트 모델",
-      lead: `${label("signal", d.signal)} · 상승 ${pct(d.p_up)} · 보합 ${pct(d.p_flat)} · 하락 ${pct(d.p_down)}`,
+      title: relative ? "퀀트 모델 (상대 순위)" : "퀀트 모델",
+      lead: `${label("signal", d.signal)} · ${up} ${pct(d.p_up)} · ${flat} ${pct(d.p_flat)} · ${down} ${pct(d.p_down)}`,
+      paragraphs: relative
+        ? [`${str(d.horizon_days) || "5"}거래일 수익이 같은 날 같은 시장 종목 중 어느 삼분위에 들지의 확률이에요. 상위 1/3 이어도 손실일 수 있어요.`]
+        : undefined,
       rows: [
         ["모델", str(d.model) || DASH],
         ["기간", num(d.horizon_days) === null ? DASH : `${num(d.horizon_days)}거래일`],

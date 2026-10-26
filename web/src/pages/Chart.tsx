@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import {
   CandlestickSeries,
   LineSeries,
@@ -14,24 +15,39 @@ import { Glyph } from "../components/Glyph";
 import { Section } from "../components/Section";
 import { Skeleton } from "../components/Skeleton";
 import { ErrorBox } from "../components/Tables";
-import { useApp, useLoad } from "../hooks";
+import { useApp, useLoad, useNameSearch } from "../hooks";
+import { parseChartQuery } from "../nav";
 import { labelOf } from "../names";
 import type { ChartData, ChartInterval, Market } from "../types";
 
 export function ChartPage() {
   const { accounts, theme, names } = useApp();
-  const [ticker, setTicker] = useState("005930");
-  const [market, setMarket] = useState<Market>("KR");
-  const [exchange, setExchange] = useState("NAS");
+  const [params] = useSearchParams();
+  const init = parseChartQuery(params);
+  const [ticker, setTicker] = useState(init.ticker);
+  const [market, setMarket] = useState<Market>(init.market);
+  const [exchange, setExchange] = useState(init.exchange);
   const [accountId, setAccountId] = useState("");
   const [ival, setIval] = useState<ChartInterval>("1d"); // window.setInterval 을 가리지 않게 interval 이 아닌 이름
   const [q, setQ] = useState({
-    ticker: "005930",
-    market: "KR" as Market,
-    exchange: "NAS",
+    ticker: init.ticker,
+    market: init.market,
+    exchange: init.exchange,
     accountId: "",
     interval: "1d" as ChartInterval,
   });
+  // ⌘K 팔레트·다른 화면의 링크(/chart?market=&ticker=)로 들어오면 그 종목을 바로 그린다
+  const paramKey = params.toString();
+  useEffect(() => {
+    if (!params.get("ticker")) return;
+    const p = parseChartQuery(params);
+    setTicker(p.ticker);
+    setMarket(p.market);
+    setExchange(p.exchange);
+    setQ((cur) => ({ ...cur, ticker: p.ticker, market: p.market, exchange: p.exchange }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [paramKey]);
+  const hits = useNameSearch(ticker === q.ticker ? "" : ticker, market);
   const [showSma, setShowSma] = useState(true);
   const box = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -103,7 +119,27 @@ export function ChartPage() {
       >
         <label className="field">
           <span>종목</span>
-          <input type="text" value={ticker} onChange={(e) => setTicker(e.target.value)} size={10} />
+          <input
+            type="text"
+            value={ticker}
+            onChange={(e) => {
+              // 자동완성에서 고르면 값이 "이름 (코드)" — 코드만 남긴다
+              const v = e.target.value;
+              const hit = hits.find((h) => `${h.name ?? h.ticker} (${h.ticker})` === v);
+              if (hit) {
+                setTicker(hit.ticker);
+                if (hit.exchange) setExchange(hit.exchange);
+              } else setTicker(v);
+            }}
+            size={14}
+            list="chart-ticker-hits"
+            placeholder="코드 또는 종목명"
+          />
+          <datalist id="chart-ticker-hits">
+            {hits.map((h) => (
+              <option key={`${h.market}:${h.ticker}`} value={`${h.name ?? h.ticker} (${h.ticker})`} />
+            ))}
+          </datalist>
         </label>
         <label className="field">
           <span>시장</span>

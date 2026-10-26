@@ -66,7 +66,9 @@ export function stageSummary(key: StageKey, items: Array<{ file: string; data: u
       return `오류 절 ${count(d0.errors)}건`;
     case "05_quant": {
       const p = num(d0.p_up);
-      return p === null ? "퀀트 확률 있음" : `상승 확률 ${pct(p)}`;
+      // relative_tercile(기본)은 상대 순위 상위 1/3 확률이지 상승 확률이 아니다
+      const what = String(d0.label_mode ?? "relative_tercile") === "absolute" ? "상승" : "상위 1/3";
+      return p === null ? "퀀트 확률 있음" : `${what} 확률 ${pct(p)}`;
     }
     case "10_analyst": {
       const c = { BULLISH: 0, NEUTRAL: 0, BEARISH: 0 } as Record<string, number>;

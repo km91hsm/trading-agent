@@ -1,28 +1,39 @@
 import { describe, expect, it } from "vitest";
-import { overviewRows, planCell, planCells } from "./overview";
-import type { Overview, OverviewMarket } from "./types";
+import { missingText, overviewRows, planCell, planCells } from "./overview";
+import type { Overview, OverviewEnv } from "./types";
 
-const env = (nav: string, accounts: string[]) => ({ nav, cash: nav, pnl: "0", pnl_pct: null, accounts });
-const mk = (nav: string, by_env: OverviewMarket["by_env"] = { paper: env(nav, ["paper-main"]) }) => ({ nav, cash: "0", pnl: "0", pnl_pct: null, positions: [], sectors: [], unmapped: [], accounts: [], by_env });
+const env = (nav: string, accounts: string[]): OverviewEnv => ({
+  nav,
+  cash: nav,
+  pnl: "0",
+  pnl_pct: null,
+  positions: [],
+  sectors: [],
+  unmapped: [],
+  accounts: accounts.map((id) => ({ id, env: "paper", nav, cash: nav, snapshot_date: "2026-10-24" })),
+});
 
 describe("overview", () => {
-  it("모의·실전은 다른 행", () => {
-    const o: Overview = { markets: { KR: mk("1500", { paper: env("1000", ["paper-main"]), real: env("500", ["real-main"]) }) }, accounts_missing_snapshot: {}, pending_approvals: 0 };
-    expect(overviewRows(o).map((r) => [r.env, r.nav])).toEqual([
-      ["paper", "1,000원"],
-      ["real", "500원"],
+  it("시장 × 모의/실전 행, 통화·환경 섞임 없음", () => {
+    const o: Overview = {
+      markets: { KR: { envs: { paper: env("1000", ["paper-main"]), real: env("500", ["real-main"]) } }, US: { envs: { paper: env("1000", ["paper-main"]) } } },
+      accounts_missing_snapshot: { KR: [], US: ["real-main"] },
+      pending_approvals: 0,
+      configured: 2,
+    };
+    expect(overviewRows(o).map((r) => [r.market, r.env, r.nav])).toEqual([
+      ["KR", "paper", "1,000원"],
+      ["KR", "real", "500원"],
+      ["US", "paper", "$1,000.00"],
     ]);
+    expect(missingText(o)).toBe("US: real-main");
+    expect(overviewRows(null)).toEqual([]);
   });
 
-  it("시장별 행, 통화 섞임 없음", () => {
-    const o: Overview = { markets: { KR: mk("1500000"), US: mk("1000") }, accounts_missing_snapshot: { KR: [], US: ["real-main"] }, pending_approvals: 0 };
-    const rows = overviewRows(o);
-    expect(rows.map((r) => [r.market, r.nav])).toEqual([
-      ["KR", "1,500,000원"],
-      ["US", "$1,000.00"],
-    ]);
-    expect(rows[1].missing).toEqual(["real-main"]);
-    expect(overviewRows(null)).toEqual([]);
+  it("스냅샷이 하나도 없으면 행은 없고 미확인 목록만", () => {
+    const o: Overview = { markets: { KR: { envs: {} } }, accounts_missing_snapshot: { KR: ["a", "b"] }, pending_approvals: 0, configured: 2 };
+    expect(overviewRows(o)).toEqual([]);
+    expect(missingText(o)).toBe("KR: a, b");
   });
 
   it("계획 셀: 가격(거리)", () => {
