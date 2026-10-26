@@ -513,7 +513,8 @@ def test_real_account_untouched_even_in_apply_mode(ectx):
 def test_apply_mode_still_capped_by_risk_gate(ectx):
     ectx.rl_sizer = _sizer("apply", weight=0.90)
     by = {r["account_id"]: r for r in _run(ectx)}
-    assert by["paper-main"]["qty"] == 35  # 25% 상한 250만/지정가 71000
+    # 25% 상한(250만/71000 = 35주)보다 1회 손실 한도가 더 좁다: 1천만 × 2% ÷ (71000 − 65000) = 33주
+    assert by["paper-main"]["qty"] == 33
 
 
 def test_disabled_or_no_model_is_noop(ectx):

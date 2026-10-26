@@ -239,6 +239,24 @@ def evaluate(
         if decision.confidence < LOW_CONFIDENCE:
             qty //= 2
             reasons.append(f"confidence {decision.confidence:.2f} < {LOW_CONFIDENCE} 로 수량 절반")
+        # 1회 손실 한도(검토 L9): 손절까지의 손실 = qty × (주문가 − 손절가) ≤ NAV × r. 손절 거리가
+        # 가까우면 많이, 멀면 적게 산다(목표 비중만 보던 사이징의 보완). 헤지·손절은 이 분기 밖
+        buy_px = order_price if order_price is not None else price
+        if (
+            not is_hedge
+            and not is_scalp
+            and decision.stop_loss is not None
+            and nav > 0
+            and buy_px > Decimal(str(decision.stop_loss))
+        ):
+            per_share = buy_px - Decimal(str(decision.stop_loss))
+            cap = _floor_qty(Decimal(str(lim.risk_per_trade_pct)) * nav, per_share)
+            if qty > cap:
+                qty = cap
+                reasons.append(
+                    f"1회 손실 한도 NAV×{lim.risk_per_trade_pct:.0%}(손절까지 "
+                    f"{float(per_share / buy_px):.1%})로 {cap}주까지"
+                )
     else:
         if held is None or held.qty <= 0:
             qty = 0
@@ -310,6 +328,22 @@ def evaluate(
                 rejected.append(
                     f"기대수익 {er:.2%} 이 왕복비용×{COST_MULTIPLE}({threshold:.2%}) 미만"
                 )
+        if not is_scalp:
+            # 검토 L9: 위험을 늘리는 주문은 손절·익절이 둘 다 있어야 하고, 확신 가중 기대값이
+            # 왕복비용을 넘어야 한다(익절가를 비우면 비용 검사를 건너뛰던 구멍을 막는다)
+            if decision.take_profit is None or decision.stop_loss is None:
+                rejected.append("매수·추가 매수에는 손절가와 익절가가 모두 필요")
+            else:
+                # 진입가는 실제 주문가(지정가) — 수량·1회 손실 한도와 같은 기준(PR #31 리뷰)
+                ev = costs.expected_value(
+                    decision, order_price if order_price is not None else price
+                )
+                cost = costs.round_trip_bp(market) / 10_000
+                if ev is not None and ev < cost:
+                    rejected.append(
+                        f"확신 가중 기대값 {ev:.2%}(확신 {decision.confidence:.2f}) 이 "
+                        f"왕복비용 {cost:.2%} 미만"
+                    )
         if qty <= 0 and not rejected:
             rejected.append("가능금액 부족으로 주문 수량 0")
     else:

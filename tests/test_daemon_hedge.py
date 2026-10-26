@@ -226,6 +226,8 @@ def test_regime_apply_view_turns_strategist_risk_off_into_fourth_signal(conn, mo
     from trader.orchestrator import market_view as mv
 
     deps = _hedge_deps(conn, closes=[100] * 30 + [99.5, 99, 98.5, 98, 97.5, 97])  # 20일선 아래 1개
+    # 전체 검토 L8 뒤 agent_signal 기본 끔 — Phase 19 동작은 켜서 확인
+    deps.settings = Settings(hedge=CFG.model_copy(update={"agent_signal": True}))
     out = daemon._regime_body(deps, "KR")
     assert out["state"] == "neutral" and out["count"] == 1
     monkeypatch.setattr(
