@@ -22,16 +22,28 @@ logger = logging.getLogger("trader.telegram")
 def _mode_label(conn, account) -> str:
     """STATUS·웹과 같은 실효 모드 (실전 auto + 확인 기록 없음 = off, 강등 표시)."""
     mode, note = executor.effective_mode(conn, account)
-    return f"{account.id}={mode}" + (" (강등)" if note else "")
+    env = messages.ENV.get(account.env, account.env)
+    return f"{account.id}({env}) {messages.MODE.get(mode, mode)}" + (" · 강등" if note else "")
 
 
-def approval_line(a: dict) -> str:
+def approval_line(a: dict, env: str | None = None) -> str:
+    """'#12 real-main(실전) 매수 삼성전자(005930) 10주 @71,500원 · 10:42 만료' (KST)."""
     o = a["order"]
     shown = names.label(str(o.get("ticker")), o.get("name"))
+    market = o.get("market")
+    who = a["account_id"] + (f"({messages.ENV[env]})" if env in messages.ENV else "")
+    price = f"@{messages.money(o.get('price'), market)}" if o.get("price") else "시장가"
+    side = messages.SIDE.get(str(o.get("side")), o.get("side"))
     return (
-        f"#{a['id']} {a['account_id']} {o.get('side')} {shown} {o.get('qty')}주 "
-        f"@{o.get('price') or '시장가'} 만료 {a['expires_at']}"
+        f"#{a['id']} {who} {side} {shown} {o.get('qty')}주 {price} · "
+        f"{messages.kst_hhmm(a.get('expires_at'))} 만료"
     )
+
+
+HELP_LINE = (
+    "/status · /approve <id> [실전] · /reject <id> · /pause · /resume · "
+    "/mode <계좌> <auto|approve|off> · /watch add|remove|list <종목> · /run <작업> [KR|US] [종목]"
+)
 
 
 def daemon_line(ectx: Any) -> str:
@@ -140,6 +152,10 @@ def poll_once(ectx: Any, receiver: Any, *, echo: Callable[[str], None] = lambda 
     for u in updates:
         cmd = parse_command(u.text)
         if cmd is None:
+            if u.text.strip().startswith("/"):
+                # 오타·모르는 명령을 조용히 버리지 않는다(전체 검토 T2)
+                ectx.notifier.send(messages.event("명령 안내", HELP_LINE))
+                control.set_flag(conn, "telegram_offset", int(u.update_id) + 1)
             continue
         handled += 1
         try:
@@ -170,7 +186,8 @@ def _handle_command(ectx: Any, conn: Any, cmd: tuple[str, str | None], echo: Cal
         if name == "status":
             pending = repo.pending_approvals(conn)
             modes = ", ".join(_mode_label(conn, a) for a in ectx.accounts)
-            body = "\n".join(approval_line(a) for a in pending) or "없음"
+            envs = {a.id: a.env for a in ectx.accounts}
+            body = "\n".join(approval_line(a, envs.get(a["account_id"])) for a in pending) or "없음"
             paused = "일시정지" if control.is_paused(conn) else "실행 중"
             from trader.risk import regime as regime_mod
             from trader.status import scan_lines
@@ -201,16 +218,41 @@ def _handle_command(ectx: Any, conn: Any, cmd: tuple[str, str | None], echo: Cal
             ectx.notifier.send(run_command(ectx, arg))
             echo(f"run {arg or ''}".strip())
             return
-        if arg is None or not arg.isdigit():
+        parts = (arg or "").split()
+        if not parts or not parts[0].isdigit():
             ectx.notifier.send(f"사용법: /{name} <승인 id>")
             return
+        arg = parts[0]
+        if name == "approve":
+            # 실전 계좌 승인은 확인어를 붙여야 한다 — 웹의 확인창과 같은 한 번 더 묻기(전체 검토 T2)
+            pa = repo.get_approval(conn, int(arg))
+            acct = next((x for x in ectx.accounts if pa and x.id == pa["account_id"]), None)
+            if acct is not None and acct.env != "paper" and messages.REAL_CONFIRM not in parts[1:]:
+                ectx.notifier.send(
+                    messages.event(
+                        f"확인 필요 #{arg}",
+                        f"{acct.id} 은(는) 실전 계좌예요 — 실제 돈으로 주문해요.",
+                        f"진행하려면: /approve {arg} {messages.REAL_CONFIRM}",
+                    )
+                )
+                echo(f"approve #{arg} → 실전 확인어 없음")
+                return
         r = (
             executor.approve(ectx, int(arg))
             if name == "approve"
             else executor.reject(ectx, int(arg))
         )
         echo(f"{name} #{arg} → {'ok' if r['ok'] else r.get('error') or '실패'}")
+        order = r.get("order") or {}
+        if not r["ok"] and order.get("status") == "unknown":
+            # 응답 없음 — executor 가 이미 [주문 상태 미확인] 을 보냈다(실패로 덧알리면 재주문 유도)
+            return
         if not r["ok"]:
+            label = "승인" if name == "approve" else "거부"
             ectx.notifier.send(
-                messages.failure(f"{name} 실패", "", r.get("error") or r.get("order"))
+                messages.failure(
+                    f"{label} 실패 #{arg}",
+                    "",
+                    r.get("error") or order.get("message") or "알 수 없음",
+                )
             )

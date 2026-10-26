@@ -114,3 +114,27 @@ def test_configure_without_stdout_skips_stream_handler(project, monkeypatch):
     mine = [h for h in root.handlers if getattr(h, "name", None) == logging_setup._HANDLER_NAME]
     assert len(mine) == 1 and not any(type(h) is logging.StreamHandler for h in mine)
     logging_setup.reset()
+
+
+def test_scheduler_logs_quieted_and_max_instances_dropped(tmp_path):
+    """전체 검토 P10: apscheduler 실행 로그는 WARNING 이상만, max instances 경고는 버린다."""
+    import logging
+
+    from trader import logging_setup
+
+    logging_setup.configure(tmp_path)
+    try:
+        lg = logging.getLogger("apscheduler.scheduler")
+        assert lg.getEffectiveLevel() >= logging.WARNING
+        rec = lg.makeRecord(
+            lg.name,
+            logging.WARNING,
+            __file__,
+            1,
+            "Execution of job skipped: maximum number of running instances reached (1)",
+            (),
+            None,
+        )
+        assert not all(f.filter(rec) for f in lg.filters)
+    finally:
+        logging_setup.reset()

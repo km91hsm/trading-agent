@@ -41,6 +41,14 @@ describe("종목 검색 연결 (Phase 24)", () => {
     expect(t).toHaveLength(1);
     expect(t[0]).toMatchObject({ to: "/chart?market=US&ticker=JPM&exchange=NYS", label: "JPMorgan 차트" });
   });
+  it("접두가 같은 다른 종목(GOOG/GOOGL)은 합치지 않는다", () => {
+    const items = paletteItems("Alphabet", {}, [
+      { market: "US", ticker: "GOOGL", name: "Alphabet A", exchange: "NAS", source: "universe" },
+      { market: "US", ticker: "GOOG", name: "Alphabet C", exchange: "NAS", source: "listed" },
+    ]).filter((i) => i.kind === "ticker");
+    expect(items.map((i) => i.to)).toEqual(["/chart?market=US&ticker=GOOGL&exchange=NAS", "/chart?market=US&ticker=GOOG&exchange=NAS"]);
+    expect(items[0].hint).toBe("US GOOGL · 유니버스");
+  });
   it("차트 URL 질의를 읽는다", () => {
     expect(parseChartQuery(new URLSearchParams("market=US&ticker=TSLA&exchange=NYS"))).toEqual({ ticker: "TSLA", market: "US", exchange: "NYS" });
     expect(parseChartQuery(new URLSearchParams(""))).toEqual({ ticker: "005930", market: "KR", exchange: "NAS" });

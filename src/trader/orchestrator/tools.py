@@ -277,7 +277,8 @@ def ensure_quant(ctx: ToolContext, *, ticker: str, market: Market, date: date) -
 
         if not load_ml().models.quant.enabled:
             return None
-        found = registry.latest("quant", state=ctx.state)
+        # 그 시장 모델 우선·전시장 폴백, 다른 시장 한정 모델은 쓰지 않는다(registry.latest 계약)
+        found = registry.latest("quant", state=ctx.state, market=market)
     except Exception as e:  # noqa: BLE001 - ML 은 선택 입력: 어떤 오류도 수집·분석을 막지 않는다
         logger.warning("05_quant 생략(레지스트리 오류): %s", e)
         return None

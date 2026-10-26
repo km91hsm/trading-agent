@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { fmtDate, fmtDelta, fmtMoney, fmtPct, fmtTime } from "./format";
+import { fmtDate, fmtDelta, fmtMoney, fmtPct, fmtTime, marketDate } from "./format";
 
 describe("fmtMoney", () => {
   it("KR 은 정수 천단위 + 원", () => {
@@ -43,5 +43,12 @@ describe("fmtTime / fmtDate", () => {
   it("날짜는 YYYY-MM-DD (KST)", () => {
     expect(fmtDate("2026-10-22T16:30:00+00:00")).toBe("2026-10-23");
     expect(fmtDate("2026-10-23")).toBe("2026-10-23");
+  });
+});
+
+describe("marketDate (전체 검토 W11)", () => {
+  it("US 주문은 뉴욕 날짜", () => {
+    expect(marketDate("2026-10-26T19:00:00Z", "US")).toBe("2026-10-26");
+    expect(marketDate("2026-10-26T19:00:00Z", "KR")).toBe("2026-10-27");
   });
 });

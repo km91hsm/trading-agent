@@ -33,8 +33,11 @@ def reevaluate(
     state: Path | None = None,
     session_runner: Callable[..., Any] | None = None,
     notifier: Any = None,
+    cancel: Any = None,
 ) -> session_mod.SessionResult:
-    """재평가 세션 1회. 결정 제출·실행은 세션 안의 `tool submit-decision --stage` 가 한다."""
+    """재평가 세션 1회. 결정 제출·실행은 세션 안의 `tool submit-decision --stage` 가 한다.
+    cancel(threading.Event)이 서면 세션 프로세스 그룹을 끊는다 — 데몬 종료 때 고아 세션이 주문을
+    계속 내지 않게(전체 검토 P1)."""
     spec = session_mod.SessionSpec(
         market=market,
         date=date,
@@ -54,6 +57,7 @@ def reevaluate(
         now=now,
         brokers=brokers or {},
         notifier=notifier,
+        **({"cancel": cancel} if cancel is not None else {}),
     )
     if trigger_id:
         repo.mark_trigger_handled(

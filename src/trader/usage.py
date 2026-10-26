@@ -130,36 +130,40 @@ def record_rate_limit(
 
 
 def _ledger_observation(conn: sqlite3.Connection, now: datetime) -> dict | None:
-    row = conn.execute(
-        "SELECT observed_at, status, five_hour_util, five_hour_resets_at, seven_day_util, "
-        "seven_day_resets_at FROM llm_rate_limits ORDER BY observed_at DESC, id DESC LIMIT 1"
-    ).fetchone()
-    if row is None:
+    """원장의 창별 **최신 유효 관측**. 한 창만 담긴 이벤트(rateLimitType)가 다른 창의 최근 관측을
+    지우지 않도록 창마다 따로 고르고, 창 dict 에 자기 관측 시각(`observed_at`·`age_s`)을 둔다."""
+    out: dict[str, Any] = {"spend_limit": None, "source": "session", "status": None}
+    newest: str | None = None
+    for k in ("five_hour", "seven_day"):
+        row = conn.execute(
+            f"SELECT observed_at, status, {k}_util AS u, {k}_resets_at AS r FROM llm_rate_limits "
+            f"WHERE {k}_util IS NOT NULL ORDER BY observed_at DESC, id DESC LIMIT 1"
+        ).fetchone()
+        if row is None:
+            out[k] = None
+            continue
+        age = max(0, int((now - datetime.fromisoformat(row["observed_at"])).total_seconds()))
+        out[k] = {
+            "used_pct": round(float(row["u"]) * 100, 1),
+            "resets_at": row["r"],
+            "observed_at": row["observed_at"],
+            "age_s": age,
+        }
+        if newest is None or row["observed_at"] > newest:
+            newest, out["status"] = row["observed_at"], row["status"]
+    if newest is None:
         return None
-    observed = row["observed_at"]
-    age = max(0, int((now - datetime.fromisoformat(observed)).total_seconds()))
-
-    def win(util, resets):
-        if util is None:
-            return None
-        return {"used_pct": round(float(util) * 100, 1), "resets_at": resets}
-
-    return {
-        "observed_at": observed,
-        "age_s": age,
-        "five_hour": win(row["five_hour_util"], row["five_hour_resets_at"]),
-        "seven_day": win(row["seven_day_util"], row["seven_day_resets_at"]),
-        "spend_limit": None,
-        "status": row["status"],
-        "source": "session",
-    }
+    out["observed_at"] = newest
+    out["age_s"] = max(0, int((now - datetime.fromisoformat(newest)).total_seconds()))
+    return out
 
 
 def latest_observation(
     conn: sqlite3.Connection | None, now: datetime, file_path: Path | None
 ) -> dict | None:
-    """원장(세션 rate_limit_event)과 상태줄 파일 중 **더 최근** 관측. 모양은 `read_rate_limits` 와
-    같고 `source`(session|statusline) 가 붙는다. 둘 다 없으면 None."""
+    """원장(세션 rate_limit_event)과 상태줄 파일 중 창마다 **더 최근** 관측. 모양은
+    `read_rate_limits` 와 같고 창 dict 에 `observed_at`·`age_s`, 최상위에 `source`
+    (가장 최근 관측의 출처) 가 붙는다. 둘 다 없으면 None."""
     cands = []
     if conn is not None:
         led = _ledger_observation(conn, now)
@@ -168,10 +172,23 @@ def latest_observation(
     if file_path is not None:
         f = read_rate_limits(file_path, now)
         if f:
+            for k in _LIMIT_KEYS:
+                if f.get(k):
+                    f[k] = {**f[k], "observed_at": f["observed_at"], "age_s": f["age_s"]}
             cands.append({**f, "source": "statusline"})
     if not cands:
         return None
-    return min(cands, key=lambda c: c["age_s"] if c.get("age_s") is not None else 10**12)
+    big = 10**12
+    best = min(cands, key=lambda c: c["age_s"] if c.get("age_s") is not None else big)
+    out = dict(best)
+    for k in ("five_hour", "seven_day"):
+        wins = [c[k] for c in cands if c.get(k)]
+        out[k] = (
+            min(wins, key=lambda w: w.get("age_s") if w.get("age_s") is not None else big)
+            if wins
+            else None
+        )
+    return out
 
 
 def session_allowance(
@@ -183,13 +200,18 @@ def session_allowance(
     if not cfg.enabled:
         return True, None
     obs = latest_observation(conn, now, usage_file(settings.llm.usage_file))
-    if obs is None or obs.get("age_s") is None or obs["age_s"] > cfg.max_age_h * 3600:
+    if obs is None:
         return True, None
-    used = [
-        (name, (obs.get(k) or {}).get("used_pct"))
-        for k, name in (("five_hour", "5시간"), ("seven_day", "7일"))
-    ]
-    used = [(n, u / 100) for n, u in used if u is not None]
+    used = []
+    for k, name in (("five_hour", "5시간"), ("seven_day", "7일")):
+        w = obs.get(k) or {}
+        age = w.get("age_s", obs.get("age_s"))
+        if w.get("used_pct") is None or age is None or age > cfg.max_age_h * 3600:
+            continue  # 관측 없음·오래됨
+        resets = w.get("resets_at")
+        if resets and datetime.fromisoformat(resets) <= now:
+            continue  # 창이 이미 리셋됐다 — 리셋 전 사용률로 막지 않는다
+        used.append((name, float(w["used_pct"]) / 100))
     if not used:
         return True, None
     name, top = max(used, key=lambda x: x[1])

@@ -42,3 +42,13 @@ export function areaLine(r: OpsResp | null): string {
     .map(([k, v]) => `${AREA_LABEL[k] ?? k} ${LEVEL_LABEL[v] ?? v}`)
     .join(" · ");
 }
+
+
+/** 점검 결과가 오래됐는가(데몬이 30분마다 갱신) — 45분 넘게 지났거나 시각을 모르면 true(전체 검토 W7).
+ * 지금 판정(live)은 방금이므로 false. */
+export function opsStale(r: OpsResp | null, now: Date = new Date(), maxMin = 45): boolean {
+  if (!r || r.source === "live") return false;
+  const t = new Date(r.at).getTime();
+  if (!Number.isFinite(t)) return true;
+  return now.getTime() - t > maxMin * 60_000;
+}

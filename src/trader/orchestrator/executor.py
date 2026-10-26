@@ -688,6 +688,9 @@ def _request_approval(
             reasons=verdict.reasons,
             opinion=opinion,
             kind=_STAGE_KIND.get(order_stage.split("_r")[0], ""),
+            env=account.env,
+            quote_price=quote_price,
+            expires_at=(now + APPROVAL_TTL).isoformat(),
         )
     )
     return aid

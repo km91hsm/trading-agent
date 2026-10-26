@@ -56,6 +56,23 @@ def quiet_httpx() -> None:
     logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 
+class _DropMaxInstances(logging.Filter):
+    """apscheduler 의 "maximum number of running instances reached" 는 긴 대기열 잡이 도는 동안
+    10초마다 나는 정상 상황이라 버린다(전체 검토 P10)."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return "maximum number of running instances" not in record.getMessage()
+
+
+def quiet_scheduler() -> None:
+    """apscheduler 는 잡 실행마다 INFO 두 줄(하루 수만 줄)을 남긴다 → WARNING 이상만."""
+    for n in ("apscheduler", "apscheduler.scheduler", "apscheduler.executors.default"):
+        lg = logging.getLogger(n)
+        lg.setLevel(logging.WARNING)
+        if not any(isinstance(f, _DropMaxInstances) for f in lg.filters):
+            lg.addFilter(_DropMaxInstances())
+
+
 def configure(state_dir: Path, level: str = "INFO", *, name: str | None = None) -> None:
     """루트 로거에 파일·콘솔 핸들러를 붙인다. 여러 번 호출해도 핸들러가 중복되지 않는다.
 
@@ -64,6 +81,7 @@ def configure(state_dir: Path, level: str = "INFO", *, name: str | None = None) 
     root = logging.getLogger()
     root.setLevel(level)
     quiet_httpx()
+    quiet_scheduler()
     reset()
     log_dir = Path(state_dir) / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -71,7 +89,11 @@ def configure(state_dir: Path, level: str = "INFO", *, name: str | None = None) 
     fname = f"trader-{name}.log" if name else "trader.log"
     handlers: list[logging.Handler] = [file_handler(log_dir / fname)]
     if sys.stderr is not None:  # 창 없는 실행파일(TraderApp)은 stderr 가 None — 파일 핸들러만
-        handlers.append(logging.StreamHandler())
+        console = logging.StreamHandler()
+        # 터미널이 아니면(launchd 의 daemon.err 등 회전 없는 파일) 같은 INFO 를 두 번 쌓지 않는다
+        if not getattr(sys.stderr, "isatty", lambda: False)():
+            console.setLevel(logging.WARNING)
+        handlers.append(console)
     for h in handlers:
         h.set_name(_HANDLER_NAME)
         h.setFormatter(formatter)
