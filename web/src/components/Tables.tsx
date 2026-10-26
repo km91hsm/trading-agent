@@ -1,6 +1,7 @@
 // 원장 표 네 개 (포지션·주문·승인·리스크 판정) — 시세표 열 문법(Table 원시요소)으로.
 import { useMemo } from "react";
 import { fmtDate, fmtDelta, fmtMoney, fmtTime, minutesLeft } from "../format";
+import { sideLabel, termLabel } from "../glossary";
 import { planCells } from "../overview";
 import type { Approval, Order, Position, RiskCheck } from "../types";
 import { Badge } from "./Badge";
@@ -166,7 +167,7 @@ export function OrdersTable({ rows, onTrace, traceId }: { rows: Order[]; onTrace
               <Td core>
                 <Ticker market={o.market} ticker={o.ticker} />
               </Td>
-              <Td core>{o.side}</Td>
+              <Td core>{sideLabel(o.side)}</Td>
               <Td num>{o.qty}</Td>
               <Td num>{price}</Td>
               <Td num core>
@@ -234,7 +235,7 @@ export function ApprovalsTable({
               <Td>
                 <Ticker market={m} ticker={a.order.ticker ?? "—"} />
               </Td>
-              <Td>{a.order.side}</Td>
+              <Td>{sideLabel(a.order.side)}</Td>
               <Td num>{a.order.qty}</Td>
               <Td num>{a.order.price ? fmtMoney(a.order.price, m) : "시장가"}</Td>
               <Td>
@@ -290,7 +291,7 @@ export function RiskChecksTable({ rows }: { rows: RiskCheck[] }) {
               <Ticker market={r.market ?? "KR"} ticker={r.ticker ?? "—"} />
             </Td>
             <Td>{r.action ? <Badge kind="action" value={r.action} /> : "—"}</Td>
-            <Td className={r.approved ? "gate ok" : r.action === "HOLD" ? "gate muted" : "gate no"}>{r.approved ? `승인${r.adjusted_qty ? ` · ${r.adjusted_qty}주` : ""}` : r.action === "HOLD" ? "보유 · 주문 없음" : `거부 · ${r.reasons[0] ?? "사유 없음"}`}</Td>
+            <Td className={r.approved ? "gate ok" : r.action === "HOLD" ? "gate muted" : "gate no"}>{r.approved ? `${termLabel("gate.pass")}${r.adjusted_qty ? ` · ${r.adjusted_qty}주` : ""}` : r.action === "HOLD" ? `${termLabel("action.HOLD")} · 주문 없음` : `${termLabel("gate.reject")} · ${r.reasons[0] ?? "사유 없음"}`}</Td>
             <Td num>{r.adjusted_qty ?? "—"}</Td>
             <Td className="muted wrap">{r.reasons.join(" / ") || "—"}</Td>
           </tr>

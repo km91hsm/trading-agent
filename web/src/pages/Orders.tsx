@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { AccountPicker } from "../components/AccountPicker";
 import { getJson, postJson, withAccount } from "../api";
+import { sideLabel } from "../glossary";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { Section } from "../components/Section";
 import { Skeleton } from "../components/Skeleton";
@@ -122,7 +123,7 @@ export function OrdersPage() {
                       .filter((o) => o.decision_id === traceId && o.price)
                       .map((o) => {
                         const d = limitDistancePct(o.price, trace.data?.quote);
-                        return <dd key={o.id}>#{o.id} {o.side} @{o.price}: 당시 현재가 대비 {d === null ? "—" : `${d >= 0 ? "+" : ""}${d.toFixed(2)}%`}</dd>;
+                        return <dd key={o.id}>#{o.id} {sideLabel(o.side)} @{o.price}: 당시 현재가 대비 {d === null ? "—" : `${d >= 0 ? "+" : ""}${d.toFixed(2)}%`}</dd>;
                       })}
                   </div>
                 )}
@@ -141,7 +142,7 @@ export function OrdersPage() {
         body={
           pendingAct ? (
             <>
-              <b>{pendingAct.a.account_id}</b> · {pendingAct.a.order.market} {labelOf(names, pendingAct.a.order.market ?? "KR", pendingAct.a.order.ticker ?? "")} {pendingAct.a.order.side}{" "}
+              <b>{pendingAct.a.account_id}</b> · {pendingAct.a.order.market} {labelOf(names, pendingAct.a.order.market ?? "KR", pendingAct.a.order.ticker ?? "")} {sideLabel(pendingAct.a.order.side)}{" "}
               {pendingAct.a.order.qty}주 @ {pendingAct.a.order.price ? fmtMoney(pendingAct.a.order.price, pendingAct.a.order.market ?? "KR") : "시장가"}
               <br />
               실제 돈이 나갑니다. 승인하면 바로 브로커에 주문합니다.

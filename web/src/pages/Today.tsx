@@ -410,7 +410,7 @@ export function TodayPage({ title = "오늘의 실행", inputsOnly = false }: { 
                       </label>
                     )}
                     <label className="check">
-                      <input type="checkbox" checked={analyzeDry} onChange={(e) => setAnalyzeDry(e.target.checked)} /> 모의 실행(주문 없음)
+                      <input type="checkbox" checked={analyzeDry} onChange={(e) => setAnalyzeDry(e.target.checked)} /> {termLabel("dry_run")}
                     </label>
                     <RunJobButton
                       spec={() => ({

@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { getJson } from "../api";
+import { termLabel } from "../glossary";
 import { Badge } from "../components/Badge";
 import { EmptyState } from "../components/EmptyState";
 import { Section } from "../components/Section";
@@ -112,7 +113,7 @@ export function ComparePage() {
                       <Td>
                         {o.account_id} <Badge kind="env" value={envOf(o.account_id)} />
                       </Td>
-                      <Td>{o.approved ? <Badge kind="ok" value="승인" /> : <Badge kind="status" value="rejected" />}</Td>
+                      <Td>{o.approved ? <Badge kind="ok" value={termLabel("gate.pass")} /> : <Badge kind="status" value="rejected" />}</Td>
                       <Td num>{o.adjusted_qty ?? "—"}</Td>
                       <Td>{o.order_status ? <Badge kind="status" value={o.order_status} /> : <span className="muted">없음</span>}</Td>
                       <Td className="muted">{o.order_no ?? "—"}</Td>

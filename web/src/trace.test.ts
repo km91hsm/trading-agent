@@ -25,8 +25,8 @@ describe("trace (결정 추적)", () => {
     expect(steps[0].lines[0]).toBe("차트: 강세 · 확신 0.70 · a / b");
     expect(steps[1].lines[0]).toBe("r0: 약세 약세 0.40 · 강세 강세 0.80");
     expect(steps[2].lines[0]).toContain("붕괴");
-    expect(steps[4].lines[0]).toBe("paper-main: 승인 3주 · r (n)");
-    expect(steps[5].lines[0]).toBe("paper-main: BUY 3주 @70000 → accepted #1");
+    expect(steps[4].lines[0]).toBe("paper-main: 통과 3주 · r (n)");
+    expect(steps[5].lines[0]).toBe("paper-main: 매수 3주 @70000 → 접수 #1");
     expect(steps[6].title).toBe("재평가 r1: HOLD");
   });
   it("지정가 거리·unknown 경고", () => {
