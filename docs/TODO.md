@@ -395,4 +395,4 @@
 - [x] 저장량: 뉴스 조회수·좋아요·댓글 수만 바뀐 행은 새 버전 아님. 리더: 트렌드 제외·오래된 화면 제외(`snapshot.stale`) (2026-10-27)
 - [ ] 실기(사용자 확인 대기, 다른 PC): 번들 폴더를 복사 → `secrets/saveticker.env` 확인 → `Trader.app` 실행 → 1분 안에 `state/external/saveticker/runtime/daemon-service.log` 에 Chromium 설치·수집 시작, 브라우저 창 4개, `./trader saveticker status` 의 스트림 `ok`
 - [ ] 실기(사용자 확인 대기, Windows): Chromium 자동 설치·일반 창 로그인·앱 종료 때 `taskkill /T` 로 브라우저까지 닫히는지
-- [ ] 결정 대기(사용자): 이 맥의 launchd 수집기(`com.user.saveticker.collector`·`monitor`, Codex 작업 폴더의 옛 코드)를 내리고 데몬(앱)이 맡게 할지 — 내리면 앱이 꺼져 있는 동안은 수집이 멈춘다. 계속 쓰면 같은 폴더 `service.lock` 으로 데몬은 띄우지 않고 감시만 한다
+- [x] 결정(사용자 2026-10-27): 이 맥의 launchd 수집기(`com.user.saveticker.collector`·`monitor`)를 내리고 앱(데몬)이 수집을 맡는다 — plist 는 `~/Library/LaunchAgents/disabled-saveticker/` 로 옮김(되돌리려면 제자리로 옮겨 `launchctl bootstrap`). 앱이 꺼져 있는 동안은 수집이 멈춘다
