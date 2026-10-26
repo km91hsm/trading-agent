@@ -139,3 +139,27 @@ def test_allowance_stale_or_missing_or_disabled_allows(conn):
         True,
         None,
     )
+
+
+def test_single_window_event_keeps_other_window(conn):
+    """7일 90% 뒤 5시간 20% 만 담긴 이벤트가 와도 7일 감속은 유지된다."""
+    usage.record_rate_limit(
+        conn, {"rateLimitType": "seven_day", "utilization": 0.9}, now=NOW - timedelta(minutes=5)
+    )
+    usage.record_rate_limit(conn, {"rateLimitType": "five_hour", "utilization": 0.2}, now=NOW)
+    obs = usage.latest_observation(conn, NOW, None)
+    assert obs["seven_day"]["used_pct"] == 90.0 and obs["five_hour"]["used_pct"] == 20.0
+    ok, why = usage.session_allowance(conn, _settings(), kind="analyze", now=NOW)
+    assert not ok and "7일" in why
+
+
+def test_reset_window_no_longer_throttles(conn):
+    soon = int((NOW + timedelta(minutes=1)).timestamp())
+    usage.record_rate_limit(
+        conn,
+        {"unifiedWindows": {"five_hour": {"utilization": 0.96, "resetsAt": soon}}},
+        now=NOW - timedelta(minutes=30),
+    )
+    assert usage.session_allowance(conn, _settings(), kind="resume", now=NOW)[0] is False
+    later = NOW + timedelta(minutes=2)
+    assert usage.session_allowance(conn, _settings(), kind="resume", now=later) == (True, None)
