@@ -23,5 +23,18 @@ describe("shadow", () => {
     expect(rows[0].lowPct).toBeCloseTo(0.4);
     expect(rows[0].verdict).toBe("우위");
     expect(rows[1].meanPct).toBeNull();
+    const withIndex = shadowRows({
+      market: "KR",
+      min_pairs: 20,
+      pairs: {
+        candidates_1n: s(0, null, null),
+        quant_topn: s(0, null, null),
+        index_hold: s(25, -0.02, -0.001),
+      },
+      recent: [],
+    });
+    expect(withIndex.map((r) => r.key)).toEqual(["candidates_1n", "quant_topn", "index_hold"]);
+    expect(withIndex[2].label).toBe("지수 보유");
+    expect(withIndex[2].verdict).toBe("열위");
   });
 });

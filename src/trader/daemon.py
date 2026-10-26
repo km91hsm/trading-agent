@@ -2124,7 +2124,13 @@ def _reflect_body(deps: DaemonDeps) -> dict:
         try:
             from trader.ledger import shadow
 
-            shadow_matured = shadow.mature(conn, state=deps.state, today=_today(deps))
+            index_tables = {
+                m: shadow.index_table(deps.market_client, deps.settings.hedge, m)
+                for m in deps.settings.markets
+            }
+            shadow_matured = shadow.mature(
+                conn, state=deps.state, today=_today(deps), index_tables=index_tables
+            )
         except Exception as e:  # noqa: BLE001 - 섀도 만기 실패가 반성을 막지 않는다
             logger.warning("섀도 포트폴리오 만기 실패: %s", e)
             shadow_matured = None
@@ -2301,7 +2307,10 @@ def _shadow_record(deps: DaemonDeps, market: str, analyzed: dict | None = None) 
     try:
         conn = deps.conn_factory()
         try:
-            shadow.record(conn, market=market, day=today, scan=scan, now=deps.now())
+            index = shadow.index_table(deps.market_client, deps.settings.hedge, market)
+            shadow.record(
+                conn, market=market, day=today, scan=scan, now=deps.now(), index=index
+            )
         finally:
             conn.close()
     except Exception as e:  # noqa: BLE001 - 측정 실패가 분석 잡을 실패로 만들지 않는다

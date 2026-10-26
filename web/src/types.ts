@@ -199,8 +199,20 @@ export type ShadowStats = { n: number; mean_diff: number | null; ci_low: number 
 export type ShadowReport = {
   market: string;
   min_pairs: number;
-  pairs: { candidates_1n: ShadowStats; quant_topn: ShadowStats };
-  recent: Array<{ date: string; llm?: number | null; candidates_1n?: number | null; quant_topn?: number | null }>;
+  pairs: {
+    candidates_1n: ShadowStats;
+    quant_topn: ShadowStats;
+    index_hold?: ShadowStats;
+    index_trend?: ShadowStats;
+  };
+  recent: Array<{
+    date: string;
+    llm?: number | null;
+    candidates_1n?: number | null;
+    quant_topn?: number | null;
+    index_hold?: number | null;
+    index_trend?: number | null;
+  }>;
 };
 
 export type Run = {

@@ -134,3 +134,44 @@ def test_block_bootstrap_is_wider_for_clustered_differences():
     blk = shadow._block_bootstrap_means(d, block=5, n_boot=4000, seed=1)
     assert np.std(blk) > np.std(iid)
     assert shadow._block_bootstrap_means(d[:2], block=5, n_boot=10, seed=0).shape == (10,)
+
+
+def _index(closes: list[float], days=None):
+    days = days or DAYS
+    return pd.DataFrame({"069500": closes}, index=pd.Index(days[: len(closes)], name="date"))
+
+
+def test_index_baselines_hold_and_trend():
+    """지수 보유·지수 추세(100일선 위면 보유, 아래면 현금) — Stock D-037~039: 규칙이 지수 보유를
+    못 이겼다. LLM 이 지수보다 나은지가 실전 전환의 핵심 질문."""
+    long_days = trading_days(130, start=date(2026, 3, 2))
+    up = _index([100 + i for i in range(130)], long_days)
+    down = _index([300 - i for i in range(130)], long_days)
+    day = long_days[-1]
+    w_up = shadow.index_weights(up, day=day)
+    assert w_up == {"index_hold": {"069500": 1.0}, "index_trend": {"069500": 1.0}}
+    w_down = shadow.index_weights(down, day=day)
+    assert w_down == {"index_hold": {"069500": 1.0}, "index_trend": {}}
+    assert shadow.index_weights(_index([100.0] * 50, long_days), day=day)["index_trend"] == {}
+    assert shadow.index_weights(pd.DataFrame(), day=day) == {}
+
+
+def test_record_and_mature_with_index_table(conn, project):
+    _store({"A": [100.0] * 7, "B": [100.0] * 7, "C": [100.0] * 7})
+    idx = _index([100, 100, 101, 102, 103, 104, 110.0])
+    n = shadow.record(conn, market="KR", day=DAYS[0], scan=SCAN, top_n=2, index=idx)
+    assert n == 5
+    got = {r["strategy"]: r["weights"] for r in shadow.rows(conn, market="KR")}
+    assert got["index_hold"] == {"069500": 1.0}
+    # 지수 proxy 는 피처 스토어에 없다 → 만기 때 넘겨 준 지수 종가표로 채운다
+    assert (
+        shadow.mature(
+            conn, state=project / "state", today=DAYS[6], horizon=5, index_tables={"KR": idx}
+        )
+        == 5
+    )
+    rets = {r["strategy"]: r["fwd_ret"] for r in shadow.rows(conn, market="KR")}
+    assert abs(rets["index_hold"] - 0.04) < 1e-9  # DAYS[0]=100 → 5거래일 뒤 104
+    assert rets["index_trend"] == 0.0  # 100일 미만 이력 → 현금
+    s = shadow.paired_stats(conn, b="index_hold")
+    assert s["n"] == 1

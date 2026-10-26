@@ -1,10 +1,14 @@
 """섀도 포트폴리오(전체 검토 L1): LLM 이 고른 종목이 같은 날 같은 후보를 1/N·정량 상위로 산 것보다
 나은지를 운영일마다 쌍으로 잰다.
 
-전략 3개(운영일·시장마다 1행씩, 주문 없음):
+전략(운영일·시장마다 1행씩, 주문 없음):
 - `candidates_1n`: 그날 scan 정량 후보(점수 있는 것) 균등 비중 — LLM 이 이겨야 할 기준선
 - `quant_topn`: 정량 점수 상위 `top_n` 균등 비중 — LLM 없이 정량만 쓴 경우
 - `llm`: 그날 LLM 결정 중 BUY/ADD 의 `target_weight` 를 합 1 로 정규화(헤지 제외, 매수 없으면 현금)
+- `index_hold`·`index_trend`(Stock D-037~039 교훈 — 규칙 조합이 3년간 지수 보유를 못 이겼다):
+  지수 proxy(`hedge.index_proxy`) 보유, 그리고 proxy 가 `TREND_MA` 일선 위면 보유·아래면 현금.
+  proxy 는 피처 스토어에 없어 기록·만기 때 KIS 일봉 종가표(`index_table`)를 넘겨 받는다
+  (없으면 생략).
 
 만기는 결정일 이후 첫 거래일 종가 → `horizon` 거래일 뒤 종가(메모리 `outcomes.window_return` 과
 같은 창)이고 만기 봉이 today 이하일 때만 채운다(백필 데이터로 미래를 보지 않음). readiness 는
@@ -20,10 +24,13 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 
 logger = logging.getLogger("trader.ledger")
 
-STRATEGIES = ("candidates_1n", "quant_topn", "llm")
+STRATEGIES = ("candidates_1n", "quant_topn", "llm", "index_hold", "index_trend")
+INDEX_STRATEGIES = ("index_hold", "index_trend")
+TREND_MA = 100
 DEFAULT_TOP_N = 3
 HORIZON = 5
 LEAD_DAYS = 10  # 시작일 직전 거래일 탐색 여유
@@ -53,6 +60,43 @@ def build(conn: sqlite3.Connection, *, market: str, day: date, scan: dict, top_n
     }
 
 
+def index_weights(index: pd.DataFrame, *, day: date) -> dict[str, dict[str, float]]:
+    """지수 기준선 비중. `index` 는 날짜 색인·proxy 열 하나의 종가표(day 까지의 봉만 본다)."""
+    if index is None or index.empty or len(index.columns) != 1:
+        return {}
+    sym = str(index.columns[0])
+    closes = index[sym].dropna()
+    closes = closes[[d <= day for d in closes.index]]
+    if closes.empty:
+        return {}
+    trend = len(closes) >= TREND_MA and float(closes.iloc[-1]) > float(
+        closes.iloc[-TREND_MA:].mean()
+    )
+    return {"index_hold": {sym: 1.0}, "index_trend": {sym: 1.0} if trend else {}}
+
+
+def index_table(market_client, hedge_cfg, market: str, *, days: int = 200) -> pd.DataFrame:
+    """지수 proxy 일봉 종가표(KIS). 실패·설정 없음은 빈 표 — 지수 기준선만 빠진다."""
+    inst = (hedge_cfg.index_proxy or {}).get(market) if hedge_cfg is not None else None
+    if market_client is None or inst is None:
+        return pd.DataFrame()
+    try:
+        candles = (
+            market_client.get_daily_kr(inst.symbol, days=days)
+            if market == "KR"
+            else market_client.get_daily_us(inst.symbol, inst.exchange or "AMS", days=days)
+        )
+    except Exception as e:  # noqa: BLE001 - 측정 보조: 실패하면 지수 기준선만 생략
+        logger.warning("지수 proxy 일봉 실패 %s %s: %s", market, inst.symbol, e)
+        return pd.DataFrame()
+    if not candles:
+        return pd.DataFrame()
+    return pd.DataFrame(
+        {inst.symbol: [float(c.close) for c in candles]},
+        index=pd.Index([c.date for c in candles], name="date"),
+    )
+
+
 def record(
     conn: sqlite3.Connection,
     *,
@@ -61,12 +105,16 @@ def record(
     scan: dict,
     top_n: int = DEFAULT_TOP_N,
     now: datetime | None = None,
+    index: pd.DataFrame | None = None,
 ) -> int:
     """운영일 기록. 만기 전 행은 같은 날 재실행(실패 뒤 재시도)이 덮어쓰고, 만기된 행은 그대로
-    둔다(PR #33 리뷰). 쓰거나 덮어쓴 행 수."""
+    둔다(PR #33 리뷰). `index` 가 있으면 지수 기준선도. 쓰거나 덮어쓴 행 수."""
     created = (now or datetime.now(UTC)).isoformat()
     n = 0
-    for strategy, weights in build(conn, market=market, day=day, scan=scan, top_n=top_n).items():
+    plans = build(conn, market=market, day=day, scan=scan, top_n=top_n)
+    if index is not None:
+        plans.update(index_weights(index, day=day))
+    for strategy, weights in plans.items():
         cur = conn.execute(
             "INSERT INTO shadow_portfolios(market, date, strategy, weights_json, created_at) "
             "VALUES (?, ?, ?, ?, ?) ON CONFLICT(market, date, strategy) DO UPDATE SET "
@@ -107,10 +155,16 @@ def _window_closed(dates: list[date], start: date, horizon: int, today: date) ->
 
 
 def mature(
-    conn: sqlite3.Connection, *, state: Path | None, today: date, horizon: int = HORIZON
+    conn: sqlite3.Connection,
+    *,
+    state: Path | None,
+    today: date,
+    horizon: int = HORIZON,
+    index_tables: dict[str, pd.DataFrame] | None = None,
 ) -> int:
     """만기가 지난 미결 행의 `fwd_ret` 를 채운다(멱등). 채운 행 수.
-    종가가 없는 종목은 빼고 남은 비중으로 다시 나눈다(전부 없으면 다음에 다시 본다)."""
+    종가가 없는 종목은 빼고 남은 비중으로 다시 나눈다(전부 없으면 다음에 다시 본다).
+    `index_tables` 는 시장별 지수 proxy 종가표(피처 스토어에 없는 proxy 를 채운다)."""
     from trader.memory import outcomes
 
     pending = conn.execute(
@@ -128,7 +182,13 @@ def mature(
             since = min(
                 date.fromisoformat(p["date"]) for p in pending if p["market"] == market
             ) - timedelta(days=LEAD_DAYS)
-            tables[market] = outcomes._close_table(state, market, since=since, until=today)
+            table = outcomes._close_table(state, market, since=since, until=today)
+            idx = (index_tables or {}).get(market)
+            if idx is not None and not idx.empty:
+                idx = idx[[since <= d <= today for d in idx.index]]
+                extra = idx[[c for c in idx.columns if c not in table.columns]]
+                table = extra if table.empty else table.join(extra, how="outer").sort_index()
+            tables[market] = table
         table = tables[market]
         if table.empty or not _window_closed(list(table.index), start, horizon, today):
             continue

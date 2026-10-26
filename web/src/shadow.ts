@@ -1,7 +1,7 @@
 import type { ShadowReport, ShadowStats } from "./types";
 
 export type ShadowRow = {
-  key: "candidates_1n" | "quant_topn";
+  key: "candidates_1n" | "quant_topn" | "index_hold" | "index_trend";
   label: string;
   n: number;
   meanPct: number | null;
@@ -13,6 +13,8 @@ export type ShadowRow = {
 const LABEL: Record<ShadowRow["key"], string> = {
   candidates_1n: "같은 후보 균등(1/N)",
   quant_topn: "정량 상위만",
+  index_hold: "지수 보유",
+  index_trend: "지수 추세(100일선)",
 };
 
 const pct = (v: number | null) => (v === null ? null : v * 100);
@@ -26,8 +28,10 @@ export function verdictOf(s: ShadowStats, minPairs: number): ShadowRow["verdict"
 }
 
 export function shadowRows(r: ShadowReport): ShadowRow[] {
-  return (["candidates_1n", "quant_topn"] as const).map((key) => {
+  // 지수 기준선은 PR 이전 응답·만기 전이면 없을 수 있다 — 있는 것만
+  return (["candidates_1n", "quant_topn", "index_hold", "index_trend"] as const).flatMap((key) => {
     const s = r.pairs[key];
+    if (!s) return [];
     return {
       key,
       label: LABEL[key],
@@ -36,6 +40,6 @@ export function shadowRows(r: ShadowReport): ShadowRow[] {
       lowPct: pct(s.ci_low),
       highPct: pct(s.ci_high),
       verdict: verdictOf(s, r.min_pairs),
-    };
+    } as ShadowRow;
   });
 }
