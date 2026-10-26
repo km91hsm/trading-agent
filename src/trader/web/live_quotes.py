@@ -24,9 +24,13 @@ from trader.broker import kis_ws
 
 logger = logging.getLogger("trader.web")
 
+Sub = tuple[str, str]  # (TR, 키)
+
 LEASE_S = 30.0  # 마지막 요청 뒤 이만큼 구독을 유지
 IDLE_S = 60.0  # 아무 요청도 없으면 연결을 닫고 스레드를 끝낸다
-MAX_TICKERS = kis_ws.MAX_SUBSCRIPTIONS - 1  # 한 칸은 여유(지수·체결통보 확장 몫)
+# 41칸 = 지수 2(KOSPI·KOSDAQ) + 호가 1 + 체결가 37 + 여유 1
+MAX_TICKERS = kis_ws.MAX_SUBSCRIPTIONS - 1 - len(kis_ws.INDEX_CODES) - 1
+BOOK_LEASE_S = 10.0  # 호가는 차트 화면이 보는 동안만
 RECV_TIMEOUT_S = 0.5
 MAX_BACKOFF_S = 30.0
 TICK_FRESH_S = 10.0  # 이보다 오래된 틱(체결이 멈췄거나 끊김을 아직 모름)은 REST 로 보완
@@ -69,10 +73,11 @@ class QuoteHub:
         self._is_open = is_open
         self._autostart = autostart
         self._lock = threading.Lock()
-        self._leases: dict[str, float] = {}  # 종목 → 마지막 요청 시각(clock)
-        self._ticks: dict[str, tuple[float, dict]] = {}  # 종목 → (받은 시각 clock, 값)
-        self._subs: set[str] = set()  # 지금 구독 중(허브 스레드만 바꾼다; 읽기는 락 안에서)
-        self._rejected: dict[str, float] = {}  # 종목 → 거절 시각(clock)
+        # 구독 키는 (TR, 키): 체결가 (H0STCNT0, 종목)·지수 (H0UPCNT0, 0001)·호가 (H0STASP0, 종목)
+        self._leases: dict[Sub, float] = {}  # 키 → 마지막 요청 시각(clock)
+        self._ticks: dict[Sub, tuple[float, dict]] = {}  # 키 → (받은 시각 clock, 값)
+        self._subs: set[Sub] = set()  # 지금 구독 중(허브 스레드만 바꾼다; 읽기는 락 안에서)
+        self._rejected: dict[Sub, float] = {}  # 키 → 거절 시각(clock)
         self._conn: Any = None
         self._key = ""
         self._attempt = 0
@@ -90,23 +95,37 @@ class QuoteHub:
 
     # --- 요청 스레드 쪽 ----------------------------------------------------
 
-    def request(self, tickers: list[str]) -> dict[str, dict]:
-        """이 종목들을 빌리고, 구독 중이며 틱이 있는 것만 돌려준다(나머지는 호출부가 REST)."""
+    def _lease(self, keys: list[Sub]) -> dict[Sub, dict]:
+        """키들을 빌리고, 구독 중이며 신선한 값이 있는 것만 돌려준다."""
         if not self._is_open(self._now()):
             return {}
         now = self._clock()
         with self._lock:
             self._last_request = now
-            for t in tickers:
-                self._leases[t] = now
+            for k in keys:
+                self._leases[k] = now
             out = {
-                t: dict(self._ticks[t][1])
-                for t in tickers
-                if t in self._subs and t in self._ticks and now - self._ticks[t][0] <= TICK_FRESH_S
+                k: dict(self._ticks[k][1])
+                for k in keys
+                if k in self._subs and k in self._ticks and now - self._ticks[k][0] <= TICK_FRESH_S
             }
         if self._autostart:
             self._ensure_thread()
         return out
+
+    def request(self, tickers: list[str]) -> dict[str, dict]:
+        """이 종목들을 빌리고, 구독 중이며 틱이 있는 것만 돌려준다(나머지는 호출부가 REST)."""
+        got = self._lease([(kis_ws.TR_TRADE, t) for t in tickers])
+        return {k[1]: v for k, v in got.items()}
+
+    def request_indices(self) -> dict[str, dict]:
+        """KOSPI·KOSDAQ 실시간 지수(상단 바). {"KOSPI": {price, change_pct, asof}}."""
+        got = self._lease([(kis_ws.TR_INDEX, c) for c in kis_ws.INDEX_CODES])
+        return {kis_ws.INDEX_CODES[k[1]]: v for k, v in got.items()}
+
+    def request_book(self, ticker: str) -> dict | None:
+        """호가 10단(차트 화면). 지수 지정가 보조 — 표시 전용."""
+        return self._lease([(kis_ws.TR_BOOK, ticker)]).get((kis_ws.TR_BOOK, ticker))
 
     def status(self) -> dict:
         with self._lock:
@@ -156,20 +175,25 @@ class QuoteHub:
             if handoff and self._autostart:
                 self._ensure_thread()
 
-    def _desired(self) -> list[str]:
+    def _desired(self) -> list[Sub]:
         now = self._clock()
+
+        def ttl(k: Sub) -> float:
+            return BOOK_LEASE_S if k[0] == kis_ws.TR_BOOK else LEASE_S
+
         with self._lock:
-            for t in [t for t, at in self._rejected.items() if now - at > REJECT_TTL_S]:
-                del self._rejected[t]
-            live = [
-                (at, t)
-                for t, at in self._leases.items()
-                if now - at <= LEASE_S and t not in self._rejected
-            ]
-            for t in [t for t, at in self._leases.items() if now - at > LEASE_S]:
-                del self._leases[t]
-        live.sort(reverse=True)  # 최근 요청부터
-        return [t for _, t in live[:MAX_TICKERS]]
+            for k in [k for k, at in self._rejected.items() if now - at > REJECT_TTL_S]:
+                del self._rejected[k]
+            for k in [k for k, at in self._leases.items() if now - at > ttl(k)]:
+                del self._leases[k]
+            live = sorted(
+                ((at, k) for k, at in self._leases.items() if k not in self._rejected),
+                reverse=True,  # 최근 요청부터
+            )
+        index = [k for _, k in live if k[0] == kis_ws.TR_INDEX]
+        book = [k for _, k in live if k[0] == kis_ws.TR_BOOK][:1]
+        trade = [k for _, k in live if k[0] == kis_ws.TR_TRADE][:MAX_TICKERS]
+        return index + book + trade
 
     def step(self) -> bool:
         """한 바퀴: (필요하면) 접속 → 구독 맞추기 → 프레임 하나 받기. 일을 했으면 True."""
@@ -211,18 +235,18 @@ class QuoteHub:
         logger.info("실시간 시세 접속")
         return True
 
-    def _sync(self, desired: set[str]) -> None:
+    def _sync(self, desired: set[Sub]) -> None:
         with self._lock:
             current = set(self._subs)
-        for t in sorted(current - desired):
-            self._conn.send(kis_ws.subscribe_message(self._key, t, release=True))
+        for k in sorted(current - desired):
+            self._conn.send(kis_ws.subscribe_message(self._key, k[1], release=True, tr_id=k[0]))
             with self._lock:
-                self._subs.discard(t)
-                self._ticks.pop(t, None)
-        for t in sorted(desired - current):
-            self._conn.send(kis_ws.subscribe_message(self._key, t))
+                self._subs.discard(k)
+                self._ticks.pop(k, None)
+        for k in sorted(desired - current):
+            self._conn.send(kis_ws.subscribe_message(self._key, k[1], tr_id=k[0]))
             with self._lock:
-                self._subs.add(t)
+                self._subs.add(k)
 
     def _handle(self, raw: str) -> bool:
         """정상 응답이면 True(백오프 해제), 접속키·해제 거절로 연결을 버렸으면 False."""
@@ -231,7 +255,8 @@ class QuoteHub:
             return True
         problem = kis_ws.control_problem(raw)
         if problem is not None:
-            _, key, msg = problem
+            tr, tr_key, msg = problem
+            key: Sub | None = (tr, tr_key) if tr_key else None
             low = msg.lower()
             if "approval" in low or low.strip() == "not found":
                 logger.warning("실시간 접속키 거절 — 새 키로 다시 접속합니다")
@@ -256,18 +281,17 @@ class QuoteHub:
             return True
         stamp, at = self._now().isoformat(), self._clock()
         for rec in kis_ws.parse_frame(raw):
+            tr = rec["tr_id"]
+            key = (tr, rec["code"] if tr == kis_ws.TR_INDEX else rec["ticker"])
+            if tr == kis_ws.TR_BOOK:
+                val = {k: rec[k] for k in ("asks", "bids", "total_ask", "total_bid", "time")}
+            else:
+                val = {"price": rec["price"], "change_pct": rec["change_pct"], "stale": False}
+                val["source"] = "ws"
+            val["asof"] = stamp
             with self._lock:
-                if rec["ticker"] in self._subs:
-                    self._ticks[rec["ticker"]] = (
-                        at,
-                        {
-                            "price": rec["price"],
-                            "change_pct": rec["change_pct"],
-                            "asof": stamp,
-                            "stale": False,
-                            "source": "ws",
-                        },
-                    )
+                if key in self._subs:
+                    self._ticks[key] = (at, val)
         return True
 
     def _drop(self, *, backoff: bool) -> None:

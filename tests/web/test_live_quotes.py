@@ -105,7 +105,8 @@ def test_lease_expiry_unsubscribes_and_drops_tick():
     assert hub.request(["005930", "000660"]).keys() == {"005930"}
 
 
-def test_capacity_keeps_most_recent_40():
+def test_capacity_keeps_most_recent_37():
+    """41칸 = 지수 2 + 호가 1 + 체결가 37 + 여유 1."""
     hub, clock, made, _ = make_hub()
     old = [f"{i:06d}" for i in range(1, 11)]
     new = [f"{i:06d}" for i in range(100, 135)]
@@ -114,7 +115,7 @@ def test_capacity_keeps_most_recent_40():
     hub.request(new)
     hub.step()
     subscribed = {t for op, t in made[0].subs() if op == "1"}
-    assert len(subscribed) == 40 and set(new) <= subscribed
+    assert len(subscribed) == 37 and set(new[-30:]) <= subscribed
 
 
 def test_pingpong_echoed():
@@ -303,3 +304,29 @@ def test_repeated_approval_rejection_backs_off():
             connects.append(t)
         hub.step()  # 거절 수신
     assert connects[:4] == [0, 1, 3, 7]
+
+
+def test_indices_and_book_leases():
+    """상단 바 지수(KOSPI·KOSDAQ)와 차트 호가 10단도 같은 연결·같은 임차로."""
+    from helpers_kis_ws import book_values, index_values
+
+    hub, clock, made, _ = make_hub()
+    assert hub.request_indices() == {} and hub.request_book("005930") is None
+    hub.step()
+    subs = made[0].sent
+    trs = sorted((m["body"]["input"]["tr_id"], m["body"]["input"]["tr_key"]) for m in subs)
+    assert trs == [("H0STASP0", "005930"), ("H0UPCNT0", "0001"), ("H0UPCNT0", "1001")]
+    made[0].inbox.append("0|H0UPCNT0|001|" + "^".join(index_values("0001", "2650.12", "5", "0.85")))
+    made[0].inbox.append("0|H0STASP0|001|" + "^".join(book_values("005930")))
+    hub.step()
+    hub.step()
+    idx = hub.request_indices()
+    assert idx["KOSPI"]["price"] == "2650.12" and idx["KOSPI"]["change_pct"] == -0.0085
+    book = hub.request_book("005930")
+    assert len(book["asks"]) == 10 and book["asks"][0] == ["71100", "10"]
+    assert book["total_bid"] == "2000"
+    # 호가 임차는 10초 — 차트를 떠나면 칸이 돌아온다
+    clock[0] = 11.0
+    hub.request_indices()
+    hub.step()
+    assert ("2", "005930") in made[0].subs()

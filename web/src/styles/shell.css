@@ -66,6 +66,25 @@
   padding-left: var(--s-3);
   border-left: 1px solid var(--rule);
 }
+/* 상단 바 국내 지수(정규장 실시간): 시계 옆 괘선 하나 뒤, 좁은 폭에선 숨긴다 */
+.index-chips {
+  display: flex;
+  gap: var(--s-3);
+  padding-left: var(--s-3);
+  border-left: 1px solid var(--rule);
+  font-size: var(--t-xs);
+  color: var(--ink-2);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.index-chip b {
+  color: var(--ink);
+}
+@media (max-width: 900px) {
+  .index-chips {
+    display: none;
+  }
+}
 .spacer {
   flex: 1;
 }

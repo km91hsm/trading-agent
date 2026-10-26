@@ -369,3 +369,38 @@ export function useLiveQuotes(market: string, tickers: string[]): QuotesResp | n
   }, [market, key]);
   return resp;
 }
+
+/** 주기 조회(지수·호가처럼 서버 캐시를 읽는 가벼운 GET). `next(r)` 이 다음 대기(ms)를 정하고,
+ * 가려진 탭은 쉬었다가 돌아오면 바로 다시 읽는다. path 가 null 이면 부르지 않는다. */
+export function usePolling<T>(path: string | null, next: (r: T | null) => number): T | null {
+  const [data, setData] = useState<T | null>(null);
+  const nextRef = useRef(next);
+  nextRef.current = next;
+  useEffect(() => {
+    setData(null);
+    if (!path) return;
+    let alive = true;
+    let timer: number | undefined;
+    const run = () => {
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+        timer = window.setTimeout(run, 5_000);
+        return;
+      }
+      getJson<T>(path)
+        .then((r) => {
+          if (!alive) return;
+          setData(r);
+          timer = window.setTimeout(run, nextRef.current(r));
+        })
+        .catch(() => {
+          if (alive) timer = window.setTimeout(run, 60_000);
+        });
+    };
+    run();
+    return () => {
+      alive = false;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [path]);
+  return data;
+}
