@@ -314,3 +314,19 @@ def run_cmd(
         lock.release()
         for sig, handler in previous.items():
             signal.signal(sig, handler)
+
+
+@app.command("service")
+def service_cmd():
+    """AI 없이 수집기를 실행하고 일시 오류를 최대 3회 재기동한다."""
+    from trader.sources.saveticker.automation import service
+
+    service(root().parent)
+
+
+@app.command("monitor")
+def monitor_cmd():
+    """AI 없이 프로세스·갱신 지연을 확인하고 macOS 장애 알림을 보낸다."""
+    from trader.sources.saveticker.automation import monitor
+
+    _print(monitor(root().parent))

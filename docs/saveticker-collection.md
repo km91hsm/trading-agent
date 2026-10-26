@@ -99,3 +99,16 @@ SQLite 커밋 후 JSONL과 최신 파일을 원자적으로 교체한다. 파일
 뉴스·커뮤니티 순위·증시·캘린더는 정상 브라우저 UI가 수신한 허용 JSON 응답에서 추출한다. 독립 HTTP 요청이나 사용자 글·댓글 API는 사용하지 않는다. 로그인·탭 선택·스크롤·기사 열기는 UI로 수행하며, SAVE 리포트 목록/PDF 원본 다운로드는 기존 UI 경로를 유지한다.
 
 뉴스 목록 content는 본문으로 저장하지 않는다. 기사를 열 때 도착한 상세 JSON에서 텍스트 블록을 펼치고 한국어 번역이 제공되면 한국어 제목·본문을 선택한다. 한도 내 미처리 기사는 pending으로 남긴다. 응답은 현재 수집 회차에서만 사용하며 조회 실패나 차단을 성공으로 표시하지 않는다. 시세 문자열은 JSON의 숫자를 그대로 보존하며 통화 기호·퍼센트 기호를 덧붙이지 않는다.
+
+## macOS 자동 운영 (AI 호출 없음)
+
+`trader saveticker service`가 기존 수집 감독 프로세스를 실행한다. 일반 종료 오류는 30/60/120초 뒤 최대 3회 재시작한다. 5분 이상 정상 실행 후 발생한 장애는 새 재시작 예산을 사용한다. `AccessDenied`·`LoginRequired`는 반복 시도하지 않고 중단한다. `trader saveticker monitor`는 프로세스 종료를 즉시, 유효 갱신 120초 지연·파일 읽기 실패를 연속 2회 확인 후 macOS 알림으로 알린다. 같은 장애는 중복 알리지 않고 복구도 한 번 알린다. 계정·쿠키·원본 예외는 알림에 넣지 않는다.
+
+설치된 사용자 LaunchAgent:
+
+- `com.user.saveticker.collector`: 로그인 시 `service` 실행, 종료 대기 70초.
+- `com.user.saveticker.monitor`: 로그인 시 및 60초마다 `monitor` 실행.
+
+실행 파일·작업 폴더는 설치 당시 Python 환경과 코드 체크아웃을 절대 경로로 참조한다. Codex/Claude 앱을 종료해도 동작하지만 해당 코드 폴더·가상환경을 삭제하면 안 된다. 이 LaunchAgent는 거래 데몬을 실행하지 않는다. macOS 로그인 세션과 깨어 있는 컴퓨터가 필요하며, 수동 재부팅·로그아웃·잠자기 중 연속 수집까지 보장하지 않는다. 재부팅 후 로그인 시 시작 여부는 실제 재부팅 전까지 미검증이다. macOS 알림 허용·집중 모드 설정은 사용자 환경에 따른다.
+
+등록 상태는 `launchctl print gui/$(id -u)/com.user.saveticker.collector` 및 `.monitor`로 확인한다. 의도적으로 수집을 중지할 때는 두 작업을 모두 `launchctl bootout gui/$(id -u)/com.user.saveticker.collector`와 `launchctl bootout gui/$(id -u)/com.user.saveticker.monitor`로 내린다. 다시 시작하려면 `~/Library/LaunchAgents/com.user.saveticker.{collector,monitor}.plist`를 각각 `launchctl bootstrap`으로 등록한다. 실행·재시작 기록은 `runtime/service.json`, 감시 기록은 `runtime/alert-monitor.json`이다.
