@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { pipelineStages, stageSummary } from "./pipeline";
+import { pipelineStages, scalpChip, scalpRows, stageSummary } from "./pipeline";
 
 describe("pipelineStages", () => {
   it("기본 판 9개를 순서대로, 파일을 묶고 done 을 표시한다", () => {
@@ -126,5 +126,28 @@ describe("stageSummary 10_analyst", () => {
       { file: "10_analyst_news_macro", data: { stance: "BULLISH" } },
     ];
     expect(stageSummary("10_analyst", items)).toBe("강세 2 · 중립 1 · 약세 1");
+  });
+});
+
+describe("scalp 판정자 표시 (Phase 25)", () => {
+  it("칩에 GO/NO 와 판정 대기, 행에 판정 GO", () => {
+    const r = {
+      enabled: true,
+      judge: true,
+      max_weight_pct: 0.05,
+      max_positions: 2,
+      markets: {
+        KR: {
+          date: "2026-10-26",
+          open: [{ ticker: "005930", entry_price: "100", entry_time: "100000", judged: true }],
+          closed: [],
+          halted: null,
+          pending: ["000660"],
+          judge: { counts: { go: 1, no_go: 2, none: 0 }, go_avg_ret: null, go_trades: 0 },
+        },
+      },
+    };
+    expect(scalpChip(r, "KR").text).toBe("켬 · 보유 1 · 청산 0 · 판정 GO 1·NO 2 · 판정 대기 1");
+    expect(scalpRows(r, "KR")[0].state).toBe("보유 중 · 판정 GO");
   });
 });

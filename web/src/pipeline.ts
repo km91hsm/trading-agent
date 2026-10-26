@@ -203,15 +203,18 @@ export type ScalpTrade = {
   ret?: number;
   qty?: Record<string, number>;
   dry_run?: boolean;
+  judged?: boolean; // Phase 25 판정자 GO 로 들어간 거래
 };
+export type ScalpJudgeSummary = { counts: { go: number; no_go: number; none: number }; go_avg_ret: number | null; go_trades: number };
 export type ScalpResp = {
   enabled: boolean;
+  judge?: boolean;
   max_weight_pct: number;
   max_positions: number;
-  markets: Record<string, { date: string; open: ScalpTrade[]; closed: ScalpTrade[]; halted: string | null }>;
+  markets: Record<string, { date: string; open: ScalpTrade[]; closed: ScalpTrade[]; halted: string | null; pending?: string[]; judge?: ScalpJudgeSummary }>;
 };
 
-const SCALP_REASON: Record<string, string> = { take_profit: "익절", stop: "손절", max_hold: "보유 시간", close: "마감 전", eod: "장 마감" };
+const SCALP_REASON: Record<string, string> = { take_profit: "익절", stop: "손절", max_hold: "보유 시간", close: "마감 전", eod: "장 마감", judge_exit: "판정자 조기 청산" };
 
 export type ScalpRow = { key: string; ticker: string; state: string; entry: string; exit: string; ret: string; reason: string; dry: boolean };
 
@@ -222,6 +225,8 @@ export function scalpChip(r: ScalpResp | null, market: string): { text: string; 
   const m = r.markets[market];
   if (!m) return { text: "켬", level: "ok" };
   const parts = [`켬 · 보유 ${m.open.length} · 청산 ${m.closed.length}`];
+  if (r.judge && m.judge) parts.push(`판정 GO ${m.judge.counts.go}·NO ${m.judge.counts.no_go}`);
+  if (m.pending?.length) parts.push(`판정 대기 ${m.pending.length}`);
   if (m.halted) parts.push("중단");
   return { text: parts.join(" · "), level: m.halted ? "warn" : "ok" };
 }
@@ -235,7 +240,7 @@ export function scalpRows(r: ScalpResp | null, market: string): ScalpRow[] {
   const open = m.open.map((t) => ({
     key: `o:${t.ticker}:${t.entry_time}`,
     ticker: t.ticker,
-    state: "보유 중",
+    state: t.judged ? "보유 중 · 판정 GO" : "보유 중",
     entry: `${t.entry_price} @ ${hhmm(t.entry_time)}`,
     exit: "—",
     ret: "—",
@@ -245,7 +250,7 @@ export function scalpRows(r: ScalpResp | null, market: string): ScalpRow[] {
   const closed = [...m.closed].reverse().map((t) => ({
     key: `c:${t.ticker}:${t.entry_time}`,
     ticker: t.ticker,
-    state: "청산",
+    state: t.judged ? "청산 · 판정 GO" : "청산",
     entry: `${t.entry_price} @ ${hhmm(t.entry_time)}`,
     exit: `${t.exit_price ?? "—"} @ ${hhmm(t.exit_time)}`,
     ret: t.ret === undefined ? "—" : `${t.ret >= 0 ? "+" : ""}${(t.ret * 100).toFixed(2)}%`,

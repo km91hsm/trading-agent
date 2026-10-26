@@ -350,7 +350,8 @@
 - [ ] 단계 4 테마 열기 감지·안전장치 (`feat/phase25-4-theme`, 머지 전 사용자 확인): KIS 순위 3종(관대한 파서), `scan/theme.py`, 원장 v18 `theme_heat`, 데몬 `<시장>_theme`·알림·CLI·API·대시보드, scout 규칙 1 완화, 게이트(+10% 추격 금지·테마 20%·테마 종목 10일·익절가) — 구현·테스트 완료, PR 확인 대기
 - [ ] 실기(사용자 확인 대기): 장중 `uv run trader theme show --live --market KR` 의 `signals.ranks` 가 0 이 아닌지(순위 API 파라미터·필드명 확인), 대시보드 '테마 열기' 블록과 `[테마 열기]` 알림
 - [ ] 결정 대기(사용자): 2~4주 뒤 `theme_heat.fwd_ret_5d`(상위 테마 사후 초과수익)로 `theme.weights`·`top_n`·`chase_limit_pct` 조정
-- [ ] 단계 5 분 단위 LLM 판정자 (`feat/phase25-5-scalp-judge`, 머지 전 사용자 확인)
+- [ ] 단계 5 분 단위 LLM 판정자 (`feat/phase25-5-scalp-judge`, 머지 전 사용자 확인): `quick.ask_json`·`scalp-judge`(haiku)·`ScalpVerdict/ScalpAdvice`·엔진 비동기 판정(다음 틱 회수·0.3% 이탈·시간 초과·재시작=진입 없음·클램프)·보유 조언·GO vs NO_GO 리포트 — 구현·테스트 완료, PR 확인 대기
+- [ ] 결정 대기(사용자): 단타를 켠 뒤(`scalp.enabled`) 1~2주 `scalp report --live` 의 GO/NO_GO 사후 수익을 보고 `scalp.judge` 를 켤지
 - [x] 단계 6 승인 지문·공시 중요도 (`feat/phase25-6-approval-disclosure`): 원장 v19 `approvals.fingerprint`·`news_items.severity`, `sources/disclosures.py`(DART 키워드·8-K item), 데몬 `_disclosure_trigger`(critical 즉시 재분석·알림 1회), 운영 점검 `disclosure` 영역 (2026-10-26)
 - [ ] 실기(사용자 확인 대기): DART 키가 있는 날 데몬 `news_collect` 로그의 `disclosure:KR` inserted·critical, EDGAR `submissions` 가 User-Agent 로 200 을 주는지
 - [ ] 단계 7 주간 리밸런스·세금 로트 (`feat/phase25-7-rebalance-tax`, 머지 전 사용자 확인)
