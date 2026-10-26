@@ -46,3 +46,8 @@ def test_run_fake_sends_and_respects_switches(conn, monkeypatch):
     assert briefing.run(conn, Settings(), ACCTS, now=NOW, notifier=sent)["skipped"].startswith(
         "감속"
     )
+
+
+def test_briefing_uses_kst_date(conn):
+    p = briefing.build_inputs(conn, Settings(), ACCTS, now=NOW)  # 22:20Z = 다음 날 07:20 KST
+    assert p["date"] == "2026-10-27"

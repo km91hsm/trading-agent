@@ -91,3 +91,17 @@ def test_approve_mode_accounts_skipped(conn, project):
     assert cash_park.run(ctx, market_client=Market(), today=D, regime="bear", dry_run=False) == {
         "skipped": "오늘 이미 실행"
     }
+
+
+def test_one_account_failure_does_not_block_others(conn, project):
+    from conftest import make_account
+
+    good = make_account("paper-b", "paper", "auto")
+    ctx = _ctx(conn, ON)
+    cash = {"KR": Cash(currency="KRW", available=Decimal(10_000_000), total=Decimal(10_000_000))}
+    ctx.accounts.append(good)
+    ctx.brokers["paper-b"] = FakeBroker(good, cash=cash)
+    ctx.brokers["paper-main"].fail = {"get_balance"}
+    r = cash_park.run(ctx, market_client=Market(), today=D, regime="bear", dry_run=False)
+    by = {o["account_id"]: o for o in r["orders"]}
+    assert "error" in by["paper-main"] and by["paper-b"]["action"] == "BUY"

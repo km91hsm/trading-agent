@@ -32,6 +32,7 @@ def build_inputs(
     market_client: Any = None,
     saveticker_root: Path | None = None,
 ) -> dict:
+    from trader.config import KST
     from trader.ledger import shadow
     from trader.orchestrator import market_view
     from trader.orchestrator.run_store import run_date_for
@@ -39,6 +40,7 @@ def build_inputs(
     from trader.sources import news_store
     from trader.sources import saveticker as st
 
+    kst_today = now.astimezone(KST).date()  # 07:20 KST 는 UTC 로 아직 전날이다(Codex 리뷰)
     us = None
     idx = shadow.index_table(market_client, settings.hedge, "US", days=5)
     if not idx.empty and len(idx) >= 2:
@@ -77,9 +79,9 @@ def build_inputs(
                 )
     calendar = st.upcoming(saveticker_root, asof=now, days=2) if saveticker_root else []
     return {
-        "date": now.date().isoformat(),
+        "date": kst_today.isoformat(),
         "us_overnight": us,
-        "regime": regime.summary(conn, ["KR", "US"], today=now.date()),
+        "regime": regime.summary(conn, ["KR", "US"], today=kst_today),
         "market_view": views_by_market,
         "news": news,
         "calendar": calendar[:10],

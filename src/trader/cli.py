@@ -1596,6 +1596,7 @@ def web(
         host=bind,
         port=port or deps.settings.web.port,
         log_level="info",
+        proxy_headers=False,  # Tailscale 게이트가 실제 피어(루프백)를 보게
     )
 
 

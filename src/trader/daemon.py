@@ -1675,9 +1675,15 @@ def _briefing_body(deps: DaemonDeps) -> dict:
 
 
 def _daily_report_body(deps: DaemonDeps, market: str) -> dict:
-    """장 마감 일일 리포트 → 텔레그램(오늘 스냅샷이 있는 계좌만, 없으면 조용히)."""
+    """장 마감 일일 리포트 → 텔레그램(오늘 스냅샷이 있는 계좌만, 없으면 조용히). 먼저 체결을
+    동기화한다 — US 마감(16:20 ET)은 정기 체결 동기화(07:10 KST)보다 앞서 실현손익·미결이 빈다."""
     from trader.ledger import daily_report
     from trader.orchestrator.run_store import run_date_for
+
+    try:
+        _fills_body(deps)
+    except Exception as e:  # noqa: BLE001 - 동기화 실패여도 리포트는 원장 값으로
+        logger.warning("일일 리포트 전 체결 동기화 실패 %s: %s", market, e)
 
     conn = deps.conn_factory()
     try:
@@ -2819,7 +2825,15 @@ def _start_web(app: Any, host: str, port: int, *, notifier: Any = None) -> threa
 
     # 접근 로그는 실시간 시세 폴링(10초)마다 줄이 쌓여 끈다(전체 검토 P10)
     server = uvicorn.Server(
-        uvicorn.Config(app, host=host, port=port, log_level="info", access_log=False)
+        uvicorn.Config(
+            app,
+            host=host,
+            port=port,
+            log_level="info",
+            access_log=False,
+            # X-Forwarded-For 로 접속 주소를 바꾸지 않는다(Tailscale 게이트가 실제 피어를 본다)
+            proxy_headers=False,
+        )
     )
 
     def run() -> None:

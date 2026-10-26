@@ -14,8 +14,21 @@ export function RiskCard({ data, market }: { data: RiskResp; market: string }) {
     );
   const summary = riskSummary(data);
   const top = topCorrelation(data);
+  const missing = data.missing ?? [];
   return (
     <>
+      {missing.length > 0 && (
+        <p className="note" role="note">
+          <span className="badge badge-pending">부분 추정</span> 종가 이력이 부족한 보유 종목 {missing.length}개(
+          {missing.map((t, i) => (
+            <span key={t}>
+              {i ? ", " : ""}
+              <Ticker market={market} ticker={t} />
+            </span>
+          ))}
+          )를 빼고 계산했어요 — 실제 위험은 이보다 클 수 있어요.
+        </p>
+      )}
       <dl className="kv">
         {summary.map((s) => (
           <div key={s.label} className="kv-row">

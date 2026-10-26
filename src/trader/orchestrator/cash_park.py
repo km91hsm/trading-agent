@@ -77,48 +77,56 @@ def run(
     out: dict[str, Any] = {"regime": regime, "orders": []}
     all_ids = {a.id for a in ctx.accounts}
     for a in todo:
-        broker = ctx.brokers[a.id]
-        pf = executor.build_portfolio(ctx.conn, broker, a, MARKET, today)
-        held = pf.positions.get(cfg.ticker)
-        held_eval = held.eval_amount if held else Decimal(0)
-        if regime == "bear":
-            spare = (
-                pf.cash_available - pf.today_order_amount - Decimal(str(cfg.reserve_pct)) * pf.nav
-            )
-            if spare < cfg.min_amount or pf.nav <= 0 or price <= 0:
-                state[a.id] = "done"  # 오늘 운용할 현금 없음
-                continue
-            weight = float((held_eval + spare) / pf.nav)
-            dec = _decision(
-                cfg.ticker, "ADD" if held else "BUY", weight, price, "하락 국면이라 남는 현금 운용"
-            )
-            cap = min(1.0, weight)
-        elif held is not None and held.qty > 0:
-            dec = _decision(cfg.ticker, "SELL", 0.0, price, f"국면 {regime} — 운용 해제")
-            cap = None
-        else:
-            state[a.id] = "done"
-            continue
-        res = executor.execute(
-            ctx,
-            dec,
-            date=today,
-            market=MARKET,
-            price=price,
-            dry_run=dry_run,
-            decision_id=None,
-            skip_accounts=frozenset(all_ids - {a.id}),
-            is_park=True,
-            park_max_weight=cap,
-        )
-        out["orders"].append({"account_id": a.id, "action": dec.action, "results": res})
-        ok = any(
-            r.get("approved")
-            and not r.get("error")
-            and (r.get("dry_run") or (r.get("order") or {}).get("status") not in DEAD_STATUSES)
-            for r in res
-        )
-        state[a.id] = "done" if ok else int(state.get(a.id) or 0) + 1
+        try:
+            _one(ctx, a, cfg, price, regime, today, dry_run, all_ids, state, out)
+        except Exception as e:  # noqa: BLE001 - 한 계좌의 잔고·주문 실패가 다른 계좌를 막지 않는다
+            logger.warning("현금 운용 실패 %s: %s", a.id, e)
+            state[a.id] = int(state.get(a.id) or 0) + 1
+            out["orders"].append({"account_id": a.id, "error": f"{type(e).__name__}: {e}"})
     if not dry_run:  # dry_run 은 실제 실행을 막지 않게 기록하지 않는다
         control.set_flag(ctx.conn, done_key(today), state)
     return out
+
+
+def _one(ctx, a, cfg, price, regime, today, dry_run, all_ids, state, out) -> None:
+    """계좌 하나: 잔고 → (bear) 남는 현금 매수 / (그 밖) 보유분 매도. state·out 을 갱신한다."""
+    broker = ctx.brokers[a.id]
+    pf = executor.build_portfolio(ctx.conn, broker, a, MARKET, today)
+    held = pf.positions.get(cfg.ticker)
+    held_eval = held.eval_amount if held else Decimal(0)
+    if regime == "bear":
+        spare = pf.cash_available - pf.today_order_amount - Decimal(str(cfg.reserve_pct)) * pf.nav
+        if spare < cfg.min_amount or pf.nav <= 0 or price <= 0:
+            state[a.id] = "done"  # 오늘 운용할 현금 없음
+            return
+        weight = float((held_eval + spare) / pf.nav)
+        dec = _decision(
+            cfg.ticker, "ADD" if held else "BUY", weight, price, "하락 국면이라 남는 현금 운용"
+        )
+        cap = min(1.0, weight)
+    elif held is not None and held.qty > 0:
+        dec = _decision(cfg.ticker, "SELL", 0.0, price, f"국면 {regime} — 운용 해제")
+        cap = None
+    else:
+        state[a.id] = "done"
+        return
+    res = executor.execute(
+        ctx,
+        dec,
+        date=today,
+        market=MARKET,
+        price=price,
+        dry_run=dry_run,
+        decision_id=None,
+        skip_accounts=frozenset(all_ids - {a.id}),
+        is_park=True,
+        park_max_weight=cap,
+    )
+    out["orders"].append({"account_id": a.id, "action": dec.action, "results": res})
+    ok = any(
+        r.get("approved")
+        and not r.get("error")
+        and (r.get("dry_run") or (r.get("order") or {}).get("status") not in DEAD_STATUSES)
+        for r in res
+    )
+    state[a.id] = "done" if ok else int(state.get(a.id) or 0) + 1
