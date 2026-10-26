@@ -54,6 +54,21 @@ class ExecContext:
     sectors: Any | None = None  # config.SectorMap (섹터 상한). None 이면 첫 사용 때 load_sectors()
 
 
+def _theme_of(ctx: ExecContext, market: str, d: date) -> Callable[[str], str | None] | None:
+    """게이트의 테마 규칙용 종목→오늘 상위 테마(Phase 25, `scan/theme.theme_of_map`). 꺼졌거나
+    오늘 결과가 없으면 None. 실패는 경고만(테마 규칙만 빠진다)."""
+    if not ctx.settings.theme.enabled:
+        return None
+    try:
+        from trader.scan import theme
+
+        m = theme.theme_of_map(ctx.conn, market, d, ctx.settings.theme.top_n)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("테마 맵 읽기 실패: %s", e)
+        return None
+    return m.get if m else None
+
+
 def _sector_of(ctx: ExecContext, market: str) -> Callable[[str], str | None] | None:
     """섹터 상한용 종목→섹터. sectors.yaml 을 못 읽으면 None(규칙 생략, 경고 1회)."""
     if ctx.sectors is None:
@@ -341,11 +356,13 @@ def execute(
     extra_note: str | None = None,
     scalp_leg: str | None = None,
     is_reprice: bool = False,
+    change_pct: float | None = None,
 ) -> list[dict]:
     """계좌마다 판정·기록·(모드별) 주문. 계좌 하나의 실패가 다른 계좌를 막지 않는다.
     scalp_leg(Phase 23 S, "entry"|"exit")는 분 단위 단타: 결정 행 없이(decision_id None 유지 —
     오늘 LLM 결정과 섞지 않는다) 체크포인트 47_/57_ 에 남기고 게이트는 단타 면제 규칙을 쓴다.
     extra_note 는 판정 note 에 덧붙이는 호출자 문구(재시세 등, Phase 21).
+    change_pct 는 판정 시점 당일 등락률(소수, 재시세 값 우선) — 게이트의 급등 추격 금지(Phase 25).
 
     skip_accounts 는 건너뛸 계좌(이미 판정이 있는 계좌의 실행 재개, 헤지의 계좌별 보유 판단).
     브로커·규칙 밖의 예외(원장 잠금·OSError·OrderBookkeepingError)도 그 계좌의 `error` 항목으로
@@ -390,6 +407,7 @@ def execute(
     agent_tilt = _agent_tilt(ctx, market, date)
     hedge_tickers = frozenset(hedge_cfg.tickers(market)) if hedge_cfg.enabled else frozenset()
     sector_of = _sector_of(ctx, market)
+    theme_of = _theme_of(ctx, market, date)
     for account in ctx.accounts:
         if market not in account.markets or account.id in skip_accounts:
             continue
@@ -420,6 +438,8 @@ def execute(
                     extra_note=extra_note,
                     agent_tilt=agent_tilt,
                     is_scalp=is_scalp,
+                    theme_of=theme_of,
+                    change_pct=change_pct,
                 )
             )
         except OrderBookkeepingError as e:  # 접수 뒤 기록 실패: 다른 계좌를 마친 뒤 올린다
@@ -475,6 +495,8 @@ def _execute_account(
     extra_note: str | None = None,
     agent_tilt: int = 0,
     is_scalp: bool = False,
+    theme_of: Callable[[str], str | None] | None = None,
+    change_pct: float | None = None,
 ) -> dict:
     """계좌 하나의 판정·기록·(모드별) 주문. 반환은 results 항목 하나."""
     if True:  # 들여쓰기 유지(execute 루프 본문을 그대로 옮김)
@@ -495,6 +517,7 @@ def _execute_account(
                 sector_of=sector_of,
                 hedge_tickers=hedge_tickers,
             )
+            portfolio.theme_of = theme_of  # Phase 25: 오늘 상위 테마(없으면 테마 규칙 생략)
             sized = decision
             if rl_eligible and account.env == "paper":
                 sized, rl_prop, rl_base.value = _rl_size(
@@ -517,6 +540,7 @@ def _execute_account(
                 hedge_max_weight=hedge_cfg.max_weight_pct if is_hedge else None,
                 agent_tilt=agent_tilt,
                 is_scalp=is_scalp,
+                change_pct=change_pct,
             )
         except (KisApiError, ValueError) as e:
             verdict = rules.RiskVerdict(
