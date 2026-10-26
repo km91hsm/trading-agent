@@ -18,7 +18,7 @@ CLAUDE.md 의 "아키텍처 핵심 규칙" 에서 옮겨 온 모듈 단위 상�
 
 ## 전략가 지표(Phase 19, `risk/regime.py`·`orchestrator/hedge.py`)
 
-**전략가 지표(Phase 19).** 시장 세션 제안이 비중만 조절하던 것을 국면 판정에도 넣는다 — 단 파이썬 규칙 안에서. `RegimeSignals.agent_risk_off` 가 4번째 지표로 `count` 에 +1 하되 `raw_state` 는 정량 지표 0개면 전략가만으로 neutral 까지만 올린다(bear 진입은 지표 1개 이상 + 전략가). 데몬 `_scan_analyze_body` 순서는 `_regime_body → _market_view_body → _regime_apply_view → scan → analyze`: 오늘 제안이 RISK_OFF 이고 `confidence ≥ hedge.agent_min_confidence`(0.7) 면 `regime.reapply(agent_risk_off=True)` 로 저장된 오늘 지표에 신호만 바꿔 재판정(같은 운영일 재계산이라 streak 겹침 없음, 전환은 `[국면 전환] … (1/3+전략가)` 알림), 아니면 신호를 끈 채 재판정(어제 신호가 남지 않게). `hedge.agent_signal=false` 면 전부 꺼진다. **RISK_ON 하루 보류**: `hedge.rebalance` 가 bear 진입 직전에 `_risk_on_deferral` — 제안 RISK_ON ∧ 확신 ≥ 기준 ∧ 정량 지표 수 == `bear_min_signals`(경계) ∧ 3/3 아님이면 `action: deferred` 로 그날 플래그를 세우고(알림 1건) 진입하지 않는다; 3/3·확신 낮음·해제는 영향 없다. 가시성은 `regime.count_text`(STATUS·텔레그램·알림)·웹 `countText`·지표 라벨 '전략가 위험 회피'. 평가는 기존 scorecard(제안 적중률)로 2~4주 뒤 — 나쁘면 `hedge.agent_signal: false`.
+**전략가 지표(Phase 19).** 시장 세션 제안이 비중만 조절하던 것을 국면 판정에도 넣는다 — 단 파이썬 규칙 안에서. `RegimeSignals.agent_risk_off` 가 4번째 지표로 `count` 에 +1 하되 `raw_state` 는 정량 지표 0개면 전략가만으로 neutral 까지만 올린다(bear 진입은 지표 1개 이상 + 전략가). 데몬 `_scan_analyze_body` 순서는 `_regime_body → _market_view_body → _regime_apply_view → scan → analyze`: 오늘 제안이 RISK_OFF 이고 `confidence ≥ hedge.agent_min_confidence`(0.7) 면 `regime.reapply(agent_risk_off=True)` 로 저장된 오늘 지표에 신호만 바꿔 재판정(같은 운영일 재계산이라 streak 겹침 없음, 전환은 `[국면 전환] … (1/3+전략가)` 알림), 아니면 신호를 끈 채 재판정(어제 신호가 남지 않게). `hedge.agent_signal=false` 면 전부 꺼진다. **RISK_ON 하루 보류**: `hedge.rebalance` 가 bear 진입 직전에 `_risk_on_deferral` — 제안 RISK_ON ∧ 확신 ≥ 기준 ∧ 정량 지표 수 == `bear_min_signals`(경계) ∧ 3/3 아님이면 `action: deferred` 로 그날 플래그를 세우고(알림 1건) 진입하지 않는다; 3/3·확신 낮음·해제는 영향 없다. 가시성은 `regime.count_text`(STATUS·텔레그램·알림)·웹 `countText`·지표 라벨 '전략가 위험 회피'. 평가는 기존 scorecard(제안 적중률)로 2~4주 뒤 — 나쁘면 `hedge.agent_signal: false`. **2026-10-26 전체 검토 L8: 기본값을 false 로 내렸다** — Phase 22 한도 기울기(`agent_gate`)가 같은 제안을 한 번 더 반영해 RISK_OFF 하나가 국면 지표 +1 과 한도 축소로 이중 작동했다. 전략가는 기울기로만 주문 범위에 닿고, 켜면 위 동작이 돌아온다.
 
 ## 응답없음 대응(Phase 20, `platform/tray.py`·`orchestrator/session.py`·`web/src/events.ts`)
 
@@ -31,6 +31,10 @@ CLAUDE.md 의 "아키텍처 핵심 규칙" 에서 옮겨 온 모듈 단위 상�
 ## 전략가 기울기 게이트(Phase 22, `risk/stance.py`·`risk/rules.py`·`orchestrator/executor.py`)
 
 **전략가 기울기 게이트(Phase 22).** "주문 허용 범위는 파이썬만 정한다" 를 한 칸 열어 에이전트(시장 세션 전략가)의 톤이 한도에 닿게 했다. `executor.execute` 가 시장·날짜마다 `_agent_tilt`(= `stance.tilt_of(market_view_today(...), min_confidence=hedge.agent_min_confidence)`) 를 한 번 구해 `rules.evaluate(agent_tilt=)` 로 넘기고, `stance.limits_for_regime(regime, limits, tilt)` 가 국면 한도를 **한 칸만** 옮긴다: bull−1 → neutral 한도(15%·3), neutral+1 → `TILT_UP`(20%·4), neutral−1 → `TILT_DOWN`(10%·2), bear+1 → 10%·2 — bear 의 신규 매수 거부 규칙은 `tilt > 0` 일 때만 "조건부 허용" 사유로 바뀐다. 설정 `risk.max_position_pct/max_positions` 보다 넓어지지 않는다(min). 헤지(`is_hedge`)·손절(`is_stop_loss`)은 tilt 0 으로 고정. 판정 reasons 에 "국면 neutral + 전략가 RISK_ON: 신규 매수 한도(종목당 20%·4종목)" 처럼 한도의 출처가 남는다. `hedge.agent_gate=false`(또는 `hedge.enabled=false`) 면 tilt 는 늘 0 이라 Phase 17 동작과 같다. 트레이더 md 는 bear + RISK_ON 확신 높음일 때만 `target_weight ≤ 0.10` 매수를 낼 수 있다고 안다. 전략가 제안 적중률(`regime.summary.scorecard`)이 나쁘면 사용자가 꺼야 한다 — 어떤 코드도 자동으로 켜거나 끄지 않는다. RL 사이저 `mode: apply` 는 기존대로 `ml.yaml` 수동(승격 뒤)이다.
+
+## 투자 방식 게이트 강화(전체 검토 3차, 2026-10-26, `risk/rules.py`·`risk/costs.py`)
+
+**게이트 강화만(사용자 결정 L9).** 사이징 모델을 새로 들이지 않고 게이트 세 줄로 손실 비대칭을 막는다. ① **1회 손실 한도**: BUY/ADD 수량을 `floor(NAV × risk_per_trade_pct ÷ (주문가 − 손절가))` 로 자른다(기본 2%, `settings.risk.risk_per_trade_pct`) — 목표 비중만 보던 사이징은 손절 거리가 −20% 든 −3% 든 같은 금액을 샀다. 반감 뒤에 적용하고 사유에 손절 거리를 남긴다. ② **손절·익절 필수**: BUY/ADD 에 둘 중 하나라도 없으면 거부(익절가를 비우면 비용 검사를 건너뛰던 구멍). ③ **확신 가중 기대값**: `costs.expected_value = p·(익절/주문가 − 1) − (1−p)·(1 − 손절/주문가)`, p = confidence 를 0.05~0.95 로 자른 값, 이 값이 왕복비용(KR 30bp·US 50bp) 미만이면 거부 — 목표 +2%·손절 −20% 같은 음의 기대값 주문이 기존 '기대수익 ≥ 비용×2' 를 통과하던 것을 막는다. 헤지·단타는 셋 다 면제(각자 전용 규칙), 손절 SELL 은 BUY 분기 밖이라 무관. 트레이더 md 규칙 6 이 같은 조건을 안내한다. 같은 묶음에서 `hedge.agent_signal` 기본을 끄고(L8, 위 「전략가 지표」) 약세 리서처 모델을 강세와 같게(sonnet) 맞췄다(L11 — 비대칭 모델이면 수렴 감시가 정당한 수렴도 아첨으로 본다).
 
 ## 보완 묶음(Phase 21, 2026-10-25)
 
@@ -241,3 +245,8 @@ Claude 리뷰어 4 + Codex 2 교차검증 결과 중 비주문 항목. 표의 �
 - **승인 실행(O11).** `executor.approve` 는 요청 뒤 결정 행동이 바뀌었으면(HOLD·반대 방향, 헤지 결정 제외) 실행하지 않고 요청을 expired 로 닫는다.
 - **헤지 레버리지(O14).** −2x 는 `regime.core_count`(200일선·모멘텀·변동성 3지표)가 3 일 때만 — 전략가·수급 보조 신호로 count 가 3 이 돼도 −1x.
 - **가격 검증(O16).** `Decision.limit_price·stop_loss·take_profit` 은 양수만(gt=0).
+
+### 승인 지문·공시 중요도 (단계 6)
+- **승인 지문.** `executor.approval_fingerprint(account_id, decision_id, order)` = 정렬 키 JSON(표시용 `name` 제외, `quote_price`·`order_stage` 포함) sha256. `_request_approval` 이 원장 v19 `approvals.fingerprint` 에 저장하고 `executor.approve` 가 실행 직전 `order_json` 으로 다시 계산해 다르면 주문하지 않고 `failed` + CRITICAL 로그 + `[긴급: 승인 지문 불일치]` 알림. 지문 없는 옛 행(NULL)은 통과.
+- **공시 중요도(`sources/disclosures.py`).** KR 은 DART `list.json` 을 회사 지정 없이 그날 1~3쪽(`DartClient.market_disclosures`) 받아 대상 종목만, US 는 대상 종목 CIK 의 `submissions`(`EdgarClient.submissions`) 최근 3일 8-K. 보고서명 키워드(`DART_CRITICAL`: 감자·거래정지·관리종목·상장폐지·회생절차·파산·감사의견 거절/부적정 등, `DART_HIGH`: 유상증자·전환사채·최대주주변경·횡령·배임·불성실공시)·8-K item(1.03·3.01·4.02 critical, 1.05 high, 2.02 info)으로 `severity` 를 매겨 뉴스 저장소(`news_items.severity`, v19, source `dart`|`edgar`)에 멱등 적재. 대상 = 유니버스 ∪ 보유 ∪ 관심.
+- **critical 처리.** 데몬 `news_collect` 가 시장별 `_disclosure_trigger` 를 부른다: 처음 보는(`control.disclosure_seen:<market>`, 최근 300개) 최근 1일 critical 이 유니버스·보유 종목에 붙으면 `[중요 공시]` 알림 1회 + `news_min_novel`·`news_burst` 조건 없이 `_news_reanalyze`(오늘 결정 있으면 재평가, 없으면 analyze_ticker). paused·장중 창 밖이면 알림만. 운영 점검 새 영역 `disclosure`: 보유 종목(최신 스냅샷)의 최근 3일 critical → critical 단계(웹 `ops.ts` '공시').

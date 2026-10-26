@@ -96,8 +96,8 @@ def insert_items(
             tickers = sorted(set(tickers) | {str(t).strip() for t in it.get("tickers") or [] if t})
         cur = conn.execute(
             "INSERT OR IGNORE INTO news_items(market, source, query, title, url, url_hash, "
-            "published_at, received_at, summary, tickers_json, lang) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "published_at, received_at, summary, tickers_json, lang, severity) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 market,
                 source,
@@ -110,6 +110,7 @@ def insert_items(
                 (it.get("summary") or "")[:300],
                 json.dumps(tickers, ensure_ascii=False),
                 lang,
+                it.get("severity"),  # 공시 중요도(Phase 25): critical|high|info|None
             ),
         )
         n += int(cur.rowcount == 1)

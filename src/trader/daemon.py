@@ -1403,6 +1403,12 @@ def _news_body(deps: DaemonDeps) -> dict:
         except Exception as e:  # noqa: BLE001 - 로컬 폴더 문제가 뉴스 잡을 막지 않는다
             logger.warning("세이브티커 적재 실패: %s", e)
             out["saveticker"] = {"error": f"{type(e).__name__}: {e}"}
+        for market in deps.settings.markets:  # 공시 중요도(Phase 25): 수집 → critical 즉시 처리
+            try:
+                out[f"disclosure:{market}"] = _disclosure_trigger(deps, conn, market, universe)
+            except Exception as e:  # noqa: BLE001 - 공시 실패가 뉴스 수집을 막지 않는다
+                logger.warning("공시 처리 실패 %s: %s", market, e)
+                out[f"disclosure:{market}"] = {"error": f"{type(e).__name__}: {e}"}
         out["pruned"] = news_store.prune(
             conn, before=deps.now() - timedelta(days=cfg.store_retention_days)
         )
@@ -1423,6 +1429,85 @@ def _in_market_window(deps: DaemonDeps, market: str) -> bool:
     return in_window(
         now_local.time().replace(second=0, microsecond=0), ms.monitor.start, ms.monitor.end
     )
+
+
+def _held_tickers(deps: DaemonDeps, market: str) -> set[str]:
+    held: set[str] = set()
+    for a in deps.accounts:
+        b = deps.brokers.get(a.id)
+        if market in a.markets and b is not None:
+            try:
+                held |= {p.ticker for p in b.get_positions(market)}
+            except Exception as e:  # noqa: BLE001
+                logger.debug("보유 조회 실패 %s: %s", a.id, e)
+    return held
+
+
+DISCLOSURE_SEEN_MAX = 300
+
+
+def _disclosure_trigger(deps: DaemonDeps, conn: sqlite3.Connection, market: str, universe) -> dict:
+    """공시 중요도(Phase 25 단계 6). 보유·유니버스·관심 종목의 오늘 공시를 적재하고, 처음 보는
+    critical 은 `[중요 공시]` 알림 + 새 뉴스 건수 조건(news_min_novel·news_burst) 없이 즉시 재분석
+    요청(paused·장중 창 밖이면 알림만). 같은 공시는 `control.disclosure_seen:<market>` 로 1회."""
+    from trader.orchestrator.run_store import run_date_for
+    from trader.sources import disclosures
+
+    uni = set(universe.kr) if market == "KR" else {u.symbol for u in universe.us}
+    held = _held_tickers(deps, market)
+    watch = set(control.get_watchlist(conn, market=market))
+    inp = deps.input_deps
+    res = disclosures.collect(
+        conn,
+        market=market,
+        tickers=uni | held | watch,
+        now=deps.now(),
+        dart=getattr(inp, "dart", None),
+        edgar=getattr(inp, "edgar", None),
+    )
+    key = f"disclosure_seen:{market}"
+    seen = list(control.get_flag(conn, key) or [])
+    fresh = [
+        r
+        for r in disclosures.critical_recent(
+            conn, market, since=deps.now() - timedelta(days=1), tickers=uni | held
+        )
+        if r["id"] not in seen
+    ]
+    if not fresh:
+        return res
+    can_run = not control.is_paused(conn) and _in_market_window(deps, market)
+    today = run_date_for(market, deps.now())
+    cache = _cache_dir(deps)
+    hedge = set(deps.settings.hedge.tickers(market)) if deps.settings.hedge.enabled else set()
+    queued = []
+    for r in fresh:
+        for t in r["tickers"]:
+            if t in hedge or t not in (uni | held):
+                continue
+            rid = _news_reanalyze(deps, conn, market, t, [r], today, universe) if can_run else None
+            action = (
+                f"재분석 요청 #{rid}"
+                if rid is not None
+                else ("재분석 요청 중복" if can_run else "일시정지·장 밖 — 알림만")
+            )
+            if rid is not None:
+                queued.append({"ticker": t, "request_id": rid})
+            try:
+                deps.notifier.send(
+                    messages.disclosure(
+                        market=market,
+                        label=names.display(conn, cache, market, t),
+                        title=r["title"],
+                        url=r["url"],
+                        action=action,
+                    )
+                )
+            except Exception:  # noqa: BLE001
+                logger.debug("중요 공시 알림 실패", exc_info=True)
+        seen.append(r["id"])
+    control.set_flag(conn, key, seen[-DISCLOSURE_SEEN_MAX:])
+    return res | {"critical_new": len(fresh), "queued": queued}
 
 
 def _news_trigger(deps: DaemonDeps, conn: sqlite3.Connection, market: str, universe) -> dict:
