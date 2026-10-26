@@ -149,3 +149,16 @@ def test_reprice_skips_when_chase_too_far_or_dry_run_or_off(conn):
         ctx, market="KR", today=D, cfg=CFG, quote_fn=lambda t, e: Decimal("70100")
     )
     assert out["repriced"] == [] and ctx.brokers["real-main"].cancelled == []
+
+
+def test_candidates_exclude_stop_loss_and_hedge_orders(conn):
+    """전체 검토 O2: 손절 SELL(결정은 BUY)·헤지 결정의 주문은 재호가하지 않는다."""
+    _, o_buy = _order(conn)  # BUY 결정 + BUY 주문 → 후보
+    _, o_sl = _order(conn, side="SELL")  # BUY 결정에 붙은 SELL = 손절 → 제외
+    conn.execute("UPDATE decisions SET source='hedge'")
+    conn.commit()
+    assert reprice.candidates(conn, "paper-main", "KR", D) == []
+    conn.execute("UPDATE decisions SET source='llm'")
+    conn.commit()
+    assert [r["id"] for r in reprice.candidates(conn, "paper-main", "KR", D)] == [o_buy]
+    assert o_sl != o_buy
