@@ -617,3 +617,67 @@ def test_snapshot_tickers_override_universe(project):
     assert n == 1
     got = pd.read_parquet(next((project / "state" / "features").glob("*.parquet")))
     assert list(got["ticker"]) == ["247540"]
+
+
+def test_rederive_reports_progress_outside_store_lock(project, monkeypatch):
+    """전체 검토 P9: 진행 콜백(데몬은 heavy 락 양보)이 파일 락을 쥔 채 불리지 않는다."""
+    import contextlib
+
+    features.write_rows(_rows("2026-10-01", ["005930"]))
+    features.write_rows(_rows("2026-10-02", ["005930"]))
+    held = {"v": False}
+    real = features._store_lock
+
+    @contextlib.contextmanager
+    def spy(state):
+        with real(state):
+            held["v"] = True
+            try:
+                yield
+            finally:
+                held["v"] = False
+
+    monkeypatch.setattr(features, "_store_lock", spy)
+    calls: list[bool] = []
+    assert features.rederive(progress=lambda s: calls.append(held["v"])) == 2
+    assert calls == [False, False]
+
+
+def test_write_rows_does_not_overwrite_when_existing_file_unreadable(project, monkeypatch):
+    """전체 검토 P11: 날짜 파일을 일시적으로 못 읽으면(OSError) 새 행만으로 덮어쓰지 않는다."""
+    features.write_rows(_rows("2026-10-01", ["A", "B"]))
+    real = pd.read_parquet
+
+    def locked_read(path, **kw):
+        raise PermissionError("다른 프로세스가 사용 중")
+
+    monkeypatch.setattr(features.pd, "read_parquet", locked_read)
+    with pytest.raises(PermissionError):
+        features.write_rows(_rows("2026-10-01", ["C"]))
+    assert features.read_part(features._features_dir(None) / "2026-10-01.parquet") is None  # 비엄격
+    monkeypatch.setattr(features.pd, "read_parquet", real)
+    got = features.latest_rows(None, "KR")
+    assert sorted(got["ticker"]) == ["A", "B"]
+
+
+def test_atomic_replace_retries_permission_error(tmp_path, monkeypatch):
+    from trader.platform import fsutil
+
+    src, dst = tmp_path / "a.tmp", tmp_path / "a"
+    src.write_text("x", encoding="utf-8")
+    real = fsutil.os.replace
+    n = {"k": 0}
+
+    def flaky(a, b):
+        n["k"] += 1
+        if n["k"] < 3:
+            raise PermissionError("공유 위반")
+        real(a, b)
+
+    monkeypatch.setattr(fsutil.os, "replace", flaky)
+    fsutil.atomic_replace(src, dst, delay_s=0)
+    assert dst.read_text(encoding="utf-8") == "x" and n["k"] == 3
+    src.write_text("y", encoding="utf-8")
+    monkeypatch.setattr(fsutil.os, "replace", lambda a, b: (_ for _ in ()).throw(PermissionError()))
+    with pytest.raises(PermissionError):
+        fsutil.atomic_replace(src, dst, attempts=2, delay_s=0)

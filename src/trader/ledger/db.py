@@ -342,6 +342,27 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
             )""",
         ],
     ),
+    (
+        21,  # 전체 검토 O8: 실행 키 선점 — 두 프로세스가 같은 주문을 동시에 내지 않게(PRIMARY KEY)
+        [
+            """CREATE TABLE IF NOT EXISTS exec_keys (
+                key TEXT PRIMARY KEY,
+                created_at TEXT NOT NULL,
+                order_id INTEGER,
+                approval_id INTEGER,
+                sent_at TEXT
+            )""",
+        ],
+    ),
+    (
+        22,  # 전체 검토: 시장별 최근 뉴스 조회(news_store.recent·novel_items) 인덱스
+        [
+            "CREATE INDEX IF NOT EXISTS ix_news_market_received "
+            "ON news_items(market, received_at)",
+            # 보존 정리의 '세션 있는 runs 유지'(NOT EXISTS agent_calls.run_id)가 풀 스캔하지 않게
+            "CREATE INDEX IF NOT EXISTS ix_agent_calls_run ON agent_calls(run_id)",
+        ],
+    ),
 ]
 
 

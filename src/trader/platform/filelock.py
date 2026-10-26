@@ -80,3 +80,30 @@ def locked(path: Path, *, timeout: float = 60.0, poll_s: float = 0.1) -> Iterato
             _unlock(fh)
     finally:
         fh.close()
+
+
+def try_hold(path: Path):
+    """`path` 에 배타 락을 기다리지 않고 잡아 **열린 핸들을 돌려준다**(못 잡으면 None). 프로세스가
+    살아 있는 동안 쥐고 있다가 `release_hold` 로 놓는다 — 프로세스가 죽으면 OS 가 풀어 준다.
+    같은 프로세스 안에서도 다른 핸들끼리는 서로 막힌다(flock·msvcrt 모두 핸들 단위)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fh = open(path, "a+b")  # noqa: SIM115 - 수명 동안 열어 둔다
+    if sys.platform == "win32":
+        fh.seek(0)
+        if fh.tell() == 0:
+            fh.write(b"\0")
+            fh.flush()
+        fh.seek(0)
+    if _try_lock(fh):
+        return fh
+    fh.close()
+    return None
+
+
+def release_hold(fh) -> None:
+    if fh is None:
+        return
+    try:
+        _unlock(fh)
+    finally:
+        fh.close()

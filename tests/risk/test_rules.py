@@ -543,9 +543,7 @@ def test_negative_expected_value_rejected_even_if_target_far_enough():
 def test_expected_value_uses_limit_price_not_quote():
     """현재가 100000, 지정가 90000·손절 80000·익절 102000·확신 0.5: 현재가 기준이면 EV −9% 지만
     지정가 진입 기준 EV 는 +1.1% 로 왕복비용 0.3% 를 넘는다(PR #31 리뷰)."""
-    d = ok_decision(
-        limit_price=90000.0, stop_loss=80000.0, take_profit=102000.0, confidence=0.5
-    )
+    d = ok_decision(limit_price=90000.0, stop_loss=80000.0, take_profit=102000.0, confidence=0.5)
     v = _eval(d, price="100000")
     assert not any("기대값" in r for r in v.reasons)
 
@@ -563,3 +561,53 @@ def test_risk_per_trade_caps_quantity_by_stop_distance():
     assert near.approved and near.adjusted_qty == 35
     assert far.approved and far.adjusted_qty == 14
     assert any("1회 손실 한도" in r for r in far.reasons)
+
+
+# --- 검토 O10: 예상 포트폴리오(미체결 BUY + pending 승인) -----------------------------------
+
+
+def test_pending_buys_count_toward_position_limit():
+    """보유 4종목 + 체결 전 BUY 1종목이면 상한 5에 닿은 것으로 본다."""
+    held = {f"T{i}": _pos(f"T{i}", 1, "100000") for i in range(4)}
+    p = _portfolio(positions=held, pending_buys={"000660": Decimal("1000000")})
+    v = _eval(ok_decision(), p)
+    assert not v.approved and any("체결 전 매수 1" in r and "상한 5" in r for r in v.reasons)
+    # 미체결 BUY 가 없으면 통과
+    assert _eval(ok_decision(), _portfolio(positions=held)).approved
+
+
+def test_pending_buys_excludes_hedge_and_self_from_count():
+    held = {f"T{i}": _pos(f"T{i}", 1, "100000") for i in range(4)}
+    p = _portfolio(
+        positions=held,
+        pending_buys={"114800": Decimal("500000")},
+        hedge_tickers=frozenset({"114800"}),
+    )
+    assert _eval(ok_decision(), p).approved
+
+
+def test_pending_approval_counts_toward_sector_cap():
+    sectors = {"005930": "반도체", "000660": "반도체"}
+    p = _portfolio(
+        positions={"000660": _pos("000660", 25, "100000")},  # 25%
+        pending_buys={"042700": Decimal("1000000")},  # 승인 대기 10% (같은 섹터)
+        sector_of={**sectors, "042700": "반도체"}.get,
+    )
+    v = _eval(ok_decision(target_weight=0.06), p)  # 25 + 10 + 6 = 41% > 40%
+    assert not v.approved and any("섹터 '반도체'" in r for r in v.reasons)
+    p.pending_buys = {}
+    assert _eval(ok_decision(target_weight=0.06), p).approved
+
+
+def test_pending_buys_count_toward_theme_cap():
+    themes = {"005930": ["kw:로봇"], "042700": ["kw:로봇"]}
+    p = _portfolio(pending_buys={"042700": Decimal("1500000")}, theme_of=themes.get)  # 15%
+    v = _eval(ok_decision(target_weight=0.1), p)  # 15 + 10 = 25% > 20%
+    assert not v.approved and any("kw:로봇" in r and "초과" in r for r in v.reasons)
+
+
+def test_pending_buys_do_not_reduce_cash_again():
+    """현금은 today_order_amount 가 이미 뺀다 — pending_buys 로 다시 깎지 않는다."""
+    p = _portfolio(pending_buys={"000660": Decimal("9000000")})
+    v = _eval(ok_decision(target_weight=0.1), p)
+    assert v.approved and not any("가능금액" in r for r in v.reasons)

@@ -65,7 +65,7 @@ def test_news_body_collects_per_market_and_prunes(conn, monkeypatch):
     assert out["pruned"] == 1 and news_store.count(conn) == 1
     # 큐 kind 로도 같은 본체
     jobq.enqueue(conn, "news_collect", {}, source="web", now=NOW)
-    daemon._queue_tick(deps, None)
+    daemon._fast_queue_tick(deps, None)  # 가벼운 잡은 빠른 레인만 꺼낸다
     rows = [r for r in jobq.list_recent(conn) if r["kind"] == "news_collect"]
     assert rows[0]["status"] == "ok"
     assert seen == ["KR", "US", "KR", "US"]

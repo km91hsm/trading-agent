@@ -15,6 +15,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from trader.platform.fsutil import atomic_replace
 from trader.platform.procs import pid_alive, same_process
 
 logger = logging.getLogger("trader.heartbeat")
@@ -119,7 +120,7 @@ class Heartbeat:
         tmp = self.path.with_name(f"{self.path.name}.{os.getpid()}.tmp")
         try:
             tmp.write_text(json.dumps(self._data, ensure_ascii=False), encoding="utf-8")
-            os.replace(tmp, self.path)
+            atomic_replace(tmp, self.path)
         except OSError as e:
             logger.warning("하트비트 기록 실패 %s: %s", self.path, e)
 

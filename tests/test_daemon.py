@@ -1032,3 +1032,17 @@ def test_analyze_body_skips_held_only_targets_by_horizon_profile(project, conn):
     assert r["skipped_held"] == [
         {"ticker": "L", "profile": "long", "last": "2026-10-24", "every": 5}
     ]
+
+
+def test_lock_os_hold_blocks_second_even_if_pidfile_removed(project):
+    """전체 검토 P4: pid 파일이 지워져도(경합 중 상대가 unlink) OS 잠금을 쥔 데몬이 있으면 못 뜬다.
+    해제하면 다시 잡을 수 있다."""
+    p = project / "state" / "daemon.lock"
+    a = daemon.Lock(p)
+    assert a.acquire() is True
+    p.unlink()  # 다른 프로세스가 '죽은 잠금' 으로 오판해 지운 상황
+    assert daemon.Lock(p).acquire() is False
+    a.release()
+    b = daemon.Lock(p)
+    assert b.acquire() is True
+    b.release()
