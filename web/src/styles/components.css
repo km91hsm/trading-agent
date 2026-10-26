@@ -63,6 +63,41 @@
 .tape tbody tr.clickable {
   cursor: pointer;
 }
+/* 행 선택 버튼: 셀 내용 그대로 보이고 초점 링은 base.css :focus-visible (Table.tsx RowButton) */
+.row-btn {
+  background: none;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  color: inherit;
+  font: inherit;
+  text-align: inherit;
+  cursor: pointer;
+}
+/* 좁은 화면 전용 펼침 열·상세 행 — 넓은 화면은 모든 열이 보이므로 숨긴다 */
+.tape .row-more,
+.tape tr.row-detail {
+  display: none;
+}
+.row-detail-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--s-1) var(--s-3);
+  margin: 0;
+}
+.row-detail-list div {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--s-2);
+}
+.row-detail-list dt {
+  color: var(--ink-2);
+}
+.row-detail-list dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
 .th-sort {
   background: none;
   border: 0;

@@ -5,7 +5,7 @@ import { EmptyState } from "../components/EmptyState";
 import { JsonView } from "../components/JsonView";
 import { Section } from "../components/Section";
 import { Skeleton } from "../components/Skeleton";
-import { Delta, Table, Td, Th } from "../components/Table";
+import { Delta, RowButton, Table, Td, Th } from "../components/Table";
 import { ErrorBox } from "../components/Tables";
 import { Term } from "../components/Term";
 import { fmtPct } from "../format";
@@ -221,8 +221,12 @@ export function MlPage() {
               </thead>
               <tbody>
                 {list.data.models.map((m) => (
-                  <tr key={m.version} className={sel === m.version ? "sel clickable" : "clickable"} aria-selected={sel === m.version} onClick={() => setSel(m.version)}>
-                    <Td>{m.version}</Td>
+                  <tr key={m.version} className={sel === m.version ? "sel clickable" : "clickable"} onClick={() => setSel(m.version)}>
+                    <Td>
+                      <RowButton pressed={sel === m.version} onClick={() => setSel(m.version)}>
+                        {m.version}
+                      </RowButton>
+                    </Td>
                     <Td>{m.market ?? "전체"}</Td>
                     <Td num>{m.rows ?? "—"}</Td>
                     <Td num>{num4(m.metrics.accuracy)}</Td>

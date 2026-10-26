@@ -4,7 +4,7 @@ import { Badge } from "../components/Badge";
 import { EmptyState } from "../components/EmptyState";
 import { Section } from "../components/Section";
 import { Skeleton } from "../components/Skeleton";
-import { Delta, Mark, Num, Table, Td, Th } from "../components/Table";
+import { Delta, Mark, Num, RowButton, Table, Td, Th } from "../components/Table";
 import { ErrorBox } from "../components/Tables";
 import { Term } from "../components/Term";
 import { UsageBlock } from "../components/Usage";
@@ -372,12 +372,13 @@ export function Dashboard() {
                       <tr
                         key={r.key}
                         className={r.key === sel ? "sel clickable" : "clickable"}
-                        aria-selected={r.key === sel}
                         onClick={() => setSel(r.key === sel ? null : r.key)}
                       >
                         <Td>
-                          <Mark kind={r.mark} />{" "}
-                          <Ticker market={r.market} ticker={r.ticker} name={dt?.name} />
+                          <RowButton expanded={r.key === sel} onClick={() => setSel(r.key === sel ? null : r.key)}>
+                            <Mark kind={r.mark} />{" "}
+                            <Ticker market={r.market} ticker={r.ticker} name={dt?.name} />
+                          </RowButton>
                         </Td>
                         <Td num>
                           <Num value={r.price} market={r.market} />

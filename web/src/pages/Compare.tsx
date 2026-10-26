@@ -4,7 +4,7 @@ import { Badge } from "../components/Badge";
 import { EmptyState } from "../components/EmptyState";
 import { Section } from "../components/Section";
 import { Skeleton } from "../components/Skeleton";
-import { Num, Table, Td, Th } from "../components/Table";
+import { Num, RowButton, Table, Td, Th } from "../components/Table";
 import { ErrorBox } from "../components/Tables";
 import { Term } from "../components/Term";
 import { fmtPct } from "../format";
@@ -50,10 +50,12 @@ export function ComparePage() {
               </thead>
               <tbody>
                 {list.data.map((x) => (
-                  <tr key={x.id} className={sel === x.id ? "sel clickable" : "clickable"} aria-selected={sel === x.id} onClick={() => setSel(x.id)}>
+                  <tr key={x.id} className={sel === x.id ? "sel clickable" : "clickable"} onClick={() => setSel(x.id)}>
                     <Td>{x.date}</Td>
                     <Td>
-                      <Ticker market={x.market} ticker={x.ticker} />
+                      <RowButton pressed={sel === x.id} onClick={() => setSel(x.id)}>
+                        <Ticker market={x.market} ticker={x.ticker} />
+                      </RowButton>
                     </Td>
                     <Td>
                       <Badge kind="action" value={x.action} />
