@@ -141,3 +141,26 @@ def test_reentry_just_outside_grace_is_new_interval(conn):
     out, _ = pit.apply(_df(), conn, PitCfg())
     a_days = set(out[out.ticker == "A"]["date"].dt.day)
     assert 7 not in a_days and 8 in a_days and 4 in a_days
+
+
+def test_liquidity_uses_pre_admission_history():
+    """GitHub Codex: 새로 편입한 C 도 편입 전 거래대금으로 순위를 낸다(첫날 값만이 아니라)."""
+    rows = []
+    for d in pd.bdate_range("2026-09-01", "2026-09-10"):
+        rows.append({"date": d, "ticker": "A", "market": "KR", "close": 10.0, "volume": 50})
+        # C 는 편입 전 내내 거래대금이 컸고 편입 첫날(9/10)만 작다
+        vol = 1 if d.day == 10 else 1000
+        rows.append({"date": d, "ticker": "C", "market": "KR", "close": 10.0, "volume": vol})
+    df = pd.DataFrame(rows)
+    keep = (df.ticker == "A") | (df["date"] == pd.Timestamp("2026-09-10"))
+    mask = pit._liquidity_mask(df, 1, 5, keep)
+    day10 = df[mask & (df["date"] == pd.Timestamp("2026-09-10"))]
+    assert day10["ticker"].tolist() == ["C"]
+    assert not mask[~keep].any()
+
+
+def test_full_coverage_keeps_exit_caveat():
+    from trader.ml import train
+
+    assert train._caveats({"coverage": 1.0}) == [train.EXIT_CAVEAT]
+    assert "생존 편향" in train._caveats({"coverage": 0.5})[0]

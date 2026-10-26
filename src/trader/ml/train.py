@@ -150,11 +150,19 @@ SURVIVORSHIP_CAVEAT = (
 )
 
 
+# 구성원 기록이 학습 행을 전부 덮어도 남는 편향: 피처 스냅샷은 지금 유니버스만 모으므로 편출된
+# 종목의 편출 뒤 봉이 없고, 그 종목의 마지막 horizon 일 라벨(편출 직전 하락 등)이 빠진다(GitHub Codex)
+EXIT_CAVEAT = (
+    "생존 편향(잔여): 편출 종목은 편출 뒤 봉을 수집하지 않아 마지막 라벨 구간이 학습에서 빠진다 — "
+    "승격 판단은 섀도 포트폴리오(지수 기준선)와 함께 본다"
+)
+
+
 def _caveats(pit: dict | None) -> list[str]:
-    """시점 기준 기록이 학습 행을 전부 덮으면 생존 편향 경고를 빼고, 아니면 덮은 비율을 붙인다."""
+    """시점 기준 기록이 학습 행을 전부 덮으면 편출 뒤 결과 누락 경고만, 아니면 덮은 비율을 붙인다."""
     cov = (pit or {}).get("coverage")
     if cov is not None and cov >= 1.0:
-        return []
+        return [EXIT_CAVEAT]
     note = f" (시점 기준 기록이 덮은 학습 행 {cov:.0%})" if cov else " (시점 기준 기록 없음)"
     return [SURVIVORSHIP_CAVEAT + note]
 
