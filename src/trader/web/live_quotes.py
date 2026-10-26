@@ -29,6 +29,8 @@ IDLE_S = 60.0  # 아무 요청도 없으면 연결을 닫고 스레드를 끝낸
 MAX_TICKERS = kis_ws.MAX_SUBSCRIPTIONS - 1  # 한 칸은 여유(지수·체결통보 확장 몫)
 RECV_TIMEOUT_S = 0.5
 MAX_BACKOFF_S = 30.0
+TICK_FRESH_S = 10.0  # 이보다 오래된 틱(체결이 멈췄거나 끊김을 아직 모름)은 REST 로 보완
+REJECT_TTL_S = 600.0  # 구독 거절 종목은 이 동안 다시 청하지 않는다(일시 거절이면 그 뒤 다시)
 
 
 def _default_connect(url: str) -> Any:
@@ -68,9 +70,9 @@ class QuoteHub:
         self._autostart = autostart
         self._lock = threading.Lock()
         self._leases: dict[str, float] = {}  # 종목 → 마지막 요청 시각(clock)
-        self._ticks: dict[str, dict] = {}
+        self._ticks: dict[str, tuple[float, dict]] = {}  # 종목 → (받은 시각 clock, 값)
         self._subs: set[str] = set()  # 지금 구독 중(허브 스레드만 바꾼다; 읽기는 락 안에서)
-        self._rejected: set[str] = set()
+        self._rejected: dict[str, float] = {}  # 종목 → 거절 시각(clock)
         self._conn: Any = None
         self._key = ""
         self._attempt = 0
@@ -97,7 +99,11 @@ class QuoteHub:
             self._last_request = now
             for t in tickers:
                 self._leases[t] = now
-            out = {t: dict(self._ticks[t]) for t in tickers if t in self._subs and t in self._ticks}
+            out = {
+                t: dict(self._ticks[t][1])
+                for t in tickers
+                if t in self._subs and t in self._ticks and now - self._ticks[t][0] <= TICK_FRESH_S
+            }
         if self._autostart:
             self._ensure_thread()
         return out
@@ -107,17 +113,19 @@ class QuoteHub:
             return {"connected": self._conn is not None, "subscribed": len(self._subs)}
 
     def stop(self) -> None:
+        """웹 앱 종료 때. 연결은 그것을 연 허브 스레드가 닫는다(종료 신호를 보고 finally 에서)."""
         self._stop.set()
-        t = self._thread
+        with self._lock:
+            t = self._thread
         if t is not None and t.is_alive() and t is not threading.current_thread():
             t.join(timeout=5)
-        self._disconnect()
+        if t is None:
+            self._disconnect()
 
     def _ensure_thread(self) -> None:
         with self._lock:
-            if self._thread is not None and self._thread.is_alive():
+            if self._stop.is_set() or (self._thread is not None and self._thread.is_alive()):
                 return
-            self._stop.clear()
             self._thread = threading.Thread(target=self._run, name="kis-ws-quotes", daemon=True)
             self._thread.start()
 
@@ -125,10 +133,12 @@ class QuoteHub:
 
     def _run(self) -> None:
         logger.info("실시간 시세 허브 시작")
+        decided = self._clock()
         try:
             while not self._stop.is_set():
                 with self._lock:
-                    idle = self._clock() - self._last_request > IDLE_S
+                    decided = self._clock()
+                    idle = decided - self._last_request > IDLE_S
                 if idle or not self._is_open(self._now()):
                     break
                 if not self.step():
@@ -137,11 +147,20 @@ class QuoteHub:
             logger.exception("실시간 시세 허브 오류")
         finally:
             self._disconnect()
+            with self._lock:
+                self._thread = None
+                # 끝내기로 정한 뒤 들어온 요청이 있으면 이어받는다(그 요청은 스레드가 살아 있어
+                # 새로 띄우지 않았다)
+                handoff = self._last_request > decided and not self._stop.is_set()
             logger.info("실시간 시세 허브 종료")
+            if handoff and self._autostart:
+                self._ensure_thread()
 
     def _desired(self) -> list[str]:
         now = self._clock()
         with self._lock:
+            for t in [t for t, at in self._rejected.items() if now - at > REJECT_TTL_S]:
+                del self._rejected[t]
             live = [
                 (at, t)
                 for t, at in self._leases.items()
@@ -169,6 +188,8 @@ class QuoteHub:
             logger.warning("실시간 시세 연결 끊김: %s", type(e).__name__)
             self._drop(backoff=True)
             return False
+        # 실제로 받은 뒤에야 백오프를 푼다(접속 직후 끊기는 장애에서 1초 반복 방지)
+        self._attempt = 0
         self._handle(raw if isinstance(raw, str) else raw.decode("utf-8", "replace"))
         return True
 
@@ -182,9 +203,11 @@ class QuoteHub:
             logger.warning("실시간 시세 접속 실패: %s", type(e).__name__)
             self._drop(backoff=True)
             return False
+        if self._stop.is_set():  # 접속하는 동안 웹 앱이 내려갔다
+            conn.close()
+            return False
         with self._lock:
             self._conn, self._key, self._subs = conn, key, set()
-        self._attempt = 0
         logger.info("실시간 시세 접속")
         return True
 
@@ -212,25 +235,38 @@ class QuoteHub:
             if "approval" in low or low.strip() == "not found":
                 logger.warning("실시간 접속키 거절 — 새 키로 다시 접속합니다")
                 self._invalidate()
-                self._drop(backoff=False)
-            elif "already" not in low and key:
-                logger.info("실시간 구독 거절 %s: %s", key, msg)
-                with self._lock:
-                    self._rejected.add(key)
-                    self._subs.discard(key)
-                    self._ticks.pop(key, None)
+                self._drop(backoff=True)  # 거절이 반복되면 키 재발급도 간격을 늘린다
+                return
+            if "already" in low or not key:
+                return
+            with self._lock:
+                registered = key in self._subs
+            if not registered:
+                # 해제가 거절됐다 — 서버에는 구독이 남았을 수 있어 로컬과 어긋난다. 다시 접속해 새로
+                # 맞춘다(41칸 한도를 넘기지 않게)
+                logger.info("실시간 구독 해제 거절 %s: %s — 다시 접속합니다", key, msg)
+                self._drop(backoff=True)
+                return
+            logger.info("실시간 구독 거절 %s: %s", key, msg)
+            with self._lock:
+                self._rejected[key] = self._clock()
+                self._subs.discard(key)
+                self._ticks.pop(key, None)
             return
-        stamp = self._now().isoformat()
+        stamp, at = self._now().isoformat(), self._clock()
         for rec in kis_ws.parse_frame(raw):
             with self._lock:
                 if rec["ticker"] in self._subs:
-                    self._ticks[rec["ticker"]] = {
-                        "price": rec["price"],
-                        "change_pct": rec["change_pct"],
-                        "asof": stamp,
-                        "stale": False,
-                        "source": "ws",
-                    }
+                    self._ticks[rec["ticker"]] = (
+                        at,
+                        {
+                            "price": rec["price"],
+                            "change_pct": rec["change_pct"],
+                            "asof": stamp,
+                            "stale": False,
+                            "source": "ws",
+                        },
+                    )
 
     def _drop(self, *, backoff: bool) -> None:
         self._disconnect()

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Callable
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -66,7 +67,15 @@ def create_app(deps: WebDeps) -> FastAPI:
         system,
     )
 
-    app = FastAPI(title="trader", docs_url="/api/docs", openapi_url="/api/openapi.json")
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        yield
+        if deps.quote_hub is not None:  # 실시간 시세 허브의 KIS 웹소켓·스레드를 함께 내린다
+            deps.quote_hub.stop()
+
+    app = FastAPI(
+        title="trader", docs_url="/api/docs", openapi_url="/api/openapi.json", lifespan=lifespan
+    )
     app.state.deps = deps
     # 로컬 전용: DNS 리바인딩으로 토큰 없는 조회 API 를 읽지 못하게 Host 를 제한한다
     app.add_middleware(

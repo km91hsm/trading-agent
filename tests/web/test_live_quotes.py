@@ -100,6 +100,8 @@ def test_lease_expiry_unsubscribes_and_drops_tick():
     clock[0] = 31.0
     hub.step()
     assert ("2", "000660") in made[0].subs()
+    made[0].inbox.append(frame(trade_values("005930", 71700)))
+    hub.step()
     assert hub.request(["005930", "000660"]).keys() == {"005930"}
 
 
@@ -178,3 +180,96 @@ def test_closed_market_never_connects():
     assert hub.request(["005930"]) == {}
     hub.step()
     assert not made
+
+
+def test_stale_tick_falls_back_to_rest():
+    """체결이 멈추거나 끊김을 아직 모르면 틱이 낡는다 → 10초 넘으면 돌려주지 않아 REST 가 채운다."""
+    hub, clock, made, _ = make_hub()
+    hub.request(["005930"])
+    hub.step()
+    made[0].inbox.append(frame(trade_values("005930", 71600)))
+    hub.step()
+    clock[0] = 9.0
+    assert "005930" in hub.request(["005930"])
+    clock[0] = 11.0
+    assert hub.request(["005930"]) == {}
+
+
+def test_release_rejected_reconnects_to_resync():
+    """해제가 거절되면 서버에 구독이 남아 41칸이 어긋난다 → 다시 접속해 새로 맞춘다."""
+    hub, clock, made, _ = make_hub(conns=[FakeConn(), FakeConn()])
+    hub.request(["005930", "000660"])
+    hub.step()
+    clock[0] = 31.0
+    hub.request(["005930"])
+    hub.step()  # 000660 해제 요청
+    made[0].inbox.append(
+        json.dumps(
+            {
+                "header": {"tr_id": "H0STCNT0", "tr_key": "000660"},
+                "body": {"rt_cd": "1", "msg1": "unsubscribe error"},
+            }
+        )
+    )
+    hub.step()
+    assert made[0].closed and not hub.status()["connected"]
+    clock[0] = 40.0
+    hub.request(["005930"])
+    hub.step()
+    assert made[1].subs() == [("1", "005930")]
+
+
+def test_backoff_grows_when_connection_drops_right_away():
+    class Dropping(FakeConn):
+        def recv(self, timeout=None):
+            raise ConnectionError("끊김")
+
+    hub, clock, made, _ = make_hub(conns=[Dropping(), Dropping(), Dropping(), FakeConn()])
+    hub.request(["005930"])
+    retries = []
+    for t in range(0, 20):
+        clock[0] = float(t)
+        hub.request(["005930"])
+        before = len(made)
+        hub.step()
+        if len(made) > before:
+            retries.append(t)
+    assert retries[:4] == [0, 1, 3, 7]  # 1·2·4초로 늘어난다(접속만 되고 바로 끊겨도)
+
+
+def test_thread_hands_off_request_arriving_while_exiting(monkeypatch):
+    """유휴 종료를 정한 직후 들어온 요청은 새 스레드가 이어받는다."""
+    import threading
+
+    from trader.web import live_quotes
+
+    hub, clock, made, _ = make_hub(conns=[FakeConn(), FakeConn()])
+    hub._autostart = True
+    started = []
+    real_start = threading.Thread.start
+
+    def start(self):
+        started.append(self.name)
+        real_start(self)
+
+    monkeypatch.setattr(threading.Thread, "start", start)
+    monkeypatch.setattr(live_quotes, "IDLE_S", 0.0)
+    clock[0] = 0.0
+    hub.request(["005930"])  # 스레드 시작 → 곧 유휴로 끝나지만 마지막 요청이 결정 뒤면 재시작
+    for _ in range(50):
+        if hub._thread is None:
+            break
+        threading.Event().wait(0.02)
+    hub.stop()
+    assert started and hub._thread is None
+
+
+def test_stop_prevents_restart_and_closes():
+    hub, clock, made, _ = make_hub()
+    hub.request(["005930"])
+    hub.step()
+    hub.stop()
+    assert made[0].closed and not hub.status()["connected"]
+    hub._autostart = True
+    hub.request(["005930"])
+    assert hub._thread is None  # 내려간 앱에서 다시 띄우지 않는다
