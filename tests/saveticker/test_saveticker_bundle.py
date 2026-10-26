@@ -35,14 +35,31 @@ def test_home_follows_reader_config(project):
     assert st_home() == other
 
 
+class FakeInstall:
+    def __init__(self, code, *, hang=False):
+        self.code, self.hang, self.terminated = code, hang, False
+
+    def wait(self, timeout=None):
+        if self.hang and not self.terminated:
+            raise chromium.subprocess.TimeoutExpired("install", timeout)
+        return self.code
+
+    def terminate(self):
+        self.terminated = True
+
+    def kill(self):
+        self.terminated = True
+
+
 def test_chromium_ensure_installs_only_when_missing(monkeypatch):
     calls = []
     monkeypatch.setattr(chromium, "installed", lambda: bool(calls))
-    monkeypatch.setattr(
-        chromium.subprocess,
-        "run",
-        lambda argv, **kw: calls.append((argv, kw)) or SimpleNamespace(returncode=0),
-    )
+
+    def popen(argv, **kw):
+        calls.append((argv, kw))
+        return FakeInstall(0)
+
+    monkeypatch.setattr(chromium.subprocess, "Popen", popen)
     assert chromium.ensure() is True
     argv, kw = calls[0]
     assert argv[-2:] == ["install", "chromium"] and kw["shell"] is False
@@ -52,10 +69,33 @@ def test_chromium_ensure_installs_only_when_missing(monkeypatch):
 
 def test_chromium_ensure_reports_failure(monkeypatch):
     monkeypatch.setattr(chromium, "installed", lambda: False)
-    monkeypatch.setattr(
-        chromium.subprocess, "run", lambda argv, **kw: SimpleNamespace(returncode=1)
-    )
+    monkeypatch.setattr(chromium.subprocess, "Popen", lambda argv, **kw: FakeInstall(1))
     assert chromium.ensure() is False
+
+
+def test_chromium_install_stops_with_service(monkeypatch):
+    """설치 중 서비스가 종료되면 설치 프로세스도 끝낸다(고아 방지, Codex 리뷰)."""
+    import threading
+
+    proc = FakeInstall(0, hang=True)
+    stop = threading.Event()
+    stop.set()
+    monkeypatch.setattr(chromium, "installed", lambda: False)
+    monkeypatch.setattr(chromium.subprocess, "Popen", lambda argv, **kw: proc)
+    assert chromium.ensure(stop) is False and proc.terminated
+
+
+def test_kill_leftovers_targets_live_collector_lanes(tmp_path, monkeypatch):
+    """서비스가 강제 종료되면 각자 세션인 수집 작업·브라우저가 남는다 → 러너 pid 그룹을 끝낸다."""
+    from trader.platform import procs
+
+    (tmp_path / "runtime").mkdir()
+    for name, pid in (("runner-news", 501), ("runner-market", 502), ("runner", 503)):
+        (tmp_path / "runtime" / f"{name}.json").write_text(json.dumps({"pid": pid}), "utf-8")
+    monkeypatch.setattr(automation, "collector_alive", lambda pid: pid in (501, 503))
+    killed = []
+    monkeypatch.setattr(procs, "kill_group", killed.append)
+    assert automation.kill_leftovers(tmp_path) == 2 and sorted(killed) == [501, 503]
 
 
 def _service_state(home, value):
@@ -175,7 +215,7 @@ def test_prune_keeps_latest_and_recent(tmp_path):
 
 def test_service_blocks_when_chromium_install_fails(tmp_path, monkeypatch):
     """Chromium 을 받지 못하면(오프라인 등) 수집 프로세스를 띄우지 않고 1시간 뒤 다시 시도한다."""
-    monkeypatch.setattr(chromium, "ensure", lambda: False)
+    monkeypatch.setattr(chromium, "ensure", lambda stop=None: False)
     automation.service(tmp_path)
     state = automation.read(tmp_path / "runtime" / "service.json")
     assert state["state"] == "blocked" and state["reason"] == "chromium_install_failed"

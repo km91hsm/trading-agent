@@ -152,3 +152,23 @@ def stop_tree(proc: subprocess.Popen, *, grace: float) -> None:
         proc.wait(timeout=10)
     except ProcessLookupError:
         pass
+
+
+def kill_group(pid: int) -> None:
+    """세션 리더 `pid` 의 프로세스 그룹(posix)을 SIGKILL, Windows 는 `taskkill /T /F` 트리."""
+    if sys.platform == "win32":
+        subprocess.run(
+            ["taskkill", "/PID", str(pid), "/T", "/F"],
+            capture_output=True,
+            shell=False,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+        )
+        return
+    import signal
+
+    try:
+        os.killpg(pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass

@@ -140,7 +140,7 @@ def test_service_transient_restart_budget_and_auth_stop(tmp_path, monkeypatch):
     fake = SimpleNamespace(**{k: getattr(subprocess, k) for k in ("DEVNULL", "SubprocessError")})
     fake.Popen = Child
     monkeypatch.setattr(automation, "subprocess", fake)
-    monkeypatch.setattr("trader.saveticker.chromium.ensure", lambda: True)
+    monkeypatch.setattr("trader.saveticker.chromium.ensure", lambda stop=None: True)
     automation.service(tmp_path)
     assert len(launched) == 4 and delays == [30, 60, 120]
     state = automation.read(tmp_path / "runtime/service.json")

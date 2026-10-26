@@ -486,6 +486,7 @@ class DaemonDeps:
     heavy_lock: threading.Lock = field(default_factory=threading.Lock)
     scalp_judge: Any | None = None  # Phase 25 단타 판정자(scalp.judge 일 때 _scalp_body 가 만든다)
     saveticker_proc: Any | None = None  # 이 데몬이 띄운 세이브티커 수집 서비스(Popen)
+    saveticker_home: Path | None = None  # 그 서비스의 수집 폴더(종료 때 남은 작업 정리)
     saveticker_pruned: date | None = None  # 수집 폴더 보관 기간 정리를 한 날(운영일 1회)
     # cron 잡이 heavy 락을 기다리는 중이면 선다. 대기열의 긴 잡(백필)은 진행 콜백에서 이것을 보고
     # 락을 잠시 내놓는다(종목 경계) — 아침 scan 이 백필 뒤로 수 시간 밀리지 않도록
@@ -1514,6 +1515,7 @@ def _saveticker_body(deps: DaemonDeps) -> dict:
     else:
         ok, reason = automation.should_start(home, st.credentials_path(), now=deps.now())
         if ok:
+            automation.kill_leftovers(home)  # 죽은 서비스가 남긴 작업이 수집 잠금을 쥐고 있지 않게
             env = {
                 **os.environ,
                 "TRADER_HOME": str(paths.project_root()),
@@ -1524,6 +1526,7 @@ def _saveticker_body(deps: DaemonDeps) -> dict:
                 log=home / "runtime" / "daemon-service.log",
                 env=env,
             )
+            deps.saveticker_home = home
             out["service"] = f"시작 pid {deps.saveticker_proc.pid}"
             logger.info("세이브티커 수집 서비스 시작 pid %s", deps.saveticker_proc.pid)
         else:
@@ -1551,6 +1554,8 @@ def _stop_saveticker(deps: DaemonDeps) -> None:
         return
     try:
         procs.stop_tree(proc, grace=automation.STOP_GRACE_S)
+        if deps.saveticker_home is not None:  # 강제 종료로 끝났으면 작업·브라우저가 남는다
+            automation.kill_leftovers(deps.saveticker_home)
     except Exception:  # noqa: BLE001 — 종료 경로는 막지 않는다
         logger.exception("세이브티커 수집 서비스 정리 실패")
 

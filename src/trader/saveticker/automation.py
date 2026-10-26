@@ -207,6 +207,21 @@ def _blocked(runtime, reason, **extra):
     )
 
 
+def kill_leftovers(root):
+    """서비스가 죽은 뒤 남은 수집 작업(각자 세션 리더라 서비스 그룹 SIGKILL 이 닿지 않는다)과
+    그 브라우저를 끝낸다. `runner-<lane>.json` 의 pid 가 아직 수집기 명령이면 그 그룹을 SIGKILL.
+    끝낸 수를 돌려준다."""
+    from trader.platform import procs
+
+    killed = 0
+    for name in RUNNERS:
+        pid = (read(root / "runtime" / (name + ".json")) or {}).get("pid")
+        if isinstance(pid, int) and pid != os.getpid() and collector_alive(pid):
+            procs.kill_group(pid)
+            killed += 1
+    return killed
+
+
 def service_elsewhere():
     """이 PC 에서 (다른 수집 폴더라도) 수집 서비스가 이미 도는지 — 같은 계정으로 두 곳에서
     로그인하면 사이트가 계정을 막을 수 있다. posix 는 `ps`, Windows 는 확인하지 않는다(False)."""
@@ -264,10 +279,6 @@ def service(root):
         return
     from trader.saveticker import chromium
 
-    if not chromium.ensure():
-        _blocked(runtime, "chromium_install_failed")
-        lock.release()
-        return
     stop = threading.Event()
     child = None
     old_handlers = {}
@@ -280,6 +291,11 @@ def service(root):
     for sig in (signal.SIGINT, signal.SIGTERM):
         old_handlers[sig] = signal.signal(sig, halt)
     try:
+        # 종료 핸들러를 건 뒤 설치한다 — 설치 중 종료되면 설치 프로세스도 함께 끝낸다(Codex 리뷰)
+        if not chromium.ensure(stop):
+            if not stop.is_set():
+                _blocked(runtime, "chromium_install_failed")
+            return
         attempts = 0
         while not stop.is_set():
             started = time.monotonic()
