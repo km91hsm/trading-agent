@@ -16,7 +16,7 @@ function Bar({ pct, cap, over, exempt, label }: { pct: number; cap: number; over
 }
 
 export function SectorTable({ rows, market, maxSectorPct, note = true }: { rows: SectorRow[]; market: string; maxSectorPct: number; note?: boolean }) {
-  if (!rows.length) return <EmptyState title="섹터 비중이 없어요" hint="스냅샷이 찍히면 보유 종목을 config/sectors.yaml 섹터로 묶어 보여 줘요." />;
+  if (!rows.length) return <EmptyState title="업종 비중이 없어요" hint="잔고 스냅샷이 찍히면 보유 종목을 업종(반도체·바이오/제약·산업재/건설 …)으로 묶어 보여 줘요." />;
   const views = sectorRows(rows, maxSectorPct);
   const cap = capLinePct(maxSectorPct);
   return (
@@ -24,7 +24,7 @@ export function SectorTable({ rows, market, maxSectorPct, note = true }: { rows:
       <Table dense caption="섹터 비중">
         <thead>
           <tr>
-            <Th>섹터</Th>
+            <Th>업종</Th>
             <Th num>종목</Th>
             <Th num>평가금액</Th>
             <Th num>비중</Th>
@@ -37,6 +37,7 @@ export function SectorTable({ rows, market, maxSectorPct, note = true }: { rows:
               <Td>
                 <span className="nm">
                   {v.sector}
+                  {v.auto ? <span className="auto-tag" title="KIS 업종명으로 자동 분류(표시용)">자동</span> : null}
                   {v.tickers.length ? <small>{v.tickers.join(" ")}</small> : null}
                 </span>
               </Td>
@@ -53,7 +54,10 @@ export function SectorTable({ rows, market, maxSectorPct, note = true }: { rows:
           ))}
         </tbody>
       </Table>
-      {note && <p className="note">같은 섹터 합계가 상한을 넘기면 리스크 게이트가 그 섹터의 신규 매수·추가 매수를 거부해요. 헤지 ETF 와 현금은 상한 대상이 아니에요.</p>}
+      {note && <p className="note">같은 업종 합계가 상한을 넘기면 리스크 게이트가 그 업종의 신규 매수·추가 매수를 거부해요. 헤지 ETF 와 현금은 상한 대상이 아니에요.</p>}
+      {views.some((v) => v.auto) && (
+        <p className="note">'자동' 은 KIS 업종명으로 분류한 표시용 업종이에요. 리스크 게이트의 업종 상한은 config/sectors.yaml 기준이라, 게이트에도 반영하려면 그 파일에 종목을 추가하세요.</p>
+      )}
     </>
   );
 }

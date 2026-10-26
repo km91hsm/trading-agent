@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { getJson, withAccount } from "../api";
 import { Badge } from "../components/Badge";
 import { EmptyState } from "../components/EmptyState";
@@ -11,9 +11,10 @@ import { UsageBlock } from "../components/Usage";
 import { JobsBlock } from "../components/Jobs";
 import { JobRequestsBlock } from "../components/JobRequests";
 import { fmtDate, fmtMoney, fmtPct, fmtTime, marketDate, minutesLeft } from "../format";
-import { useApp, useLoad } from "../hooks";
+import { useApp, useEnsureFresh, useLiveQuotes, useLoad, useNow } from "../hooks";
+import { applyQuotes } from "../live";
 import { labelOf } from "../names";
-import type { UsageResp } from "../usage";
+import { usageChip, type UsageResp } from "../usage";
 import { daemonText, type DaemonStatus } from "../jobs";
 import { proposalText, regimeText, type RegimeResp } from "../sectors";
 import { type ScalpResp, scalpChip } from "../pipeline";
@@ -24,7 +25,7 @@ import { ThemeHeatBlock } from "../components/ThemeHeatBlock";
 import type { ThemeResp } from "../themeHeat";
 import { mergeAccountRows, mergeHoldings, partialText } from "../overview";
 import { termLabel } from "../glossary";
-import { buildTape, gateFor, marketPhase, type TapeRow } from "../tape";
+import { buildTape, gateFor, type TapeRow } from "../tape";
 import type {
   Approval,
   CallsResp,
@@ -55,9 +56,15 @@ function runDates(now: Date): Record<string, string> {
 const str = (v: unknown): string | null => (v === null || v === undefined || v === "" ? null : String(v));
 
 export function Dashboard() {
-  const { accounts, accountId, events, tick, names, tickOf } = useApp();
-  // 바뀐 스냅샷 키에 맞는 표만 다시 읽는다 (runs 는 판정·스냅샷·세션, 나머지는 해당 표)
+  const { accounts, accountId, events, names, tickOf } = useApp();
+  // 바뀐 스냅샷 키에 맞는 표만 다시 읽는다 — 새로고침 없이 실시간(runs 는 판정·세션, positions 는
+  // 잔고 스냅샷, usage 는 사용률 관측, control 은 국면·점검·모드 플래그, daemon 은 하트비트)
   const tRuns = tickOf("runs");
+  const tPos = tickOf("positions");
+  const tUsage = tickOf("usage");
+  const tControl = tickOf("control");
+  const tDaemon = tickOf("daemon");
+  const tTheme = tickOf("theme", "control");
   const tOrders = tickOf("orders");
   const tDecisions = tickOf("decisions");
   const tApprovals = tickOf("approvals", "approvals_pending");
@@ -70,26 +77,19 @@ export function Dashboard() {
   const markets = accountId ? (acct?.markets ?? []) : (["KR", "US"] as const).filter((m) => accounts.some((a) => a.markets.includes(m)));
   const acctMarkets = acct?.markets ?? [];
   const otherAccounts = accounts.filter((a) => a.id !== primaryId);
-  const [now, setNow] = useState(() => new Date());
-  useEffect(() => setNow(new Date()), [tick]); // 원장 이벤트마다 시각·운영일을 다시 잡는다
-  const [minute, setMinute] = useState(0); // 원장과 무관한 것(데몬·사용량)은 60초마다 다시 읽는다
-  useEffect(() => {
-    const id = setInterval(() => {
-      setMinute((m) => m + 1);
-      setNow(new Date());
-    }, 60_000);
-    return () => clearInterval(id);
-  }, []);
+  // 시각·운영일·남은 분은 30초마다(서버 재조회 없이), 원장 밖 값(데몬·사용량)은 분이 바뀔 때 다시 읽는다
+  const now = useNow(30_000);
+  const minute = Math.floor(now.getTime() / 60_000);
   const dates = useMemo(() => runDates(now), [now]);
   const [sel, setSel] = useState<string | null>(null);
 
   const pfKR = useLoad(
     () => (primaryId && acctMarkets.includes("KR") ? getJson<Portfolio>(withAccount("/api/portfolio?market=KR", primaryId)) : null),
-    [primaryId, acctMarkets.join(), tRuns, tOrders],
+    [primaryId, acctMarkets.join(), tRuns, tOrders, tPos],
   );
   const pfUS = useLoad(
     () => (primaryId && acctMarkets.includes("US") ? getJson<Portfolio>(withAccount("/api/portfolio?market=US", primaryId)) : null),
-    [primaryId, acctMarkets.join(), tRuns, tOrders],
+    [primaryId, acctMarkets.join(), tRuns, tOrders, tPos],
   );
   const decisions = useLoad(() => getJson<Decision[]>("/api/decisions", { days: "2" }), [tDecisions]);
   const checks = useLoad(() => (primaryId ? getJson<RiskCheck[]>(withAccount("/api/risk-checks", primaryId)) : null), [primaryId, tRuns, tDecisions]);
@@ -120,32 +120,45 @@ export function Dashboard() {
     [otherAccounts.map((a) => a.id).join(), tRuns, tDecisions],
   );
   const watch = useLoad(() => getJson<{ tickers: string[] }>("/api/control/watchlist"), [tWatch]);
-  const calls = useLoad(() => getJson<CallsResp>("/api/calls", { days: "1" }), [tRuns]);
+  const calls = useLoad(() => getJson<CallsResp>("/api/calls", { days: "1" }), [tRuns, tUsage]);
   const runs = useLoad(() => getJson<Run[]>("/api/runs", { limit: "30" }), [tRuns]);
-  const settings = useLoad(() => getJson<SystemSettings>("/api/system/settings"), []);
-  const usage = useLoad(() => getJson<UsageResp>("/api/system/usage"), [tRuns, minute]);
-  const daemon = useLoad(() => getJson<DaemonStatus>("/api/system/daemon"), [tick, minute]);
-  const regime = useLoad(() => getJson<RegimeResp>("/api/system/regime"), [tRuns]);
-  const themeKR = useLoad(() => getJson<ThemeResp>("/api/system/theme", { market: "KR" }), [tRuns, minute]);
-  const scalp = useLoad(() => getJson<ScalpResp>("/api/system/scalp"), [tRuns]);
-  const ops = useLoad(() => getJson<OpsResp>("/api/system/ops"), [tRuns, tOrders]);
+  const settings = useLoad(() => getJson<SystemSettings>("/api/system/settings"), [tControl]);
+  const usage = useLoad(() => getJson<UsageResp>("/api/system/usage"), [tRuns, tUsage, minute]);
+  const daemon = useLoad(() => getJson<DaemonStatus>("/api/system/daemon"), [tDaemon, tRuns, minute]);
+  const regime = useLoad(() => getJson<RegimeResp>("/api/system/regime"), [tRuns, tControl]);
+  const themeKR = useLoad(() => getJson<ThemeResp>("/api/system/theme", { market: "KR" }), [tRuns, tTheme]);
+  const scalp = useLoad(() => getJson<ScalpResp>("/api/system/scalp"), [tRuns, tOrders, minute]);
+  const ops = useLoad(() => getJson<OpsResp>("/api/system/ops"), [tRuns, tOrders, tControl]);
   const models = useLoad(() => getJson<ModelsResp>("/api/ml/models"), [tJobs]);
   const rl = useLoad(() => getJson<RlResp>("/api/rl/experiments"), [tJobs]);
   const perfKR = useLoad(
     () => (primaryId && acctMarkets.includes("KR") ? getJson<PerformanceReport>(withAccount("/api/performance?market=KR&days=30", primaryId)) : null),
-    [primaryId, acctMarkets.join(), tRuns],
+    [primaryId, acctMarkets.join(), tRuns, tPos],
   );
   const perfUS = useLoad(
     () => (primaryId && acctMarkets.includes("US") ? getJson<PerformanceReport>(withAccount("/api/performance?market=US&days=30", primaryId)) : null),
-    [primaryId, acctMarkets.join(), tRuns],
+    [primaryId, acctMarkets.join(), tRuns, tPos],
   );
 
-  const overview = useLoad(() => getJson<Overview>("/api/portfolio/overview"), [tRuns, tOrders, tApprovals]);
+  const overview = useLoad(() => getJson<Overview>("/api/portfolio/overview"), [tRuns, tOrders, tApprovals, tPos]);
+  useEnsureFresh(markets as string[]); // 접속 즉시 잔고 신선하게(정규장·2분 넘은 스냅샷만, 조회만)
   // 시세표의 '보유' 표시: 계좌를 고르면 그 계좌, '전체'면 모든 계좌·환경의 보유 종목(종목별 한 줄)
   const allHeld = (["KR", "US"] as const).flatMap((m) => Object.values(overview.data?.markets[m]?.envs ?? {}).flatMap((e) => e?.positions ?? []));
-  const positions = accountId
+  const rawPositions = accountId
     ? [...(pfKR.data?.snapshot?.positions ?? []), ...(pfUS.data?.snapshot?.positions ?? [])]
     : mergeHoldings(allHeld);
+  // 실시간 시세는 페이지에서 시장별로 한 번(보유 + 결정 종목, ≤20) — 시세표·합산·보유 표가 같은 값을 쓴다
+  const liveTickers = (m: string) =>
+    Array.from(
+      new Set([
+        ...allHeld.filter((p) => (p.market ?? "KR") === m).map((p) => p.ticker),
+        ...rawPositions.filter((p) => (p.market ?? "KR") === m).map((p) => p.ticker),
+        ...(decisions.data ?? []).filter((d) => d.market === m).map((d) => d.ticker),
+      ]),
+    ).slice(0, 20);
+  const liveKR = useLiveQuotes("KR", liveTickers("KR"));
+  const liveUS = useLiveQuotes("US", liveTickers("US"));
+  const positions = applyQuotes(rawPositions, { ...(liveUS?.quotes ?? {}), ...(liveKR?.quotes ?? {}) }).positions;
   // '전체'의 보유 행은 여러 계좌·환경의 합이라 대표 계좌 NAV 로 나누면 비중이 틀린다 → 비중을 비운다
   const navOf = (m: "KR" | "US") => (accountId ? (m === "KR" ? pfKR : pfUS).data?.snapshot?.nav : undefined);
   const tape = useMemo(
@@ -163,7 +176,7 @@ export function Dashboard() {
         now,
       }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [pfKR.data, pfUS.data, overview.data, accountId, primaryId, decisions.data, checks.data, orders.data, approvals.data, watch.data, dates, now],
+    [pfKR.data, pfUS.data, overview.data, accountId, primaryId, decisions.data, checks.data, orders.data, approvals.data, watch.data, dates, now, liveKR, liveUS],
   );
   // 행별 보조 정보: 결정이 있는 행만, 30_decision + 00_inputs 두 파일 (로컬 서버라 N 요청이 부담 없다)
   const decidedKeys = tape.filter((r) => r.decisionId).map((r) => r.key).join();
@@ -220,7 +233,6 @@ export function Dashboard() {
     approvals.error ||
     partialText(orders.data?.failed ?? [], "주문") ||
     partialText(approvals.data?.failed ?? [], "승인 요청");
-  const phase = marketPhase(now);
   const earliestExpiry = pendingApprovals.map((a) => minutesLeft(a.expires_at, now)).filter((m): m is number => m !== null).sort((a, b) => a - b)[0];
 
   const perfRows = (m: string, rep: PerformanceReport | null) => {
@@ -280,9 +292,7 @@ export function Dashboard() {
     <>
       <header className="page-h">
         <h1>대시보드</h1>
-        <p className="sub">
-          {fmtDate(now.toISOString())} · {phase.label} · {fmtTime(now.toISOString(), "KR")} KST
-        </p>
+        <p className="sub">{fmtDate(now.toISOString())} · 새로고침 없이 실시간</p>
       </header>
       <Advisory ops={ops.data} />
 
@@ -297,7 +307,7 @@ export function Dashboard() {
         <span title="구독 사용률 최신 관측값 (분석 세션 또는 대화형 claude 상태줄)">
           Claude{" "}
           <b>
-            {usage.data?.rate_limits ? `5h ${Math.round(usage.data.rate_limits.five_hour?.used_pct ?? 0)}% · 7d ${Math.round(usage.data.rate_limits.seven_day?.used_pct ?? 0)}%` : usage.data ? "관측 없음" : "확인 중"}
+            {usage.data?.rate_limits ? usageChip(usage.data.rate_limits) : usage.data ? "관측 없음" : "확인 중"}
           </b>
         </span>
         <span className={pendingApprovals.length ? "pend" : ""}>
@@ -326,7 +336,12 @@ export function Dashboard() {
           })}
       </div>
 
-      <OverviewBlock data={overview.data} maxSectorPct={Number(settings.data?.risk?.max_sector_pct ?? 0.4)} accountCount={accounts.length} />
+      <OverviewBlock
+        data={overview.data}
+        maxSectorPct={Number(settings.data?.risk?.max_sector_pct ?? 0.4)}
+        accountCount={accounts.length}
+        quotes={{ KR: liveKR, US: liveUS }}
+      />
       <ThemeHeatBlock data={themeKR.data} market="KR" />
 
       <div className="cols">
@@ -502,14 +517,8 @@ export function Dashboard() {
               <EmptyState title="성과를 낼 스냅샷이 없어요" hint="판정이 쌓이면 NAV 와 벤치마크가 표시돼요." />
             )}
           </Section>
-          <Section title="데몬 잡" aside={daemon.data ? `${daemon.data.jobs.length}개 · 1분마다 갱신` : undefined}>
-            <JobsBlock data={daemon.data} now={now} />
-          </Section>
-          <Section title="작업 대기열" aside="지금 실행 요청 · 데몬이 순서대로">
-            <JobRequestsBlock now={now} />
-          </Section>
           <Section title="Claude 사용량" aside="구독 창 · 세션">
-            <UsageBlock data={usage.data} now={now} />
+            <UsageBlock data={usage.data} />
           </Section>
           <Section title="모델" aside="승격 상태">
             <Table dense caption="모델 승격 상태">
@@ -540,6 +549,15 @@ export function Dashboard() {
                 </tr>
               </tbody>
             </Table>
+          </Section>
+          <Section title="작업 대기열" aside="지금 실행 요청 · 데몬이 순서대로">
+            <JobRequestsBlock now={now} />
+          </Section>
+          <Section title="데몬 잡" aside={daemon.data ? `${daemon.data.jobs.length}개 · 실시간` : undefined}>
+            <details className="fold">
+              <summary>잡 예정표·마지막 실행 펼치기</summary>
+              <JobsBlock data={daemon.data} now={now} />
+            </details>
           </Section>
         </aside>
       </div>

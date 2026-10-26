@@ -136,7 +136,8 @@ def _ledger_observation(conn: sqlite3.Connection, now: datetime) -> dict | None:
     newest: str | None = None
     for k in ("five_hour", "seven_day"):
         row = conn.execute(
-            f"SELECT observed_at, status, {k}_util AS u, {k}_resets_at AS r FROM llm_rate_limits "
+            f"SELECT observed_at, status, source, {k}_util AS u, {k}_resets_at AS r "
+            f"FROM llm_rate_limits "
             f"WHERE {k}_util IS NOT NULL ORDER BY observed_at DESC, id DESC LIMIT 1"
         ).fetchone()
         if row is None:
@@ -151,6 +152,7 @@ def _ledger_observation(conn: sqlite3.Connection, now: datetime) -> dict | None:
         }
         if newest is None or row["observed_at"] > newest:
             newest, out["status"] = row["observed_at"], row["status"]
+            out["source"] = row["source"] or "session"  # session | probe(데몬 사용량 확인)
     if newest is None:
         return None
     out["observed_at"] = newest

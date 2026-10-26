@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
-import { getJson, subscribeEvents, tokenStore, type EventSnapshot } from "./api";
+import { getJson, postJson, subscribeEvents, tokenStore, type EventSnapshot } from "./api";
 import { changedKeys } from "./events";
 import { groupByMarket, missingKeys, type NameMap } from "./names";
 import { applyTheme, themeStore, watchSystemTheme, type Theme } from "./theme";
@@ -38,6 +38,14 @@ export function useApp(): AppState {
 }
 
 const ACCOUNT_KEY = "trader.accountId";
+/** 자주 바뀌는 지문 키(세션 중 체크포인트, 데몬 하트비트) — 전역 tick 은 올리지 않고 그 키를 구독한
+ * 블록만 다시 읽는다(전 페이지가 몇 초마다 모든 표를 다시 읽지 않게). */
+export const NOISY_KEYS = new Set(["checkpoints", "daemon"]);
+
+/** 전역 tick 을 올릴 변경인가: 첫 스냅샷이거나 시끄럽지 않은 키가 하나라도 바뀌었을 때. */
+export function bumpsGlobalTick(changed: string[], first: boolean): boolean {
+  return first || changed.some((k) => !NOISY_KEYS.has(k));
+}
 export const LIVENESS_MS = 60_000;
 
 export function useAppState(): AppState {
@@ -120,11 +128,12 @@ export function useAppState(): AppState {
   useEffect(() => {
     return subscribeEvents(
       (snap) => {
+        const first = prevSnap.current === null;
         const changed = changedKeys(prevSnap.current, snap);
         prevSnap.current = snap;
         setEvents(snap);
         setConnected(true);
-        setTick((t) => t + 1);
+        if (bumpsGlobalTick(changed, first)) setTick((t) => t + 1);
         if (changed.length)
           setTicks((cur) => {
             const next = { ...cur };
@@ -231,6 +240,55 @@ export function useLoad<T>(fn: () => Promise<T> | null, deps: unknown[]): Loaded
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [...deps, n]);
   return { data, error, loading, reload: () => setN((x) => x + 1) };
+}
+
+/** 현재 시각을 stepMs 마다 다시 준다(상단 시계·'n분 전'·남은 시간). 가려진 탭에선 쉬고, 돌아오면
+ * 즉시 맞춘다. 서버를 다시 부르지 않는 '시간이 흐르는 값' 전용. */
+export function useNow(stepMs = 1000): Date {
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => {
+    let id: number | undefined;
+    const start = () => {
+      setNow(new Date());
+      // 초 경계에 맞춰 시작해 초가 고르게 넘어가게 한다
+      const lag = stepMs >= 1000 ? stepMs - (Date.now() % stepMs) : stepMs;
+      id = window.setTimeout(function tickFn() {
+        setNow(new Date());
+        id = window.setTimeout(tickFn, stepMs - (Date.now() % stepMs));
+      }, lag);
+    };
+    const stop = () => id !== undefined && window.clearTimeout(id);
+    const onVis = () => {
+      stop();
+      if (document.visibilityState === "visible") start();
+    };
+    start();
+    document.addEventListener("visibilitychange", onVis);
+    return () => {
+      stop();
+      document.removeEventListener("visibilitychange", onVis);
+    };
+  }, [stepMs]);
+  return now;
+}
+
+/** 페이지 접속·탭 복귀 때 잔고 스냅샷을 신선하게: 서버가 정규장이고 2분보다 오래된 계좌만 브로커
+ * 잔고를 다시 읽는다(조회만, 시장별 30초 1회). 결과는 SSE `positions` 로 표에 반영되므로 응답은 버린다. */
+export function useEnsureFresh(markets: string[]): void {
+  const key = markets.join(",");
+  useEffect(() => {
+    if (!key) return;
+    const run = () => {
+      for (const m of key.split(","))
+        postJson("/api/portfolio/ensure-fresh?market=" + m, null, null).catch(() => {
+          /* 보조 동작 — 실패해도 스냅샷 값이 보인다 */
+        });
+    };
+    run();
+    const onVis = () => document.visibilityState === "visible" && run();
+    document.addEventListener("visibilitychange", onVis);
+    return () => document.removeEventListener("visibilitychange", onVis);
+  }, [key]);
 }
 
 /** 종목 코드·이름 검색 (Phase 24, /api/names/search). 300ms 디바운스, 빈 질의는 []. 실패는 [] (보조 기능). */

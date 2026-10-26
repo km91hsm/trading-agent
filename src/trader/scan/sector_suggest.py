@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections.abc import Iterable
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -165,6 +166,18 @@ def sync(src: Path, dst: Path, market: str, *, today: date) -> int:
 # yaml 이 언제나 우선이고(사람이 관리), 표에 없는 업종은 추측하지 않는다(sector None 으로 캐시해
 # 다시 조회하지 않음). 조회 실패는 캐시하지 않아 다음 관측 때 다시 시도한다.
 AUTO_FILE = "sector_auto.json"
+# KIS 가 업종을 주지 않는 ETF·ETN 은 종목명의 운용사 상표로만 'ETF' 로 묶는다(표시 전용 — 리스크
+# 게이트는 sectors.yaml 만 본다). 상표 목록은 국내 상장 ETF 브랜드.
+ETF_SECTOR = "ETF"
+_ETF_BRANDS = re.compile(
+    r"^(KODEX|TIGER|KBSTAR|RISE|ACE|SOL|HANARO|ARIRANG|KOSEF|PLUS|KIWOOM|TIMEFOLIO|WON|"
+    r"BNK|UNICORN|파워|마이티|히어로즈|1Q|에셋플러스|TRUSTON|FOCUS|DAISHIN343)\b",
+    re.I,
+)
+
+
+def _etf_by_name(name: str | None) -> bool:
+    return bool(name and (_ETF_BRANDS.search(name.strip()) or " ETN" in name or "ETF" in name))
 
 
 def _auto_path(state: Path | None) -> Path:
@@ -188,8 +201,10 @@ def auto_classify(
     tickers: Iterable[str],
     state: Path | None = None,
     exchanges: dict[str, str] | None = None,
+    names: dict[str, str] | None = None,
 ) -> dict[str, str]:
-    """yaml·캐시에 없는 종목만 업종을 조회해 캐시에 적는다. 새로 대분류된 {종목: 섹터}."""
+    """yaml·캐시에 없는 종목만 업종을 조회해 캐시에 적는다. 새로 대분류된 {종목: 섹터}.
+    업종 표에 없는데 이름이 ETF 상표면(`names`) 'ETF' 로 묶는다."""
     cache = load_auto(state)
     seen = cache.setdefault(market, {})
     got: dict[str, str] = {}
@@ -207,6 +222,8 @@ def auto_classify(
             logger.info("업종 조회 실패 %s %s: %s", market, t, e)
             continue
         sector = sectors.classify(industry, market)  # type: ignore[arg-type]
+        if sector is None and _etf_by_name((names or {}).get(t)):
+            sector = ETF_SECTOR
         seen[t] = {"sector": sector, "industry": industry, "at": datetime.now(UTC).isoformat()}
         changed = True
         if sector:

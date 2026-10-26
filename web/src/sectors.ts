@@ -1,6 +1,6 @@
 // 섹터 비중 표 (Phase 17 S): /api/portfolio 의 sectors → 행. 막대 폭·상한 초과 표시는 순수 함수.
 
-export type SectorRow = { sector: string; eval_amount: string; weight: number | null; tickers: string[]; count: number };
+export type SectorRow = { sector: string; eval_amount: string; weight: number | null; tickers: string[]; count: number; auto?: boolean };
 
 export type SectorView = {
   key: string;
@@ -13,6 +13,7 @@ export type SectorView = {
   over: boolean; // 상한 초과 (헤지·현금은 상한 대상 아님)
   capped: boolean; // 상한 규칙 대상(일반 섹터)인가
   tickers: string[];
+  auto: boolean; // KIS 업종으로 자동 분류된 종목이 든 행(표시 전용 — 게이트는 sectors.yaml 기준)
 };
 
 const EXEMPT = new Set(["현금", "헤지"]);
@@ -32,6 +33,7 @@ export function sectorRows(rows: SectorRow[], maxSectorPct: number): SectorView[
       over: capped && w != null && w > maxSectorPct + 1e-9,
       capped,
       tickers: r.tickers,
+      auto: !!r.auto,
     };
   });
 }

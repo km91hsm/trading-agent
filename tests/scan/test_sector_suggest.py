@@ -229,3 +229,17 @@ def test_auto_classify_tolerates_lookup_failure(tmp_path):
     assert got == {}
     # 실패는 캐시하지 않는다(다음 관측 때 다시 시도)
     assert sector_suggest.load_auto(tmp_path).get("KR", {}) == {}
+
+
+def test_auto_classify_groups_etf_by_brand_name(tmp_path):
+    """KIS 가 업종을 주지 않는 ETF 는 운용사 상표 이름으로 'ETF' 로 묶는다(표시 전용)."""
+    m = FakeMarket(industries={})
+    got = sector_suggest.auto_classify(
+        SECTORS,
+        m,
+        market="KR",
+        tickers=["357870", "336260"],
+        state=tmp_path,
+        names={"357870": "TIGER CD금리투자KIS(합성)", "336260": "두산퓨얼셀"},
+    )
+    assert got == {"357870": "ETF"}

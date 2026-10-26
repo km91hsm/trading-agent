@@ -81,11 +81,12 @@ def refresh(
         for p in snap.get("positions") or []:
             tickers.setdefault(str(p["ticker"]), p.get("exchange"))
     if tickers and market_client is not None:
-        out["sectors"] = _classify(market, tickers, settings, market_client, state)
+        out["sectors"] = _classify(conn, market, tickers, settings, market_client, state)
     return out
 
 
-def _classify(market: str, tickers: dict, settings: Any, market_client: Any, state) -> dict:
+def _classify(conn, market: str, tickers: dict, settings: Any, market_client: Any, state) -> dict:
+    from trader import names as names_mod
     from trader.config import load_sectors
     from trader.scan import sector_suggest
 
@@ -101,6 +102,14 @@ def _classify(market: str, tickers: dict, settings: Any, market_client: Any, sta
         tickers=[t for t in tickers if t not in hedge],
         state=state,
         exchanges={t: e for t, e in tickers.items() if e},
+        names={
+            t: n
+            for (_m, t), n in names_mod.resolve_many(
+                conn,
+                (state / "cache") if state else names_mod.default_cache_dir(),
+                [(market, t) for t in tickers],
+            ).items()
+        },
     )
 
 

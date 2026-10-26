@@ -44,9 +44,27 @@
 .acct[data-env="real"] select {
   border-color: var(--real);
 }
-.phase {
+/* 상단 바 시계: 1초마다 흐르는 KST(굵게) + 뉴욕 시각 + 장 상태. 숫자는 tnum 이라 폭이 흔들리지 않는다 */
+.clock {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s-3);
   font-size: var(--t-xs);
+  color: var(--ink-2);
   white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.clock b {
+  color: var(--ink);
+  font-weight: 800;
+}
+.clock-kst b {
+  font-size: var(--t-sm);
+}
+.clock-et,
+.clock-phase {
+  padding-left: var(--s-3);
+  border-left: 1px solid var(--rule);
 }
 .spacer {
   flex: 1;
@@ -171,7 +189,8 @@ main {
   .sidenav.open {
     transform: translateX(0);
   }
-  .phase {
+  .clock-phase,
+  .clock-date {
     display: none;
   }
   main {
@@ -191,6 +210,10 @@ main {
     display: none;
   }
   .acct .badge {
+    display: none;
+  }
+  .clock-et,
+  .clock-tz {
     display: none;
   }
 }

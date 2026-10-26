@@ -284,12 +284,43 @@
   }
 }
 
-/* 용어 */
+/* 용어: 누르면 한 줄 설명이 열리는 버튼(글자 그대로 보이고 점선 밑줄만 단다) */
+.term-wrap {
+  display: inline;
+}
 .term {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  padding: 0;
   text-decoration: underline dotted;
   text-underline-offset: 3px;
   text-decoration-color: var(--ink-3);
-  cursor: help;
+  cursor: pointer;
+}
+.term:hover,
+.term[aria-expanded="true"] {
+  text-decoration-style: solid;
+  text-decoration-color: var(--ink);
+}
+.term-pop {
+  z-index: 40;
+  display: block;
+  padding: var(--s-2) var(--s-3);
+  background: var(--ink);
+  color: var(--paper);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  font-size: var(--t-xs);
+  font-weight: 500;
+  line-height: 1.5;
+  white-space: normal;
+  text-align: left;
+}
+.term-pop b {
+  font-weight: 800;
+  margin-right: var(--s-1);
 }
 
 /* 버튼·폼 */
@@ -720,6 +751,15 @@ pre.status {
 .meter small {
   font-size: var(--t-xs);
 }
+/* 초기화 시각(KST)과 남은 시간을 두 줄로 — 좁은 열에서 숫자 중간이 끊기지 않게 */
+.meter-reset {
+  display: grid;
+  gap: 1px;
+  font-variant-numeric: tabular-nums;
+}
+.meter-reset span {
+  white-space: nowrap;
+}
 .usage .note {
   font-size: var(--t-xs);
   color: var(--ink-2);
@@ -940,4 +980,38 @@ tr.danger td:first-child {
 }
 .picker-id {
   font-weight: 600;
+}
+
+/* 업종 표의 '자동' 꼬리표(KIS 업종명 자동 분류, 표시용) */
+.auto-tag {
+  margin-left: var(--s-1);
+  padding: 0 var(--s-1);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  font-size: var(--t-xs);
+  font-weight: 600;
+  color: var(--ink-2);
+}
+/* 합산 행의 '실시간' 꼬리표: 시세가 들어온 행만 */
+.live-tag {
+  margin-left: var(--s-2);
+  font-size: var(--t-xs);
+  font-weight: 600;
+  color: var(--ok);
+}
+
+/* 접는 절(데몬 잡 예정표처럼 길지만 가끔 보는 표) */
+.fold > summary {
+  cursor: pointer;
+  padding: var(--s-2) 0;
+  font-size: var(--t-xs);
+  font-weight: 600;
+  color: var(--ink-2);
+  list-style-position: inside;
+}
+.fold > summary:hover {
+  color: var(--ink);
+}
+.fold[open] > summary {
+  margin-bottom: var(--s-2);
 }

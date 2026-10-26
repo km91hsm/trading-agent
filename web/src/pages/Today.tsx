@@ -52,10 +52,12 @@ function marketFileLabel(f: string): string {
 
 /** 시장 단위 단계 파일(시장 세션·스캔·발굴) — 종목 판과 달리 시장 디렉터리에 있다. */
 function MarketFiles({ files, market, date }: { files: string[]; market: Market; date: string }) {
+  const { tickOf } = useApp();
+  const tCp = tickOf("checkpoints"); // 세션이 새 단계 파일을 쓰면 새로고침 없이 다시 읽는다
   const [stage, setStage] = useState("");
   const cp = useLoad(
     () => (stage ? getJson<MarketCp>("/api/market-checkpoint", { market, date, stage }) : null),
-    [market, date, stage],
+    [market, date, stage, tCp],
   );
   return (
     <Section title="시장 단계" aside={`${files.length}개 파일`}>
@@ -240,7 +242,8 @@ function StagePlates({
 }
 
 export function TodayPage({ title = "오늘의 실행", inputsOnly = false }: { title?: string; inputsOnly?: boolean }) {
-  const { tick, names } = useApp();
+  const { tick, names, tickOf } = useApp();
+  const tCp = tickOf("checkpoints"); // 진행 중인 분석의 단계 파일이 생기면 판·보고서가 바로 바뀐다
   const run = useCanRun();
   const [analyzeTicker, setAnalyzeTicker] = useState("");
   const [analyzeExchange, setAnalyzeExchange] = useState("NAS");
@@ -249,7 +252,7 @@ export function TodayPage({ title = "오늘의 실행", inputsOnly = false }: { 
   const [date, setDate] = useState("");
   const [ticker, setTicker] = useState("");
   const [stage, setStage] = useState("");
-  const today = useLoad(() => getJson<TodayResp>("/api/today", date ? { market, date } : { market }), [market, date, tick]);
+  const today = useLoad(() => getJson<TodayResp>("/api/today", date ? { market, date } : { market }), [market, date, tick, tCp]);
   const scalp = useLoad(() => getJson<ScalpResp>("/api/system/scalp", { market }), [market, tick]);
   const files = today.data?.tickers[ticker] ?? [];
   const stages = pipelineStages(files);
@@ -273,11 +276,11 @@ export function TodayPage({ title = "오늘의 실행", inputsOnly = false }: { 
             return out;
           })
         : null,
-    [ticker, runDate, market, files.join(), inputsOnly],
+    [ticker, runDate, market, files.join(), inputsOnly, tCp],
   );
   const cp = useLoad(
     () => (ticker && stage && runDate ? getJson<Checkpoint>("/api/checkpoint", { ticker, market, date: runDate, stage }) : null),
-    [ticker, stage, market, runDate],
+    [ticker, stage, market, runDate, tCp],
   );
   const cpData = cp.data?.data as Record<string, unknown> | undefined;
   const tickers = Object.keys(today.data?.tickers ?? {});
