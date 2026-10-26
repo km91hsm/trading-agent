@@ -387,3 +387,12 @@
 - [x] 완료 기준(코드): 최종 전체 pytest 1,010 passed·1 skipped, 수집기 49개 테스트·ruff 통과. 상시 프로세스 반복 갱신·핵심 목록 실측 75~85초 확인 (2026-10-25 확인)
 - [ ] Windows 실기: Chromium 설치·일반 창 자동 로그인·종료 및 UTF-8 파일 확인 (크로스플랫폼 코드는 구현, Windows 장비 미검증)
 - [ ] 완료 기준(운영 검증): 전체 과거 본문·모든 댓글의 완전 수집 및 장중 폭주 시 누락 여부 확인. 현 코드는 횟수 한도·끝 미확인을 partial로 명시하며 무한 과거 완료를 주장하지 않음
+
+## 세이브티커 수집기 합치기·번들 (2026-10-27, 사용자 결정 '공개 main 머지 + Chromium 첫 실행 설치')
+- [x] 수집기 브랜치(`feat/phase17-saveticker`)를 main 위로 병합, 패키지 `trader.saveticker`(리더 `trader.sources.saveticker` 와 이름 충돌 해소) (2026-10-27)
+- [x] 저장 위치 = 리더 설정(`news.saveticker_dir`), 하위 프로세스 argv `bundle.cli_argv()`(번들 `trader`), `playwright`·`pypdf` 기본 의존성 + PyInstaller 드라이버 포함, Chromium 첫 실행 설치(`chromium.ensure`·`saveticker install-browser`·`selfcheck`) (2026-10-27)
+- [x] 데몬 잡 `saveticker`(60초): 계정 파일 있을 때 서비스 분리 실행·재기동(인증 실패는 계정 파일이 바뀐 뒤, 재기동 한도는 1시간 뒤)·텔레그램 장애 알림·운영일 1회 보관 기간 정리(`saveticker_retention_days` 30), 종료 때 트리 정리 (2026-10-27)
+- [x] 저장량: 뉴스 조회수·좋아요·댓글 수만 바뀐 행은 새 버전 아님. 리더: 트렌드 제외·오래된 화면 제외(`snapshot.stale`) (2026-10-27)
+- [ ] 실기(사용자 확인 대기, 다른 PC): 번들 폴더를 복사 → `secrets/saveticker.env` 확인 → `Trader.app` 실행 → 1분 안에 `state/external/saveticker/runtime/daemon-service.log` 에 Chromium 설치·수집 시작, 브라우저 창 4개, `./trader saveticker status` 의 스트림 `ok`
+- [ ] 실기(사용자 확인 대기, Windows): Chromium 자동 설치·일반 창 로그인·앱 종료 때 `taskkill /T` 로 브라우저까지 닫히는지
+- [ ] 결정 대기(사용자): 이 맥의 launchd 수집기(`com.user.saveticker.collector`·`monitor`, Codex 작업 폴더의 옛 코드)를 내리고 데몬(앱)이 맡게 할지 — 내리면 앱이 꺼져 있는 동안은 수집이 멈춘다. 계속 쓰면 같은 폴더 `service.lock` 으로 데몬은 띄우지 않고 감시만 한다

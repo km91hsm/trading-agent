@@ -5,9 +5,13 @@
 ## 설치와 계정
 
 ```text
-uv sync --extra browser
-uv run playwright install chromium
+uv sync
+uv run trader saveticker install-browser   # Chromium 1회(서비스 시작 때도 자동)
 ```
+
+번들(`Trader.app`/`TraderApp.exe`)은 Playwright 드라이버를 포함하고 Chromium 은 첫 실행에 내려받는다.
+평소에는 데몬 잡 `saveticker` 가 계정 파일이 있을 때 `trader saveticker service` 를 띄우고 감시·정리한다
+(`docs/architecture.md` 「세이브티커 수집기」). 아래 launchd 등록은 데몬 없이 상시 수집할 때만 쓴다.
 
 `secrets/saveticker.env`에 아래 이름으로 계정을 저장한다. 실제 값은 이 문서·명령 인자·로그에 넣지 않는다.
 
@@ -37,7 +41,7 @@ uv run trader saveticker export
 
 ## 파일
 
-기준 폴더는 `$TRADER_HOME/state/external/saveticker/data/`다. TRADER_HOME이 없으면 현재 프로젝트의 platform/paths 규칙을 쓴다. 수집 결과는 `data/`, 로그·실행 상태·잠금 파일은 형제 폴더 `runtime/`로 분리한다.
+기준 폴더는 `config/sources.yaml` 의 `news.saveticker_dir`(기본 `$TRADER_HOME/state/external/saveticker`) 아래 `data/`다 — 리더가 읽는 곳과 같다. 상대 경로는 프로젝트 루트 기준이다. `news.saveticker_retention_days`(30) 지난 변경 이력·화면 캡처(스트림별 마지막 제외)·날짜 폴더·PDF 원본은 데몬이 운영일 1회 지운다(추출 텍스트·manifest 는 남김). 수집 결과는 `data/`, 로그·실행 상태·잠금 파일은 형제 폴더 `runtime/`로 분리한다.
 
 ```text
 feed.sqlite3                  변경 이력 원본(WAL)
@@ -61,7 +65,7 @@ JSONL은 한 줄이 변경 버전 하나이며 `{revision, stream, received_at, 
 
 수집 시각은 UTC, 화면 시간대는 Asia/Seoul로 고정한다. 상대시각만 있는 목록은 `published_at=null`이며 추정한 절대시각을 만들지 않는다. 캘린더 `scheduled_at`은 미래여도 유효한 예정 정보다. 종일·시각 미정 일정은 `scheduled_at=null`과 `scheduled_date`로 보존한다. 발표값의 알려진 시각은 `received_at`이며 일정 시각으로 과거에 알았다고 처리하면 안 된다.
 
-스트림 내 같은 행과 상대시각만 달라진 행은 중복 버전을 만들지 않는다. 수정·조회수·좋아요·순위 변화는 새 버전이다. 사이트가 고유 ID를 노출하지 않는 화면에서는 제목+출처 의 해시를 사용하므로 동일 제목의 기사가 겹칠 가능성이 있다. 원문 고유 ID가 확인되면 우선하도록 확장할 수 있다.
+스트림 내 같은 행과 상대시각만 달라진 행은 중복 버전을 만들지 않는다. 뉴스는 조회수·좋아요·댓글 수만 바뀐 행도 새 버전이 아니다(하루 1만 줄 중 대부분이 조회수 변경이었다). 수정·순위 변화와 커뮤니티·순위 화면의 조회수·좋아요 변화는 새 버전이다. 사이트가 고유 ID를 노출하지 않는 화면에서는 제목+출처 의 해시를 사용하므로 동일 제목의 기사가 겹칠 가능성이 있다. 원문 고유 ID가 확인되면 우선하도록 확장할 수 있다.
 
 SQLite 커밋 후 JSONL과 최신 파일을 원자적으로 교체한다. 파일 생성 중 중단돼도 `export`로 원본에서 복구한다. 오류/로그인 만료/빈 응답이 나면 기존 유효 최신 파일을 지우지 않으며 반드시 `status.json`의 시각·상태를 함께 읽는다. `query --asof`는 수신 시각과 발행 시각이 asof 이하인 버전만 반환한다. 다른 탭의 본문 대기 행이 기존 본문을 가리지 않도록 마지막 확인된 본문 버전을 원래 수신 시각과 함께 우선한다. 순위·캘린더는 그 시점 마지막 유효 화면에 실제 있는 항목만 반환한다. 기존 `00_inputs.json`을 자동 변경하지 않는다.
 

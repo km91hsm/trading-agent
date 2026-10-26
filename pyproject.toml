@@ -10,8 +10,10 @@ dependencies = [
     "httpx>=0.28.1",
     "joblib>=1.6.0",
     "pandas>=3.0.6",
+    "playwright>=1.56,<2",  # 세이브티커 수집기(브라우저는 첫 실행에 내려받는다)
     "pyarrow>=25.0.1",
     "pydantic>=2.14.0",
+    "pypdf>=6,<7",
     "python-dotenv>=1.2.4",
     "pystray>=0.19.5",
     "pyyaml>=6.0.3",
@@ -36,10 +38,6 @@ rl = [
     "gymnasium>=0.29,<1.0; sys_platform == 'darwin' and platform_machine == 'x86_64'",
     "stable-baselines3>=2.3,<2.4; sys_platform == 'darwin' and platform_machine == 'x86_64'",
     "torch<=2.2.2; sys_platform == 'darwin' and platform_machine == 'x86_64'",
-]
-browser = [
-    "playwright>=1.56,<2",
-    "pypdf>=6,<7",
 ]
 
 [dependency-groups]

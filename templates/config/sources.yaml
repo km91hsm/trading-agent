@@ -19,7 +19,9 @@ news:
   store_retention_days: 14
   store_hours: 48
   store_items: 60
-  saveticker_dir: state/external/saveticker   # 사용자 별도 수집기가 쌓는 폴더(data/<날짜>/*.jsonl, data/latest/*.json). 없으면 건너뜀
+  saveticker_dir: state/external/saveticker   # 세이브티커 수집기가 쓰고 리더가 읽는 폴더(data/<날짜>/*.jsonl, data/latest/*.json). 다른 폴더의 수집기를 함께 쓰려면 절대경로
+  saveticker_collect: true          # 데몬(앱)이 수집 서비스를 띄운다 — secrets/saveticker.env 가 있을 때만(첫 실행에 Chromium 자동 설치)
+  saveticker_retention_days: 30     # 수집 폴더의 변경 이력·날짜별 JSONL·PDF 원본 보관 기간(추출 텍스트는 남김)
 
 macro:
   enabled: true

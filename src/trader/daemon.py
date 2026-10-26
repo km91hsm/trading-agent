@@ -32,7 +32,7 @@ from trader.ledger import db
 from trader.notify import messages
 from trader.notify.telegram import Notifier, NullNotifier
 from trader.orchestrator import run_store
-from trader.platform import paths
+from trader.platform import bundle, paths, procs
 from trader.platform.procs import process_start, same_process
 
 logger = logging.getLogger("trader.daemon")
@@ -69,6 +69,11 @@ class Lock:
 
     def _holder_pid(self) -> int:
         return self._holder()[0]
+
+    def held(self) -> bool:
+        """지금 살아 있는 (이 잠금을 잡은 그) 프로세스가 쥐고 있는지 — 잡지 않고 보기만 한다."""
+        pid, start = self._holder()
+        return bool(pid) and same_process(pid, start)
 
     FRESH_S = 10  # 내용 없는 잠금이 이 시간 안에 생겼으면 다른 데몬이 쓰는 중
 
@@ -353,6 +358,7 @@ def build_jobs(schedule: ScheduleConfig, settings: Settings, *, markets: list[st
     jobs.append(Job("news_collect", "news_collect", interval_s=schedule.news_collect.interval_s))
     jobs.append(Job("ops_check", "ops_check", interval_s=OPS_CHECK_S))  # 운영 점검(Phase 23 A)
     jobs.append(Job("balance_refresh", "balance_refresh", interval_s=BALANCE_REFRESH_S))
+    jobs.append(Job("saveticker", "saveticker", interval_s=SAVETICKER_WATCH_S))
     if settings.llm.usage_probe.enabled:
         jobs.append(
             Job("usage_probe", "usage_probe", interval_s=settings.llm.usage_probe.interval_min * 60)
@@ -479,6 +485,8 @@ class DaemonDeps:
     # 대기열 틱은 잠겨 있으면 claim 하지 않는다
     heavy_lock: threading.Lock = field(default_factory=threading.Lock)
     scalp_judge: Any | None = None  # Phase 25 단타 판정자(scalp.judge 일 때 _scalp_body 가 만든다)
+    saveticker_proc: Any | None = None  # 이 데몬이 띄운 세이브티커 수집 서비스(Popen)
+    saveticker_pruned: date | None = None  # 수집 폴더 보관 기간 정리를 한 날(운영일 1회)
     # cron 잡이 heavy 락을 기다리는 중이면 선다. 대기열의 긴 잡(백필)은 진행 콜백에서 이것을 보고
     # 락을 잠시 내놓는다(종목 경계) — 아침 scan 이 백필 뒤로 수 시간 밀리지 않도록
     heavy_wanted: HeavyWanted = field(default_factory=lambda: HeavyWanted())
@@ -1479,6 +1487,74 @@ def _usage_probe_body(deps: DaemonDeps) -> dict:
         conn.close()
 
 
+SAVETICKER_WATCH_S = 60
+
+
+def _saveticker_body(deps: DaemonDeps) -> dict:
+    """세이브티커 수집 서비스 감독(앱·데몬이 켜져 있는 동안 수집). 계정 파일이 있고 다른 서비스
+    (예: launchd)가 같은 폴더를 돌리지 않으면 `trader saveticker service` 를 분리 실행하고, 죽으면
+    다시 띄운다(인증 실패·재기동 한도는 `automation.should_start` 가 막는다). 장애·복구는 수집기
+    감시(`automation.monitor`)가 판정해 텔레그램으로 한 번씩, 보관 기간 정리는 운영일 1회.
+    가벼운 잡(heavy 밖) — 수집은 별도 프로세스라 데몬 스레드를 붙잡지 않는다."""
+    from trader import saveticker as st
+    from trader.saveticker import automation
+    from trader.saveticker.store import Store
+    from trader.sources import saveticker as reader
+
+    news = deps.sources_cfg.news if deps.sources_cfg is not None else None
+    home = reader.resolve_dir(news.saveticker_dir) if news is not None else None
+    if news is None or not news.saveticker_collect or home is None:
+        return {"skipped": "꺼짐"}
+    if deps.stop_event.is_set():
+        return {"skipped": "종료 중"}
+    out: dict[str, Any] = {}
+    proc = deps.saveticker_proc
+    if proc is not None and proc.poll() is None:
+        out["service"] = "실행 중"
+    else:
+        ok, reason = automation.should_start(home, st.credentials_path(), now=deps.now())
+        if ok:
+            env = {
+                **os.environ,
+                "TRADER_HOME": str(paths.project_root()),
+                "PYTHONIOENCODING": "utf-8",
+            }
+            deps.saveticker_proc = procs.spawn_detached(
+                [*bundle.cli_argv(), "saveticker", "service"],
+                log=home / "runtime" / "daemon-service.log",
+                env=env,
+            )
+            out["service"] = f"시작 pid {deps.saveticker_proc.pid}"
+            logger.info("세이브티커 수집 서비스 시작 pid %s", deps.saveticker_proc.pid)
+        else:
+            out["service"] = reason
+    if out["service"] != "계정 파일 없음":
+        health = automation.monitor(
+            home, send=lambda text: deps.notifier.send(messages.saveticker_health(text))
+        )
+        out["health"] = health.get("health")
+    today = deps.now().astimezone(KST).date()
+    if deps.saveticker_pruned != today and (home / "data").is_dir():
+        deps.saveticker_pruned = today
+        out["pruned"] = Store(home / "data").prune(
+            today=today, keep_days=news.saveticker_retention_days
+        )
+    return out
+
+
+def _stop_saveticker(deps: DaemonDeps) -> None:
+    """데몬 종료 때 이 데몬이 띄운 수집 서비스를 정리한다(서비스 → 수집 작업 → 브라우저 순)."""
+    from trader.saveticker import automation
+
+    proc, deps.saveticker_proc = deps.saveticker_proc, None
+    if proc is None:
+        return
+    try:
+        procs.stop_tree(proc, grace=automation.STOP_GRACE_S)
+    except Exception:  # noqa: BLE001 — 종료 경로는 막지 않는다
+        logger.exception("세이브티커 수집 서비스 정리 실패")
+
+
 def _ops_body(deps: DaemonDeps) -> dict:
     """운영 점검(Phase 23 A): 다섯 영역 판정 → 직전보다 나빠졌으면 알림 1건. 결과는
     `control.ops_result` 에 남겨 웹·텔레그램·STATUS 가 같은 것을 본다. 가벼운 잡(heavy 밖)."""
@@ -2312,6 +2388,8 @@ def job_body(
         return lambda: _balance_body(deps)
     if job.kind == "usage_probe":
         return lambda: _usage_probe_body(deps)
+    if job.kind == "saveticker":
+        return lambda: _saveticker_body(deps)
     if job.kind == "reconcile":
         return lambda: market_job(
             deps, job.market or "KR", "reconcile", lambda: _reconcile_body(deps, job.market)
@@ -2667,6 +2745,7 @@ def run(
         if deps.scalp_judge is not None:  # 대기 중 판정 취소(실행 중인 것은 stop_event 로 정리)
             deps.stop_event.set()
             deps.scalp_judge.shutdown()
+        _stop_saveticker(deps)
         lock.release()
 
 

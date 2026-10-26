@@ -1209,7 +1209,17 @@ def selfcheck_cmd() -> None:
 
     from trader.platform import bundle
 
-    mods = ["sklearn", "pyarrow.parquet", "pandas", "fastapi", "uvicorn", "apscheduler", "httpx"]
+    mods = [
+        "sklearn",
+        "pyarrow.parquet",
+        "pandas",
+        "fastapi",
+        "uvicorn",
+        "apscheduler",
+        "httpx",
+        "playwright.sync_api",
+        "pypdf",
+    ]
     loaded, failed = [], {}
     for m in mods:
         try:
@@ -1217,6 +1227,17 @@ def selfcheck_cmd() -> None:
             loaded.append(m.split(".")[0])
         except Exception as e:  # noqa: BLE001 - 어떤 import 실패든 보고한다
             failed[m] = f"{type(e).__name__}: {e}"
+    try:  # 세이브티커 수집기: Playwright 드라이버(node)가 번들에 실행 가능하게 들어 있는지
+        import os
+        from pathlib import Path
+
+        from playwright._impl._driver import compute_driver_executable
+
+        node = Path(compute_driver_executable()[0])
+        if not (node.is_file() and os.access(node, os.X_OK)):
+            failed["playwright.driver"] = f"실행 불가: {node.name}"
+    except Exception as e:  # noqa: BLE001
+        failed.setdefault("playwright.driver", f"{type(e).__name__}: {e}")
     optional = {}
     for m in ("lightgbm", "stable_baselines3"):  # 선택 백엔드: 없어도 ok (sklearn·cem 폴백)
         try:

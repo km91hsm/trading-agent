@@ -1,4 +1,8 @@
-"""AI 호출 없는 macOS 수집 서비스 및 로컬 장애 감시."""
+"""AI 호출 없는 수집 서비스 및 로컬 장애 감시.
+
+서비스는 데몬(`daemon._saveticker_body`, 앱이 켜져 있는 동안)이나 macOS launchd 가 띄운다. 같은
+수집 폴더의 `runtime/service.lock` 으로 하나만 돌고, 인증 실패·재기동 한도로 멈추면
+`should_start` 가 다시 띄울 때를 정한다."""
 
 from __future__ import annotations
 
@@ -14,6 +18,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from trader.platform import bundle
 from trader.saveticker.store import atomic_json
 
 RUNNERS = ("runner", "runner-background", "runner-community", "runner-market", "runner-news")
@@ -41,6 +46,10 @@ def read(path):
 def collector_alive(pid):
     if not isinstance(pid, int) or pid <= 0:
         return False
+    if os.name == "nt":  # ps 가 없다 — pid 생존만 본다
+        from trader.platform import procs
+
+        return procs.pid_alive(pid)
     result = subprocess.run(
         ["ps", "-p", str(pid), "-o", "command="], capture_output=True, text=True, timeout=5
     )
@@ -126,7 +135,9 @@ def notify(message):
     return result.returncode == 0
 
 
-def monitor(root):
+def monitor(root, *, send=None):
+    """`send(message) -> bool`: 알림 전송(기본 macOS 알림 센터, 데몬은 텔레그램)."""
+    send = send or notify
     from trader.daemon import Lock
 
     runtime = root / "runtime"
@@ -156,7 +167,7 @@ def monitor(root):
             )
             message = f"{stamp} · {summary} · 마지막 정상 {last}"
             try:
-                delivered = notify(message)
+                delivered = send(message)
             except (OSError, subprocess.SubprocessError):
                 delivered = False
             state["notification"] = "submitted" if delivered else "failed"
@@ -179,6 +190,49 @@ def retry_allowed(runners):
     )
 
 
+STOP_GRACE_S = 70  # 데몬 종료 때 서비스(→ 수집 작업 → 브라우저) 정리 유예
+RESTART_LIMIT_RETRY = 3600  # 재기동 한도로 멈춘 뒤 다시 띄우기까지(초)
+
+
+def _blocked(runtime, reason, **extra):
+    atomic_json(
+        runtime / "service.json",
+        {
+            "pid": os.getpid(),
+            "state": "blocked",
+            "reason": reason,
+            "at": datetime.now(UTC).isoformat(),
+            **extra,
+        },
+    )
+
+
+def should_start(home, credentials, *, now):
+    """데몬이 서비스를 (다시) 띄울지와 이유. 계정 파일은 있는지만 본다(값은 읽지 않는다).
+    인증 실패로 멈췄으면 계정 파일이 그 뒤에 바뀌어야, 재기동 한도·Chromium 설치 실패는 1시간
+    뒤에 다시 띄운다 — 실패한 로그인을 1분마다 반복하면 계정이 잠길 수 있다."""
+    from trader.daemon import Lock
+
+    if not credentials.is_file():
+        return False, "계정 파일 없음"
+    runtime = home / "runtime"
+    if Lock(runtime / "service.lock").held():
+        return False, "이미 실행 중"
+    state = read(runtime / "service.json") or {}
+    if state.get("state") != "blocked":
+        return True, ""
+    try:
+        at = datetime.fromisoformat(state["at"])
+    except (KeyError, TypeError, ValueError):
+        at = None
+    if state.get("reason") == "authentication_or_stopped":
+        changed = at is None or credentials.stat().st_mtime > at.timestamp()
+        return (True, "") if changed else (False, "인증 실패로 멈춤 — 계정 파일 확인 필요")
+    if at is not None and (now - at).total_seconds() < RESTART_LIMIT_RETRY:
+        return False, f"멈춤({state.get('reason')}) — 1시간 뒤 재시도"
+    return True, ""
+
+
 def service(root):
     from trader.daemon import Lock
 
@@ -186,6 +240,12 @@ def service(root):
     runtime.mkdir(parents=True, exist_ok=True)
     lock = Lock(runtime / "service.lock")
     if not lock.acquire():
+        return
+    from trader.saveticker import chromium
+
+    if not chromium.ensure():
+        _blocked(runtime, "chromium_install_failed")
+        lock.release()
         return
     stop = threading.Event()
     child = None
@@ -205,9 +265,7 @@ def service(root):
             with (runtime / "service.log").open("a", encoding="utf-8") as log:
                 child = subprocess.Popen(
                     [
-                        sys.executable,
-                        "-m",
-                        "trader",
+                        *bundle.cli_argv(),
                         "saveticker",
                         "run",
                         "--headed",
@@ -235,29 +293,13 @@ def service(root):
                 break
             rows = {n: read(runtime / (n + ".json")) for n in RUNNERS}
             if code == 0 or not retry_allowed(rows):
-                atomic_json(
-                    runtime / "service.json",
-                    {
-                        "pid": os.getpid(),
-                        "state": "blocked",
-                        "reason": "authentication_or_stopped",
-                        "exit_code": code,
-                    },
-                )
+                _blocked(runtime, "authentication_or_stopped", exit_code=code)
                 return
             if time.monotonic() - started >= 300:
                 attempts = 0
             attempts += 1
             if attempts > 3:
-                atomic_json(
-                    runtime / "service.json",
-                    {
-                        "pid": os.getpid(),
-                        "state": "blocked",
-                        "reason": "restart_limit",
-                        "restart_count": attempts - 1,
-                    },
-                )
+                _blocked(runtime, "restart_limit", restart_count=attempts - 1)
                 return
             delay = 30 * 2 ** (attempts - 1)
             atomic_json(
@@ -281,6 +323,8 @@ def service(root):
 
 
 def plists(project, trader_home, *, python=sys.executable):
+    """macOS launchd 등록용(데몬 없이 상시 수집할 때). 앱을 쓰면 데몬이 서비스를 띄우므로
+    필요 없다."""
     runtime = trader_home / "state/external/saveticker/runtime"
     result = {}
     for kind, label in LABELS.items():

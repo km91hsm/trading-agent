@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import signal
-import sys
 import threading
 import time
 from datetime import UTC, datetime
@@ -13,7 +12,8 @@ from pathlib import Path
 import typer
 
 from trader.config import KST, ConfigError
-from trader.platform import paths
+from trader.platform import bundle
+from trader.saveticker import credentials_path, home
 from trader.saveticker.dom import months_between
 from trader.saveticker.models import Capture
 from trader.saveticker.service import View, build_views, choose_due, collect_cycle, lane_for
@@ -23,11 +23,11 @@ app = typer.Typer(help="SaveTicker 브라우저 수집·파일 조회", no_args_
 
 
 def root() -> Path:
-    return paths.state_dir() / "external" / "saveticker" / "data"
+    return home() / "data"
 
 
 def runtime() -> Path:
-    return paths.state_dir() / "external" / "saveticker" / "runtime"
+    return home() / "runtime"
 
 
 def sqlite_diagnostics(exc) -> dict:
@@ -128,11 +128,11 @@ def run_cmd(
         start = start_month or _month_offset(now, -1)
         end = end_month or _month_offset(now, 3)
         months_between(start, end)
-        account = credentials(paths.project_root() / "secrets" / "saveticker.env")
+        account = credentials(credentials_path())
         from playwright.sync_api import sync_playwright
     except ImportError:
         typer.echo(
-            "uv sync --extra browser 및 uv run playwright install chromium을 실행하세요", err=True
+            "uv sync 및 uv run trader saveticker install-browser 를 실행하세요", err=True
         )
         raise typer.Exit(1) from None
     except (ValueError, ConfigError) as exc:
@@ -192,9 +192,7 @@ def run_cmd(
             commands = {}
             for group in sorted({lane_for(view) for view in planned}):
                 command = [
-                    sys.executable,
-                    "-m",
-                    "trader",
+                    *bundle.cli_argv(),
                     "saveticker",
                     "run",
                     "--lane",
@@ -316,12 +314,23 @@ def run_cmd(
             signal.signal(sig, handler)
 
 
+@app.command("install-browser")
+def install_browser_cmd():
+    """수집기용 Chromium 을 설치한다(이미 있으면 그대로). 서비스도 시작 때 같은 일을 한다."""
+    from trader.saveticker import chromium
+
+    ok = chromium.ensure()
+    _print({"ok": ok})
+    if not ok:
+        raise typer.Exit(1)
+
+
 @app.command("service")
 def service_cmd():
     """AI 없이 수집기를 실행하고 일시 오류를 최대 3회 재기동한다."""
     from trader.saveticker.automation import service
 
-    service(root().parent)
+    service(home())
 
 
 @app.command("monitor")
@@ -329,4 +338,4 @@ def monitor_cmd():
     """AI 없이 프로세스·갱신 지연을 확인하고 macOS 장애 알림을 보낸다."""
     from trader.saveticker.automation import monitor
 
-    _print(monitor(root().parent))
+    _print(monitor(home()))

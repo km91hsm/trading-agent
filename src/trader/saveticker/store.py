@@ -5,12 +5,23 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
+import shutil
 import sqlite3
 import tempfile
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 
 from trader.saveticker.models import Capture
+
+# 뉴스의 참여 수치(조회수 등)는 20초마다 바뀌어 같은 기사가 하루 수백 번 새 버전이 됐다 — 뉴스
+# 스트림에서는 디지스트에서 뺀다(커뮤니티·순위 화면은 그 숫자가 정보라 그대로 둔다).
+_VOLATILE = ("displayed_time",)
+_NEWS_VOLATILE = ("views", "likes", "comment_count")
+
+
+def _stable(stream: str, item: dict) -> dict:
+    drop = _VOLATILE + (_NEWS_VOLATILE if stream.startswith("news_") else ())
+    return {k: v for k, v in item.items() if k not in drop}
 
 
 def _json(value) -> str:
@@ -98,7 +109,7 @@ class Store:
                 raise ValueError("수집 시각이 이전 관측보다 과거입니다")
             if capture.status in ("ok", "partial"):
                 for item in data["items"]:
-                    stable = {k: v for k, v in item.items() if k != "displayed_time"}
+                    stable = _stable(capture.stream, item)
                     digest = hashlib.sha256(_json(stable).encode()).hexdigest()
                     prior = db.execute(
                         "SELECT digest FROM revisions WHERE stream=? AND item_id=? "
@@ -217,6 +228,45 @@ class Store:
                     "overrun_s": max(0, payload["elapsed_s"] - payload["target_interval_s"]),
                 }
             atomic_json(self.root / "status.json", {"streams": streams})
+
+    def prune(self, *, today: date, keep_days: int) -> dict[str, int]:
+        """보관 기간(`keep_days`)보다 오래된 이력을 지운다(멱등): 변경 버전·화면 캡처(스트림별
+        마지막 것은 남김 — latest·status 의 원본), 날짜 폴더 JSONL, PDF 원본(추출 텍스트·manifest 는
+        작아서 남김). 지운 SQLite 공간은 파일을 줄이지 않고 다음 쓰기가 재사용한다."""
+        cutoff = today - timedelta(days=keep_days)
+        stamp = datetime.combine(cutoff, time.min, UTC).isoformat()
+        out = {"revisions": 0, "captures": 0, "day_dirs": 0, "pdfs": 0}
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            out["revisions"] = db.execute(
+                "DELETE FROM revisions WHERE received_at < ?", (stamp,)
+            ).rowcount
+            out["captures"] = db.execute(
+                "DELETE FROM captures WHERE observed_at < ? AND seq NOT IN "
+                "(SELECT MAX(seq) FROM captures GROUP BY stream)",
+                (stamp,),
+            ).rowcount
+            # 지운 날짜의 내보내기 커서도 지운다(남기면 export 가 파일이 없다고 보고 다시 만든다)
+            db.execute("DELETE FROM exports WHERE substr(path, 1, 10) < ?", (cutoff.isoformat(),))
+        for d in sorted(self.root.iterdir()):
+            try:
+                day = date.fromisoformat(d.name)
+            except ValueError:
+                continue
+            if d.is_dir() and day < cutoff:
+                shutil.rmtree(d, ignore_errors=True)
+                out["day_dirs"] += 1
+        attachments = self.root / "attachments"
+        if attachments.is_dir():
+            limit = datetime.combine(cutoff, time.min, UTC).timestamp()
+            for pdf in attachments.glob("*.pdf"):
+                try:
+                    if pdf.stat().st_mtime < limit:
+                        pdf.unlink()
+                        out["pdfs"] += 1
+                except OSError:
+                    continue
+        return out
 
     def status(self) -> dict:
         p = self.root / "status.json"

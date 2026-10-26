@@ -1,10 +1,13 @@
-"""프로세스 생존 확인 (OS 분기는 platform/ 에서만). 데몬 잠금 파일의 stale 판정에 쓴다."""
+"""프로세스 생존 확인·분리 실행 (OS 분기는 platform/ 에서만). 데몬 잠금 파일의 stale 판정, 데몬이
+띄우는 상시 하위 서비스(세이브티커 수집)의 기동·정리에 쓴다."""
 
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 from collections.abc import Callable
+from pathlib import Path
 
 
 def open_folder(path: os.PathLike[str] | str) -> None:
@@ -104,3 +107,48 @@ def pid_alive(pid: int) -> bool:
     except PermissionError:
         return True
     return True
+
+
+def spawn_detached(argv: list[str], *, log: Path, env: dict[str, str]) -> subprocess.Popen:
+    """부모와 다른 프로세스 그룹(posix 새 세션, Windows 새 프로세스 그룹)으로 띄우고 출력은
+    `log` 에 덧붙인다 — 데몬의 시그널·Ctrl+C 가 그대로 번지지 않게 하고, 정리는 `stop_tree` 로."""
+    log.parent.mkdir(parents=True, exist_ok=True)
+    kw: dict = (
+        {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}  # type: ignore[attr-defined]
+        if sys.platform == "win32"
+        else {"start_new_session": True}
+    )
+    with log.open("a", encoding="utf-8") as out:
+        return subprocess.Popen(
+            argv, stdin=subprocess.DEVNULL, stdout=out, stderr=out, env=env, shell=False, **kw
+        )
+
+
+def stop_tree(proc: subprocess.Popen, *, grace: float) -> None:
+    """posix: SIGTERM(하위 정리는 그 프로세스의 핸들러 몫) → `grace` 초 안에 안 끝나면 그룹 SIGKILL.
+    Windows: 그룹 신호가 없어 `taskkill /T /F` 로 트리 전체(브라우저 포함)를 끝낸다."""
+    if proc.poll() is not None:
+        return
+    if sys.platform == "win32":
+        subprocess.run(
+            ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+            capture_output=True,
+            shell=False,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+        )
+        return
+    import signal
+
+    try:
+        proc.terminate()
+        proc.wait(timeout=grace)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            proc.kill()
+        proc.wait(timeout=10)
+    except ProcessLookupError:
+        pass
