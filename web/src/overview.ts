@@ -101,3 +101,28 @@ export function mergeHoldings(rows: Position[]): Position[] {
   }
   return [...by.values()];
 }
+
+export type AccountRows<T> = { rows: T[]; failed: string[] };
+
+/** 계좌마다 부른 조회를 합친다. 실패한 계좌는 빈 결과로 숨기지 않고 `failed` 에 남긴다(전체 검토 W3 리뷰).
+ * 모든 계좌가 실패하면 첫 오류를 그대로 던져 화면이 '오류' 로 보이게 한다. */
+export async function mergeAccountRows<T extends { id: number }>(
+  ids: string[],
+  load: (id: string) => Promise<T[]>,
+): Promise<AccountRows<T>> {
+  const settled = await Promise.allSettled(ids.map((id) => load(id)));
+  const rows: T[] = [];
+  const failed: string[] = [];
+  settled.forEach((s, i) => (s.status === "fulfilled" ? rows.push(...s.value) : failed.push(ids[i])));
+  if (ids.length && failed.length === ids.length) {
+    const first = settled.find((s): s is PromiseRejectedResult => s.status === "rejected");
+    throw first?.reason instanceof Error ? first.reason : new Error(String(first?.reason));
+  }
+  rows.sort((a, b) => b.id - a.id);
+  return { rows, failed };
+}
+
+/** 일부 계좌만 실패했을 때 보일 문구. 없으면 null. */
+export function partialText(failed: string[], what: string): string | null {
+  return failed.length ? `${failed.join(", ")} 계좌의 ${what}을 읽지 못해 합계에서 빠졌어요` : null;
+}

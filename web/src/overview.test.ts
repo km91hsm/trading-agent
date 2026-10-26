@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mergeHoldings, missingText, overviewRows, planCell, planCells } from "./overview";
+import { mergeAccountRows, mergeHoldings, missingText, overviewRows, partialText, planCell, planCells } from "./overview";
 import type { Overview, OverviewEnv } from "./types";
 
 const env = (nav: string, accounts: string[]): OverviewEnv => ({
@@ -54,5 +54,21 @@ describe("mergeHoldings (전체 검토 W4)", () => {
     const p = (qty: number, ev: string, acct: string) => ({ ticker: "005930", market: "KR", qty, avg_price: "1", current_price: "1", eval_amount: ev, accounts: [acct] });
     const [m] = mergeHoldings([p(10, "100", "paper-main"), p(5, "50", "real-main")]);
     expect(m).toMatchObject({ qty: 15, eval_amount: "150", accounts: ["paper-main", "real-main"] });
+  });
+});
+
+describe("mergeAccountRows", () => {
+  it("성공한 계좌 행은 합치고 실패 계좌는 failed 로 남긴다", async () => {
+    const r = await mergeAccountRows(["a", "b", "c"], (id) =>
+      id === "b" ? Promise.reject(new Error("503")) : Promise.resolve([{ id: id === "a" ? 1 : 5 }]),
+    );
+    expect(r.rows.map((x) => x.id)).toEqual([5, 1]);
+    expect(r.failed).toEqual(["b"]);
+    expect(partialText(r.failed, "주문")).toContain("b 계좌의 주문");
+    expect(partialText([], "주문")).toBeNull();
+  });
+
+  it("모든 계좌가 실패하면 오류를 던진다(빈 원장으로 보이지 않게)", async () => {
+    await expect(mergeAccountRows(["a"], () => Promise.reject(new Error("HTTP 500")))).rejects.toThrow("HTTP 500");
   });
 });

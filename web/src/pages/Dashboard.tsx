@@ -20,7 +20,7 @@ import { type ScalpResp, scalpChip } from "../pipeline";
 import type { OpsResp } from "../ops";
 import { Advisory } from "../components/Advisory";
 import { OverviewBlock } from "../components/OverviewBlock";
-import { mergeHoldings } from "../overview";
+import { mergeAccountRows, mergeHoldings, partialText } from "../overview";
 import { termLabel } from "../glossary";
 import { buildTape, gateFor, marketPhase, type TapeRow } from "../tape";
 import type {
@@ -93,24 +93,17 @@ export function Dashboard() {
   const checks = useLoad(() => (primaryId ? getJson<RiskCheck[]>(withAccount("/api/risk-checks", primaryId)) : null), [primaryId, tRuns, tDecisions]);
   // '전체' 선택이면 모든 계좌의 주문·승인을 합친다(첫 계좌만 세던 버그 — 전체 검토 W3)
   const scopeIds = accountId ? [accountId] : accounts.map((a) => a.id);
+  // 실패한 계좌는 빈 목록으로 숨기지 않는다 — 전부 실패면 오류, 일부면 '합계에서 빠짐' 안내
   const orders = useLoad(
-    () =>
-      scopeIds.length
-        ? Promise.all(scopeIds.map((id) => getJson<Order[]>(withAccount("/api/orders", id)).catch(() => [] as Order[]))).then((xs) =>
-            xs.flat().sort((a, b) => b.id - a.id),
-          )
-        : null,
+    () => (scopeIds.length ? mergeAccountRows(scopeIds, (id) => getJson<Order[]>(withAccount("/api/orders", id))) : null),
     [scopeIds.join(), tOrders],
   );
   const approvals = useLoad(
-    () =>
-      scopeIds.length
-        ? Promise.all(scopeIds.map((id) => getJson<Approval[]>(withAccount("/api/approvals", id)).catch(() => [] as Approval[]))).then((xs) =>
-            xs.flat().sort((a, b) => b.id - a.id),
-          )
-        : null,
+    () => (scopeIds.length ? mergeAccountRows(scopeIds, (id) => getJson<Approval[]>(withAccount("/api/approvals", id))) : null),
     [scopeIds.join(), tApprovals],
   );
+  const orderRows = orders.data?.rows ?? [];
+  const approvalRows = approvals.data?.rows ?? [];
   const otherChecks = useLoad(
     () =>
       otherAccounts.length
@@ -158,15 +151,16 @@ export function Dashboard() {
         positions,
         decisions: decisions.data ?? [],
         riskChecks: checks.data ?? [],
-        orders: orders.data ?? [],
-        approvals: approvals.data ?? [],
+        // 게이트 열은 대표 계좌 기준이라 그 계좌의 주문·승인만 넘긴다(다른 계좌 실행이 섞이지 않게)
+        orders: orderRows.filter((o) => o.account_id === primaryId),
+        approvals: approvalRows.filter((a) => a.account_id === primaryId),
         watch: watch.data?.tickers ?? [],
         dates,
         nav: { KR: navOf("KR"), US: navOf("US") },
         now,
       }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [pfKR.data, pfUS.data, overview.data, accountId, decisions.data, checks.data, orders.data, approvals.data, watch.data, dates, now],
+    [pfKR.data, pfUS.data, overview.data, accountId, primaryId, decisions.data, checks.data, orders.data, approvals.data, watch.data, dates, now],
   );
   // 행별 보조 정보: 결정이 있는 행만, 30_decision + 00_inputs 두 파일 (로컬 서버라 N 요청이 부담 없다)
   const decidedKeys = tape.filter((r) => r.decisionId).map((r) => r.key).join();
@@ -206,15 +200,23 @@ export function Dashboard() {
   };
   const selRow = tape.find((r) => r.key === sel) ?? null;
 
-  const todayOrders = (orders.data ?? []).filter((o) => marketDate(o.created_at, o.market) === dates[o.market]);
-  const pendingApprovals = (approvals.data ?? []).filter((a) => a.status === "pending");
+  const todayOrders = orderRows.filter((o) => marketDate(o.created_at, o.market) === dates[o.market]);
+  const pendingApprovals = approvalRows.filter((a) => a.status === "pending");
   const runsToday = (runs.data ?? []).filter((r) => fmtDate(r.started_at) === dates.KR);
   const errorsToday = runsToday.filter((r) => r.status === "error");
   const signal = daemonText(daemon.data);
   const regimeChip = regimeText(regime.data);
   const cap = settings.data?.llm?.daily_session_cap;
   const loading = (pfKR.loading || pfUS.loading || decisions.loading) && !tape.length;
-  const anyError = pfKR.error || pfUS.error || decisions.error || checks.error || orders.error || approvals.error;
+  const anyError =
+    pfKR.error ||
+    pfUS.error ||
+    decisions.error ||
+    checks.error ||
+    orders.error ||
+    approvals.error ||
+    partialText(orders.data?.failed ?? [], "주문") ||
+    partialText(approvals.data?.failed ?? [], "승인 요청");
   const phase = marketPhase(now);
   const earliestExpiry = pendingApprovals.map((a) => minutesLeft(a.expires_at, now)).filter((m): m is number => m !== null).sort((a, b) => a - b)[0];
 
