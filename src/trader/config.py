@@ -119,6 +119,29 @@ class RepriceCfg(BaseModel):
     max_chase_pct: float = Field(default=0.01, gt=0, le=0.1)
 
 
+class ThemeWeights(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    news: float = 0.35
+    rank: float = 0.25
+    flow: float = 0.15
+    saveticker: float = 0.10
+    vol: float = 0.15
+
+
+class ThemeCfg(BaseModel):
+    """테마 열기 감지 (Phase 25 단계 4, `scan/theme.py`). 감지·알림·scout 입력만 —
+    매매는 분석 세션."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    interval_s: int = Field(default=1800, ge=300, le=86400)  # 데몬 <시장>_theme 주기(장중만)
+    top_n: int = Field(default=3, ge=1, le=10)  # 알림·scout·게이트가 보는 상위 테마 수
+    min_cluster_titles: int = Field(default=3, ge=2)  # 키워드 테마: 새 뉴스 제목 공출현 최소 건수
+    weights: ThemeWeights = Field(default_factory=ThemeWeights)
+
+
 class RiskLimits(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -131,6 +154,11 @@ class RiskLimits(BaseModel):
     # 보유기간 프로필(Phase 23 T): short(≤10일)·mid(11~40)·long(>40) 셋이 전부 있어야 한다
     horizon_profiles: dict[str, HorizonProfile] = Field(default_factory=_default_profiles)
     reprice: RepriceCfg = Field(default_factory=RepriceCfg)  # 아침 미체결 재호가(Phase 23 B)
+    # 테마 매매 안전장치(Phase 25 단계 4): 같은 테마(오늘 상위 테마) 합계 상한, 당일 급등 추격 금지,
+    # 테마 종목 결정은 짧은 보유·익절가 필수
+    max_theme_pct: float = Field(default=0.20, gt=0, le=1)
+    chase_limit_pct: float = Field(default=0.10, gt=0)  # 당일 등락률 ≥ 이 값이면 신규 매수 금지
+    theme_max_horizon_days: int = Field(default=10, ge=1)
 
     @field_validator("horizon_profiles")
     @classmethod
@@ -335,6 +363,7 @@ class Settings(BaseModel):
     memory: MemorySettings = Field(default_factory=MemorySettings)
     discovery: DiscoveryCfg = Field(default_factory=DiscoveryCfg)  # Phase 23 장중 뉴스 발굴
     scalp: ScalpCfg = Field(default_factory=ScalpCfg)  # Phase 23 분 단위 단타(모의 전용, 기본 끔)
+    theme: ThemeCfg = Field(default_factory=ThemeCfg)  # Phase 25 테마 열기 감지
 
 
 # --- accounts.yaml ---------------------------------------------------------

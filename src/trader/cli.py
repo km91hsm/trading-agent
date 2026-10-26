@@ -2332,6 +2332,62 @@ def scalp_report(
     typer.echo(json.dumps(out, ensure_ascii=False, default=str))
 
 
+theme_app = typer.Typer(help="테마 열기 감지 (Phase 25): 조회", no_args_is_help=True)
+app.add_typer(theme_app, name="theme")
+
+
+@theme_app.command("show")
+@_config_errors
+def theme_show(
+    market: str = typer.Option("KR", "--market", help="KR|US"),
+    live: bool = typer.Option(
+        False, "--live", help="저장된 결과 대신 지금 계산(KIS 순위 조회, 저장 안 함)"
+    ),
+) -> None:
+    """오늘 테마 열기 결과(데몬 <시장>_theme 이 남긴 control 값)를 JSON 으로. 상태 불변."""
+    import json
+
+    from trader.control import control
+    from trader.ledger import db
+    from trader.orchestrator.run_store import run_date_for
+    from trader.scan import theme
+
+    configure(paths.state_dir())
+    settings = config.load_settings()
+    conn = db.connect()
+    db.init_schema(conn)
+    try:
+        if live:
+            from datetime import UTC, datetime
+
+            from trader.sources import saveticker
+
+            try:
+                mc = _build_market(config.load_secrets())
+            except Exception:  # noqa: BLE001 - 키가 없으면 순위 없이
+                mc = None
+            now = datetime.now(UTC)
+            out = theme.compute(
+                conn,
+                settings,
+                market=market,
+                today=run_date_for(market, now),
+                now=now,
+                market_client=mc,
+                saveticker_root=saveticker.resolve_dir(config.load_sources().news.saveticker_dir),
+                state=paths.state_dir(),
+            )
+        else:
+            out = control.get_flag(conn, f"{theme.FLAG}:{market}") or {
+                "market": market,
+                "themes": [],
+                "note": "아직 결과 없음 — 데몬 장중 잡(<시장>_theme) 또는 --live",
+            }
+    finally:
+        conn.close()
+    typer.echo(json.dumps(out, ensure_ascii=False, default=str))
+
+
 @regime_app.command("show")
 @_config_errors
 def regime_show() -> None:

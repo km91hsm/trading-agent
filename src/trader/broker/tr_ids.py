@@ -50,6 +50,14 @@ _TR: dict[str, tuple[str, str, str | None]] = {
         "FHPUP02100000",
     ),
     "HOLIDAY": ("/uapi/domestic-stock/v1/quotations/chk-holiday", "CTCA0903R", None),
+    # 국내 순위 (Phase 25 테마 열기, 실전 전용 — 응답 필드명 미확인, architecture.md 「미확인」)
+    "VOLUME_RANK": ("/uapi/domestic-stock/v1/quotations/volume-rank", "FHPST01710000", None),
+    "FLUCT_RANK": ("/uapi/domestic-stock/v1/ranking/fluctuation", "FHPST01700000", None),
+    "FRGN_INST_TOTAL": (
+        "/uapi/domestic-stock/v1/quotations/foreign-institution-total",
+        "FHPTJ04400000",
+        None,
+    ),
     # 국내 계좌
     "DOM_BALANCE": ("/uapi/domestic-stock/v1/trading/inquire-balance", "TTTC8434R", "VTTC8434R"),
     "DOM_ORDER_BUY": ("/uapi/domestic-stock/v1/trading/order-cash", "TTTC0012U", "VTTC0012U"),

@@ -13,11 +13,12 @@ from decimal import Decimal
 from pathlib import Path
 
 from trader.broker._parse import dec as _dec
+from trader.broker._parse import first_of as _first
 from trader.broker._parse import rows as _rows
 from trader.broker._parse import to_int as _int
 from trader.broker.errors import KisApiError
 from trader.broker.kis_client import KisClient
-from trader.broker.models import Candle, InvestorFlow, OrderBook, Quote
+from trader.broker.models import Candle, InvestorFlow, OrderBook, Quote, RankRow
 from trader.broker.tr_ids import path
 from trader.config import KST
 from trader.platform import paths
@@ -305,6 +306,88 @@ class KisMarket:
         ]
         flows.sort(key=lambda f: f.date)
         return flows[-days:] if days > 0 else flows
+
+    # --- 순위 (Phase 25 테마 열기, 응답 필드명 미확인 → 관대한 파서) -----------------
+
+    _RANK_PARAMS = {
+        "VOLUME_RANK": {
+            "FID_COND_MRKT_DIV_CODE": "J",
+            "FID_COND_SCR_DIV_CODE": "20171",
+            "FID_INPUT_ISCD": "0000",
+            "FID_DIV_CLS_CODE": "0",
+            "FID_BLNG_CLS_CODE": "0",
+            "FID_TRGT_CLS_CODE": "111111111",
+            "FID_TRGT_EXLS_CLS_CODE": "000000",
+            "FID_INPUT_PRICE_1": "",
+            "FID_INPUT_PRICE_2": "",
+            "FID_VOL_CNT": "",
+            "FID_INPUT_DATE_1": "",
+        },
+        "FLUCT_RANK": {
+            "fid_cond_mrkt_div_code": "J",
+            "fid_cond_scr_div_code": "20170",
+            "fid_input_iscd": "0000",
+            "fid_rank_sort_cls_code": "0",
+            "fid_input_cnt_1": "0",
+            "fid_prc_cls_code": "0",
+            "fid_input_price_1": "",
+            "fid_input_price_2": "",
+            "fid_vol_cnt": "",
+            "fid_trgt_cls_code": "0",
+            "fid_trgt_exls_cls_code": "0",
+            "fid_div_cls_code": "0",
+            "fid_rsfl_rate1": "",
+            "fid_rsfl_rate2": "",
+        },
+        "FRGN_INST_TOTAL": {
+            "FID_COND_MRKT_DIV_CODE": "V",
+            "FID_COND_SCR_DIV_CODE": "16449",
+            "FID_INPUT_ISCD": "0000",
+            "FID_DIV_CLS_CODE": "0",
+            "FID_RANK_SORT_CLS_CODE": "0",
+            "FID_ETC_CLS_CODE": "0",
+        },
+    }
+
+    def _rank(self, name: str, limit: int) -> list[RankRow]:
+        data = self._client.get(path(name), name, dict(self._RANK_PARAMS[name]))
+        out: list[RankRow] = []
+        for i, r in enumerate(_rows(data.get("output") or data.get("output1")), start=1):
+            code = _first(r, "mksc_shrn_iscd", "stck_shrn_iscd", "pdno", "iscd")
+            if not code or not str(code).strip().isalnum():
+                continue
+            pct = _first(r, "prdy_ctrt", "prdy_vrss_rate")
+            vol = _first(r, "acml_vol", "vol")
+            frgn = _first(r, "frgn_ntby_qty")
+            orgn = _first(r, "orgn_ntby_qty")
+            rank = _first(r, "data_rank", "rank")
+            out.append(
+                RankRow(
+                    ticker=str(code).strip(),
+                    name=(str(_first(r, "hts_kor_isnm", "prdt_name") or "").strip() or None),
+                    rank=_int(rank) if rank is not None else i,
+                    change_pct=float(_dec(pct)) / 100 if pct is not None else None,
+                    volume=_int(vol) if vol is not None else None,
+                    net_buy=(_int(frgn) + _int(orgn))
+                    if frgn is not None or orgn is not None
+                    else None,
+                )
+            )
+            if len(out) >= limit:
+                break
+        return out
+
+    def volume_rank_kr(self, limit: int = 30) -> list[RankRow]:
+        """거래량 순위 (FHPST01710000)."""
+        return self._rank("VOLUME_RANK", limit)
+
+    def fluctuation_rank_kr(self, limit: int = 30) -> list[RankRow]:
+        """등락률 순위 (FHPST01700000)."""
+        return self._rank("FLUCT_RANK", limit)
+
+    def foreign_institution_kr(self, limit: int = 30) -> list[RankRow]:
+        """외인·기관 순매수 합계 순위 (FHPTJ04400000). net_buy = 외인 + 기관 순매수 수량."""
+        return self._rank("FRGN_INST_TOTAL", limit)
 
     # --- 일봉 -----------------------------------------------------------------
 

@@ -499,3 +499,28 @@ def test_build_inputs_intraday_uses_novel_news_only_and_writes_round_copy(projec
     kw.pop("analyzed_today")
     plain = discovery.build_inputs(conn, Settings(), UNI_KR, **kw)
     assert plain["intraday_round"] is None and plain["news"][0]["title"].startswith("저장소")
+
+
+def test_discovery_inputs_include_theme_heat(project, conn):
+    """Phase 25: 오늘 테마 열기 상위 top_n 이 scout 입력에 들어간다(다른 날 결과는 빈 목록)."""
+    from trader.control import control
+
+    themes = [
+        {
+            "theme": f"kw:t{i}",
+            "rank": i,
+            "score": 1 - i / 10,
+            "catalyst_ok": i == 1,
+            "catalyst_ids": [7],
+            "tickers": [{"ticker": "005930", "name": "삼성전자", "why": []}],
+        }
+        for i in range(1, 6)
+    ]
+    control.set_flag(conn, "theme_heat:KR", {"date": D.isoformat(), "themes": themes})
+    kw = dict(quant_candidates=[], now=lambda: T0, cache_names=CACHE)
+    data = discovery.build_inputs(conn, Settings(), UNI_KR, market="KR", today=D, asof=T0, **kw)
+    assert [t["theme"] for t in data["theme_heat"]] == ["kw:t1", "kw:t2", "kw:t3"]
+    assert data["theme_heat"][0]["catalyst_ok"] is True
+    control.set_flag(conn, "theme_heat:KR", {"date": "2000-01-01", "themes": themes})
+    data = discovery.build_inputs(conn, Settings(), UNI_KR, market="KR", today=D, asof=T0, **kw)
+    assert data["theme_heat"] == []

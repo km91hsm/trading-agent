@@ -301,6 +301,25 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
         ],
     ),
     (
+        18,  # Phase 25: 테마 열기 판정 기록(사후 검증 — reflect 가 5거래일 뒤 fwd_ret_5d 를 채운다)
+        [
+            """CREATE TABLE IF NOT EXISTS theme_heat (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                market TEXT NOT NULL,
+                date TEXT NOT NULL,
+                observed_at TEXT NOT NULL,
+                theme TEXT NOT NULL,
+                rank INTEGER NOT NULL,
+                score REAL NOT NULL,
+                catalyst_ok INTEGER NOT NULL,
+                tickers_json TEXT NOT NULL,
+                components_json TEXT NOT NULL,
+                fwd_ret_5d REAL,
+                UNIQUE(market, date, theme)
+            )""",
+        ],
+    ),
+    (
         19,  # Phase 25 단계 6: 승인 지문(요청 뒤 주문 내용 변조 감지) + 공시 중요도
         [
             "ALTER TABLE approvals ADD COLUMN fingerprint TEXT",

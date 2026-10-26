@@ -5,7 +5,7 @@ from __future__ import annotations
 from contextlib import closing
 from importlib.metadata import PackageNotFoundError, version
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 
 from trader import heartbeat, usage
 from trader.control import control
@@ -79,6 +79,28 @@ def usage_view(request: Request) -> dict:
         "usage_file": str(path) if path is not None else None,
         "windows": windows,
         "note": USAGE_NOTE,
+    }
+
+
+@router.get("/theme")
+def theme_status(request: Request, market: str = "KR") -> dict:
+    """오늘 테마 열기 결과(Phase 25, 데몬 <시장>_theme). 토큰 없음. 결과가 없으면 themes []."""
+    from trader.control import control
+    from trader.scan import theme
+
+    if market not in ("KR", "US"):
+        raise HTTPException(status_code=400, detail="market 은 KR|US")
+    deps = request.app.state.deps
+    with closing(deps.conn_factory()) as conn:
+        heat = control.get_flag(conn, f"{theme.FLAG}:{market}") or {}
+    return {
+        "enabled": deps.settings.theme.enabled,
+        "top_n": deps.settings.theme.top_n,
+        "market": market,
+        "date": heat.get("date"),
+        "observed_at": heat.get("observed_at"),
+        "themes": heat.get("themes") or [],
+        "signals": heat.get("signals") or {},
     }
 
 

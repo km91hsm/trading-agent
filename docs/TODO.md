@@ -342,12 +342,14 @@
 ## Phase 24 웹 보고서·실시간·사용률 (`docs/superpowers/plans/2026-10-26-phase24-25.md` 단계 1~3)
 - [x] 단계 1(PR [#23](https://github.com/km91hsm/trading-agent/pull/23) 머지) 웹 보고서 형식·전체/계좌 분리·섹터·목표가 (`feat/phase24-1-web-report`): 섹터 원인 진단(보유 행 없음·대시보드 블록 없음), 보유 행 `plan`(목표가·손절·지정가·보유기간·거리), `/api/portfolio/overview`(시장 × 모의/실전 합산), `report.ts`·`StageReport`(JsonView 는 '원본 보기'), 계좌 선택기 '전체' (2026-10-26)
 - [x] 단계 2(PR [#24](https://github.com/km91hsm/trading-agent/pull/24) 머지) 실시간 시세·종목명 검색 (`feat/phase24-2-live-quotes`): `/api/quotes`(정규장만, 5초 캐시, 레이트리미터·stale 폴백), 보이는 탭 10초 폴링(`live.ts`), `/api/names/search`, 차트 URL·자동완성·⌘K (2026-10-26)
-- [x] 단계 3 구독 사용률·세션 상한·텔레그램 문구 (`feat/phase24-3-usage-telegram`): stream-json `rate_limit_event` → 원장 `llm_rate_limits`(v17), 상한 40→80 + 사용률 감속(80% 재평가만·95% 중지), `notify/messages.py`(최종 의견 블록·'종목명(코드)'·골든 테스트) (2026-10-26)
+- [x] 단계 3(PR [#25](https://github.com/km91hsm/trading-agent/pull/25) 머지) 구독 사용률·세션 상한·텔레그램 문구 (`feat/phase24-3-usage-telegram`): stream-json `rate_limit_event` → 원장 `llm_rate_limits`(v17), 상한 40→80 + 사용률 감속(80% 재평가만·95% 중지), `notify/messages.py`(최종 의견 블록·'종목명(코드)'·골든 테스트) (2026-10-26)
 - [ ] 결정 대기(사용자): 2~4주 `llm_rate_limits`·`agent_calls` 통계로 `llm.daily_session_cap` 고정값 재설정
 - [ ] 이연: KIS 실시간 웹소켓(지금은 보이는 종목 10초 조회)
 
 ## Phase 25 테마·LLM 판정자·공시·리밸런스 (같은 플랜 단계 4~7)
-- [ ] 단계 4 테마 열기 감지·안전장치 (`feat/phase25-4-theme`, 머지 전 사용자 확인)
+- [ ] 단계 4 테마 열기 감지·안전장치 (`feat/phase25-4-theme`, 머지 전 사용자 확인): KIS 순위 3종(관대한 파서), `scan/theme.py`, 원장 v18 `theme_heat`, 데몬 `<시장>_theme`·알림·CLI·API·대시보드, scout 규칙 1 완화, 게이트(+10% 추격 금지·테마 20%·테마 종목 10일·익절가) — 구현·테스트 완료, PR 확인 대기
+- [ ] 실기(사용자 확인 대기): 장중 `uv run trader theme show --live --market KR` 의 `signals.ranks` 가 0 이 아닌지(순위 API 파라미터·필드명 확인), 대시보드 '테마 열기' 블록과 `[테마 열기]` 알림
+- [ ] 결정 대기(사용자): 2~4주 뒤 `theme_heat.fwd_ret_5d`(상위 테마 사후 초과수익)로 `theme.weights`·`top_n`·`chase_limit_pct` 조정
 - [ ] 단계 5 분 단위 LLM 판정자 (`feat/phase25-5-scalp-judge`, 머지 전 사용자 확인)
 - [x] 단계 6 승인 지문·공시 중요도 (`feat/phase25-6-approval-disclosure`): 원장 v19 `approvals.fingerprint`·`news_items.severity`, `sources/disclosures.py`(DART 키워드·8-K item), 데몬 `_disclosure_trigger`(critical 즉시 재분석·알림 1회), 운영 점검 `disclosure` 영역 (2026-10-26)
 - [ ] 실기(사용자 확인 대기): DART 키가 있는 날 데몬 `news_collect` 로그의 `disclosure:KR` inserted·critical, EDGAR `submissions` 가 User-Agent 로 200 을 주는지

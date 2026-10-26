@@ -184,6 +184,7 @@ def build_inputs(
         "recent_picks": recent,
         "intraday_round": rnd,
         "saveticker": saveticker_snap,
+        "theme_heat": _theme_heat(conn, settings, market, today),
         "blog_posts": blog_posts,
         "quant_candidates": [
             {k: c.get(k) for k in ("ticker", "exchange", "score", "reasons")}
@@ -401,6 +402,30 @@ def merge(
         for d in listed[:max_listed]
     ]
     return [*first, *second, *rest]
+
+
+def _theme_heat(conn, settings, market: str, today) -> list[dict]:
+    """오늘 테마 열기 상위 top_n (Phase 25, 데몬 <시장>_theme). 없거나 다른 날이면 []. scout 는
+    `catalyst_ok` 인 상위 테마의 대표 종목 1~2개를 후보로 올릴 수 있다(규칙 1 완화)."""
+    from trader.control import control
+    from trader.scan import theme
+
+    if conn is None or not settings.theme.enabled:
+        return []
+    heat = control.get_flag(conn, f"{theme.FLAG}:{market}") or {}
+    if heat.get("date") != today.isoformat():
+        return []
+    return [
+        {
+            "theme": t["theme"],
+            "rank": t["rank"],
+            "score": t["score"],
+            "catalyst_ok": t.get("catalyst_ok", False),
+            "catalyst_ids": t.get("catalyst_ids") or [],
+            "tickers": t.get("tickers") or [],
+        }
+        for t in theme.top(heat, settings.theme.top_n)
+    ]
 
 
 def summary(discovery: dict | None) -> dict | None:
