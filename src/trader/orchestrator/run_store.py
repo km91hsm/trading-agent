@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 from datetime import date, datetime, time
 from pathlib import Path
 from typing import Any
@@ -59,9 +60,10 @@ def checkpoint_payload(data: Any, call: dict | None = None) -> dict:
 
 
 def write_checkpoint(dir: Path, name: str, data: dict) -> Path:
-    """체크포인트를 pid 접미사 임시파일에 쓴 뒤 원자적으로 교체한다."""
+    """체크포인트를 pid·스레드 접미사 임시파일에 쓴 뒤 원자적으로 교체한다(데몬은 monitor·작업
+    대기열이 한 프로세스의 다른 스레드라 pid 만으로는 같은 단계 동시 쓰기에서 임시파일이 겹친다)."""
     final = dir / f"{name}.json"
-    tmp = dir / f"{name}.json.{os.getpid()}.tmp"
+    tmp = dir / f"{name}.json.{os.getpid()}.{threading.get_ident()}.tmp"
     tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     atomic_replace(tmp, final)
     return final
