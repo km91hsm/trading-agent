@@ -48,6 +48,7 @@ def _patch(monkeypatch):
         return FakeProc()
 
     monkeypatch.setattr(daemon.procs, "spawn_detached", spawn)
+    monkeypatch.setattr(automation, "service_elsewhere", lambda: False)  # 이 PC 의 실제 수집기 무시
     monkeypatch.setattr(
         automation,
         "monitor",

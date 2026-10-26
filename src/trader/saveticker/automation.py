@@ -207,6 +207,25 @@ def _blocked(runtime, reason, **extra):
     )
 
 
+def service_elsewhere():
+    """이 PC 에서 (다른 수집 폴더라도) 수집 서비스가 이미 도는지 — 같은 계정으로 두 곳에서
+    로그인하면 사이트가 계정을 막을 수 있다. posix 는 `ps`, Windows 는 확인하지 않는다(False)."""
+    if os.name == "nt":
+        return False
+    try:
+        result = subprocess.run(
+            ["ps", "-axo", "pid=,command="], capture_output=True, text=True, timeout=5
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    me = os.getpid()
+    for line in result.stdout.splitlines():
+        pid, _, command = line.strip().partition(" ")
+        if pid.isdigit() and int(pid) != me and "trader saveticker service" in command:
+            return True
+    return False
+
+
 def should_start(home, credentials, *, now):
     """데몬이 서비스를 (다시) 띄울지와 이유. 계정 파일은 있는지만 본다(값은 읽지 않는다).
     인증 실패로 멈췄으면 계정 파일이 그 뒤에 바뀌어야, 재기동 한도·Chromium 설치 실패는 1시간
@@ -218,6 +237,8 @@ def should_start(home, credentials, *, now):
     runtime = home / "runtime"
     if Lock(runtime / "service.lock").held():
         return False, "이미 실행 중"
+    if service_elsewhere():
+        return False, "다른 폴더의 수집 서비스가 실행 중"
     state = read(runtime / "service.json") or {}
     if state.get("state") != "blocked":
         return True, ""

@@ -63,7 +63,18 @@ def _service_state(home, value):
     (home / "runtime" / "service.json").write_text(json.dumps(value), encoding="utf-8")
 
 
-def test_should_start_rules(tmp_path):
+def test_service_elsewhere_reads_process_list(monkeypatch):
+    rows = f"  1 /sbin/launchd\n{os.getpid()} python -m trader saveticker service\n"
+    monkeypatch.setattr(
+        automation.subprocess, "run", lambda *a, **k: SimpleNamespace(stdout=rows, returncode=0)
+    )
+    assert automation.service_elsewhere() is False  # 자기 자신은 빼고
+    rows += "  77 /opt/trader/trader saveticker service\n"
+    assert automation.service_elsewhere() is True
+
+
+def test_should_start_rules(tmp_path, monkeypatch):
+    monkeypatch.setattr(automation, "service_elsewhere", lambda: False)
     now = datetime(2026, 10, 27, 1, 0, tzinfo=UTC)
     home = tmp_path / "st"
     creds = tmp_path / "saveticker.env"
@@ -91,6 +102,10 @@ def test_should_start_rules(tmp_path):
         False,
         "이미 실행 중",
     )
+    lock.unlink()
+    # 다른 폴더의 서비스(예: 저장소 쪽 launchd)가 같은 PC 에서 돌면 같은 계정 이중 로그인을 피한다
+    monkeypatch.setattr(automation, "service_elsewhere", lambda: True)
+    assert automation.should_start(home, creds, now=now + timedelta(hours=2))[0] is False
 
 
 def _capture(items, when, stream="news_all"):
