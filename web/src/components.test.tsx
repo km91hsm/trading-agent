@@ -98,7 +98,7 @@ function fakeState(over: Partial<AppState> = {}): AppState {
     setAccountId: () => {},
     token: null,
     setToken: () => {},
-    events: { orders: 0, approvals_pending: 2, approvals: 0, runs: 0, decisions: 0, triggers: 0, watchlist: "", paused: true },
+    events: { orders: "0:0", approvals_pending: 2, approvals: "0:0", runs: "0:0", decisions: 0, triggers: 0, watchlist: "", paused: true },
     connected: true,
     tick: 0,
     ticks: {},

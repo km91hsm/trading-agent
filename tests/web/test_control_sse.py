@@ -273,3 +273,34 @@ def test_expired_pending_approval_no_longer_reserves_cash(deps):
         assert not repo.has_open_order_or_approval(conn, a["decision_id"], "paper-main", now=later)
     finally:
         conn.close()
+
+
+def test_sse_snapshot_detects_status_changes_without_new_rows(conn):
+    """전체 검토 W5: MAX(id) 만 보면 체결·만료 같은 상태 변경(UPDATE)을 못 잡는다 →
+    테이블별 지문(건수·최대 id·상태별 건수)으로 비교한다."""
+    from trader.web import sse
+
+    conn.execute(
+        "INSERT INTO orders (account_id, ticker, market, side, qty, order_type, status, mode,"
+        " created_at) VALUES ('paper-main','005930','KR','BUY',1,'LIMIT','accepted','auto','t')"
+    )
+    conn.execute(
+        "INSERT INTO approvals (decision_id, account_id, order_json, status, requested_at,"
+        " expires_at) VALUES (1,'paper-main','{}','pending','t','t')"
+    )
+    conn.commit()
+    s0 = sse.snapshot(conn)
+    conn.execute("UPDATE orders SET status='filled'")
+    conn.commit()
+    s1 = sse.snapshot(conn)
+    assert s1["orders"] != s0["orders"]
+    conn.execute("INSERT INTO fills (order_id, account_id, qty, price, filled_at)"
+                 " VALUES (1,'paper-main',1,'100','t')")
+    conn.commit()
+    s2 = sse.snapshot(conn)
+    assert s2["orders"] != s1["orders"]  # 체결 적재도 주문 표 재조회 대상
+    conn.execute("UPDATE approvals SET status='expired'")
+    conn.commit()
+    s3 = sse.snapshot(conn)
+    assert s3["approvals"] != s2["approvals"] and s3["approvals_pending"] == 0
+    assert sse.snapshot(conn) == s3  # 바뀐 게 없으면 같은 지문
