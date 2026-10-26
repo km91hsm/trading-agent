@@ -328,20 +328,21 @@ def test_risk_on_defers_entry_only_at_boundary(project, conn):
     ctx = _ctx(conn)
     _set_regime(conn, "bear", 2)
     _view(conn, stance="RISK_ON", confidence=0.9)
-    out = hedge.rebalance(ctx, market="KR", today=D, cfg=CFG, quote_fn=lambda i: Decimal("5000"))
+    cfg = CFG.model_copy(update={"agent_signal": True})  # 전체 검토 L8 뒤 기본 끔 — Phase 19 동작 확인
+    out = hedge.rebalance(ctx, market="KR", today=D, cfg=cfg, quote_fn=lambda i: Decimal("5000"))
     assert out["action"] == "deferred" and "보류" in out["reason"]
     assert ctx.brokers["paper-main"].orders == []
     assert control.get_flag(conn, hedge.done_key("KR", D))["action"] == "deferred"
     assert any("[헤지 보류] KR" in m for m in ctx.notifier.sent)
     assert hedge.rebalance(
-        ctx, market="KR", today=D, cfg=CFG, quote_fn=lambda i: Decimal("5000")
+        ctx, market="KR", today=D, cfg=cfg, quote_fn=lambda i: Decimal("5000")
     ) == {"skipped": "오늘 이미 실행"}
     # 3/3 은 보류 불가
     ctx2 = _ctx(conn)
     d2 = date(2026, 10, 27)
     _set_regime(conn, "bear", 3)
     _view(conn, date=d2.isoformat(), stance="RISK_ON", confidence=0.9)
-    out2 = hedge.rebalance(ctx2, market="KR", today=d2, cfg=CFG, quote_fn=lambda i: Decimal("5000"))
+    out2 = hedge.rebalance(ctx2, market="KR", today=d2, cfg=cfg, quote_fn=lambda i: Decimal("5000"))
     assert out2["action"] == "enter" and len(ctx2.brokers["paper-main"].orders) == 1
     # 확신이 낮으면 진입
     ctx3 = _ctx(conn)
@@ -349,7 +350,7 @@ def test_risk_on_defers_entry_only_at_boundary(project, conn):
     _set_regime(conn, "bear", 2)
     _view(conn, date=d3.isoformat(), stance="RISK_ON", confidence=0.5)
     assert (
-        hedge.rebalance(ctx3, market="KR", today=d3, cfg=CFG, quote_fn=lambda i: Decimal("5000"))[
+        hedge.rebalance(ctx3, market="KR", today=d3, cfg=cfg, quote_fn=lambda i: Decimal("5000"))[
             "action"
         ]
         == "enter"
