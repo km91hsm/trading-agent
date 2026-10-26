@@ -725,6 +725,9 @@ def _close_step(
     waiting = False
     for acct, leg in legs.items():
         if not leg.get("dry"):
+            if not _can_trade(ctx, acct):
+                waiting = True  # dry-run·일시정지·auto 아닌 계좌: 취소·매도하지 않고 기다린다
+                continue
             _adopt_exit_orders(ctx, pos, acct, leg)
         v = _leg_view(ctx, leg)
         for o in v["buys"]:
@@ -800,16 +803,25 @@ def _close_step(
     }
 
 
+def _can_trade(ctx: ScalpContext, acct: str) -> bool:
+    """실제 주문 다리를 건드려도 되는가: dry-run 아님·일시정지 아님·계좌 실효 모드 auto. 그 밖이면
+    취소도 매도도 하지 않는다 — 승인 요청을 틱마다 쌓거나 안전장치를 우회하지 않게(Codex 리뷰)."""
+    if ctx.dry_run or control.is_paused(ctx.conn):
+        return False
+    account = next((a for a in ctx.accounts if a.id == acct), None)
+    return account is not None and executor.effective_mode(ctx.conn, account)[0] == "auto"
+
+
 def _adopt_exit_orders(ctx: ScalpContext, pos: dict, acct: str, leg: dict) -> None:
-    """진입 뒤 이 계좌·종목에 낸 결정 없는 SELL 중 다리에 없는 것을 흡수한다 — 접수와 상태
-    저장 사이에 프로세스가 끊긴 경우 같은 잔량을 다시 팔지 않게(Codex 리뷰)."""
-    since = pos.get("entry_at")
+    """청산 시작 뒤 이 계좌·종목에 낸 결정 없는 SELL(외부 수동 주문 제외) 중 다리에 없는 것을
+    흡수한다 — 접수와 상태 저장 사이에 끊긴 경우 같은 잔량을 다시 팔지 않게(Codex 리뷰)."""
+    since = pos.get("closing_at")  # 청산 시작은 주문 전에 저장된다
     if not since:
         return
     known = set(leg.get("sell") or [])
     for r in ctx.conn.execute(
         "SELECT id FROM orders WHERE account_id=? AND ticker=? AND side='SELL' "
-        "AND decision_id IS NULL AND created_at >= ? ORDER BY id",
+        "AND decision_id IS NULL AND mode != 'external' AND created_at >= ? ORDER BY id",
         (acct, pos["ticker"], since),
     ):
         if int(r["id"]) not in known:
@@ -822,7 +834,7 @@ def _adopt_entry_orders(ctx: ScalpContext, pos: dict) -> None:
     legs: dict[str, dict] = {}
     for r in ctx.conn.execute(
         "SELECT id, account_id, qty FROM orders WHERE ticker=? AND side='BUY' "
-        "AND decision_id IS NULL AND created_at >= ? ORDER BY id",
+        "AND decision_id IS NULL AND mode != 'external' AND created_at >= ? ORDER BY id",
         (pos["ticker"], pos["entry_at"]),
     ):
         leg = legs.setdefault(r["account_id"], {"req": 0, "buy": [], "sell": []})
@@ -858,8 +870,7 @@ def _check_exits(
     judge_on = cfg.judge and ctx.judge is not None
     now_t = _local_hms(ctx, market)
     synced: dict = {}
-    still_open = []
-    for pos in st.get("open") or []:
+    for pos in list(st.get("open") or []):  # 끝난 포지션은 바로 빼서 중간 저장에 남지 않게
         if pos.get("status") == "entering":  # 진입 주문 뒤 저장 전에 끊겼다
             _adopt_entry_orders(ctx, pos)
         _legs(pos)
@@ -870,6 +881,7 @@ def _check_exits(
         live_buys = any(v["buys"] for v in views.values())
         if pos.get("status") != "closing":
             if bought == 0 and not live_buys:  # 진입이 체결 없이 죽었다(거부·만료·취소)
+                st["open"].remove(pos)
                 _event(ctx.state, today, market, "entry_void", ticker=pos["ticker"])
                 if ctx.judge is not None:
                     ctx.judge.discard(advice_key(market, pos))
@@ -887,7 +899,6 @@ def _check_exits(
             q = _quote(ctx, market, pos["ticker"], pos.get("exchange"))
         except (KisApiError, ValueError) as e:
             logger.warning("단타 시세 실패 %s: %s", pos["ticker"], e)
-            still_open.append(pos)
             continue
         if pos.get("status") != "closing":
             reason = signals.exit_reason(
@@ -901,7 +912,6 @@ def _check_exits(
             if reason is None and judge_on:
                 reason = _advice(ctx, market, today, pos, q)
             if reason is None:
-                still_open.append(pos)
                 continue
             if ctx.judge is not None:
                 ctx.judge.discard(advice_key(market, pos))
@@ -917,8 +927,8 @@ def _check_exits(
             ctx, ectx, market=market, today=today, pos=pos, price=q, skip=skip, persist=persist
         )
         if res is None:
-            still_open.append(pos)
             continue
+        st["open"].remove(pos)
         if res.get("void"):
             _event(ctx.state, today, market, "entry_void", ticker=pos["ticker"])
             continue
@@ -943,7 +953,6 @@ def _check_exits(
                 ret=res["ret"],
             )
         )
-    st["open"] = still_open
 
 
 def _advice(ctx: ScalpContext, market: str, today: date, pos: dict, q: Decimal) -> str | None:

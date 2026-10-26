@@ -391,3 +391,108 @@ def test_entering_position_carried_over_adopts_entry(conn, project):
     _advance(ctx, 2 * 24 * 60)
     engine.tick(ctx, market="KR", today=nxt)
     assert [r["qty"] for r in _sells(conn)] == [49]
+
+
+def _held_closing(ctx, conn):
+    _enter(ctx, conn)
+    b = ctx.brokers["paper-main"]
+    b.fills[("KR", D)] = [_fill("FAKE-1", "BUY", 20, "10050")]
+    b.positions = [_pos(120)]
+    ctx.market_client.prices[T] = Decimal("9900")
+    return b
+
+
+def test_no_cancel_or_sell_when_account_not_auto(conn, project):
+    """auto 가 아닌 계좌(approve·off)·dry-run 전환 뒤에는 취소도 매도도, 승인 요청도 내지 않는다."""
+    ctx = _ctx(conn, minutes={T: _bars(True)}, prices={T: Decimal("10050")})
+    b = _held_closing(ctx, conn)
+    control.set_account_mode(conn, ctx.accounts[0], "approve")
+    _advance(ctx, 3)
+    engine.tick(ctx, market="KR", today=D)
+    _advance(ctx, 4)
+    engine.tick(ctx, market="KR", today=D)
+    assert b.cancelled == [] and _sells(conn) == []
+    assert conn.execute("SELECT COUNT(*) FROM approvals").fetchone()[0] == 0
+    assert engine.load_state(None, D, "KR")["open"][0]["status"] == "closing"
+    ctx.dry_run = True
+    control.set_account_mode(conn, ctx.accounts[0], "auto")
+    _advance(ctx, 5)
+    engine.tick(ctx, market="KR", today=D)
+    assert b.cancelled == [] and _sells(conn) == []
+
+
+def test_external_manual_sell_is_not_adopted(conn, project):
+    """같은 종목 일반 보유분을 앱에서 판 외부 체결(mode='external')은 청산으로 흡수하지 않는다."""
+    from trader.ledger import repo
+
+    ctx = _ctx(conn, minutes={T: _bars(True)}, prices={T: Decimal("10050")})
+    b = _held_closing(ctx, conn)
+    _advance(ctx, 2)
+    engine.tick(ctx, market="KR", today=D)  # closing 시작 + BUY 취소 + 20주 SELL
+    repo.insert_order(
+        conn,
+        decision_id=None,
+        account_id="paper-main",
+        ticker=T,
+        market="KR",
+        side="SELL",
+        qty=100,
+        order_type="MARKET",
+        price=None,
+        status="filled",
+        order_no="EXT-1",
+        message="",
+        mode="external",
+        created_at=ctx.now().isoformat(),
+    )
+    _advance(ctx, 3)
+    engine.tick(ctx, market="KR", today=D)
+    leg = engine.load_state(None, D, "KR")["open"][0]["legs"]["paper-main"]
+    ext = conn.execute("SELECT id FROM orders WHERE order_no='EXT-1'").fetchone()["id"]
+    assert ext not in leg["sell"]
+    assert b.cancelled == ["FAKE-1"]
+
+
+def test_finished_position_leaves_open_before_next_persist(conn, project):
+    """포지션 둘: 앞의 것이 끝난 뒤 뒤의 것이 저장해도 앞의 것이 open·closed 양쪽에 남지 않는다."""
+    ctx = _ctx(conn, minutes={T: _bars(True)}, prices={T: Decimal("10050")})
+    _enter(ctx, conn)
+    b = ctx.brokers["paper-main"]
+    b.fills[("KR", D)] = [_fill("FAKE-1", "BUY", 49, "10050")]
+    b.positions = [_pos(49)]
+    ctx.market_client.prices[T] = Decimal("9900")
+    _advance(ctx, 3)
+    engine.tick(ctx, market="KR", today=D)  # A: 청산 주문 접수
+    b.fills[("KR", D)].append(_fill("FAKE-2", "SELL", 49, "9900", minutes=3))
+    st = engine.load_state(None, D, "KR")
+    other = {
+        "ticker": "000660",
+        "exchange": None,
+        "weight": 0.05,
+        "entry_price": "10000",
+        "entry_time": "090500",
+        "entry_at": NOW.isoformat(),
+        "qty": {"paper-main": 5},
+        "legs": {"paper-main": {"req": 5, "dry": True, "buy": [], "sell": []}},
+        "status": "held",
+        "dry_run": True,
+    }
+    st["open"].append(other)  # B: 이번 틱에 청산을 시작한다(시작 상태를 중간 저장)
+    engine.save_state(None, D, "KR", st)
+    ctx.market_client.prices["000660"] = Decimal("9000")
+    seen = []
+    orig = engine.save_state
+
+    def spy(state, today, market, data):
+        seen.append(([p["ticker"] for p in data["open"]], [c["ticker"] for c in data["closed"]]))
+        return orig(state, today, market, data)
+
+    engine.save_state = spy
+    try:
+        _advance(ctx, 4)
+        out = engine.tick(ctx, market="KR", today=D)
+    finally:
+        engine.save_state = orig
+    assert out["exits"][0]["ticker"] == T
+    assert any("000660" in o for o, _ in seen)  # B 의 중간 저장이 있었고
+    assert all(not (set(o) & set(c)) for o, c in seen)  # A 는 양쪽에 동시에 없다
