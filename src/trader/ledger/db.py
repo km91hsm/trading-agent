@@ -359,6 +359,8 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
         [
             "CREATE INDEX IF NOT EXISTS ix_news_market_received "
             "ON news_items(market, received_at)",
+            # 보존 정리의 '세션 있는 runs 유지'(NOT EXISTS agent_calls.run_id)가 풀 스캔하지 않게
+            "CREATE INDEX IF NOT EXISTS ix_agent_calls_run ON agent_calls(run_id)",
         ],
     ),
 ]

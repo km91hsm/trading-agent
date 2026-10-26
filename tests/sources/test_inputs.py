@@ -992,6 +992,8 @@ def test_stuck_sections_are_not_resubmitted_beyond_cap(project):
         release.set()
     assert started["n"] == inputs_mod.MAX_STUCK_PER_SECTION
     assert "skipped" in d["news_macro"]["error"]
+    # 역할 단위 실패도 errors 집계에 들어간다(PR #37 리뷰)
+    assert any(e.startswith("news_macro:") and "skipped" in e for e in d["errors"])
     import time
 
     for _ in range(100):

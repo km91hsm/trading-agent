@@ -476,6 +476,10 @@ class DaemonDeps:
     # cron 잡이 heavy 락을 기다리는 중이면 선다. 대기열의 긴 잡(백필)은 진행 콜백에서 이것을 보고
     # 락을 잠시 내놓는다(종목 경계) — 아침 scan 이 백필 뒤로 수 시간 밀리지 않도록
     heavy_wanted: HeavyWanted = field(default_factory=lambda: HeavyWanted())
+    # 종목별 결정 실행 직렬화(PR #37 리뷰): 빠른 레인의 재평가가 같은 종목 analyze 세션과 겹치면
+    # 둘 다 열린 주문 확인을 통과해 같은 잔고로 주문을 낼 수 있다 → (시장, 종목) 락
+    ticker_locks: dict[tuple[str, str], threading.Lock] = field(default_factory=dict)
+    ticker_locks_guard: threading.Lock = field(default_factory=threading.Lock)
 
 
 HEAVY_POLL_S = 30.0  # heavy 락 대기 폴링 간격
@@ -741,17 +745,20 @@ def _analyze_targets(
         conn = deps.conn_factory()
         shown = names.display(conn, _cache_dir(deps), market, t["ticker"])
         try:
-            res = runner(
-                SessionSpec(market=market, date=today, tickers=[t], dry_run=dry, asof=deps.now()),
-                deps.settings,
-                conn,
-                deps.accounts,
-                state=deps.state,
-                now=deps.now,
-                brokers=deps.brokers,
-                notifier=deps.notifier,
-                cancel=deps.stop_event,
-            )
+            with _ticker_lock(deps, market, t["ticker"]):
+                res = runner(
+                    SessionSpec(
+                        market=market, date=today, tickers=[t], dry_run=dry, asof=deps.now()
+                    ),
+                    deps.settings,
+                    conn,
+                    deps.accounts,
+                    state=deps.state,
+                    now=deps.now,
+                    brokers=deps.brokers,
+                    notifier=deps.notifier,
+                    cancel=deps.stop_event,
+                )
         except Exception as e:  # noqa: BLE001 - 한 종목 세션 실패가 나머지를 막지 않는다
             logger.exception("analyze 세션 기동 실패 %s %s", market, t["ticker"])
             failed.append(t["ticker"])
@@ -1154,28 +1161,29 @@ def _reevaluate_request(deps: DaemonDeps, p: dict) -> dict:
             deps.stop_event.is_set()
         ):  # 재수집(최대 수 분) 사이 종료 요청이 왔으면 세션을 띄우지 않는다
             return {"skipped": "종료 중"}
-        res = resume.reevaluate(
-            deps.settings,
-            conn,
-            deps.accounts,
-            market=market,
-            date=today,
-            ticker=p["ticker"],
-            exchange=p.get("exchange"),
-            trigger_id=int(p["trigger_id"]),
-            trigger={
-                "kind": trig["kind"],
-                "price": str(trig["price"]) if trig.get("price") is not None else None,
-                "detail": trig.get("detail") or {},
-            },
-            brokers=deps.brokers,
-            now=deps.now,
-            dry_run=deps.dry_run,
-            state=deps.state,
-            session_runner=deps.session_runner or run_session,
-            notifier=deps.notifier,
-            cancel=deps.stop_event,
-        )
+        with _ticker_lock(deps, market, p["ticker"]):  # 같은 종목 analyze 와 겹치지 않게
+            res = resume.reevaluate(
+                deps.settings,
+                conn,
+                deps.accounts,
+                market=market,
+                date=today,
+                ticker=p["ticker"],
+                exchange=p.get("exchange"),
+                trigger_id=int(p["trigger_id"]),
+                trigger={
+                    "kind": trig["kind"],
+                    "price": str(trig["price"]) if trig.get("price") is not None else None,
+                    "detail": trig.get("detail") or {},
+                },
+                brokers=deps.brokers,
+                now=deps.now,
+                dry_run=deps.dry_run,
+                state=deps.state,
+                session_runner=deps.session_runner or run_session,
+                notifier=deps.notifier,
+                cancel=deps.stop_event,
+            )
         for tid in p.get("trigger_ids") or []:
             repo.mark_trigger_handled(
                 conn, int(tid), resume.handled_marker(res), handled_at=deps.now().isoformat()
@@ -2119,6 +2127,12 @@ def _shadow_record(deps: DaemonDeps, market: str, analyzed: dict | None = None) 
 
 def _cache_dir(deps: DaemonDeps) -> Path:
     return (deps.state or paths.state_dir()) / "cache"
+
+
+def _ticker_lock(deps: DaemonDeps, market: str, ticker: str) -> threading.Lock:
+    """(시장, 종목) 결정 실행 락. analyze 세션과 재평가 세션이 같은 종목에서 겹치지 않게 한다."""
+    with deps.ticker_locks_guard:
+        return deps.ticker_locks.setdefault((market, str(ticker)), threading.Lock())
 
 
 def _heavy(deps: DaemonDeps, fn: Callable[[], Any], *, cron: bool = True) -> Any:

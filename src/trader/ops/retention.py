@@ -34,14 +34,15 @@ def _old_date(key: str, cutoff: date) -> bool:
     parts = key.split(":")
     if parts[0] in PERSISTENT_PREFIXES:
         return False
-    for seg in parts[1:]:
-        if _DATE_SEGMENT.match(seg):
-            try:
-                if date.fromisoformat(seg) < cutoff:
-                    return True
-            except ValueError:
-                continue
-    return False
+    # 운영일은 **마지막** 날짜 세그먼트다(계좌 id 가 날짜 모양이어도 앞쪽에 온다:
+    # `sl_unrecorded:<계좌>:<시장>:<종목>:<날짜>`, `sl_recorded:…:<날짜>:<상태>`, PR #37 리뷰)
+    dates = [seg for seg in parts[1:] if _DATE_SEGMENT.match(seg)]
+    if not dates:
+        return False
+    try:
+        return date.fromisoformat(dates[-1]) < cutoff
+    except ValueError:
+        return False
 
 
 def prune(

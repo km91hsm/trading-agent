@@ -454,3 +454,27 @@ def test_main_queue_does_not_take_fast_kinds(project, conn):
     assert daemon._queue_tick(deps, None) == {"skipped": "대기 없음"}
     assert jobq.SLOW_KINDS.isdisjoint(jobq.FAST_KINDS)
     assert jobq.SLOW_KINDS | jobq.FAST_KINDS == frozenset(jobq.KINDS)
+
+
+def test_reevaluate_runs_under_same_ticker_lock_as_analyze(conn, monkeypatch):
+    """PR #37 리뷰: 빠른 레인의 재평가는 같은 (시장, 종목) analyze 세션과 같은 락 안에서 돈다."""
+    from trader.ledger import repo
+    from trader.orchestrator import resume
+    from trader.orchestrator.session import SessionResult
+
+    deps = _deps(conn, FakeMarket(), now=lambda: NOW)
+    lock = daemon._ticker_lock(deps, "KR", "005930")
+    assert lock is daemon._ticker_lock(deps, "KR", "005930")
+    assert lock is not daemon._ticker_lock(deps, "KR", "000660")
+    held = []
+
+    def fake_reevaluate(*a, **kw):
+        held.append(lock.locked())
+        return SessionResult(ok=True, session_id="s")
+
+    monkeypatch.setattr(resume, "reevaluate", fake_reevaluate)
+    tid = repo.insert_trigger(
+        conn, market="KR", ticker="005930", kind="move", detail={}, price=None, decision_id=None
+    )
+    daemon._reevaluate_request(deps, {"market": "KR", "ticker": "005930", "trigger_id": tid})
+    assert held == [True] and not lock.locked()

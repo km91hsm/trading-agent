@@ -127,6 +127,12 @@ def _collect_errors(inputs: dict) -> list[str]:
                 visit(f"{path}.{k}", sub)
 
     for role in ("technical", "fundamental", "news_macro", "sentiment"):
+        r = inputs[role]
+        # 절 전체가 실패(시간 초과·멈춘 작업 상한)면 역할 자리에 Section 하나(+ events)
+        if isinstance(r, dict) and {"data", "received_at", "error"} <= set(r) and r["error"]:
+            if r["error"] not in SKIP_REASONS:
+                out.append(f"{role}: {r['error']}")
+            continue
         for key, val in inputs[role].items():
             visit(f"{role}.{key}", val)
     return out

@@ -68,3 +68,16 @@ def test_prune_keeps_persistent_keys_with_date_like_account_ids(project, conn):
     assert out["control"] == 1
     assert control.get_flag(conn, "mode:paper-2026-01-01") == "off"
     assert control.get_flag(conn, "live_confirmed:2026-01-01") is True
+
+
+def test_prune_uses_last_date_segment_as_operational_day(project, conn):
+    """계좌 id 가 날짜 모양이어도 운영일은 마지막 날짜 세그먼트다(PR #37 리뷰)."""
+    keep = "sl_unrecorded:2026-01-01:KR:005930:2026-10-26"
+    drop = "sl_unrecorded:2026-01-01:KR:005930:2026-01-02"
+    control.set_flag(conn, keep, True)
+    control.set_flag(conn, drop, True)
+    control.set_flag(conn, "sl_recorded:2026-01-01:KR:005930:2026-10-25:live-auto", True)
+    retention.prune(conn, project / "state", today=TODAY, keep_days=120)
+    assert control.get_flag(conn, keep) is True
+    assert control.get_flag(conn, drop) is None
+    assert control.get_flag(conn, "sl_recorded:2026-01-01:KR:005930:2026-10-25:live-auto")
