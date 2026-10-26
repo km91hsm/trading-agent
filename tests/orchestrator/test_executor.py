@@ -810,3 +810,247 @@ def test_breaker_sums_paper_accounts_nav(ectx):
     assert series[0][1] == Decimal("10000000")
     executor._update_breaker(ectx.conn, ectx.accounts[0], "KR", D, Decimal("850000"))
     assert control.get_flag(ectx.conn, "memory_breaker:KR")["active"] is False
+
+
+# --- 검토 O8: 실행 키 선점 --------------------------------------------------------------
+
+
+def test_concurrent_execute_places_one_order(ectx, monkeypatch):
+    """두 프로세스(스레드 + 각자 연결)가 같은 결정을 동시에 실행해도 주문은 1건."""
+    import threading
+
+    from trader.ledger import db
+
+    paper = ectx.accounts[0]
+    barrier = threading.Barrier(2, timeout=10)
+
+    real_check = repo.has_open_order_or_approval
+
+    def check_then_wait(*a, **kw):
+        out = real_check(*a, **kw)
+        barrier.wait()  # 둘 다 중복 확인을 "없음" 으로 지난 뒤에 주문으로 간다
+        return out
+
+    monkeypatch.setattr(repo, "has_open_order_or_approval", check_then_wait)
+    broker = _broker(paper)
+    dec = Decision(**ok_decision())
+    repo.ingest_checkpoint(
+        ectx.conn, D, "KR", dec.ticker, "30_decision", {"data": dec.model_dump()}
+    )
+    results: list = []
+
+    def worker():
+        c = db.connect()
+        try:
+            ctx = executor.ExecContext(
+                settings=Settings(),
+                accounts=[paper],
+                conn=c,
+                brokers={paper.id: broker},
+                notifier=FakeNotifier(),
+                now=lambda: T0,
+            )
+            results.extend(
+                executor.execute(ctx, dec, date=D, market="KR", price=PRICE, dry_run=False)
+            )
+        finally:
+            c.close()
+
+    threads = [threading.Thread(target=worker) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert len(broker.orders) == 1
+    assert sorted(r["approved"] for r in results) == [False, True]
+    lost = next(r for r in results if not r["approved"])
+    assert any("다른 프로세스" in s for s in lost["reasons"])
+    row = ectx.conn.execute("SELECT key, order_id FROM exec_keys").fetchone()
+    assert row["order_id"] is not None and row["key"].endswith("|paper-main|BUY|50_order")
+
+
+def test_rejected_order_releases_exec_key(ectx):
+    from trader.broker.errors import KisApiError
+
+    calls = []
+
+    def reject_once(request):
+        calls.append(request)
+        if len(calls) == 1:
+            raise KisApiError("APBK0013", "주문 거부")
+        return FakeBroker.place_order(ectx.brokers["paper-main"], request)
+
+    ectx.brokers["paper-main"].place_order = reject_once
+    _run(ectx)
+    assert ectx.conn.execute("SELECT COUNT(*) FROM exec_keys").fetchone()[0] == 0
+    r = next(x for x in _run(ectx) if x["account_id"] == "paper-main")
+    assert r["order"]["accepted"] and len(calls) == 2
+    assert ectx.conn.execute("SELECT COUNT(*) FROM exec_keys").fetchone()[0] == 1
+
+
+def test_unknown_order_keeps_exec_key(ectx):
+    from trader.broker.errors import UNKNOWN_RESPONSE_CODE, KisApiError
+
+    def boom(request):
+        raise KisApiError(UNKNOWN_RESPONSE_CODE, "응답 없음")
+
+    ectx.brokers["paper-main"].place_order = boom
+    _run(ectx)
+    assert ectx.conn.execute("SELECT COUNT(*) FROM exec_keys").fetchone()[0] == 1
+
+
+def test_stop_loss_exec_key_is_per_ticker_day(ectx):
+    from trader.broker.models import Position
+
+    pos = Position(
+        ticker="005930",
+        market="KR",
+        qty=10,
+        avg_price=Decimal("80000"),
+        current_price=PRICE,
+        eval_amount=PRICE * 10,
+        pnl_pct=-0.1,
+    )
+    ectx.brokers["paper-main"].positions = [pos]
+    dec = Decision(
+        **ok_decision(action="SELL", target_weight=0.0, order_type="MARKET", limit_price=None)
+    )
+    for _ in range(2):
+        executor.execute(
+            ectx, dec, date=D, market="KR", price=PRICE, dry_run=False, is_stop_loss=True
+        )
+    assert len(ectx.brokers["paper-main"].orders) == 1
+    key = ectx.conn.execute("SELECT key FROM exec_keys").fetchone()["key"]
+    assert key == f"stop|paper-main|005930|{D.isoformat()}"
+
+
+# --- 검토 O12: 승인 직전 최소 재판정 ----------------------------------------------------
+
+
+def test_approve_buy_expires_when_regime_turned_bear(ectx):
+    aid = _pending(ectx)
+    control.set_flag(ectx.conn, "regime:KR", {"state": "bear", "count": 3})
+    r = executor.approve(ectx, aid)
+    assert r["ok"] is False and "bear" in r["error"]
+    assert ectx.brokers["paper-main"].orders == []
+    assert repo.get_approval(ectx.conn, aid)["status"] == "expired"
+
+
+def test_approve_buy_passes_bear_with_strategist_risk_on(ectx, monkeypatch):
+    aid = _pending(ectx)
+    control.set_flag(ectx.conn, "regime:KR", {"state": "bear", "count": 3})
+    monkeypatch.setattr(executor, "_agent_tilt", lambda ctx, market, today: 1)
+    assert executor.approve(ectx, aid)["ok"]
+
+
+def test_approve_buy_expires_when_daily_loss_limit_hit(ectx):
+    aid = _pending(ectx)
+    repo.snapshot_positions(
+        ectx.conn,
+        account_id="paper-main",
+        d=date(2026, 10, 8),
+        market="KR",
+        nav=Decimal("10800000"),  # 오늘 1000만 → −7.4%
+        cash=Decimal("10800000"),
+        positions=[],
+    )
+    r = executor.approve(ectx, aid)
+    assert r["ok"] is False and "일일 손실" in r["error"]
+    assert ectx.brokers["paper-main"].orders == []
+    assert repo.get_approval(ectx.conn, aid)["status"] == "expired"
+
+
+def test_approve_sell_not_rechecked_in_bear(ectx):
+    from trader.broker.models import Position
+
+    ectx.brokers["paper-main"].positions = [
+        Position(
+            ticker="005930",
+            market="KR",
+            qty=10,
+            avg_price=PRICE,
+            current_price=PRICE,
+            eval_amount=PRICE * 10,
+            pnl_pct=0.0,
+        )
+    ]
+    control.set_account_mode(ectx.conn, ectx.accounts[0], "approve")
+    res = _run(ectx, ok_decision(action="SELL", target_weight=0.0))
+    aid = next(x for x in res if x["account_id"] == "paper-main")["approval_id"]
+    control.set_flag(ectx.conn, "regime:KR", {"state": "bear", "count": 3})
+    assert executor.approve(ectx, aid)["ok"]
+
+
+def _keys(ectx):
+    return [dict(r) for r in ectx.conn.execute("SELECT * FROM exec_keys ORDER BY key")]
+
+
+def test_approval_request_claims_key_and_approve_binds_order(ectx):
+    """승인 모드도 요청 때 키를 잡는다(두 프로세스가 같은 결정의 승인 요청을 둘 만들지 않게)."""
+    aid = _pending(ectx)
+    (k,) = _keys(ectx)
+    assert k["approval_id"] == aid and k["sent_at"] is None
+    assert executor.approve(ectx, aid)["ok"]
+    (k,) = _keys(ectx)
+    assert k["order_id"] is not None and k["sent_at"] is not None
+
+
+def test_closed_approval_key_is_reclaimed(ectx):
+    aid = _pending(ectx)
+    executor.reject(ectx, aid)
+    r = next(x for x in _run(ectx) if x["account_id"] == "paper-main")
+    assert r["approval_id"] and r["approval_id"] != aid  # 거절 뒤 재제출은 새 요청
+
+
+def test_pending_approval_key_blocks_other_process(ectx):
+    """다른 프로세스가 잡은 살아 있는 승인 키가 있으면 승인 요청을 또 만들지 않는다."""
+    aid = _pending(ectx)
+    ectx.conn.execute("UPDATE approvals SET decision_id=0 WHERE id=?", (aid,))  # 중복 확인 우회
+    ectx.conn.commit()
+    r = next(x for x in _run(ectx) if x["account_id"] == "paper-main")
+    assert r["approval_id"] is None and any("실행 키" in s for s in r["reasons"])
+
+
+def test_stale_unsent_key_is_reclaimed_but_sent_key_is_not(ectx):
+    did = None
+    dec = Decision(**ok_decision())
+    repo.ingest_checkpoint(
+        ectx.conn, D, "KR", dec.ticker, "30_decision", {"data": dec.model_dump()}
+    )
+    did = repo.decision_id(ectx.conn, D, "KR", dec.ticker)
+    key = f"{did}|paper-main|BUY|50_order"
+    old = (T0 - timedelta(minutes=11)).isoformat()
+    ectx.conn.execute(
+        "INSERT INTO exec_keys(key, created_at, sent_at) VALUES (?, ?, ?)", (key, old, old)
+    )
+    ectx.conn.commit()
+    executor.execute(ectx, dec, date=D, market="KR", price=PRICE, dry_run=False)
+    assert ectx.brokers["paper-main"].orders == []  # 보냈는데 행이 없는 키: 수동 대조
+    ectx.conn.execute("UPDATE exec_keys SET sent_at=NULL WHERE key=?", (key,))
+    ectx.conn.commit()
+    executor.execute(ectx, dec, date=D, market="KR", price=PRICE, dry_run=False)
+    assert len(ectx.brokers["paper-main"].orders) == 1  # 선점 뒤 죽은 프로세스의 키는 넘겨받음
+
+
+def test_stop_loss_after_cancelled_stop_is_placed_again(ectx):
+    """US 손절 지정가가 취소된 뒤(monitor 가 현재가 위 SELL 을 취소) 같은 날 재손절은 나간다."""
+    from trader.broker.models import Position
+
+    ectx.brokers["paper-main"].positions = [
+        Position(
+            ticker="005930",
+            market="KR",
+            qty=10,
+            avg_price=Decimal("80000"),
+            current_price=PRICE,
+            eval_amount=PRICE * 10,
+            pnl_pct=-0.1,
+        )
+    ]
+    dec = Decision(**ok_decision(action="SELL", target_weight=0.0))
+    kw = dict(date=D, market="KR", price=PRICE, dry_run=False, is_stop_loss=True)
+    executor.execute(ectx, dec, **kw)
+    oid = ectx.conn.execute("SELECT id FROM orders").fetchone()["id"]
+    repo.set_order_status(ectx.conn, oid, "cancelled")
+    executor.execute(ectx, dec, **kw)
+    assert len(ectx.brokers["paper-main"].orders) == 2
