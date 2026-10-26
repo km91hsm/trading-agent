@@ -38,6 +38,7 @@ from trader.platform.procs import process_start, same_process
 logger = logging.getLogger("trader.daemon")
 SCALP_INTERVAL_S = 60  # 분 단위 단타 틱 (Phase 23 S)
 OPS_CHECK_S = 1800  # 운영 점검 주기 (Phase 23 A)
+BALANCE_REFRESH_S = 300  # 정규장 잔고 주기 갱신(웹 실시간 — 조회만)
 TELEGRAM_POLL_S = 30
 QUEUE_JOB_ID = "job_queue"  # 작업 대기열 소비 잡 (jobs.py)
 FAST_QUEUE_JOB_ID = "job_queue_fast"  # 빠른 레인: 재평가·가벼운 잡(heavy 락 밖, 전체 검토 P2)
@@ -351,6 +352,11 @@ def build_jobs(schedule: ScheduleConfig, settings: Settings, *, markets: list[st
     jobs.append(Job(FAST_QUEUE_JOB_ID, "job_queue_fast", interval_s=QUEUE_INTERVAL_S))
     jobs.append(Job("news_collect", "news_collect", interval_s=schedule.news_collect.interval_s))
     jobs.append(Job("ops_check", "ops_check", interval_s=OPS_CHECK_S))  # 운영 점검(Phase 23 A)
+    jobs.append(Job("balance_refresh", "balance_refresh", interval_s=BALANCE_REFRESH_S))
+    if settings.llm.usage_probe.enabled:
+        jobs.append(
+            Job("usage_probe", "usage_probe", interval_s=settings.llm.usage_probe.interval_min * 60)
+        )
     for i, (h, mi) in enumerate(FILLS_SYNC_TIMES):
         jobs.append(
             Job(
@@ -1419,6 +1425,63 @@ def _scalp_body(deps: DaemonDeps, market: str) -> dict:
         conn.close()
 
 
+def _balance_body(deps: DaemonDeps) -> dict:
+    """정규장인 시장만 계좌 잔고를 다시 읽어 스냅샷 갱신(조회만, 주문 없음) → SSE `positions` 로
+    화면의 순자산·보유·섹터가 새로고침 없이 바뀐다. 가벼운 잡(heavy 밖)."""
+    from trader.orchestrator import balance
+
+    if deps.stop_event.is_set():  # 일시정지는 거래 중단일 뿐 — 잔고 조회는 계속
+        return {"skipped": "종료 중"}
+    now = deps.now()
+    markets = balance.open_markets(list(deps.settings.markets), now)
+    if not markets:
+        return {"skipped": "정규장 아님"}
+    conn = deps.conn_factory()
+    try:
+        return {
+            m: balance.refresh(
+                conn,
+                accounts=deps.accounts,
+                brokers=deps.brokers,
+                market=m,
+                settings=deps.settings,
+                now=now,
+                market_client=deps.market_client,
+                state=deps.state,
+            )
+            for m in markets
+        }
+    finally:
+        conn.close()
+
+
+def _usage_probe_body(deps: DaemonDeps) -> dict:
+    """구독 사용률 확인(웹 사용량 블록 실시간). 최근 관측이 있거나 감속 hard 이상이면 건너뛴다."""
+    from trader import usage
+    from trader.orchestrator import quick
+
+    cfg = deps.settings.llm.usage_probe
+    if deps.stop_event.is_set() or not cfg.enabled:
+        return {"skipped": "종료 중·꺼짐"}
+    now = deps.now()
+    conn = deps.conn_factory()
+    try:
+        row = conn.execute("SELECT MAX(observed_at) FROM llm_rate_limits").fetchone()
+        if row and row[0]:
+            try:
+                age = (now - datetime.fromisoformat(row[0])).total_seconds()
+            except ValueError:
+                age = None
+            if age is not None and age < cfg.skip_if_recent_min * 60:
+                return {"skipped": f"최근 관측 {int(age)}초 전"}
+        ok, reason = usage.session_allowance(conn, deps.settings, kind="resume", now=now)
+        if not ok:
+            return {"skipped": f"감속: {reason}"}
+        return quick.probe_usage(deps.settings, conn, now=deps.now, cancel=deps.stop_event)
+    finally:
+        conn.close()
+
+
 def _ops_body(deps: DaemonDeps) -> dict:
     """운영 점검(Phase 23 A): 다섯 영역 판정 → 직전보다 나빠졌으면 알림 1건. 결과는
     `control.ops_result` 에 남겨 웹·텔레그램·STATUS 가 같은 것을 본다. 가벼운 잡(heavy 밖)."""
@@ -2248,6 +2311,10 @@ def job_body(
         return lambda: _news_body(deps)
     if job.kind == "ops_check":
         return lambda: _ops_body(deps)
+    if job.kind == "balance_refresh":
+        return lambda: _balance_body(deps)
+    if job.kind == "usage_probe":
+        return lambda: _usage_probe_body(deps)
     if job.kind == "reconcile":
         return lambda: market_job(
             deps, job.market or "KR", "reconcile", lambda: _reconcile_body(deps, job.market)

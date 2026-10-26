@@ -8,13 +8,16 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import date
+from collections.abc import Iterable
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
 import yaml
 
 from trader.config import ConfigError, SectorMap, Universe, load_sectors
+from trader.platform import paths
+from trader.platform.fsutil import atomic_replace
 
 logger = logging.getLogger("trader.scan")
 
@@ -153,3 +156,91 @@ def sync(src: Path, dst: Path, market: str, *, today: date) -> int:
         if t not in b
     ]
     return apply(dst, market, rows, today=today) if rows else 0
+
+
+# --- 자동 분류 캐시 (웹 섹터 비중) --------------------------------------------------------------
+# sectors.yaml 에 없는 **보유·관심** 종목(장중 발굴로 유니버스 밖에서 산 종목 등)이 섹터 비중에서
+# 전부 '기타' 로 묶이던 문제. 잔고를 관측할 때(데몬 잔고 갱신·웹 잔고 새로고침) 빠진 종목만 KIS
+# 업종명 → 같은 표(`*_industry_to_sector`)로 대분류해 `state/cache/sector_auto.json` 에 남긴다.
+# yaml 이 언제나 우선이고(사람이 관리), 표에 없는 업종은 추측하지 않는다(sector None 으로 캐시해
+# 다시 조회하지 않음). 조회 실패는 캐시하지 않아 다음 관측 때 다시 시도한다.
+AUTO_FILE = "sector_auto.json"
+
+
+def _auto_path(state: Path | None) -> Path:
+    return (state or paths.state_dir()) / "cache" / AUTO_FILE
+
+
+def load_auto(state: Path | None = None) -> dict[str, dict[str, dict]]:
+    p = _auto_path(state)
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def auto_classify(
+    sectors: SectorMap,
+    market_client: Any,
+    *,
+    market: str,
+    tickers: Iterable[str],
+    state: Path | None = None,
+    exchanges: dict[str, str] | None = None,
+) -> dict[str, str]:
+    """yaml·캐시에 없는 종목만 업종을 조회해 캐시에 적는다. 새로 대분류된 {종목: 섹터}."""
+    cache = load_auto(state)
+    seen = cache.setdefault(market, {})
+    got: dict[str, str] = {}
+    changed = False
+    for t in dict.fromkeys(str(x) for x in tickers):
+        if sectors.sector_of(t, market) is not None or t in seen:  # type: ignore[arg-type]
+            continue
+        try:
+            industry = (
+                market_client.get_industry_kr(t)
+                if market == "KR"
+                else market_client.get_industry_us(t, (exchanges or {}).get(t) or "NAS")
+            )
+        except Exception as e:  # noqa: BLE001 - 종목 단위 격리, 다음 관측 때 다시
+            logger.info("업종 조회 실패 %s %s: %s", market, t, e)
+            continue
+        sector = sectors.classify(industry, market)  # type: ignore[arg-type]
+        seen[t] = {"sector": sector, "industry": industry, "at": datetime.now(UTC).isoformat()}
+        changed = True
+        if sector:
+            got[t] = sector
+    if changed:
+        p = _auto_path(state)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        tmp = p.with_name(f"{p.name}.tmp")
+        tmp.write_text(json.dumps(cache, ensure_ascii=False, indent=1), encoding="utf-8")
+        atomic_replace(tmp, p)
+    return got
+
+
+class SectorResolver:
+    """종목 → 섹터: yaml 우선, 없으면 자동 캐시. 자동으로 정해진 종목은 `auto_tickers` 에 모아
+    화면이 '자동' 꼬리표를 붙이게 한다(views.sector_weights 가 읽는다)."""
+
+    def __init__(self, sectors: SectorMap | None, market: str, auto: dict[str, dict]) -> None:
+        self.sectors, self.market, self.auto = sectors, market, auto
+        self.auto_tickers: set[str] = set()
+
+    def __call__(self, ticker: str) -> str | None:
+        t = str(ticker)
+        if self.sectors is not None:
+            s = self.sectors.sector_of(t, self.market)  # type: ignore[arg-type]
+            if s:
+                return s
+        s = (self.auto.get(t) or {}).get("sector")
+        if s:
+            self.auto_tickers.add(t)
+        return s
+
+
+def resolver(
+    sectors: SectorMap | None, market: str, *, state: Path | None = None
+) -> SectorResolver:
+    return SectorResolver(sectors, market, load_auto(state).get(market, {}))

@@ -7,9 +7,11 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import time
 from collections.abc import AsyncIterator
+from pathlib import Path
 
 import anyio
 from fastapi import APIRouter, Request
@@ -36,7 +38,45 @@ def _fingerprint(conn: sqlite3.Connection, table: str, *, status: bool = False) 
     return fp
 
 
-def snapshot(conn: sqlite3.Connection) -> dict:
+def _q(conn: sqlite3.Connection, sql: str) -> str:
+    """지문용 한 줄 집계(행 하나의 값들을 ':' 로 잇는다). 테이블이 없으면(옛 원장) 빈 문자열."""
+    try:
+        row = conn.execute(sql).fetchone()
+    except sqlite3.OperationalError:
+        return ""
+    return ":".join("" if v is None else str(v) for v in tuple(row))
+
+
+def _mtime(path: Path) -> int:
+    try:
+        return int(path.stat().st_mtime)
+    except OSError:
+        return 0
+
+
+def _runs_mtime(state: Path, now) -> int:
+    """오늘(시장별 운영일) run 디렉터리와 그 아래 종목 디렉터리의 최신 mtime — 새 체크포인트가
+    쓰이면(원자 교체로 디렉터리 mtime 이 바뀐다) 오늘 페이지가 다시 읽는다. 2단계만 훑는다."""
+    from trader.orchestrator.run_store import run_date_for
+
+    best = 0
+    for m in ("KR", "US"):
+        d = state / "runs" / run_date_for(m, now).isoformat() / m
+        best = max(best, _mtime(d))
+        try:
+            with os.scandir(d) as it:
+                for e in it:
+                    if e.is_dir():
+                        best = max(best, int(e.stat().st_mtime))
+        except OSError:
+            continue
+    return best
+
+
+# 화면이 읽는 값이 바뀌었는지 보는 지문(전체 검토 이후 '새로고침 없이 실시간' 요구). 키마다 프런트
+# `tickOf(키)` 로 그 블록만 다시 읽는다. 자주 바뀌는 키(`checkpoints`·`daemon`)는 프런트가 전역
+# tick 에서 뺀다(`hooks.NOISY_KEYS`).
+def snapshot(conn: sqlite3.Connection, state: Path | None = None, now=None) -> dict:
     def _max(table: str) -> int:
         row = conn.execute(f"SELECT COALESCE(MAX(id), 0) AS m FROM {table}").fetchone()
         return int(row["m"])
@@ -65,6 +105,40 @@ def snapshot(conn: sqlite3.Connection) -> dict:
             "SELECT COALESCE(MAX(id), 0) AS m FROM job_requests "
             "WHERE status NOT IN ('queued','running')"
         ).fetchone()["m"],
+        # 잔고 스냅샷(데몬 잔고 주기 갱신·판정·새로고침) → 순자산·보유·섹터
+        "positions": _q(conn, "SELECT COUNT(*), MAX(id), MAX(created_at) FROM positions_snapshot"),
+        # 구독 사용률 관측 + 끝난 오케스트레이터 세션(서브에이전트 행·running 은 빼서 폭주 방지)
+        "usage": _q(conn, "SELECT COUNT(*), MAX(id) FROM llm_rate_limits")
+        + "|"
+        + _q(
+            conn,
+            "SELECT COUNT(*) FROM agent_calls WHERE agent IN ('orchestrator','usage_probe',"
+            "'scalp_judge') AND status != 'running'",
+        ),
+        # control 플래그 전체(국면·시장 뷰·운영 점검·모드·테마 상위 등). 텔레그램 오프셋은 매 폴링
+        # 바뀔 수 있어 뺀다
+        "control": _q(conn, "SELECT MAX(updated_at) FROM control WHERE key != 'telegram_offset'"),
+        "news": _q(conn, "SELECT COUNT(*), MAX(id) FROM news_items"),
+        "theme": _q(conn, "SELECT COUNT(*), MAX(id), MAX(observed_at) FROM theme_heat"),
+        "market_views": _q(conn, "SELECT COUNT(*), MAX(id), COUNT(matured_at) FROM market_views"),
+        "shadow": _q(conn, "SELECT COUNT(*), COUNT(fwd_ret) FROM shadow_portfolios"),
+        "memory": _q(conn, "SELECT COUNT(*), COUNT(outcome_at) FROM memory_entries"),
+        **_file_keys(state, now),
+    }
+
+
+def _file_keys(state: Path | None, now) -> dict:
+    """원장 밖(파일) 상태: 데몬 하트비트(잡 표·데몬 실행 중)와 오늘 체크포인트."""
+    if state is None:
+        return {}
+    from datetime import UTC, datetime
+
+    from trader import heartbeat
+
+    now = now or datetime.now(UTC)
+    return {
+        "daemon": _mtime(state / heartbeat.FILE_NAME),
+        "checkpoints": _runs_mtime(state, now),
     }
 
 
@@ -73,18 +147,20 @@ async def stream(
 ) -> AsyncIterator[str]:
     conn = deps.conn_factory()  # 스트림당 연결 1개 (틱마다 열지 않는다; check_same_thread=False)
     try:
-        async for item in _ticks(conn, interval_s, max_events):
+        async for item in _ticks(conn, interval_s, max_events, getattr(deps, "state", None)):
             yield item
     finally:
         conn.close()
 
 
-async def _ticks(conn, interval_s: float, max_events: int | None) -> AsyncIterator[str]:
+async def _ticks(
+    conn, interval_s: float, max_events: int | None, state: Path | None = None
+) -> AsyncIterator[str]:
     last: dict | None = None
     sent = 0
     last_ping = time.monotonic()
     while True:
-        snap = await run_in_threadpool(snapshot, conn)
+        snap = await run_in_threadpool(snapshot, conn, state)
         if snap != last:
             last = snap
             sent += 1

@@ -48,6 +48,9 @@ const KIND_LABEL: Record<string, string> = {
   scalp: "분 단위 단타",
   theme: "테마 열기",
   ops_check: "운영 점검",
+  job_queue_fast: "빠른 작업 실행기",
+  balance_refresh: "잔고 갱신",
+  usage_probe: "Claude 사용량 확인",
 };
 
 export function jobLabel(j: Pick<JobRow, "id" | "kind" | "market">): string {

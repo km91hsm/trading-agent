@@ -78,6 +78,63 @@ def _extract_json(text: str) -> dict | None:
             return None
 
 
+def _spawn(
+    settings: Settings,
+    *,
+    model: str,
+    prompt: str,
+    stdin: str,
+    timeout_s: float,
+    runner: Callable[..., subprocess.CompletedProcess] | None = None,
+    claude_bin: Path | None = None,
+    cancel: Any = None,
+) -> subprocess.CompletedProcess:
+    """도구 없는 `claude -p` 1회(stream-json). 임시 cwd·설정 차단·예산 상한은 분석 세션과 같은 원칙.
+    예외(타임아웃·취소·실행 실패)는 그대로 올린다 — 호출자가 agent_calls 행을 닫는다."""
+    from trader.orchestrator import session
+
+    cwd = Path(tempfile.mkdtemp(prefix="trader-quick-"))
+    try:
+        bin_path = claude_bin or claude_bin_mod.find_claude(settings.claude_bin)
+        cmd = [
+            str(bin_path),
+            "-p",
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "--model",
+            model,
+            "--tools",
+            "",
+            "--permission-mode",
+            "dontAsk",
+            "--setting-sources",
+            "",
+            "--disable-slash-commands",
+            "--append-system-prompt",
+            prompt,
+            "--session-id",
+            str(uuid.uuid4()),
+            "--max-budget-usd",
+            str(BUDGET_USD),
+        ]
+        env = {**os.environ, "CLAUDE_CODE_RETRY_WATCHDOG": "1"}
+        return (runner or session.run_claude)(
+            cmd,
+            input=stdin,
+            capture_output=True,
+            encoding="utf-8",
+            errors="replace",
+            env=env,
+            cwd=str(cwd),
+            shell=False,
+            timeout=timeout_s,
+            **({"cancel": cancel} if cancel is not None else {}),
+        )
+    finally:
+        shutil.rmtree(cwd, ignore_errors=True)
+
+
 def ask_json(
     settings: Settings,
     conn: sqlite3.Connection,
@@ -123,43 +180,16 @@ def ask_json(
         )
         conn.commit()
 
-    cwd = Path(tempfile.mkdtemp(prefix="trader-quick-"))
     try:
-        bin_path = claude_bin or claude_bin_mod.find_claude(settings.claude_bin)
-        cmd = [
-            str(bin_path),
-            "-p",
-            "--output-format",
-            "stream-json",
-            "--verbose",
-            "--model",
-            model,
-            "--tools",
-            "",
-            "--permission-mode",
-            "dontAsk",
-            "--setting-sources",
-            "",
-            "--disable-slash-commands",
-            "--append-system-prompt",
-            prompt,
-            "--session-id",
-            str(uuid.uuid4()),
-            "--max-budget-usd",
-            str(BUDGET_USD),
-        ]
-        env = {**os.environ, "CLAUDE_CODE_RETRY_WATCHDOG": "1"}
-        proc = (runner or session.run_claude)(
-            cmd,
-            input=json.dumps(payload, ensure_ascii=False, default=str),
-            capture_output=True,
-            encoding="utf-8",
-            errors="replace",
-            env=env,
-            cwd=str(cwd),
-            shell=False,
-            timeout=timeout_s,
-            **({"cancel": cancel} if cancel is not None else {}),
+        proc = _spawn(
+            settings,
+            model=model,
+            prompt=prompt,
+            stdin=json.dumps(payload, ensure_ascii=False, default=str),
+            timeout_s=timeout_s,
+            runner=runner,
+            claude_bin=claude_bin,
+            cancel=cancel,
         )
     except session.SessionCancelled:  # TimeoutExpired 의 하위라 먼저 잡는다
         finish("error", error="데몬 종료 요청으로 중단")
@@ -170,8 +200,6 @@ def ask_json(
     except Exception as e:  # noqa: BLE001 - 판정 실패는 '판정 없음'
         finish("error", error=f"{type(e).__name__}: {e}"[:500])
         return None
-    finally:
-        shutil.rmtree(cwd, ignore_errors=True)
     try:
         data, rate = session._parse_stream(proc.stdout)
     except session.PipelineError as e:
@@ -194,3 +222,63 @@ def ask_json(
         return None
     finish("ok", cost=cost, sid=sid)
     return out
+
+
+PROBE_AGENT = "usage_probe"
+PROBE_MODEL = "haiku"
+PROBE_PROMPT = "사용량 확인용 호출입니다. 다른 말 없이 ok 한 단어만 답하세요."
+
+
+def probe_usage(
+    settings: Settings,
+    conn: sqlite3.Connection,
+    *,
+    timeout_s: float = 90.0,
+    runner: Callable[..., subprocess.CompletedProcess] | None = None,
+    claude_bin: Path | None = None,
+    now: Callable[[], datetime] = lambda: datetime.now(UTC),
+    cancel: Any = None,
+) -> dict:
+    """구독 사용률 확인(웹 실시간): 아주 짧은 `claude -p`(haiku) 1회의 `rate_limit_event` 를
+    `llm_rate_limits` 에 `source='probe'` 로 남긴다. `agent_calls.agent='usage_probe'` 라 분석
+    세션 상한·하루 세션 수에 들어가지 않는다. FAKE_CLAUDE=1 이면 호출 없음."""
+    from trader.orchestrator import session
+
+    if session.is_fake():
+        return {"skipped": "FAKE"}
+    started = now()
+    cur = conn.execute(
+        "INSERT INTO agent_calls(agent, model, status, created_at) VALUES (?,?,?,?)",
+        (PROBE_AGENT, PROBE_MODEL, "running", started.isoformat()),
+    )
+    conn.commit()
+    call_id, t0 = int(cur.lastrowid), time.monotonic()
+
+    def finish(status: str, *, cost=None, error=None) -> None:
+        conn.execute(
+            "UPDATE agent_calls SET status=?, cost_usd=?, duration_ms=?, error=? WHERE id=?",
+            (status, cost, int((time.monotonic() - t0) * 1000), error, call_id),
+        )
+        conn.commit()
+
+    try:
+        proc = _spawn(
+            settings,
+            model=PROBE_MODEL,
+            prompt=PROBE_PROMPT,
+            stdin="ok",
+            timeout_s=timeout_s,
+            runner=runner,
+            claude_bin=claude_bin,
+            cancel=cancel,
+        )
+        data, rate = session._parse_stream(proc.stdout)
+    except Exception as e:  # noqa: BLE001 - 확인 실패는 다음 주기에
+        finish("error", error=f"{type(e).__name__}: {e}"[:500])
+        return {"error": f"{type(e).__name__}: {e}"}
+    if rate is None:
+        finish("error", cost=data.get("total_cost_usd"), error="rate_limit_event 없음")
+        return {"error": "rate_limit_event 없음"}
+    usage.record_rate_limit(conn, rate, now=now(), source="probe")
+    finish("ok", cost=data.get("total_cost_usd"))
+    return {"ok": True}
