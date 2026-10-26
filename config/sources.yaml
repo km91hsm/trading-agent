@@ -50,7 +50,6 @@ channels:
   naver_blog: ["ranto28"]   # 메르의 블로그. 공개 RSS, 키워드 무관 최근 naver_blog_posts 건을 분위기 입력에 싣는다
   naver_blog_posts: 5
 
-# 자동 수집 불가로 확인된 사이트 (기록용). 세이브티커는 Cloudflare 봇 검증으로 403 —
-# 이 저장소는 긁지 않고 사용자 수집기가 쌓은 로컬 폴더(news.saveticker_dir)만 읽는다.
+# 직접 HTTP 수집 비활성 사이트. 사용자 승인 브라우저 CLI는 docs/saveticker-collection.md 참조.
 disabled_sites:
   - "https://www.saveticker.com/news"   # Cloudflare 봇 검증으로 403, 2026-10-09 확인

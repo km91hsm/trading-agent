@@ -210,6 +210,8 @@ trading-agent/
 - **커뮤니티(R11)**: §0.3 표의 정책. 수집기는 소스별 파일, 공통 요청 제한·User-Agent, 실패 시 빈 결과. 토스·네이버는 Phase 6 에서 브라우저로 API 를 조사한 뒤 구현 여부 결정.
 - **DART(R12)**: `corpCode.xml` 주 1회 캐시, 재무제표는 호출마다, 공시는 접수 시각. **기타**: FRED, ECOS, KRX 공매도(Phase 6), SEC EDGAR(User-Agent).
 
+> 2026-10-25 변경: 사용자가 SaveTicker 전용 브라우저 수집을 승인했다. 직접 HTTP 수집 비활성 정책은 유지하고 독립 `trader saveticker` CLI로 수집한다. 범위·인증·파일·실행 계약은 `2026-10-25-saveticker-design.md` 및 `docs/saveticker-collection.md` 참조.
+
 ### 3.3 룩어헤드 방지
 모든 항목에 `received_at`. 뉴스·커뮤니티·공시는 `asof` 이후 발행분 제외, EDGAR 는 `filed <= asof`, 재무비율은 공시일 이후부터 적용(사업연도 Y 값은 Y+1 년 4월 1일부터). 과거 `asof` 재수집은 금지(수집기는 현재 데이터만 주므로)하고 Phase 7 백테스트가 피처 스토어로만 지원. 익명화(`anonymize: true`)는 도구가 프롬프트 직전에 종목명·티커를 치환하고 응답에서 복원.
 
