@@ -409,3 +409,10 @@
 - [ ] 결정 대기(사용자, 실전 전): `config/accounts.yaml` 실전 계좌 `capital_cap` 첫 금액(예: KR 300만·US 2000달러)
 - [ ] 운영 규칙(Stock D-120): `scalp.enabled` 를 켜기 전 수개월 분봉 재생·비용 반영·보류 구간 1회 검증(코드 강제 없음)
 - [ ] 다음 단계: 시점 기준 유니버스(그날까지의 거래대금 상위 N + 상장폐지 포함)로 ML 재학습 — 생존 편향 제거
+
+## Stock 교훈 2차 — 운용·화면 (2026-10-27, `docs/superpowers/plans/2026-10-27-stock-lessons-2.md`)
+- [x] 장 마감 일일 리포트(현지 16:20)·`/daily`, 위험 카드(VaR·CVaR·베타·상관·위험 기여), 스냅샷 기준 시각 오래됨, ML 생존 편향 표시, 아침 브리핑(07:20 haiku), 권리 일정 블랙아웃(기본 끔·수집은 매일), 현금 단기금리 ETF(기본 끔·하락 국면만), Tailscale 폰 접속(설정 시) (2026-10-27)
+- [ ] 실기(사용자 확인 대기): 평일 07:05 뒤 `control.ksd_events:KR` 에 일정이 쌓이는지(`errors` 비었는지) — 예탁원 TR 4종은 Stock 대조값, 이 저장소 실기 미확인
+- [ ] 실기(사용자 확인 대기): 07:20 `[아침 브리핑]`·16:20 `[일일 리포트]` 텔레그램, 계좌 페이지 '위험' 블록(피처 스토어 종가 20일 이상 필요)
+- [ ] 결정 대기(사용자): 2~4주 모의 뒤 `cash_park.enabled`·`event_blackout.enabled` 를 켤지(모의에서 먼저)
+- [ ] 사용자 설정(선택): 폰 접속 — Tailscale 설치 → `tailscale serve --bg 8787` → `settings.yaml web.tailscale_hosts`·`tailscale_users`

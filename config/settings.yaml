@@ -90,6 +90,8 @@ web:
   bind: 127.0.0.1
   port: 8787
   realtime_ws: true   # 국내 현재가를 KIS 웹소켓으로(화면 1초 갱신). false 면 10초 REST 폴링
+  tailscale_hosts: []  # 폰 접속: `tailscale serve` 의 tailnet 이름(예: mymac.tail1234.ts.net). 비면 로컬만
+  tailscale_users: []  # 허용할 Tailscale-User-Login(이메일). 조회만 — 제어는 WEB_TOKEN 그대로
 
 # 메모리 검색 (스펙 §6.5): 3층 반감기(일), 워밍업 건수, 서킷브레이커 기준
 memory:
@@ -142,3 +144,21 @@ theme:                   # 테마 열기 감지(Phase 25) — 감지·알림·sc
   top_n: 3               # 알림·scout·게이트가 보는 상위 테마 수
   min_cluster_titles: 3  # 키워드 테마: 오늘 새 뉴스 제목 공출현 최소 건수
   weights: {news: 0.35, rank: 0.25, flow: 0.15, saveticker: 0.10, vol: 0.15}
+
+# 아침 브리핑(Stock docs/06): 평일 KST 이 시각에 haiku 단발 1회 → 텔레그램 5줄(결정·주문과 무관)
+briefing:
+  enabled: true
+  time: "07:20"
+  daily_cap: 1
+
+# 현금 단기금리 ETF(Stock D-115, 기본 끔): 하락 국면이라 신규 매수가 막힌 동안만 남는 현금을 산다
+cash_park:
+  enabled: false
+  ticker: "357870"     # TIGER CD금리투자KIS(합성)
+  reserve_pct: 0.20    # NAV 대비 남길 현금(조건부 매수·헤지 몫)
+
+# 권리 일정 블랙아웃(Stock D-113, 기본 끔): 예탁원 기준일 5일 전 ~ 2일 뒤 신규 매수 금지(수집은 매일)
+event_blackout:
+  enabled: false
+  before_days: 5
+  after_days: 2
