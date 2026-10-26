@@ -159,3 +159,35 @@ def test_quotes_us_and_closed_never_touch_hub(project, conn):
         is False
     )
     assert deps2.quote_hub.requested == []
+
+
+class BookHub(FakeHub):
+    def request_indices(self):
+        return {"KOSPI": {"price": "2650.12", "change_pct": -0.0085, "asof": "x"}}
+
+    def request_book(self, ticker):
+        return {
+            "asks": [["71100", "10"]],
+            "bids": [["71000", "5"]],
+            "total_ask": "10",
+            "total_bid": "5",
+            "time": "093015",
+            "asof": "x",
+        }
+
+
+def test_indices_and_book_routes(project, conn):
+    c, deps = _client(project, OPEN)
+    deps.quote_hub = BookHub({})
+    r = c.get("/api/quotes/indices").json()
+    assert r["session"] == "open" and r["indices"]["KOSPI"]["price"] == "2650.12"
+    b = c.get("/api/quotes/book", params={"ticker": "005930"}).json()
+    assert b["book"]["asks"][0] == ["71100", "10"]
+    assert c.get("/api/quotes/book", params={"ticker": "../x"}).status_code == 400
+    c2, deps2 = _client(project, CLOSED)
+    deps2.quote_hub = BookHub({})
+    assert c2.get("/api/quotes/indices").json() == {
+        "session": "closed",
+        "asof": CLOSED.isoformat(),
+        "indices": {},
+    }

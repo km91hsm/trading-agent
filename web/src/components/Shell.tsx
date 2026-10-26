@@ -7,6 +7,7 @@ import { MOBILE_TABS, NAV } from "../nav";
 import { ALL_ACCOUNTS } from "../overview";
 import { Badge } from "./Badge";
 import { Clock } from "./Clock";
+import { IndexChips } from "./IndexChips";
 import { CommandPalette } from "./CommandPalette";
 import { Glyph, type GlyphName } from "./Glyph";
 
@@ -52,6 +53,7 @@ export function Shell({ children }: { children: ReactNode }) {
           {acct ? <Badge kind="env" value={acct.env} /> : hasReal ? <Badge kind="env" value="real" title="전체 합산에 실전 계좌가 들어 있어요" /> : null}
         </label>
         <Clock />
+        <IndexChips />
         <span className="spacer" />
         <div className="status-badges">
           {!connected && <Badge kind="pending" value="실시간 끊김" title="서버와의 실시간 연결(SSE)이 끊겨 재연결 중 — 1분마다 서버 생존을 확인해 표를 다시 읽어요" />}

@@ -460,6 +460,8 @@ class Settings(BaseModel):
     briefing: BriefingCfg = Field(default_factory=BriefingCfg)  # 아침 브리핑(Stock docs/06)
     cash_park: CashParkCfg = Field(default_factory=CashParkCfg)  # 현금 단기금리 ETF(기본 끔)
     event_blackout: BlackoutCfg = Field(default_factory=BlackoutCfg)  # 권리 일정 블랙아웃(기본 끔)
+    # 체결통보 웹소켓(데몬, secrets KIS_HTS_ID 필요): 통보가 오면 체결 동기화를 바로 당긴다
+    fill_notice: bool = True
 
     def excluded_tickers(self, market: str) -> set[str]:
         """분석·monitor·종목 수·섹터 계산에서 뺄 운용 상품: 헤지 ETF(켜져 있으면) + 현금 단기금리
@@ -695,6 +697,8 @@ class Secrets(BaseModel):
     REDDIT_CLIENT_ID: str | None = None
     REDDIT_CLIENT_SECRET: str | None = None
     REDDIT_USER: str | None = None
+    # 체결통보 웹소켓 구독 키(HTS ID, Stock D-060). 없으면 정기 체결 동기화만
+    KIS_HTS_ID: str | None = None
 
 
 # --- 로더 -------------------------------------------------------------------

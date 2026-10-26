@@ -140,3 +140,29 @@ def quotes(request: Request, market: str, tickers: str = "") -> dict:
         "quotes": out,
         "stream": bool(is_open and hub is not None and hub.status()["connected"]),
     }
+
+
+@router.get("/quotes/indices")
+def indices(request: Request) -> dict:
+    """KOSPI·KOSDAQ 실시간 지수(상단 바, 국내 웹소켓 허브). 장 밖·허브 없음이면 빈 값."""
+    deps = deps_of(request)
+    now = deps.now()
+    is_open = market_hours.is_open("KR", now)
+    hub = deps.quote_hub
+    got = hub.request_indices() if is_open and hub is not None else {}
+    return {"session": "open" if is_open else "closed", "asof": now.isoformat(), "indices": got}
+
+
+@router.get("/quotes/book")
+def book(request: Request, ticker: str) -> dict:
+    """국내 종목 호가 10단(차트 화면, 웹소켓 허브 임차 10초). 표시 전용."""
+    deps = deps_of(request)
+    try:
+        tools._validate_ids(ticker, "KR")
+    except tools.ToolInputError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from None
+    now = deps.now()
+    is_open = market_hours.is_open("KR", now)
+    hub = deps.quote_hub
+    got = hub.request_book(ticker) if is_open and hub is not None else None
+    return {"session": "open" if is_open else "closed", "ticker": ticker, "book": got}

@@ -1015,3 +1015,16 @@ tr.danger td:first-child {
 .fold[open] > summary {
   margin-bottom: var(--s-2);
 }
+
+/* 호가 10단 잔량(차트): 숫자 옆 짧은 막대 — 바탕 없이 --ink-3 하나, 매도는 오른쪽 정렬로 가운데 가격을 향한다 */
+.depth {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--s-2);
+}
+.depth .bar-svg {
+  width: 64px;
+  min-width: 0;
+  height: 8px;
+}

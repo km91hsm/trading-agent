@@ -1005,11 +1005,17 @@ def _daemon_deps(*, dry_run: bool = False):
             "시세 클라이언트 없음(휴장일·monitor 비활성): %s", e
         )
         market_client = None
+    notice_listeners = _notice_listeners(settings, secrets, accounts, db.connect)
 
     def web_app():
         from trader.web.app import create_app
 
-        wd = _web_deps()
+        # KIS 는 앱키당 웹소켓 세션 하나 — 실전 체결통보가 세션을 쓰는 동안 시세 허브는 비켜선다
+        wd = _web_deps(
+            hub_blocked=lambda: any(
+                lst.env == "real" and lst.holds_session() for lst in notice_listeners
+            )
+        )
         extra = _hosts_for_bind(wd.settings.web.bind)  # 단독 `trader web` 과 같은 규칙
         if extra:
             logging.getLogger("trader.web").warning(
@@ -1038,7 +1044,55 @@ def _daemon_deps(*, dry_run: bool = False):
             secrets, universe, market_client, notifier=make_notifier(secrets)
         ),
         features_fn=_daemon_features_fn(secrets, universe, market_client),
+        notice_listeners=notice_listeners,
     )
+
+
+def _notice_listeners(settings, secrets, accounts, conn_factory) -> list:
+    """계좌 env 마다 체결통보 리스너(HTS ID·앱키가 있을 때만). 없으면 빈 목록(정기 동기화만)."""
+    from trader import daemon as daemon_mod
+    from trader.orchestrator.notice import NoticeListener
+
+    hts = (secrets.KIS_HTS_ID or "").strip()
+    if not settings.fill_notice or not hts:
+        return []
+    out = []
+    for env in sorted({a.env for a in accounts}):
+        try:
+            auth = _build_client(secrets, env).auth
+        except config.ConfigError as e:
+            logging.getLogger("trader.cli").warning("체결통보 생략(%s): %s", env, e)
+            continue
+        out.append(
+            NoticeListener(
+                env=env,
+                hts_id=hts,
+                approval=auth.approval_key,
+                invalidate=auth.invalidate_approval,
+                on_notice=daemon_mod.notice_handler(conn_factory),
+                enabled=_notice_enabled(env, accounts, conn_factory),
+            )
+        )
+    return out
+
+
+def _notice_enabled(env: str, accounts, conn_factory):
+    """모의는 늘 켬. 실전은 실전 계좌가 실제로 주문을 낼 수 있을 때(유효 모드가 off 아님)만 —
+    실전 앱키의 웹소켓 세션 하나를 화면 시세 허브와 나눠 쓰기 때문이다."""
+    if env != "real":
+        return lambda: True
+    from trader.orchestrator import executor
+
+    real = [a for a in accounts if a.env == "real"]
+
+    def enabled() -> bool:
+        conn = conn_factory()
+        try:
+            return any(executor.effective_mode(conn, a)[0] != "off" for a in real)
+        finally:
+            conn.close()
+
+    return enabled
 
 
 @app.command("init")
@@ -1527,7 +1581,7 @@ def control_resume() -> None:
 # --- 웹 UI (Phase 5) ------------------------------------------------------------
 
 
-def _web_deps(log_name: str | None = None):
+def _web_deps(log_name: str | None = None, *, hub_blocked=None):
     """log_name="web" 은 단독 `trader web` 용 (데몬 안의 web 스레드는 데몬 로그를 그대로 쓴다)."""
     from trader.ledger import db
     from trader.web.app import WebDeps
@@ -1558,17 +1612,17 @@ def _web_deps(log_name: str | None = None):
         dist=paths.web_dist(),
         notifier=make_notifier(secrets),
         schedule=schedule,
-        quote_hub=_quote_hub(settings, market),
+        quote_hub=_quote_hub(settings, market, blocked=hub_blocked),
     )
 
 
-def _quote_hub(settings: config.Settings, market):
+def _quote_hub(settings: config.Settings, market, *, blocked=None):
     """웹 실시간 시세 허브(`settings.web.realtime_ws`). 첫 장중 요청에 스레드가 뜬다."""
     if not settings.web.realtime_ws:
         return None
     from trader.web.live_quotes import QuoteHub
 
-    return QuoteHub.for_market(market)
+    return QuoteHub.for_market(market, blocked=blocked)
 
 
 @app.command("web")

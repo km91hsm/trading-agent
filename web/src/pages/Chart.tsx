@@ -12,6 +12,7 @@ import {
 import { getJson } from "../api";
 import { chartOptions, chartPalette, formatSessionTime, markerStyle, sma } from "../chart";
 import { Glyph } from "../components/Glyph";
+import { OrderBook } from "../components/OrderBook";
 import { Section } from "../components/Section";
 import { Skeleton } from "../components/Skeleton";
 import { ErrorBox } from "../components/Tables";
@@ -215,6 +216,11 @@ export function ChartPage() {
           1분봉은 당일(KR 은 KIS 30봉 단위 역방향 페이징, US 는 최근 120봉)이며 주문·트리거 마커만 찍는다.
         </p>
       </Section>
+      {q.market === "KR" && (
+        <Section title="호가 10단" aside="국내 정규장 · 1초 · 웹소켓">
+          <OrderBook ticker={q.ticker} />
+        </Section>
+      )}
     </>
   );
 }

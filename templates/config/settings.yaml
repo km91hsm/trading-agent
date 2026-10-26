@@ -162,3 +162,6 @@ event_blackout:
   enabled: false
   before_days: 5
   after_days: 2
+
+# 체결통보 웹소켓(데몬, secrets/.env KIS_HTS_ID 필요): 통보가 오면 체결 동기화를 바로 당긴다(Stock D-060)
+fill_notice: true

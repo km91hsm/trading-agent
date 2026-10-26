@@ -12,3 +12,17 @@ def trade_values(ticker, price, sign="2", change_pct="1.25"):
 def frame(*records):
     body = "^".join("^".join(r) for r in records)
     return f"0|H0STCNT0|{len(records):03d}|{body}"
+
+
+def index_values(code, price, sign="2", change_pct="0.50"):
+    """H0UPCNT0 한 건: 업종코드·시각·현재지수·부호·대비 … 9번째 칸 등락률."""
+    v = [code, "093015", price, sign, "10.5", "0", "0", "0", "0", change_pct]
+    return v + ["0"] * (27 - len(v))
+
+
+def book_values(ticker):
+    """H0STASP0 한 건: 매도 71100~, 매수 71000~, 잔량 10씩, 총잔량 1000/2000."""
+    asks = [str(71100 + i * 100) for i in range(10)]
+    bids = [str(71000 - i * 100) for i in range(10)]
+    qty = ["10"] * 20
+    return [ticker, "093015", "0", *asks, *bids, *qty, "1000", "2000"] + ["0"] * 14
