@@ -349,7 +349,7 @@
 ## Phase 25 테마·LLM 판정자·공시·리밸런스 (같은 플랜 단계 4~7)
 - [ ] 단계 4 테마 열기 감지·안전장치 (`feat/phase25-4-theme`, 머지 전 사용자 확인)
 - [ ] 단계 5 분 단위 LLM 판정자 (`feat/phase25-5-scalp-judge`, 머지 전 사용자 확인)
-- [x] 단계 6 승인 지문·공시 중요도 (`feat/phase25-6-approval-disclosure`): 원장 v18 `approvals.fingerprint`·`news_items.severity`, `sources/disclosures.py`(DART 키워드·8-K item), 데몬 `_disclosure_trigger`(critical 즉시 재분석·알림 1회), 운영 점검 `disclosure` 영역 (2026-10-26)
+- [x] 단계 6 승인 지문·공시 중요도 (`feat/phase25-6-approval-disclosure`): 원장 v19 `approvals.fingerprint`·`news_items.severity`, `sources/disclosures.py`(DART 키워드·8-K item), 데몬 `_disclosure_trigger`(critical 즉시 재분석·알림 1회), 운영 점검 `disclosure` 영역 (2026-10-26)
 - [ ] 실기(사용자 확인 대기): DART 키가 있는 날 데몬 `news_collect` 로그의 `disclosure:KR` inserted·critical, EDGAR `submissions` 가 User-Agent 로 200 을 주는지
 - [ ] 단계 7 주간 리밸런스·세금 로트 (`feat/phase25-7-rebalance-tax`, 머지 전 사용자 확인)
 
