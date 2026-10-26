@@ -9,6 +9,9 @@
 - **장애**: 접속 실패는 지수 백오프, 접속키 거절은 키를 버리고 재접속, 거절된 종목은 다시 청하지
   않는다, 틱이 없는 종목은 결과에서 빠져 호출부가 REST 로 채운다.
 - **표시 전용**: 신호·주문·게이트는 이 값을 읽지 않는다.
+- **앱키 세션 양보**: KIS 는 앱키당 웹소켓 세션 하나라, 같은 프로세스의 실전 체결통보 리스너가
+  세션을 쓰는 동안(`blocked()`)은 붙지 않고 화면은 REST 로 돈다. 다른 프로세스가 쥐고 있으면
+  ('ALREADY IN USE appkey') 백오프한다.
 """
 
 from __future__ import annotations
@@ -61,6 +64,7 @@ class QuoteHub:
         clock: Callable[[], float] = time.monotonic,
         is_open: Callable[[datetime], bool] = _kr_open,
         autostart: bool = True,
+        blocked: Callable[[], bool] = lambda: False,
     ) -> None:
         from trader.broker.tr_ids import WS_URL
 
@@ -72,6 +76,7 @@ class QuoteHub:
         self._clock = clock
         self._is_open = is_open
         self._autostart = autostart
+        self.blocked = blocked
         self._lock = threading.Lock()
         # 구독 키는 (TR, 키): 체결가 (H0STCNT0, 종목)·지수 (H0UPCNT0, 0001)·호가 (H0STASP0, 종목)
         self._leases: dict[Sub, float] = {}  # 키 → 마지막 요청 시각(clock)
@@ -87,17 +92,23 @@ class QuoteHub:
         self._stop = threading.Event()
 
     @classmethod
-    def for_market(cls, market: Any) -> QuoteHub | None:
+    def for_market(
+        cls, market: Any, *, blocked: Callable[[], bool] | None = None
+    ) -> QuoteHub | None:
         """실전 시세 클라이언트(`KisMarket`)의 접속키로 만든다. 없으면 None(폴링만)."""
         if market is None or not hasattr(market, "approval_key"):
             return None
-        return cls(approval=market.approval_key, invalidate=market.invalidate_approval)
+        return cls(
+            approval=market.approval_key,
+            invalidate=market.invalidate_approval,
+            blocked=blocked or (lambda: False),
+        )
 
     # --- 요청 스레드 쪽 ----------------------------------------------------
 
     def _lease(self, keys: list[Sub]) -> dict[Sub, dict]:
         """키들을 빌리고, 구독 중이며 신선한 값이 있는 것만 돌려준다."""
-        if not self._is_open(self._now()):
+        if not self._is_open(self._now()) or self.blocked():
             return {}
         now = self._clock()
         with self._lock:
@@ -158,7 +169,7 @@ class QuoteHub:
                 with self._lock:
                     decided = self._clock()
                     idle = decided - self._last_request > IDLE_S
-                if idle or not self._is_open(self._now()):
+                if idle or not self._is_open(self._now()) or self.blocked():
                     break
                 if not self.step():
                     self._stop.wait(RECV_TIMEOUT_S)
@@ -262,6 +273,10 @@ class QuoteHub:
                 logger.warning("실시간 접속키 거절 — 새 키로 다시 접속합니다")
                 self._invalidate()
                 self._drop(backoff=True)  # 거절이 반복되면 키 재발급도 간격을 늘린다
+                return False
+            if kis_ws.is_appkey_in_use(msg):
+                logger.warning("실시간 시세: 앱키 세션 사용 중(다른 연결) — 잠시 뒤 다시")
+                self._drop(backoff=True)
                 return False
             if "already" in low or not key:
                 return True

@@ -330,3 +330,34 @@ def test_indices_and_book_leases():
     hub.request_indices()
     hub.step()
     assert ("2", "005930") in made[0].subs()
+
+
+def test_blocked_hub_does_not_connect_and_yields():
+    """Codex(PR #46): 실전 체결통보가 앱키 세션을 쓰는 동안 허브는 붙지 않는다(화면은 REST)."""
+    hub, clock, made, _ = make_hub()
+    blocked = [True]
+    hub.blocked = lambda: blocked[0]
+    assert hub.request(["005930"]) == {}
+    blocked[0] = False
+    hub.request(["005930"])
+    hub.step()
+    assert len(made) == 1
+
+
+def test_appkey_in_use_drops_with_backoff():
+    c1, c2 = FakeConn(), FakeConn()
+    hub, clock, made, invalidated = make_hub(conns=[c1, c2])
+    hub.request(["005930"])
+    hub.step()
+    c1.inbox.append(
+        json.dumps(
+            {
+                "header": {"tr_id": "H0STCNT0", "tr_key": "005930"},
+                "body": {"rt_cd": "1", "msg1": "ALREADY IN USE appkey"},
+            }
+        )
+    )
+    hub.step()
+    assert c1.closed and invalidated == []
+    hub.step()
+    assert len(made) == 1  # 백오프 중

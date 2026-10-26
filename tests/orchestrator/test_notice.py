@@ -159,3 +159,51 @@ def test_subscribe_send_failure_closes_socket():
     c = SendFail()
     lst, _, _, _, _ = _listener([c])
     assert not lst.step() and c.closed
+
+
+def test_real_listener_connects_only_when_enabled_and_yields_session():
+    """Codex(PR #46): KIS 는 앱키당 웹소켓 세션 하나 — 실전 리스너는 실전 계좌가 주문을 낼 수
+    있을 때만 붙고, 그동안만 holds_session() 이 참(같은 프로세스 시세 허브가 비켜선다)."""
+    from trader.orchestrator import notice
+
+    on = [False]
+    c = Conn()
+    clock = [0.0]
+    made = []
+    lst = NoticeListener(
+        env="real",
+        hts_id="myhts",
+        approval=lambda: "ak",
+        invalidate=lambda: None,
+        on_notice=lambda env: True,
+        connect=lambda url: made.append(c) or c,
+        clock=lambda: clock[0],
+        enabled=lambda: on[0],
+    )
+    assert lst.step() is False and made == [] and lst.holds_session() is False
+    on[0] = True
+    lst.step()  # 캐시(ENABLED_TTL_S) 안이라 아직 끔
+    assert made == []
+    clock[0] += notice.ENABLED_TTL_S
+    lst.step()
+    assert made == [c] and lst.holds_session() is True
+    on[0] = False
+    clock[0] += notice.ENABLED_TTL_S
+    lst.step()
+    assert c.closed and lst.holds_session() is False
+
+
+def test_appkey_in_use_backs_off_instead_of_ignoring():
+    busy = json.dumps(
+        {"header": {"tr_id": "H0STCNI0"}, "body": {"rt_cd": "1", "msg1": "ALREADY IN USE appkey"}}
+    )
+    c1, c2 = Conn([busy]), Conn()
+    lst, clock, _, _, made = _listener([c1, c2], env="real")
+    lst.step()  # 접속·구독
+    lst.step()  # 사용 중 → 끊고 백오프
+    assert c1.closed and lst.rejected is None
+    lst.step()
+    assert len(made) == 1  # 백오프 동안 다시 붙지 않는다
+    clock[0] += 2
+    lst.step()
+    assert len(made) == 2

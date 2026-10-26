@@ -76,6 +76,12 @@ def control_problem(raw: str) -> tuple[str, str, str] | None:
     return str(header.get("tr_id", "")), str(header.get("tr_key", "")), msg
 
 
+def is_appkey_in_use(msg: str) -> bool:
+    """'ALREADY IN USE appkey' — KIS 는 앱키당 웹소켓 세션 하나만 받는다(다른 연결이 쥐고 있다).
+    같은 키를 두 번 구독한 'ALREADY IN SUBSCRIBE' 와 구별한다."""
+    return "in use" in msg.lower()
+
+
 def _signed_pct(value: str, sign: str) -> float | None:
     """KIS 등락률(%) → 비율(REST `KisMarket.get_price_kr` 와 같은 단위, 1.25% → 0.0125)."""
     try:
