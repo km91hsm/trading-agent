@@ -153,7 +153,7 @@ def build_inputs(
         if snap:
             saveticker_snap = {
                 k: snap.get(k)
-                for k in ("observed_at", "trends", "movers", "community_top5", "report")
+                for k in ("observed_at", "movers", "community_top5", "report")
             }
     except Exception as e:  # noqa: BLE001 - 선택 입력
         logger.debug("세이브티커 발굴 입력 실패 %s: %s", market, e)

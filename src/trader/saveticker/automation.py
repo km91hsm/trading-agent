@@ -1,0 +1,398 @@
+"""AI 호출 없는 수집 서비스 및 로컬 장애 감시.
+
+서비스는 데몬(`daemon._saveticker_body`, 앱이 켜져 있는 동안)이나 macOS launchd 가 띄운다. 같은
+수집 폴더의 `runtime/service.lock` 으로 하나만 돌고, 인증 실패·재기동 한도로 멈추면
+`should_start` 가 다시 띄울 때를 정한다."""
+
+from __future__ import annotations
+
+import json
+import os
+import plistlib
+import signal
+import subprocess
+import sys
+import threading
+import time
+from datetime import UTC, datetime
+from pathlib import Path
+from zoneinfo import ZoneInfo
+
+from trader.platform import bundle
+from trader.saveticker.store import atomic_json
+
+RUNNERS = ("runner", "runner-background", "runner-community", "runner-market", "runner-news")
+STREAMS = (
+    "news_all",
+    "community_index_live",
+    "community_gain_live",
+    "community_loss_live",
+    "community_top5",
+    "market_turnover_live",
+    "market_gain_live",
+    "market_loss_live",
+)
+LABELS = {"collector": "com.user.saveticker.collector", "monitor": "com.user.saveticker.monitor"}
+
+
+def read(path):
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+        return value if isinstance(value, dict) else None
+    except (OSError, ValueError):
+        return None
+
+
+def collector_alive(pid):
+    if not isinstance(pid, int) or pid <= 0:
+        return False
+    if os.name == "nt":  # ps 가 없다 — pid 생존만 본다
+        from trader.platform import procs
+
+        return procs.pid_alive(pid)
+    result = subprocess.run(
+        ["ps", "-p", str(pid), "-o", "command="], capture_output=True, text=True, timeout=5
+    )
+    return result.returncode == 0 and "trader saveticker run" in result.stdout
+
+
+def evaluate(runners, status, previous, *, now, alive=collector_alive):
+    counts = dict(previous.get("failure_counts", {}))
+    startup = dict(previous.get("startup", {}))
+    faults = []
+    last = dict(previous.get("last_success_at", {}))
+    for name in RUNNERS:
+        row = runners.get(name)
+        key = "file:" + name
+        counts[key] = counts.get(key, 0) + 1 if row is None else 0
+        if row is None:
+            if counts[key] >= 2:
+                faults.append(key)
+            continue
+        if not alive(row.get("pid")):
+            faults.append("process:" + name)
+        elif row.get("state") in ("error", "stopped") or row.get("exit_code") is not None:
+            faults.append("state:" + name)
+        if startup.get(name, {}).get("pid") != row.get("pid"):
+            startup[name] = {"pid": row.get("pid"), "first_seen_at": now.isoformat()}
+    counts["file:status"] = counts.get("file:status", 0) + 1 if status is None else 0
+    if counts["file:status"] >= 2:
+        faults.append("file:status")
+    for name in STREAMS:
+        row = (status or {}).get("streams", {}).get(name, {})
+        stamp = row.get("last_success_at")
+        if stamp:
+            last[name] = stamp
+        try:
+            stale = not stamp or (now - datetime.fromisoformat(stamp)).total_seconds() > 120
+        except (ValueError, TypeError):
+            stale = True
+        lane = (
+            "news"
+            if name.startswith("news")
+            else "community"
+            if name.startswith("community")
+            else "market"
+        )
+        boot = startup.get("runner-" + lane, {}).get("first_seen_at")
+        grace = bool(boot and (now - datetime.fromisoformat(boot)).total_seconds() < 180)
+        # 이미 유효한 데이터가 있는 작업은 새 PID를 관측했다는 이유로 지연을 숨기지 않는다.
+        grace = grace and (
+            not stamp
+            or (runners.get("runner-" + lane) or {}).get("state")
+            in ("logging_in", "reauthenticating")
+        )
+        bad = stale or row.get("status") in ("error", "auth_required")
+        key = "stale:" + name
+        counts[key] = counts.get(key, 0) + 1 if bad and not grace else 0
+        if counts[key] >= 2:
+            faults.append(key)
+    roots = [f for f in faults if not f.startswith("stale:")]
+    faults = sorted(roots or faults)
+    return {
+        "checked_at": now.isoformat(),
+        "health": "fault" if faults else "healthy",
+        "faults": faults,
+        "failure_counts": {k: v for k, v in counts.items() if v},
+        "first_detected_at": (previous.get("first_detected_at") or now.isoformat())
+        if faults
+        else None,
+        "startup": startup,
+        "last_success_at": last,
+        "last_notified_fingerprint": previous.get("last_notified_fingerprint", ""),
+    }
+
+
+def notify(message):
+    # 메시지는 고정 문구·스트림 이름·시각만 포함한다. 셸이나 원본 예외는 사용하지 않는다.
+    script = (
+        "on run argv\n display notification (item 1 of argv) "
+        'with title "SAVE Ticker" sound name "Glass"\nend run'
+    )
+    result = subprocess.run(
+        ["/usr/bin/osascript", "-e", script, message], capture_output=True, text=True, timeout=15
+    )
+    return result.returncode == 0
+
+
+def monitor(root, *, send=None):
+    """`send(message) -> bool`: 알림 전송(기본 macOS 알림 센터, 데몬은 텔레그램)."""
+    send = send or notify
+    from trader.daemon import Lock
+
+    runtime = root / "runtime"
+    lock = Lock(runtime / "alert-monitor.lock")
+    if not lock.acquire():
+        return {"notification": "busy"}
+    try:
+        previous = read(runtime / "alert-monitor.json") or {}
+        runners = {n: read(runtime / (n + ".json")) for n in RUNNERS}
+        state = evaluate(runners, read(root / "data/status.json"), previous, now=datetime.now(UTC))
+        fingerprint = "|".join(state["faults"])
+        old = previous.get("last_notified_fingerprint", "")
+        changed = fingerprint != old
+        state["notification"] = "unchanged"
+        if changed:
+            stamp = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%m/%d %H:%M KST")
+            last = min((v for v in state["last_success_at"].values() if v), default=None)
+            last = (
+                datetime.fromisoformat(last)
+                .astimezone(ZoneInfo("Asia/Seoul"))
+                .strftime("%m/%d %H:%M KST")
+                if last
+                else "미확인"
+            )
+            summary = (
+                "수집 장애: " + ", ".join(state["faults"]) if fingerprint else "수집 복구 확인"
+            )
+            message = f"{stamp} · {summary} · 마지막 정상 {last}"
+            try:
+                delivered = send(message)
+            except (OSError, subprocess.SubprocessError):
+                delivered = False
+            state["notification"] = "submitted" if delivered else "failed"
+            if delivered:
+                state["last_notified_fingerprint"] = fingerprint
+        atomic_json(runtime / "alert-monitor.json", state)
+        return {
+            "health": state["health"],
+            "faults": state["faults"],
+            "notification": state["notification"],
+        }
+    finally:
+        lock.release()
+
+
+def retry_allowed(runners):
+    return not any(
+        (row or {}).get("error_type") in ("AccessDenied", "LoginRequired")
+        for row in runners.values()
+    )
+
+
+STOP_GRACE_S = 70  # 데몬 종료 때 서비스(→ 수집 작업 → 브라우저) 정리 유예
+RESTART_LIMIT_RETRY = 3600  # 재기동 한도로 멈춘 뒤 다시 띄우기까지(초)
+
+
+def _blocked(runtime, reason, **extra):
+    atomic_json(
+        runtime / "service.json",
+        {
+            "pid": os.getpid(),
+            "state": "blocked",
+            "reason": reason,
+            "at": datetime.now(UTC).isoformat(),
+            **extra,
+        },
+    )
+
+
+def kill_leftovers(root):
+    """서비스가 죽은 뒤 남은 수집 작업(각자 세션 리더라 서비스 그룹 SIGKILL 이 닿지 않는다)과
+    그 브라우저를 끝낸다. `runner-<lane>.json` 의 pid·시작 시각이 지금 프로세스와 같고 수집기
+    명령이면 그 그룹을 SIGKILL.
+    끝낸 수를 돌려준다."""
+    from trader.platform import procs
+
+    killed = 0
+    for name in RUNNERS:
+        row = read(root / "runtime" / (name + ".json")) or {}
+        pid, start = row.get("pid"), row.get("proc_start")
+        if not isinstance(pid, int) or pid == os.getpid() or not start:
+            continue  # 시작 시각 기록이 없으면 그 프로세스라고 확인할 수 없다 — 건드리지 않는다
+        # pid 는 재부팅 뒤 다른 프로그램에 재사용된다(Windows 는 명령줄 확인도 없다)
+        if procs.process_start(pid) == start and collector_alive(pid):
+            procs.kill_group(pid)
+            killed += 1
+    return killed
+
+
+def service_elsewhere():
+    """이 PC 에서 (다른 수집 폴더라도) 수집 서비스가 이미 도는지 — 같은 계정으로 두 곳에서
+    로그인하면 사이트가 계정을 막을 수 있다. posix 는 `ps`, Windows 는 확인하지 않는다(False)."""
+    if os.name == "nt":
+        return False
+    try:
+        result = subprocess.run(
+            ["ps", "-axo", "pid=,command="], capture_output=True, text=True, timeout=5
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    me = os.getpid()
+    for line in result.stdout.splitlines():
+        pid, _, command = line.strip().partition(" ")
+        if pid.isdigit() and int(pid) != me and "trader saveticker service" in command:
+            return True
+    return False
+
+
+def should_start(home, credentials, *, now):
+    """데몬이 서비스를 (다시) 띄울지와 이유. 계정 파일은 있는지만 본다(값은 읽지 않는다).
+    인증 실패로 멈췄으면 계정 파일이 그 뒤에 바뀌어야, 재기동 한도·Chromium 설치 실패는 1시간
+    뒤에 다시 띄운다 — 실패한 로그인을 1분마다 반복하면 계정이 잠길 수 있다."""
+    from trader.daemon import Lock
+
+    if not credentials.is_file():
+        return False, "계정 파일 없음"
+    runtime = home / "runtime"
+    if Lock(runtime / "service.lock").held():
+        return False, "이미 실행 중"
+    if service_elsewhere():
+        return False, "다른 폴더의 수집 서비스가 실행 중"
+    state = read(runtime / "service.json") or {}
+    if state.get("state") != "blocked":
+        return True, ""
+    try:
+        at = datetime.fromisoformat(state["at"])
+    except (KeyError, TypeError, ValueError):
+        at = None
+    if state.get("reason") == "authentication_or_stopped":
+        changed = at is None or credentials.stat().st_mtime > at.timestamp()
+        return (True, "") if changed else (False, "인증 실패로 멈춤 — 계정 파일 확인 필요")
+    if at is not None and (now - at).total_seconds() < RESTART_LIMIT_RETRY:
+        return False, f"멈춤({state.get('reason')}) — 1시간 뒤 재시도"
+    return True, ""
+
+
+def service(root):
+    from trader.daemon import Lock
+
+    runtime = root / "runtime"
+    runtime.mkdir(parents=True, exist_ok=True)
+    lock = Lock(runtime / "service.lock")
+    if not lock.acquire():
+        return
+    from trader.saveticker import chromium
+
+    # 설치·확인·수집 작업(자식은 env 를 물려받는다)이 같은 브라우저 폴더를 본다
+    chromium.prepare_env()
+    stop = threading.Event()
+    child = None
+    old_handlers = {}
+
+    def halt(*_):
+        stop.set()
+        if child is not None and child.poll() is None:
+            child.terminate()
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        old_handlers[sig] = signal.signal(sig, halt)
+    try:
+        # 종료 핸들러를 건 뒤 설치한다 — 설치 중 종료되면 설치 프로세스도 함께 끝낸다(Codex 리뷰)
+        if not chromium.ensure(stop):
+            if not stop.is_set():
+                _blocked(runtime, "chromium_install_failed")
+            return
+        attempts = 0
+        while not stop.is_set():
+            started = time.monotonic()
+            with (runtime / "service.log").open("a", encoding="utf-8") as log:
+                child = subprocess.Popen(
+                    [
+                        *bundle.cli_argv(),
+                        "saveticker",
+                        "run",
+                        "--headed",
+                        "--max-scrolls",
+                        "2",
+                        "--max-details",
+                        "2",
+                    ],
+                    stdin=subprocess.DEVNULL,
+                    stdout=log,
+                    stderr=log,
+                )
+                atomic_json(
+                    runtime / "service.json",
+                    {
+                        "pid": os.getpid(),
+                        "child_pid": child.pid,
+                        "state": "running",
+                        "restart_count": attempts,
+                        "started_at": datetime.now(UTC).isoformat(),
+                    },
+                )
+                code = child.wait()
+            if stop.is_set():
+                break
+            rows = {n: read(runtime / (n + ".json")) for n in RUNNERS}
+            if code == 0 or not retry_allowed(rows):
+                _blocked(runtime, "authentication_or_stopped", exit_code=code)
+                return
+            if time.monotonic() - started >= 300:
+                attempts = 0
+            attempts += 1
+            if attempts > 3:
+                _blocked(runtime, "restart_limit", restart_count=attempts - 1)
+                return
+            delay = 30 * 2 ** (attempts - 1)
+            atomic_json(
+                runtime / "service.json",
+                {
+                    "pid": os.getpid(),
+                    "state": "backoff",
+                    "restart_count": attempts,
+                    "retry_after_s": delay,
+                },
+            )
+            stop.wait(delay)
+        atomic_json(runtime / "service.json", {"pid": os.getpid(), "state": "stopped"})
+    finally:
+        if child is not None and child.poll() is None:
+            child.terminate()
+            child.wait(timeout=60)
+        for sig, handler in old_handlers.items():
+            signal.signal(sig, handler)
+        lock.release()
+
+
+def plists(project, trader_home, *, python=sys.executable):
+    """macOS launchd 등록용(데몬 없이 상시 수집할 때). 앱을 쓰면 데몬이 서비스를 띄우므로
+    필요 없다."""
+    runtime = trader_home / "state/external/saveticker/runtime"
+    result = {}
+    for kind, label in LABELS.items():
+        value = {
+            "Label": label,
+            "ProgramArguments": [
+                python,
+                "-m",
+                "trader",
+                "saveticker",
+                "service" if kind == "collector" else "monitor",
+            ],
+            "WorkingDirectory": str(project),
+            "EnvironmentVariables": {
+                "TRADER_HOME": str(trader_home),
+                "PYTHONIOENCODING": "utf-8",
+                "PATH": str(Path(python).parent) + ":/usr/local/bin:/usr/bin:/bin",
+            },
+            "RunAtLoad": True,
+            "ExitTimeOut": 70,
+            "StandardOutPath": str(runtime / (kind + ".launchd.out")),
+            "StandardErrorPath": str(runtime / (kind + ".launchd.err")),
+        }
+        if kind == "monitor":
+            value["StartInterval"] = 60
+        result[kind] = plistlib.dumps(value)
+    return result

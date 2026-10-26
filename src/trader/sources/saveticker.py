@@ -10,10 +10,12 @@
 - `data/attachments/<sha>.pdf|.txt` — SAVE 데일리 리포트 원본·추출 텍스트
 
 뉴스(`news_all`·`news_reports`)는 시장 전체 뉴스 저장소(`news_items`, source `saveticker:<출처>`)에
-멱등 적재되어 발굴·시장 세션·종목 세션이 다른 뉴스와 같은 길로 읽는다. 커뮤니티 트렌드·종목 TOP5·
-지수·상승/하락/거래대금·캘린더·리포트 발췌는 `snapshot(asof)` 로 세션 입력(`saveticker` 절)에
-들어간다.
-룩어헤드: `observed_at`/`received_at` 이 asof 이하인 것만.
+멱등 적재되어 발굴·시장 세션·종목 세션이 다른 뉴스와 같은 길로 읽는다. 종목 TOP5·지수·상승/하락/
+거래대금·캘린더·리포트 발췌는 `snapshot(asof)` 로 세션 입력(`saveticker` 절)에 들어간다(커뮤니티
+트렌드는 2026-10-26 수집 중단이라 읽지 않는다).
+룩어헤드: `observed_at`/`received_at` 이 asof 이하인 것만. 신선도: latest 화면은 수집기가 매 회차
+`observed_at` 을 새로 쓰므로, asof 보다 `STALE_AFTER` 넘게 오래된 화면은 수집기가 멈춘 것으로 보고
+뺀다(`snapshot.stale` 에 스트림 이름).
 """
 
 from __future__ import annotations
@@ -39,6 +41,10 @@ SUMMARY_CHARS = 300
 JSONL_DAYS = 3  # 뉴스 적재는 최근 N일 폴더만 다시 읽는다(URL 해시로 멱등)
 CALENDAR_BACK_DAYS = 1
 CALENDAR_AHEAD_DAYS = 7
+# 화면 신선도: 순위·TOP5 는 20초~5분 주기라 1시간, 리포트(15분)는 날 단위라 하루, 캘린더는 예정
+# 일정이라 오래된 관측도 쓸모가 있어 2주
+STALE_AFTER = timedelta(hours=1)
+STALE_AFTER_BY_PREFIX = (("calendar_", timedelta(days=14)), ("news_reports", timedelta(days=1)))
 _KR_CODE = re.compile(r"^\d{6}$")
 _DISPLAYED = re.compile(r"^(\d{4})\.\s*(\d{1,2})\.\s*(\d{1,2})\.\s*(\d{1,2}):(\d{2})$")
 
@@ -275,7 +281,14 @@ def _load_latest(root: Path, stream: str) -> dict | None:
     return snap
 
 
-def _calendar(root: Path, cutoff: datetime, *, back_days: int, ahead_days: int) -> list[dict]:
+def _calendar(
+    root: Path,
+    cutoff: datetime,
+    *,
+    back_days: int,
+    ahead_days: int,
+    stale: set[str] | None = None,
+) -> list[dict]:
     """경제 일정(월 파일 여러 개) 중 cutoff-back ~ cutoff+ahead 창, scheduled_at 오름차순."""
     lo = cutoff - timedelta(days=back_days)
     hi = cutoff + timedelta(days=ahead_days)
@@ -283,7 +296,7 @@ def _calendar(root: Path, cutoff: datetime, *, back_days: int, ahead_days: int) 
     months = sorted({(lo + timedelta(days=i)).strftime("%Y-%m") for i in range(0, span)})
     out: list[dict] = []
     for ym in months:
-        for it in _items(_load_latest(root, f"calendar_{ym}"), cutoff):
+        for it in _items(_load_latest(root, f"calendar_{ym}"), cutoff, stale):
             when = _parse_dt(it.get("scheduled_at"))
             if when is None or not (lo <= when <= hi):
                 continue
@@ -324,12 +337,19 @@ def upcoming(root: Path | None, *, asof: datetime, days: int = 7) -> list[dict]:
     return out
 
 
-def _items(snap: dict | None, asof: datetime) -> list[dict]:
+def _items(snap: dict | None, asof: datetime, stale: set[str] | None = None) -> list[dict]:
     if not snap:
         return []
     observed = _parse_dt(snap.get("observed_at"))
-    if observed is not None and observed > asof.astimezone(UTC):
+    cutoff = asof.astimezone(UTC)
+    if observed is not None and observed > cutoff:
         return []  # asof 뒤 화면은 보이지 않는다(룩어헤드)
+    stream = str(snap.get("stream") or "")
+    limit = next((v for k, v in STALE_AFTER_BY_PREFIX if stream.startswith(k)), STALE_AFTER)
+    if observed is not None and cutoff - observed > limit:
+        if stale is not None:
+            stale.add(stream)
+        return []  # 수집기가 멈춘 뒤 남은 화면을 '지금' 값으로 쓰지 않는다
     return list(snap.get("items") or [])
 
 
@@ -357,26 +377,24 @@ def snapshot(root: Path | None, *, asof: datetime) -> dict | None:
     if root is None or not available(root):
         return None
     cutoff = asof.astimezone(UTC)
-    trends = [
-        {"rank": it.get("rank"), "keyword": it.get("title"), "basis": it.get("basis")}
-        for it in _items(_load_latest(root, "community_trends"), cutoff)
-    ]
-    index = _quote_rows(_items(_load_latest(root, "community_index_regular"), cutoff))
-    top5 = _quote_rows(_items(_load_latest(root, "community_top5"), cutoff))
+    stale: set[str] = set()
+
+    def latest(stream: str) -> list[dict]:
+        return _items(_load_latest(root, stream), cutoff, stale)
+
+    index = _quote_rows(latest("community_index_regular"))
+    top5 = _quote_rows(latest("community_top5"))
     movers = {
-        key: _quote_rows(
-            _items(_load_latest(root, f"market_{key}_regular"), cutoff), with_turnover=True
-        )
+        key: _quote_rows(latest(f"market_{key}_regular"), with_turnover=True)
         for key in ("gain", "loss", "turnover")
     }
-    community = {
-        key: _quote_rows(_items(_load_latest(root, f"community_{key}_regular"), cutoff))
-        for key in ("gain", "loss")
-    }
+    community = {key: _quote_rows(latest(f"community_{key}_regular")) for key in ("gain", "loss")}
     # 캘린더: asof 기준 -1일 ~ +7일 일정 (월 파일 여러 개)
-    calendar = _calendar(root, cutoff, back_days=CALENDAR_BACK_DAYS, ahead_days=CALENDAR_AHEAD_DAYS)
+    calendar = _calendar(
+        root, cutoff, back_days=CALENDAR_BACK_DAYS, ahead_days=CALENDAR_AHEAD_DAYS, stale=stale
+    )
     report = None
-    reports = _items(_load_latest(root, "news_reports"), cutoff)
+    reports = latest("news_reports")
     if reports:
         latest_r = max(reports, key=lambda r: str(r.get("report_date") or ""))
         report = {
@@ -388,7 +406,7 @@ def snapshot(root: Path | None, *, asof: datetime) -> dict | None:
     observed = [
         _parse_dt(s.get("observed_at"))
         for s in (
-            _load_latest(root, "community_trends"),
+            _load_latest(root, "community_top5"),
             _load_latest(root, "market_gain_regular"),
             _load_latest(root, "news_all"),
         )
@@ -396,26 +414,26 @@ def snapshot(root: Path | None, *, asof: datetime) -> dict | None:
     ]
     observed = [o for o in observed if o is not None and o <= cutoff]
     return {
-        "source": "saveticker (사용자 로컬 수집기, state/external/saveticker)",
+        "source": "saveticker (로컬 수집기, news.saveticker_dir)",
         "observed_at": max(observed).isoformat() if observed else None,
-        "trends": trends,
         "index": index,
         "community_top5": top5,
         "community": community,
         "movers": movers,
         "calendar": calendar,
         "report": report,
+        "stale": sorted(stale) or None,
         "streams_status": {
             k: v.get("status")
             for k, v in (status.get("streams") or {}).items()
-            if isinstance(v, dict)
+            if isinstance(v, dict) and k != "community_trends"
         }
         or None,
     }
 
 
 def for_ticker(snap: dict | None, ticker: str) -> dict | None:
-    """종목 세션 분위기 절: 이 종목이 등장하는 TOP5·상승/하락·거래대금 행 + 시장 트렌드·지수."""
+    """종목 세션 분위기 절: 이 종목이 등장하는 TOP5·상승/하락·거래대금 행 + 시장 지수."""
     if not snap:
         return None
     t = ticker.upper()
@@ -434,10 +452,9 @@ def for_ticker(snap: dict | None, ticker: str) -> dict | None:
     return {
         "observed_at": snap.get("observed_at"),
         "mentions": {k: v for k, v in mentions.items() if v},
-        "trends": snap.get("trends") or [],
         "index": snap.get("index") or [],
         "note": (
             "종목 언급(mentions)이 비어 있으면 세이브티커 커뮤니티·시세 상위에 없다는 뜻. "
-            "trends·index 는 시장 전체 분위기 맥락이다"
+            "index 는 시장 전체 분위기 맥락이다"
         ),
     }

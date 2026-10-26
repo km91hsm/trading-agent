@@ -153,6 +153,11 @@ def event(tag: str, text: str = "", *lines: str) -> str:
     return render(tag, text, lines)
 
 
+def saveticker_health(text: str) -> str:
+    """세이브티커 수집 장애·복구(수집기 감시가 만든 고정 문구 한 줄)."""
+    return event("세이브티커 수집", text)
+
+
 def failure(tag: str, scope: str, err: Any) -> str:
     """실패 알림: '[태그] 범위' + 오류 한 줄. 예외면 '형식: 메시지'."""
     msg = f"{type(err).__name__}: {err}" if isinstance(err, BaseException) else str(err)

@@ -28,12 +28,17 @@ for rel, dst in (("web/dist", "web/dist"), ("docs/runbook-live-transition.md", "
     if (ROOT / rel).exists():
         datas.append((str(ROOT / rel), dst))
 datas += collect_data_files("tzdata")
+# 세이브티커 수집기: Playwright 드라이버(node + package, 약 140MB). Chromium 은 첫 실행에 내려받는다
+# (trader.saveticker.chromium). 드라이버 위치는 playwright 패키지 옆 driver/ 라 그대로 둔다.
+datas += collect_data_files("playwright")
 
 hiddenimports = (
     collect_submodules("trader")
     + collect_submodules("sklearn")
     + collect_submodules("uvicorn")
     + collect_submodules("apscheduler")
+    + collect_submodules("playwright")
+    + ["pypdf"]
     + ["pyarrow", "pyarrow.parquet", "tzdata", "youtube_transcript_api", "bs4", "PIL.Image", "PIL.PngImagePlugin"]
     + (["pystray._darwin"] if sys.platform == "darwin" else ["pystray._win32"] if sys.platform == "win32" else [])
 )

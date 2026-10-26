@@ -76,18 +76,22 @@ def tool_bin_dir() -> Path:
     return cli_executable().parent
 
 
+def cli_argv() -> list[str]:
+    """`trader <명령>` 을 하위 프로세스로 띄울 때의 접두 argv: 번들은 콘솔 CLI, 개발 환경은
+    `python -m trader` (번들의 sys.executable 은 `-m` 을 모른다)."""
+    if is_frozen():
+        return [str(cli_executable())]
+    return [sys.executable, "-m", "trader"]
+
+
 def daemon_argv() -> list[str]:
     """데몬 등록(launchd·작업 스케줄러)에 쓰는 argv."""
-    if is_frozen():
-        return [str(cli_executable()), "daemon"]
-    return [sys.executable, "-m", "trader", "daemon"]
+    return [*cli_argv(), "daemon"]
 
 
 def watchdog_argv() -> list[str]:
     """watchdog 등록(5분 간격 1회 실행, Phase 23 C)에 쓰는 argv."""
-    if is_frozen():
-        return [str(cli_executable()), "watchdog"]
-    return [sys.executable, "-m", "trader", "watchdog"]
+    return [*cli_argv(), "watchdog"]
 
 
 def icons_dir() -> Path:

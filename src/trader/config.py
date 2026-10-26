@@ -475,8 +475,11 @@ class NewsCfg(BaseModel):
     store_retention_days: int = Field(default=14, ge=1, le=365)
     store_hours: int = Field(default=48, ge=1, le=24 * 14)  # 세션·발굴 입력의 최근 창
     store_items: int = Field(default=60, ge=1, le=500)  # 발굴 입력 건수 상한
-    # 세이브티커 로컬 수집 폴더(사용자 별도 수집기). 상대 경로는 프로젝트 루트 기준, 없으면 건너뜀
+    # 세이브티커 수집 폴더(수집기가 쓰고 리더가 읽는 곳). 상대 경로는 프로젝트 루트 기준
     saveticker_dir: str | None = "state/external/saveticker"
+    # 데몬이 수집 서비스(`trader saveticker service`)를 띄운다 — secrets/saveticker.env 가 있을 때만
+    saveticker_collect: bool = True
+    saveticker_retention_days: int = Field(default=30, ge=3, le=365)
 
 
 class MacroCfg(BaseModel):

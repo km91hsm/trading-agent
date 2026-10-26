@@ -84,7 +84,7 @@ def test_ingest_news_is_idempotent_and_splits_markets(conn, tmp_path):
 def test_snapshot_filters_by_asof_and_collects_streams(tmp_path):
     root = _root(tmp_path)
     snap = saveticker.snapshot(root, asof=T_AFTER)
-    assert snap["trends"][0]["keyword"] == "트럼프" and snap["trends"][0]["rank"] == 1
+    assert "trends" not in snap  # 트렌드는 2026-10-26 수집 중단 — 남은 옛 파일을 싣지 않는다
     assert {r["tickers"][0] for r in snap["index"]} >= {"QQQ", "SPY"}
     assert len(snap["movers"]["gain"]) == 5 and snap["movers"]["turnover"][0]["turnover"]
     assert snap["community_top5"] and snap["report"]["report_date"] == "2026-10-23"
@@ -93,13 +93,31 @@ def test_snapshot_filters_by_asof_and_collects_streams(tmp_path):
     assert snap["streams_status"]["news_all"] == "partial" and snap["observed_at"]
     # 관측 전 asof 면 화면이 전부 비어 있다(룩어헤드)
     early = saveticker.snapshot(root, asof=T_BEFORE)
-    assert early["trends"] == [] and early["movers"]["gain"] == [] and early["report"] is None
+    assert early["movers"]["gain"] == [] and early["report"] is None
+
+
+def test_snapshot_drops_stale_streams(tmp_path):
+    """수집기가 멈추면 latest 파일이 '지금' 값처럼 남는다 → 관측 1시간(리포트 하루·캘린더 2주)
+    넘으면 뺀다."""
+    from datetime import timedelta
+
+    root = _root(tmp_path)
+    late = saveticker.snapshot(root, asof=T_AFTER + timedelta(hours=2))
+    assert late["movers"]["gain"] == [] and late["community_top5"] == [] and late["index"] == []
+    assert late["report"]  # 하루 기준이라 아직 유효
+    assert "market_gain_regular" in late["stale"] and "news_reports" not in late["stale"]
+    assert saveticker.snapshot(root, asof=T_AFTER)["stale"] is None
+    day = saveticker.snapshot(root, asof=T_AFTER + timedelta(days=2))
+    assert day["report"] is None and "news_reports" in day["stale"]
+    assert not any(s.startswith("calendar_") for s in day["stale"])
+    assert saveticker.upcoming(root, asof=T_AFTER + timedelta(days=2), days=9)  # 예정 일정은 유효
+    assert saveticker.upcoming(root, asof=T_AFTER + timedelta(days=15), days=9) == []
 
 
 def test_for_ticker_mentions_and_market_context(tmp_path):
     snap = saveticker.snapshot(_root(tmp_path), asof=T_AFTER)
     qqq = saveticker.for_ticker(snap, "qqq")
-    assert "community_top5" in qqq["mentions"] and qqq["trends"]
+    assert "community_top5" in qqq["mentions"] and "trends" not in qqq
     none = saveticker.for_ticker(snap, "005930")
     assert none["mentions"] == {} and none["index"]
     assert saveticker.for_ticker(None, "QQQ") is None
@@ -119,7 +137,7 @@ def test_upcoming_calendar_within_seven_days_and_schema_warning(tmp_path, caplog
     assert up[0]["date"] == "2026-11-02 23:00"  # 14:00 UTC → KST
     assert saveticker.upcoming(None, asof=T_AFTER) == []
     # schema_version 2 파일 → 경고 1회(같은 버전은 반복하지 않음)
-    p = root / "data" / "latest" / "community_trends.json"
+    p = root / "data" / "latest" / "community_top5.json"
     data = json.loads(p.read_text(encoding="utf-8"))
     data["schema_version"] = 2
     p.write_text(json.dumps(data), encoding="utf-8")

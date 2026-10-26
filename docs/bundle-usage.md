@@ -25,7 +25,12 @@ trader/                ← 이 폴더가 TRADER_HOME. 폴더째 다른 PC 로 �
    한 번 로그인(구독 인증)해 둡니다. 터미널에서 `claude --version` 이 나오면 됩니다.
 2. **KIS Open API 앱키** (모의·실전), **DART**·**FRED** 키, **네이버 API HUB** 앱의 Client ID/Secret
    (NCP 콘솔 > NAVER API HUB > Application), **텔레그램** 봇 토큰·chat_id.
-3. (선택) 번들은 scikit-learn 백엔드로 돕니다. LightGBM·PPO 백엔드는 소스 설치(`uv sync --extra lightgbm --extra rl`,
+3. (선택) **세이브티커 수집** — 세이브티커 계정을 `secrets/saveticker.env` 에
+   `SAVETICKER_EMAIL='…'`·`SAVETICKER_PASSWORD='…'` 두 줄로 적어 두면, 앱(데몬)이 켜져 있는 동안 수집기가
+   돕니다. 처음 한 번 Chromium(약 150MB)을 내려받으므로 인터넷이 필요하고, 수집 중에는 브라우저 창이
+   몇 개 뜹니다(사이트가 창 없는 접속을 막아 일반 창을 씁니다 — 최소화해 두면 됩니다). 파일이 없으면
+   수집기는 돌지 않고 나머지는 그대로입니다.
+4. (선택) 번들은 scikit-learn 백엔드로 돕니다. LightGBM·PPO 백엔드는 소스 설치(`uv sync --extra lightgbm --extra rl`,
    macOS 는 `brew install libomp`)에서만 쓸 수 있고 설정 `backend: auto` 는 없으면 자동으로 폴백합니다.
    소스 설치에서 LightGBM 으로 학습·승격한 모델(`ml models` 의 backend)은 번들이 로드하지 못해 경고 뒤 ML 없이
    돕니다 — 번들과 `state/` 를 공유하려면 소스 쪽도 `backend: sklearn` 으로 학습하세요.
@@ -61,6 +66,12 @@ trader/                ← 이 폴더가 TRADER_HOME. 폴더째 다른 PC 로 �
 - 웹 UI 제어(일시정지·승인·모드·관심종목)는 `secrets/.env` 의 `WEB_TOKEN` 을 설정/제어 페이지에 넣어야 됩니다. 토큰이 없으면 조회 전용입니다.
 - 스캔→분석·종목 분석·피처 백필·퀀트/RL 학습·복기·체결 동기화는 터미널 없이 **웹 대시보드 '데몬 잡' 표의 '지금 실행'** 과 데이터·ML 페이지의 버튼으로 돌릴 수 있습니다(`WEB_TOKEN` 필요, 데몬이 켜져 있어야 함 — Trader.app 이 켜져 있으면 됩니다). 요청은 '작업 대기열' 블록에 대기→실행 중→완료로 보이고 진행 문구도 보여요. 피처 스토어가 비어 있으면 데몬이 처음 켜질 때 3년 백필과 퀀트 학습을 자동으로 넣습니다.
 - **하락장 대응**: 매일 스캔 앞에 지수 proxy(KODEX 200·SPY)로 시장 국면(상승/중립/하락)을 판정해 대시보드 상태줄에 보여 주고, 하락이면 신규 매수를 막고 인버스 ETF(KODEX 인버스·SH, 3지표 모두면 2배)를 계좌의 최대 20% 로 사서 들다가 국면이 풀리면 팝니다. 계좌 모드(off/approve/auto)·일시정지는 그대로 적용됩니다. 설정은 `config/settings.yaml` 의 `hedge:`.
+- **세이브티커 수집**: 계정 파일이 있으면 데몬이 1분마다 수집 서비스를 확인해 없으면 띄우고(죽으면 다시),
+  앱을 종료하면 함께 닫습니다. 수집 폴더는 `state/external/saveticker/`(`config/sources.yaml`
+  `news.saveticker_dir`, 다른 곳의 수집기를 함께 쓰려면 그 절대경로)이고 장애·복구는 텔레그램
+  `[세이브티커 수집]` 으로 옵니다. 로그인 실패로 멈추면 계정 파일을 고칠 때까지 다시 시도하지 않습니다.
+  변경 이력·날짜별 파일·PDF 원본은 `news.saveticker_retention_days`(30일) 뒤 지웁니다. 상태 확인:
+  `./trader saveticker status`, Chromium 만 미리 받기: `./trader saveticker install-browser`.
 - 터미널 명령은 개발 환경과 같습니다(`uv run trader …` 대신 `./trader …`):
   `status`, `scan`, `analyze`, `monitor --once`, `fills sync`, `approvals list`, `control show|pause|resume`,
   `features backfill --years 3`, `ml train`, `readiness`, `backtest --since YYYY-MM-DD`.

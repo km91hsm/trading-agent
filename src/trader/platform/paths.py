@@ -33,6 +33,21 @@ def project_root() -> Path:
     )
 
 
+def playwright_browsers_dir() -> Path:
+    """Playwright 브라우저 캐시(사용자별, 번들 밖이라 업데이트로 지워지지 않는다): macOS
+    `~/Library/Caches/ms-playwright`, Windows `%LOCALAPPDATA%\\ms-playwright`, 그 밖
+    `~/.cache/ms-playwright`."""
+    import sys
+
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Caches" / "ms-playwright"
+    if sys.platform == "win32":
+        base = os.environ.get("LOCALAPPDATA")
+        return (Path(base) if base else Path.home() / "AppData" / "Local") / "ms-playwright"
+    base = os.environ.get("XDG_CACHE_HOME")
+    return (Path(base) if base else Path.home() / ".cache") / "ms-playwright"
+
+
 def config_dir() -> Path:
     return project_root() / "config"
 

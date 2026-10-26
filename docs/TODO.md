@@ -377,3 +377,22 @@
 - [x] 상단 1초 시계(KST·뉴욕·장 상태), 도움말 클릭 팝오버, 업종 비중 자동 분류(KIS 업종·ETF 상표, 표시용), 화면 전체 실시간(SSE 지문 확장·키별 재조회), 데몬 잔고 주기 갱신·접속 즉시 갱신(조회만), Claude 사용량 확인 잡(30분)·초기화 시각 표기 (2026-10-26)
 - [ ] 실기(사용자 확인 대기): 데몬을 켠 장중에 대시보드를 열어 둔 채 순자산·현재가가 10초마다, 잔고(현금·수량)가 5분 안에 새로고침 없이 바뀌는지, Claude 사용량 블록의 5시간 창 초기화 시각이 30분 안에 채워지는지(`llm_rate_limits` source=probe)
 - [ ] 결정 대기(사용자): 자동 분류된 보유 종목(업종 표의 '자동')을 `config/sectors.yaml` 에 굳혀 리스크 게이트 업종 상한에도 반영할지
+
+## Phase 17 SaveTicker 브라우저 수집 (`docs/superpowers/plans/2026-10-25-saveticker-collection.md`)
+- [x] 사용자 승인 계정 파일(`secrets/saveticker.env`, Git 제외·0600)과 일반 브라우저 자동 로그인. headless HTTP 403은 우회하지 않고 실패로 기록
+- [x] 뉴스 출처·카테고리 22개 스트림, 커뮤니티 글·댓글 및 지수/상승/하락, 증시 거래대금/상승/하락, 정규장/실시간 기준, 기간 지정 캘린더
+- [x] SQLite 버전·변경 이력, 증분 JSONL·최신 캡처·스트림 상태·실행 상태, 중단 파일 복구, 시점 조회·중복 억제·순위 이탈 반영
+- [x] 실기(2026-10-25): 일반 창에서 36개 화면 1회 읽기, 커뮤니티 지수 5·상승/하락 각 20·증시 거래대금/상승/하락 각 20, 캘린더 9월 133·10월 136·11월 79건. 12월/2027-01 빈 결과는 partial
+- [x] 실기(2026-10-25): 뉴스 상세·커뮤니티 댓글을 파일로 저장. 본문 처리 예산·가상 스크롤 끝 미확인은 partial로 보존
+- [x] 완료 기준(코드): 최종 전체 pytest 1,010 passed·1 skipped, 수집기 49개 테스트·ruff 통과. 상시 프로세스 반복 갱신·핵심 목록 실측 75~85초 확인 (2026-10-25 확인)
+- [ ] Windows 실기: Chromium 설치·일반 창 자동 로그인·종료 및 UTF-8 파일 확인 (크로스플랫폼 코드는 구현, Windows 장비 미검증)
+- [ ] 완료 기준(운영 검증): 전체 과거 본문·모든 댓글의 완전 수집 및 장중 폭주 시 누락 여부 확인. 현 코드는 횟수 한도·끝 미확인을 partial로 명시하며 무한 과거 완료를 주장하지 않음
+
+## 세이브티커 수집기 합치기·번들 (2026-10-27, 사용자 결정 '공개 main 머지 + Chromium 첫 실행 설치')
+- [x] 수집기 브랜치(`feat/phase17-saveticker`)를 main 위로 병합, 패키지 `trader.saveticker`(리더 `trader.sources.saveticker` 와 이름 충돌 해소) (2026-10-27)
+- [x] 저장 위치 = 리더 설정(`news.saveticker_dir`), 하위 프로세스 argv `bundle.cli_argv()`(번들 `trader`), `playwright`·`pypdf` 기본 의존성 + PyInstaller 드라이버 포함, Chromium 첫 실행 설치(`chromium.ensure`·`saveticker install-browser`·`selfcheck`) (2026-10-27)
+- [x] 데몬 잡 `saveticker`(60초): 계정 파일 있을 때 서비스 분리 실행·재기동(인증 실패는 계정 파일이 바뀐 뒤, 재기동 한도는 1시간 뒤)·텔레그램 장애 알림·운영일 1회 보관 기간 정리(`saveticker_retention_days` 30), 종료 때 트리 정리 (2026-10-27)
+- [x] 저장량: 뉴스 조회수·좋아요·댓글 수만 바뀐 행은 새 버전 아님. 리더: 트렌드 제외·오래된 화면 제외(`snapshot.stale`) (2026-10-27)
+- [ ] 실기(사용자 확인 대기, 다른 PC): 번들 폴더를 복사 → `secrets/saveticker.env` 확인 → `Trader.app` 실행 → 1분 안에 `state/external/saveticker/runtime/daemon-service.log` 에 Chromium 설치·수집 시작, 브라우저 창 4개, `./trader saveticker status` 의 스트림 `ok`
+- [ ] 실기(사용자 확인 대기, Windows): Chromium 자동 설치·일반 창 로그인·앱 종료 때 `taskkill /T` 로 브라우저까지 닫히는지
+- [ ] 결정 대기(사용자): 이 맥의 launchd 수집기(`com.user.saveticker.collector`·`monitor`, Codex 작업 폴더의 옛 코드)를 내리고 데몬(앱)이 맡게 할지 — 내리면 앱이 꺼져 있는 동안은 수집이 멈춘다. 계속 쓰면 같은 폴더 `service.lock` 으로 데몬은 띄우지 않고 감시만 한다
