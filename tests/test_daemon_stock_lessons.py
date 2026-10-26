@@ -65,3 +65,21 @@ def test_briefing_job_and_body(conn, project, monkeypatch):
     sent = []
     deps.notifier.send = lambda text, **kw: sent.append(text) or True
     assert daemon._briefing_body(deps) == {"lines": 1} and sent[-1].startswith("[아침 브리핑]")
+
+
+def test_universe_members_job_records(conn, project):
+    from trader.config import Universe, UsSymbol
+    from trader.ml import universe_pit
+
+    jobs = {j.id: j for j in daemon.build_jobs(SCHED, Settings(), markets=["KR"])}
+    assert jobs["universe_members"].cron == {"hour": 6, "minute": 40}
+    deps = _deps(conn, None, now=lambda: NOW)
+    deps.universe = Universe(
+        kr=["005930", "000660", "114800"],
+        us=[UsSymbol(symbol="AAPL", exchange="NAS")],
+        exclude=["000660"],
+    )
+    out = daemon._universe_members_body(deps)
+    kr = set(universe_pit.members(conn, "KR")["ticker"])
+    assert "005930" in kr and "000660" not in kr and "114800" not in kr  # 제외·헤지 ETF 빠짐
+    assert out["KR"] == len(kr)

@@ -99,6 +99,9 @@ def prepare_dataset(
         down=cfg.label.thresholds.down,
         mode=cfg.label.mode,
     )
+    # 라벨은 종목의 연속 봉으로 먼저 계산하고(행을 먼저 빼면 앞으로의 수익이 틀어진다) 그다음 그날
+    # 유니버스 구성원이 아니었던 행을 학습에서 뺀다(시점 기준 유니버스, Stock D-037)
+    df, pit_info = _apply_pit(df, cfg, state)
     labeled = df[df["label"].notna()]
     cols = dataset.feature_columns(df)
     if len(labeled) < min_rows or labeled["label"].nunique() < 2 or not cols:
@@ -107,7 +110,28 @@ def prepare_dataset(
             f"라벨 종류 {labeled['label'].nunique()}"
         )
         return labeled, cols, reason
+    df.attrs["pit"] = pit_info
     return df, cols, None
+
+
+def _apply_pit(df: pd.DataFrame, cfg: MlConfig, state: Path | None) -> tuple[pd.DataFrame, dict]:
+    import sqlite3
+
+    from trader.ledger import db
+    from trader.ml import universe_pit
+
+    try:
+        conn = db.connect((state / "trader.db") if state is not None else None)
+    except (sqlite3.Error, OSError) as e:
+        logger.warning("시점 기준 유니버스 기록을 열 수 없어 걸러내지 않음: %s", e)
+        return df, {"error": str(e)}
+    try:
+        return universe_pit.apply(df, conn, cfg.train.pit)
+    except sqlite3.OperationalError as e:  # 마이그레이션 전 원장(표 없음)
+        logger.warning("universe_members 없음 — 걸러내지 않음: %s", e)
+        return df, {"error": str(e)}
+    finally:
+        conn.close()
 
 
 # Stock D-037 교훈: "지금 구성 종목" 으로 고른 과거는 상장폐지·편출 종목이 빠져 알파가 부풀려진다
@@ -117,6 +141,15 @@ SURVIVORSHIP_CAVEAT = (
     "종목이 없다 — 워크포워드 알파가 실제보다 클 수 있다. 승격 판단은 섀도 포트폴리오"
     "(지수 기준선)와 함께 본다"
 )
+
+
+def _caveats(pit: dict | None) -> list[str]:
+    """시점 기준 기록이 학습 행을 전부 덮으면 생존 편향 경고를 빼고, 아니면 덮은 비율을 붙인다."""
+    cov = (pit or {}).get("coverage")
+    if cov is not None and cov >= 1.0:
+        return []
+    note = f" (시점 기준 기록이 덮은 학습 행 {cov:.0%})" if cov else " (시점 기준 기록 없음)"
+    return [SURVIVORSHIP_CAVEAT + note]
 
 
 def train_quant(
@@ -175,7 +208,8 @@ def train_quant(
         "backend": model.backend,
         "params": {k: v for k, v in kwargs.items() if k != "backend"},
         "label": cfg.label.model_dump(),
-        "caveats": [SURVIVORSHIP_CAVEAT],
+        "caveats": _caveats(df.attrs.get("pit")),
+        "pit": df.attrs.get("pit"),
     }
     version = registry.save(NAME, model, meta, state=state, now=now)
     if promoted:
@@ -190,5 +224,6 @@ def train_quant(
         "rows": int(len(labeled)),
         "features": cols,
         "backend": model.backend,
-        "caveats": [SURVIVORSHIP_CAVEAT],
+        "caveats": _caveats(df.attrs.get("pit")),
+        "pit": df.attrs.get("pit"),
     }
