@@ -113,6 +113,11 @@ scalp:
   warmup_min: 15             # 개장 뒤 이 시간은 진입 없음
   close_before_min: 20       # 마감 전 이 시간부터 신규 금지·전량 청산
   daily_stop_pct: 0.01       # 단타 일일 실현손실(NAV 비중 합) 한도 — 닿으면 그날 중단
+  judge: false               # 분 단위 LLM 판정자(scalp-judge, haiku): 신호마다 GO/NO_GO — 켜면 판정 없이는 진입 안 함
+  judge_daily_cap: 60        # 판정 호출 하루 상한 (분석 세션 상한과 별도)
+  judge_timeout_s: 45        # 이 시간 안에 판정이 안 오면 버림(진입 안 함)
+  judge_max_drift_pct: 0.003 # 판정을 기다리는 사이 신호가보다 0.3% 넘게 움직이면 버림
+  judge_hold_every_min: 5    # 보유 중 유지/조기 청산 조언 주기(조언은 조기 청산만 — 손절·마감은 파이썬)
 
 rebalance:               # 주간 리밸런스(Phase 25): 최근 결정 목표 비중 대비 ±band 밖 보유만 TRIM 먼저·ADD 나중
   enabled: true

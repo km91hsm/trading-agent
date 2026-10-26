@@ -105,6 +105,12 @@ class ScalpCfg(BaseModel):
     daily_stop_pct: float = Field(
         default=0.01, gt=0, le=0.2
     )  # 단타 일일 실현손실(NAV 비중 합) 한도
+    # Phase 25 분 단위 LLM 판정자(scalp-judge, 기본 끔): 신호 뒤 비동기 판정 → 다음 틱 회수
+    judge: bool = False
+    judge_daily_cap: int = Field(default=60, ge=1, le=500)  # 판정 호출 하루 상한(분석 상한과 별도)
+    judge_timeout_s: float = Field(default=45, gt=0, le=300)  # 이 시간 안에 판정이 없으면 버림
+    judge_max_drift_pct: float = Field(default=0.003, gt=0, le=0.05)  # 판정 사이 신호가 대비 변동
+    judge_hold_every_min: int = Field(default=5, ge=1, le=60)  # 보유 중 유지/청산 조언 주기
 
 
 class RepriceCfg(BaseModel):

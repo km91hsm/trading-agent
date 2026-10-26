@@ -105,11 +105,12 @@ def test_common_rules_identical_prefix_across_all_agents():
                 *registry.SCREEN_AGENTS,
                 *registry.REFLECT_AGENTS,
                 *registry.MARKET_AGENTS,
+                *registry.QUICK_AGENTS,
                 registry.ORCHESTRATOR,
             ]
         )
     )
-    assert len(names) == 13
+    assert len(names) == 14
     canon = None
     for name in names:
         body = load_agent(name, REPO_AGENTS).prompt
