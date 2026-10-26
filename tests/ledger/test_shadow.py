@@ -54,8 +54,12 @@ def test_record_builds_three_portfolios(conn):
     assert got["candidates_1n"] == {"A": 1 / 3, "B": 1 / 3, "C": 1 / 3}
     assert got["quant_topn"] == {"A": 0.5, "B": 0.5}
     assert got["llm"] == {"B": 1.0}
-    # 멱등: 같은 날 다시 기록해도 행이 늘지 않는다
-    assert shadow.record(conn, market="KR", day=DAYS[0], scan=SCAN, top_n=2) == 0
+    # 같은 날 재실행(실패 뒤 재시도)은 만기 전 행을 덮어쓴다 — 행 수는 그대로
+    _decision(conn, "A", "ADD", 0.1)
+    shadow.record(conn, market="KR", day=DAYS[0], scan=SCAN, top_n=2)
+    got = {r["strategy"]: r["weights"] for r in shadow.rows(conn, market="KR")}
+    assert len(shadow.rows(conn, market="KR")) == 3
+    assert got["llm"] == {"A": 1 / 3, "B": 2 / 3}
 
 
 def test_llm_without_buys_is_cash(conn):
@@ -76,8 +80,12 @@ def test_mature_fills_forward_return_only_after_horizon(conn, project):
     assert abs(got["llm"] - 0.10) < 1e-9
     assert abs(got["quant_topn"] - 0.05) < 1e-9
     assert abs(got["candidates_1n"] - 0.10 / 3) < 1e-9
-    # 멱등
+    # 멱등, 만기된 행은 재기록이 덮지 않는다
     assert shadow.mature(conn, state=project / "state", today=DAYS[6], horizon=5) == 0
+    _decision(conn, "A", "BUY", 0.3)
+    shadow.record(conn, market="KR", day=DAYS[0], scan=SCAN, top_n=2)
+    after = {r["strategy"]: (r["weights"], r["fwd_ret"]) for r in shadow.rows(conn, market="KR")}
+    assert after["llm"] == ({"B": 1.0}, got["llm"])
 
 
 def test_mature_cash_portfolio_is_zero_when_window_closed(conn, project):
@@ -117,3 +125,12 @@ def test_paired_stats_ci_straddles_zero_for_noise(conn):
 def test_paired_stats_empty(conn):
     s = shadow.paired_stats(conn)
     assert s == {"n": 0, "mean_diff": None, "ci_low": None, "ci_high": None}
+
+
+def test_block_bootstrap_is_wider_for_clustered_differences():
+    """연속 운영일의 5거래일 수익은 겹친다 → 블록 부트스트랩 구간이 독립 가정보다 넓다."""
+    d = np.array(([0.02] * 5 + [-0.01] * 5) * 3)
+    iid = shadow._block_bootstrap_means(d, block=1, n_boot=4000, seed=1)
+    blk = shadow._block_bootstrap_means(d, block=5, n_boot=4000, seed=1)
+    assert np.std(blk) > np.std(iid)
+    assert shadow._block_bootstrap_means(d[:2], block=5, n_boot=10, seed=0).shape == (10,)

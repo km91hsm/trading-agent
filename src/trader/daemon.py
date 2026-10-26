@@ -1959,19 +1959,25 @@ def _scan_analyze_body(deps: DaemonDeps, market: str) -> dict:
         logger.exception("scan 실패 %s", market)
         scan_error = f"{type(e).__name__}: {e}"  # 알림은 _analyze_body 가 원인과 함께 1건만
     out = _analyze_body(deps, market, scan_error=scan_error)
-    _shadow_record(deps, market)
+    _shadow_record(deps, market, out)
     return out
 
 
-def _shadow_record(deps: DaemonDeps, market: str) -> None:
+def _shadow_record(deps: DaemonDeps, market: str, analyzed: dict | None = None) -> None:
     """섀도 포트폴리오(전체 검토 L1): 오늘 scan 후보·LLM 결정으로 비교 포트폴리오 3개를 남긴다.
-    주문 없음, 실패해도 잡은 계속(경고만)."""
+    주문 없음, 실패해도 잡은 계속(경고만). 분석이 끝까지 돌지 않은 날(실패·중단·scan 없음)과
+    FAKE 세션은 남기지 않는다 — 운영 실패나 고정 HOLD 를 LLM 선택으로 채점하지 않게(PR #33)."""
     from trader.ledger import shadow
+    from trader.orchestrator import session as session_mod
     from trader.orchestrator.run_store import read_checkpoint, run_date_for
 
+    a = analyzed or {}
+    if a.get("failed") or a.get("stopped") or a.get("error"):
+        logger.info("섀도 기록 생략 %s: 분석 미완(%s)", market, a)
+        return
     today = run_date_for(market, deps.now())
     scan = read_checkpoint(run_store.market_dir(today, market, deps.state), "_scan")
-    if not scan:
+    if not scan or session_mod.is_fake() or ((scan.get("session") or {}).get("fake")):
         return
     try:
         conn = deps.conn_factory()

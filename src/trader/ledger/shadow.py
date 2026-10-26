@@ -62,13 +62,16 @@ def record(
     top_n: int = DEFAULT_TOP_N,
     now: datetime | None = None,
 ) -> int:
-    """운영일 1회 기록(멱등, 이미 있으면 0). 새로 쓴 행 수."""
+    """운영일 기록. 만기 전 행은 같은 날 재실행(실패 뒤 재시도)이 덮어쓰고, 만기된 행은 그대로
+    둔다(PR #33 리뷰). 쓰거나 덮어쓴 행 수."""
     created = (now or datetime.now(UTC)).isoformat()
     n = 0
     for strategy, weights in build(conn, market=market, day=day, scan=scan, top_n=top_n).items():
         cur = conn.execute(
-            "INSERT OR IGNORE INTO shadow_portfolios(market, date, strategy, weights_json, "
-            "created_at) VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO shadow_portfolios(market, date, strategy, weights_json, created_at) "
+            "VALUES (?, ?, ?, ?, ?) ON CONFLICT(market, date, strategy) DO UPDATE SET "
+            "weights_json=excluded.weights_json, created_at=excluded.created_at "
+            "WHERE shadow_portfolios.fwd_ret IS NULL",
             (market, day.isoformat(), strategy, json.dumps(weights, sort_keys=True), created),
         )
         n += cur.rowcount
@@ -149,6 +152,18 @@ def mature(
     return filled
 
 
+def _block_bootstrap_means(diffs: np.ndarray, *, block: int, n_boot: int, seed: int) -> np.ndarray:
+    """이동 블록 부트스트랩: 길이 `block` 의 연속 구간을 복원 추출해 이어 붙이고 n 개로 자른 표본의
+    평균 n_boot 개."""
+    n = diffs.size
+    b = max(1, min(block, n))
+    k = -(-n // b)  # ceil
+    rng = np.random.default_rng(seed)
+    starts = rng.integers(0, n - b + 1, size=(n_boot, k))
+    idx = (starts[:, :, None] + np.arange(b)).reshape(n_boot, k * b)[:, :n]
+    return diffs[idx].mean(axis=1)
+
+
 def paired_stats(
     conn: sqlite3.Connection,
     *,
@@ -158,21 +173,23 @@ def paired_stats(
     n_boot: int = 2000,
     seed: int = 0,
 ) -> dict:
-    """같은 (시장, 운영일) 에 둘 다 만기된 쌍의 a − b 평균과 95% 부트스트랩 신뢰구간."""
+    """같은 (시장, 운영일) 에 둘 다 만기된 쌍의 a − b 평균과 95% 신뢰구간.
+    연속 운영일의 5거래일 수익은 4일씩 겹쳐 독립이 아니다 → 날짜 순서를 지키는 이동 블록
+    부트스트랩(블록 길이 = `HORIZON`)으로 구간을 넓게 잡는다(PR #33 리뷰)."""
     sql = (
         "SELECT x.fwd_ret - y.fwd_ret AS d FROM shadow_portfolios x JOIN shadow_portfolios y "
         "ON x.market = y.market AND x.date = y.date "
         "WHERE x.strategy=? AND y.strategy=? AND x.fwd_ret IS NOT NULL AND y.fwd_ret IS NOT NULL"
     )
+    order = " ORDER BY x.market, x.date"
     args: list = [a, b]
     if market:
         sql += " AND x.market=?"
         args.append(market)
-    diffs = np.array([float(r["d"]) for r in conn.execute(sql, args).fetchall()])
+    diffs = np.array([float(r["d"]) for r in conn.execute(sql + order, args).fetchall()])
     if diffs.size == 0:
         return {"n": 0, "mean_diff": None, "ci_low": None, "ci_high": None}
-    rng = np.random.default_rng(seed)
-    means = rng.choice(diffs, size=(n_boot, diffs.size), replace=True).mean(axis=1)
+    means = _block_bootstrap_means(diffs, block=HORIZON, n_boot=n_boot, seed=seed)
     return {
         "n": int(diffs.size),
         "mean_diff": round(float(diffs.mean()), 6),
