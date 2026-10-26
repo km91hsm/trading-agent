@@ -118,6 +118,7 @@ scalp:
   judge_timeout_s: 45        # 이 시간 안에 판정이 안 오면 버림(진입 안 함)
   judge_max_drift_pct: 0.003 # 판정을 기다리는 사이 신호가보다 0.3% 넘게 움직이면 버림
   judge_hold_every_min: 5    # 보유 중 유지/조기 청산 조언 주기(조언은 조기 청산만 — 손절·마감은 파이썬)
+  digest_every_min: 30       # 진입·청산 텔레그램 묶음 주기 (첫 묶음은 바로, 중단·마감은 즉시)
 
 rebalance:               # 주간 리밸런스(Phase 25): 최근 결정 목표 비중 대비 ±band 밖 보유만 TRIM 먼저·ADD 나중
   enabled: true

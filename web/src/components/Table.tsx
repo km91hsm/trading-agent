@@ -146,8 +146,10 @@ export function DetailRow({
       <tr {...rowProps}>
         {children}
         <td className="core row-more">
+          {/* 이름은 늘 '<종목> 상세'(보이는 글자 '상세' 포함), 펼침 상태는 aria-expanded·화살표로 */}
           <button type="button" className="btn btn-sm btn-ghost" aria-expanded={open} aria-controls={id} aria-label={`${label} 상세`} onClick={() => setOpen((v) => !v)}>
-            {open ? "접기" : "상세"}
+            상세
+            <Glyph name={open ? "chevron-up" : "chevron"} size={12} />
           </button>
         </td>
       </tr>

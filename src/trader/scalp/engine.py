@@ -244,6 +244,30 @@ def _local_hms(ctx: ScalpContext, market: str) -> str:
     return ctx.now().astimezone(MARKET_TZ[market]).strftime("%H%M%S")
 
 
+def _queue_note(st: dict, **item: Any) -> None:
+    """진입·청산 알림은 틱마다 보내지 않고 상태 파일 outbox 에 모은다(전체 검토 T3 — 알림 피로)."""
+    st.setdefault("outbox", []).append(item)
+
+
+def _flush_digest(ctx: ScalpContext, market: str, st: dict, *, force: bool = False) -> None:
+    """outbox 를 `messages.scalp_digest` 한 통으로 보낸다. 그날 첫 묶음은 바로, 그 뒤는
+    `digest_every_min` 마다, 중단·마감 청산·허용 해제 때는 즉시(force). 보내면 비운다."""
+    box = st.get("outbox") or []
+    if not box:
+        return
+    last = st.get("digest_at")
+    now = ctx.now()
+    every = ctx.settings.scalp.digest_every_min * 60
+    if not force and last and (now - datetime.fromisoformat(last)).total_seconds() < every:
+        return
+    try:
+        ctx.notifier.send(messages.scalp_digest(market=market, items=box, dry_run=ctx.dry_run))
+    except Exception:  # noqa: BLE001 - 알림 실패가 단타 상태를 바꾸지 않는다
+        logger.warning("단타 묶음 알림 실패", exc_info=True)
+    st["outbox"] = []
+    st["digest_at"] = now.isoformat()
+
+
 def _minutes(ctx: ScalpContext, market: str, c: dict) -> list:
     if market == "KR":
         return ctx.market_client.get_minute_kr(c["ticker"], count=MINUTES_NEEDED)
@@ -445,14 +469,8 @@ def _enter(
     }
     st["open"].append(pos)
     _event(ctx.state, today, market, "entry", **pos)
-    ctx.notifier.send(
-        messages.scalp(
-            leg="entry",
-            market=market,
-            label=_label(ctx, market, c["ticker"]),
-            price=price,
-            reason=reason + (" (dry-run)" if ctx.dry_run else ""),
-        )
+    _queue_note(
+        st, leg="entry", label=_label(ctx, market, c["ticker"]), price=str(price), reason=reason
     )
     return pos
 
@@ -543,6 +561,9 @@ def tick(ctx: ScalpContext, *, market: str, today: date) -> dict:
     st = load_state(ctx.state, today, market)
     why = allowed(ctx, market, today, st)
     if why:
+        if st.get("outbox"):  # 막히기 전 묶음이 남았으면 지금 보낸다(다음 틱이 없을 수 있다)
+            _flush_digest(ctx, market, st, force=True)
+            save_state(ctx.state, today, market, st)
         return {"skipped": why}
     judge_on = cfg.judge and ctx.judge is not None
     ectx = _exec_ctx(ctx)
@@ -628,15 +649,13 @@ def tick(ctx: ScalpContext, *, market: str, today: date) -> dict:
         st.setdefault("closed", []).append(closed)
         out["exits"].append({"ticker": pos["ticker"], "reason": reason, "ret": round(ret, 5)})
         _event(ctx.state, today, market, "exit", **closed)
-        ctx.notifier.send(
-            messages.scalp(
-                leg="exit",
-                market=market,
-                label=_label(ctx, market, pos["ticker"]),
-                price=q,
-                reason=reason + (" (dry-run)" if ctx.dry_run else ""),
-                ret=ret,
-            )
+        _queue_note(
+            st,
+            leg="exit",
+            label=_label(ctx, market, pos["ticker"]),
+            price=str(q),
+            reason=reason,
+            ret=round(ret, 5),
         )
     st["open"] = still_open
     # 일일 손실 한도: 청산된 거래의 (수익률 × 비중) 합
@@ -713,6 +732,8 @@ def tick(ctx: ScalpContext, *, market: str, today: date) -> dict:
                 out["entries"].append(
                     {"ticker": c["ticker"], "price": str(e.price), "qty": pos["qty"]}
                 )
+    closing = signals.hm_minutes(now_t) >= signals.hm_minutes(ctx.close_hm) - cfg.close_before_min
+    _flush_digest(ctx, market, st, force=bool(st.get("halted")) or closing)
     save_state(ctx.state, today, market, st)
     return out
 

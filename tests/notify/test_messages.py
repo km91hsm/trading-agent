@@ -168,3 +168,61 @@ def test_approval_request_shows_env_amount_and_kst_expiry():
     )
     assert "시장가 = $400.00 (현재가 기준)" in paper and "리스크 판정: 확신 0.45" in paper
     assert "/approve 3 · /reject 3 (30분 안)" in paper
+
+
+# --- 전체 검토 T3: 해요체·영문 노출 제거·단타 묶음 요약 ------------------------------------
+
+
+def test_regime_view_mode_messages_have_no_english_codes():
+    assert M.regime_change(market="KR", before=None, after="bear", count="2/3") == (
+        "[국면 전환] KR — → 하락 (2/3)"
+    )
+    assert M.regime_change(market="US", before="neutral", after="bull", count="0/3") == (
+        "[국면 전환] US 중립 → 상승 (0/3)"
+    )
+    assert M.market_view(market="KR", stance="RISK_OFF", hedge_weight=0.2, leveraged=False) == (
+        "[시장 뷰] KR 위험 회피 · 헤지 제안 20% (레버리지 거부)"
+    )
+    assert M.mode_changed(account="paper-main", mode="auto") == "[모드] paper-main → 자동"
+    assert M.ml_trained(
+        kind="퀀트", version="v1", trained=True, detail="정확도 0.400", promoted=False
+    ) == ("[ML 학습] 퀀트 v1: 학습 완료 · 정확도 0.400\n승격 안 함(기준 미달)")
+    assert M.ml_trained(
+        kind="퀀트", version=None, trained=False, detail="행 부족", promoted=None
+    ) == ("[ML 학습] 퀀트 —: 데이터 부족 · 행 부족")
+
+
+def test_scalp_digest_bundles_entries_and_exits_in_korean():
+    items = [
+        {"leg": "entry", "label": "삼성전자(005930)", "price": "71500", "reason": "거래량 3.2배"},
+        {
+            "leg": "exit",
+            "label": "삼성전자(005930)",
+            "price": "72600",
+            "reason": "take_profit",
+            "ret": 0.0154,
+        },
+        {
+            "leg": "exit",
+            "label": "SK하이닉스(000660)",
+            "price": "200000",
+            "reason": "judge_exit",
+            "ret": -0.004,
+        },
+    ]
+    text = M.scalp_digest(market="KR", items=items, dry_run=True)
+    assert text == (
+        "[단타] KR 진입 1 · 청산 2 · 수익 합계 +1.14% (주문 없이 판정)\n"
+        "진입 삼성전자(005930) @71,500원 · 거래량 3.2배\n"
+        "청산 삼성전자(005930) @72,600원 · 익절 · +1.54%\n"
+        "청산 SK하이닉스(000660) @200,000원 · 판정자 조기 청산 · -0.40%"
+    )
+    assert "dry-run" not in text and "take_profit" not in text
+    assert M.scalp(leg="halt", market="KR", label="", reason="실현 -1.20% ≤ -1.00%") == (
+        "[단타 중단] KR\n실현 -1.20% ≤ -1.00%\n오늘은 새로 진입하지 않아요."
+    )
+
+
+def test_hold_is_watch_not_holding():
+    """W12 와 같은 말: HOLD 는 '관망'(보유 수량과 겹치지 않게)."""
+    assert M.ACTION["HOLD"] == "관망"

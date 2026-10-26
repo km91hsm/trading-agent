@@ -91,7 +91,9 @@
   gap: var(--s-2);
 }
 .row-detail-list dt {
-  color: var(--ink-2);
+  color: var(--ink-2); /* Label: 표 머리글과 같은 0.75rem 600 (DESIGN.md) */
+  font-size: var(--t-xs);
+  font-weight: 600;
 }
 .row-detail-list dd {
   margin: 0;

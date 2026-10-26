@@ -365,3 +365,4 @@
 - [x] 보완 4차(L1, 사용자 결정 '섀도 포트폴리오 + 기준 교체'): `ledger/shadow` 운영일 1회 llm·후보 1/N·정량 상위 기록 → reflect 5거래일 만기, readiness `llm_alpha`(20쌍 ∧ 부트스트랩 하한 > 0), 1/N 수익률 비교는 정보, 성과 페이지 'LLM 종목 선택 효과' (2026-10-26)
 - [ ] 결정 대기(사용자): L2·L3 메모리 채점 재설계, L17 비용 절감, O8 실행 키·O10 예상 포트폴리오·O12 승인 때 게이트 재판정, O6·O7 단타 청산(기본 꺼짐)
 - [ ] 보완 4차(프로세스·웹 나머지): P2 재평가 전용 레인, P4 데몬 잠금 인수 경쟁, P7 수집 타임아웃, P8 heavy_wanted 카운터, P9 derive 락 양보, P11 Windows 교체 재시도, P12 보존 정리, P13 레이트 스토어 연결, W5 SSE 상태 변경 감지, W8 실시간 거리 재계산, W9 모바일 행 상세, W10 키보드 행, W12 용어 충돌, T3 문구 어투·단타 알림 요약, `(market, received_at)` 뉴스 인덱스
+  - [x] 묶음 B(웹·문구): W5 SSE 테이블 지문, W8 `livePlan`, W9 `DetailRow`, W10 `RowButton`, W12 통과·관망·주문 없이 판정·`sideLabel`, T3 해요체·영문 코드 한글화(`regime_change`·`market_view`·`mode_changed`·`ml_trained`, `regime.line`)·단타 `scalp_digest`(`scalp.digest_every_min` 30분, 첫 묶음 즉시·중단·마감 즉시) (2026-10-26)

@@ -49,6 +49,7 @@ describe("DetailRow (W9)", () => {
     act(() => btn.click());
     expect(btn.getAttribute("aria-expanded")).toBe("true");
     expect(detail.hidden).toBe(false);
+    expect(btn.textContent).toContain("상세"); // 보이는 글자가 접근 이름 안에 (WCAG 2.5.3)
     expect(detail.textContent).toContain("손절가");
     expect(detail.textContent).toContain("90,000");
   });

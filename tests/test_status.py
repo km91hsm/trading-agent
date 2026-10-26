@@ -182,7 +182,7 @@ def test_status_regime_section(conn, project):
         today=datetime.now(UTC).date(),
     )
     text = status.build_status(conn, Settings(), [make_account("paper-main", "paper", "auto")], p)
-    assert "KR bear(" in text
+    assert "KR 하락(" in text
 
 
 def test_status_scan_section(conn, project):

@@ -74,10 +74,10 @@ def _control_command(ectx: Any, name: str, arg: str | None) -> str:
     conn = ectx.conn
     if name == "pause":
         control.set_flag(conn, "paused", True)
-        return messages.event("일시정지", "모든 계좌 주문 중단")
+        return messages.event("일시정지", "모든 계좌의 주문을 멈췄어요")
     if name == "resume":
         control.set_flag(conn, "paused", False)
-        return messages.event("재개", "실행 중")
+        return messages.event("재개", "주문을 다시 내요")
     if name == "mode":
         parts = (arg or "").split()
         if len(parts) != 2:
@@ -95,7 +95,7 @@ def _control_command(ectx: Any, name: str, arg: str | None) -> str:
             control.set_account_mode(conn, acct, mode)
         except (ValueError, control.ConfirmationRequired) as e:
             return f"거부: {e}"
-        return messages.event("모드", f"{acct.id} = {mode}")
+        return messages.mode_changed(account=acct.id, mode=mode)
     parts = (arg or "").split()
     sub = parts[0] if parts else "list"
     current = control.get_watchlist(conn)
