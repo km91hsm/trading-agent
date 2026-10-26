@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeout
@@ -48,6 +49,20 @@ from trader.sources.macro import collect_macro
 from trader.sources.news import collect_news
 
 SECTION_TIMEOUT_S = 180.0  # 절(fundamental·news_macro·sentiment) 하나의 최대 대기
+# 시간 초과 뒤에도 끝나지 않은 절 작업 수(절 이름별). 이만큼 쌓이면 그 절은 새로 띄우지 않고
+# 오류 절로 둔다 — 멈춘 네트워크 호출이 종목마다 스레드를 하나씩 계속 쌓지 않게(Codex 리뷰)
+MAX_STUCK_PER_SECTION = 2
+_STUCK: dict[str, int] = {}
+_STUCK_LOCK = threading.Lock()
+
+
+def _stuck_done(key: str) -> Callable[[Any], None]:
+    def done(_fut: Any) -> None:
+        with _STUCK_LOCK:
+            _STUCK[key] = max(0, _STUCK.get(key, 0) - 1)
+
+    return done
+
 
 logger = logging.getLogger("trader.sources")
 
@@ -112,6 +127,12 @@ def _collect_errors(inputs: dict) -> list[str]:
                 visit(f"{path}.{k}", sub)
 
     for role in ("technical", "fundamental", "news_macro", "sentiment"):
+        r = inputs[role]
+        # 절 전체가 실패(시간 초과·멈춘 작업 상한)면 역할 자리에 Section 하나(+ events)
+        if isinstance(r, dict) and {"data", "received_at", "error"} <= set(r) and r["error"]:
+            if r["error"] not in SKIP_REASONS:
+                out.append(f"{role}: {r['error']}")
+            continue
         for key, val in inputs[role].items():
             visit(f"{role}.{key}", val)
     return out
@@ -570,24 +591,49 @@ def build_inputs(
     # 세 절은 서로 독립(fundamental 만 technical 의 현재가를 쓴다)이고 네트워크 대기가 대부분이라
     # 동시에 돈다. KIS 클라이언트는 RateLimiter 락, httpx.Client 는 스레드 안전, DART 지연 초기화는
     # 자체 락. 각 절은 run_section 이 예외를 절 안에 가두므로 결과 조립은 그대로다.
-    with ThreadPoolExecutor(max_workers=3, thread_name_prefix="collect") as pool:
-        futures = {
-            "fundamental": pool.submit(_fundamental, ticker, market, asof, cfg, deps, technical),
-            "news_macro": pool.submit(_news_macro, ticker, market, name, asof, cfg, secrets, deps),
-            "sentiment": pool.submit(_sentiment, ticker, market, name, asof, cfg, deps, secrets),
+    # 기한은 세 절 공통(시작부터 SECTION_TIMEOUT_S): 절마다 따로 기다리면 최악 3배가 되고, `with`
+    # 블록은 닫힐 때 멈춘 스레드를 끝까지 기다려 기한이 무의미했다(전체 검토 P7) → 기한이 지나면
+    # 결과를 오류 절로 적고 풀은 기다리지 않고 닫는다(멈춘 스레드는 끝날 때까지 뒤에 남는다)
+    pool = ThreadPoolExecutor(max_workers=3, thread_name_prefix="collect")
+    try:
+        calls = {
+            "fundamental": (_fundamental, (ticker, market, asof, cfg, deps, technical)),
+            "news_macro": (_news_macro, (ticker, market, name, asof, cfg, secrets, deps)),
+            "sentiment": (_sentiment, (ticker, market, name, asof, cfg, deps, secrets)),
         }
+        futures = {}
+        for key, (fn, args) in calls.items():
+            with _STUCK_LOCK:
+                stuck = _STUCK.get(key, 0)
+            if stuck >= MAX_STUCK_PER_SECTION:
+                logger.warning(
+                    "수집 절 %s: 이전 시간 초과 작업 %d개가 아직 실행 중 → 생략", key, stuck
+                )
+                result[key] = Section(
+                    data=None,
+                    received_at=deps.now().isoformat(),
+                    error=f"skipped: 이전 시간 초과 작업 {stuck}개 실행 중",
+                )
+                continue
+            futures[key] = pool.submit(fn, *args)
+        deadline = time.monotonic() + SECTION_TIMEOUT_S
         for key, fut in futures.items():
             try:
-                result[key] = fut.result(timeout=SECTION_TIMEOUT_S)
+                result[key] = fut.result(timeout=max(0.0, deadline - time.monotonic()))
             except FuturesTimeout:
-                # 한 절이 멈춰도(네트워크 TLS 교착 등) 수집 전체·세션을 막지 않는다. 스레드는 풀이
-                # 닫힐 때까지 남지만 결과는 오류 절로 기록한다
+                # 한 절이 멈춰도(네트워크 TLS 교착 등) 수집 전체·세션을 막지 않는다
                 logger.warning("수집 절 %s 시간 초과(%ss) %s", key, SECTION_TIMEOUT_S, ticker)
+                if not fut.cancel():  # 이미 실행 중이면 끝날 때까지 '멈춘 작업' 으로 센다
+                    with _STUCK_LOCK:
+                        _STUCK[key] = _STUCK.get(key, 0) + 1
+                    fut.add_done_callback(_stuck_done(key))
                 result[key] = Section(
                     data=None,
                     received_at=deps.now().isoformat(),
                     error=f"timeout after {SECTION_TIMEOUT_S}s",
                 )
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
     result["news_macro"]["events"] = _events(
         result["fundamental"], asof, deps.now, upcoming=_upcoming(asof, cfg)
     )

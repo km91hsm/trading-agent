@@ -16,6 +16,7 @@ from trader.config import AccountConfig, Settings
 from trader.notify import messages
 from trader.ops import health
 from trader.platform import paths
+from trader.platform.fsutil import atomic_replace
 
 logger = logging.getLogger("trader.watchdog")
 FILE_NAME = "watchdog.json"
@@ -42,7 +43,7 @@ def save(state: Path | None, data: dict) -> None:
     p.parent.mkdir(parents=True, exist_ok=True)
     tmp = p.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(data, ensure_ascii=False, default=str), encoding="utf-8")
-    tmp.replace(p)
+    atomic_replace(tmp, p)
 
 
 def should_notify(prev: dict, level: str, now: datetime) -> bool:

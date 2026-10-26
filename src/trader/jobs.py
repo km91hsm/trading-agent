@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import Collection
 from datetime import UTC, datetime
 from typing import Literal
 
@@ -125,6 +126,12 @@ PRIORITY: dict[str, int] = {"reevaluate": 10}
 # 가벼운 kind(체결 동기화·뉴스 수집)만 heavy 락 밖. 나머지는 세션·KIS·CPU 를 오래 쓴다.
 LIGHT_KINDS: frozenset[str] = frozenset({"fills_sync", "news_collect", "reconcile"})
 HEAVY_KINDS: frozenset[str] = frozenset(k for k in KINDS if k not in LIGHT_KINDS)
+# 빠른 레인(전체 검토 P2): heavy 락과 무관하게 데몬 `job_queue_fast` 틱이 꺼낸다 — 백필·scan_analyze
+# 가 몇십 분 도는 동안 손절 재평가·체결 동기화가 뒤로 밀리지 않게
+FAST_KINDS: frozenset[str] = LIGHT_KINDS | {"reevaluate"}
+# 기존 `job_queue` 가 꺼내는 종류 — 빠른 레인 종류는 빼서 소비자를 하나로 둔다(두 레인이 같은 종목
+# 재평가를 동시에 꺼내 `31_decision_r<n>` 를 함께 쓰는 경합 방지, Codex 리뷰)
+SLOW_KINDS: frozenset[str] = frozenset(KINDS) - FAST_KINDS
 _KIND_LABEL = {
     "features_backfill": "피처 백필",
     "features_snapshot": "피처 스냅샷",
@@ -232,12 +239,23 @@ def enqueue(
     return int(cur.lastrowid)
 
 
-def claim_next(conn: sqlite3.Connection, *, now: datetime | None = None) -> sqlite3.Row | None:
+def claim_next(
+    conn: sqlite3.Connection,
+    *,
+    now: datetime | None = None,
+    kinds: Collection[str] | None = None,
+) -> sqlite3.Row | None:
     """우선순위가 높은 것, 같으면 가장 오래된 queued 를 running 으로 바꿔 돌려준다. 다른 연결이
-    먼저 가져갔으면 다음 건."""
+    먼저 가져갔으면 다음 건. `kinds` 가 있으면 그 종류만(빠른 레인)."""
+    where, args = "status='queued'", []
+    if kinds is not None:
+        if not kinds:
+            return None
+        where += f" AND kind IN ({','.join('?' * len(kinds))})"
+        args = sorted(kinds)
     while True:
         row = conn.execute(
-            "SELECT id FROM job_requests WHERE status='queued' ORDER BY priority DESC, id LIMIT 1"
+            f"SELECT id FROM job_requests WHERE {where} ORDER BY priority DESC, id LIMIT 1", args
         ).fetchone()
         if row is None:
             return None
