@@ -1452,6 +1452,26 @@ def control_pause() -> None:
     typer.echo("일시정지: 예")
 
 
+@app.command("paper-review")
+@_config_errors
+def paper_review_cmd(days: int = typer.Option(7, "--days", min=1, max=90)) -> None:
+    """모의 계좌 결정 주문의 체결률·지정가 대비 슬리피지를 비용 가정과 비교한다(읽기 전용, JSON)."""
+    import json
+    from datetime import timedelta
+
+    from trader.ledger import paper_review
+
+    boot = _boot(settings=True, accounts=True, conn=True)
+    try:
+        today = datetime.now(config.KST).date()
+        r = paper_review.compute(
+            boot.conn, boot.accounts, since=today - timedelta(days=days), until=today
+        )
+    finally:
+        boot.conn.close()
+    typer.echo(json.dumps(r, ensure_ascii=False, indent=1))
+
+
 @control_app.command("killswitch")
 @_config_errors
 def control_killswitch(

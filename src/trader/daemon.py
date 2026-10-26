@@ -360,6 +360,9 @@ def build_jobs(schedule: ScheduleConfig, settings: Settings, *, markets: list[st
     jobs.append(Job("balance_refresh", "balance_refresh", interval_s=BALANCE_REFRESH_S))
     jobs.append(Job("saveticker", "saveticker", interval_s=SAVETICKER_WATCH_S))
     jobs.append(Job("ledger_backup", "ledger_backup", cron={"hour": 17, "minute": 10}))
+    jobs.append(
+        Job("paper_review", "paper_review", cron={"hour": 9, "minute": 0, "day_of_week": "sat"})
+    )
     if settings.llm.usage_probe.enabled:
         jobs.append(
             Job("usage_probe", "usage_probe", interval_s=settings.llm.usage_probe.interval_min * 60)
@@ -1555,6 +1558,20 @@ def _backup_body(deps: DaemonDeps) -> dict:
     return {"file": out.name, "pruned": removed}
 
 
+def _paper_review_body(deps: DaemonDeps) -> dict:
+    """모의 체결 대 가정 주간 점검(토 09:00 KST): 지난 7일 결정 주문 체결률·슬리피지 → 텔레그램."""
+    from trader.ledger import paper_review
+
+    conn = deps.conn_factory()
+    try:
+        r = paper_review.weekly(conn, deps.accounts, today=deps.now().astimezone(KST).date())
+    finally:
+        conn.close()
+    if any(it["terminal"] for it in r["items"]) or r["alerts"]:
+        deps.notifier.send(paper_review.message(r))
+    return {"items": len(r["items"]), "alerts": len(r["alerts"])}
+
+
 def _stop_saveticker(deps: DaemonDeps) -> None:
     """데몬 종료 때 이 데몬이 띄운 수집 서비스를 정리한다(서비스 → 수집 작업 → 브라우저 순)."""
     from trader.saveticker import automation
@@ -2416,6 +2433,8 @@ def job_body(
         return lambda: _saveticker_body(deps)
     if job.kind == "ledger_backup":
         return lambda: _backup_body(deps)
+    if job.kind == "paper_review":
+        return lambda: _paper_review_body(deps)
     if job.kind == "reconcile":
         return lambda: market_job(
             deps, job.market or "KR", "reconcile", lambda: _reconcile_body(deps, job.market)
