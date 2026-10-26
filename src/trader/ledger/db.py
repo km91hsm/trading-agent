@@ -300,6 +300,25 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
             "CREATE INDEX IF NOT EXISTS ix_llm_rate_limits_at ON llm_rate_limits(observed_at)",
         ],
     ),
+    (
+        18,  # Phase 25: 테마 열기 판정 기록(사후 검증 — reflect 가 5거래일 뒤 fwd_ret_5d 를 채운다)
+        [
+            """CREATE TABLE IF NOT EXISTS theme_heat (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                market TEXT NOT NULL,
+                date TEXT NOT NULL,
+                observed_at TEXT NOT NULL,
+                theme TEXT NOT NULL,
+                rank INTEGER NOT NULL,
+                score REAL NOT NULL,
+                catalyst_ok INTEGER NOT NULL,
+                tickers_json TEXT NOT NULL,
+                components_json TEXT NOT NULL,
+                fwd_ret_5d REAL,
+                UNIQUE(market, date, theme)
+            )""",
+        ],
+    ),
 ]
 
 

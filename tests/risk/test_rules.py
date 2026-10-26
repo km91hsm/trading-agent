@@ -460,3 +460,63 @@ def test_agent_tilt_shifts_regime_limits_one_step_and_opens_bear_conditionally()
         is_stop_loss=True,
     )
     assert v.approved
+
+
+# --- Phase 25 단계 4: 테마 매매 안전장치 ---------------------------------------------------
+
+
+def test_chase_limit_rejects_buy_at_10pct():
+    v = _eval(ok_decision(), change_pct=0.10)
+    assert not v.approved and any("+10%" in r and "신규 매수 금지" in r for r in v.reasons)
+    assert _eval(ok_decision(), change_pct=0.099).approved
+    v = _eval(
+        ok_decision(action="ADD"),
+        _portfolio(positions={"005930": _pos("005930", 1, "70000")}),
+        change_pct=0.15,
+    )
+    assert not v.approved and any("신규 매수 금지" in r for r in v.reasons)
+
+
+def test_change_pct_none_skips_rule():
+    assert _eval(ok_decision(), change_pct=None).approved
+
+
+def test_chase_limit_ignores_stop_loss_hedge_and_sell():
+    held = _portfolio(
+        positions={"005930": _pos("005930", 10, "70000")},
+        held_since={"005930": D - timedelta(days=10)},
+    )
+    v = _eval(
+        ok_decision(action="SELL", target_weight=0.0), held, change_pct=0.2, is_stop_loss=True
+    )
+    assert v.approved
+    v = _eval(ok_decision(), change_pct=0.2, is_hedge=True, hedge_max_weight=0.1)
+    assert not any("신규 매수 금지" in r for r in v.reasons)
+
+
+def test_theme_cap_20pct():
+    themes = {"005930": ["섹터:반도체"], "000660": ["섹터:반도체"]}
+    pf = _portfolio(positions={"000660": _pos("000660", 15, "100000")}, theme_of=themes.get)  # 15%
+    v = _eval(ok_decision(target_weight=0.1), pf)  # +10% → 25% > 20%
+    assert not v.approved and any("테마" in r and "20%" in r for r in v.reasons)
+    v = _eval(ok_decision(target_weight=0.04), pf)  # +4% → 19%
+    assert v.approved
+
+
+def test_theme_ticker_requires_short_horizon_and_take_profit():
+    pf = _portfolio(theme_of={"005930": ["kw:로봇"]}.get)
+    v = _eval(ok_decision(horizon_days=20), pf)
+    assert not v.approved and any("보유 10일 이하" in r for r in v.reasons)
+    v = _eval(ok_decision(take_profit=None), pf)
+    assert not v.approved and any("익절가" in r for r in v.reasons)
+    assert _eval(ok_decision(horizon_days=10), pf).approved
+    # 테마 종목이 아니면 긴 보유·익절가 없음도 통과(기존 규칙대로)
+    assert _eval(ok_decision(horizon_days=30, take_profit=None)).approved
+
+
+def test_theme_cap_checks_every_overlapping_theme():
+    """종목이 섹터·키워드 테마에 함께 속하면 각 테마의 합계를 따로 본다(PR #26 리뷰)."""
+    themes = {"000660": ["섹터:반도체", "kw:로봇"], "005930": ["kw:로봇"]}
+    pf = _portfolio(positions={"000660": _pos("000660", 15, "100000")}, theme_of=themes.get)
+    v = _eval(ok_decision(target_weight=0.1), pf)  # 로봇 15% + 10% = 25% > 20%
+    assert not v.approved and any("kw:로봇" in r and "초과" in r for r in v.reasons)

@@ -1200,7 +1200,7 @@ def test_submit_decision_requotes_when_inputs_are_stale(ctx, project):
         "KR",
         "005930",
         Decimal("71500"),
-    ) == (Decimal("71500"), None)
+    ) == (Decimal("71500"), None, None)
     # 11분 지남 + 재시세가 손절선 아래면 저장 전에 거부(30_decision 없음)
     ctx.now = lambda: T0 + timedelta(minutes=11)
     ctx.market_client = FakeMarket(prices={"005930": Decimal("60000")})
@@ -1221,7 +1221,73 @@ def test_submit_decision_requotes_when_inputs_are_stale(ctx, project):
     ) == (
         Decimal("1"),
         None,
+        None,
     )
+
+
+def test_requote_returns_change_pct(ctx, project):
+    """Phase 25: 재시세 값의 당일 등락률을 함께 돌려준다(없으면 입력 시세의 값)."""
+    from datetime import timedelta
+
+    from trader.broker.fake import FakeMarket
+
+    inputs = {
+        "meta": {"asof": T0.isoformat()},
+        "technical": {"quote": {"data": {"price": "100", "change_pct": 0.02}}},
+    }
+    ctx.market_client = None
+    assert tools._requote(ctx, inputs, "KR", "005930", Decimal("100")) == (
+        Decimal("100"),
+        None,
+        0.02,
+    )
+    ctx.market_client = FakeMarket(prices={"005930": Decimal("112")})
+    ctx.now = lambda: T0 + timedelta(minutes=11)
+    price, note, pct = tools._requote(ctx, inputs, "KR", "005930", Decimal("100"))
+    assert price == Decimal("112") and note == "재시세 100→112"
+    assert pct == ctx.market_client._quote("005930", "KR").change_pct
+
+
+def test_submit_decision_rejects_chasing_theme_buy(ctx, project):
+    """Phase 25: 입력 시세의 당일 +12% 면 게이트가 BUY 를 거부한다(재시세 없음)."""
+    from trader.broker.fake import FakeBroker
+    from trader.broker.models import Cash
+    from trader.orchestrator.run_store import write_checkpoint
+
+    _inputs(project)
+    d = run_dir(D, "KR", "005930")
+    inputs = read_checkpoint(d, "00_inputs")
+    inputs["technical"]["quote"]["data"]["change_pct"] = 0.12
+    write_checkpoint(d, "00_inputs", inputs)
+    for role in ("technical", "fundamental"):
+        tools.checkpoint_write(
+            ctx,
+            ticker="005930",
+            market="KR",
+            date=D,
+            stage=f"10_analyst_{role}",
+            payload=ok_report(role=role),
+            agent="a",
+        )
+    for side in ("bull", "bear"):
+        tools.checkpoint_write(
+            ctx,
+            ticker="005930",
+            market="KR",
+            date=D,
+            stage=f"20_debate_r0_{side}",
+            payload=ok_turn(side),
+            agent="r",
+        )
+    tools.checkpoint_summarize(ctx, ticker="005930", market="KR", date=D)
+    cash = {"KR": Cash(currency="KRW", available=Decimal("10000000"), total=Decimal("10000000"))}
+    ctx.brokers = {a.id: FakeBroker(a, cash=cash) for a in ctx.accounts}
+    ctx.dry_run = False
+    r = tools.submit_decision(ctx, ticker="005930", market="KR", date=D, payload=ok_decision())
+    assert r["ok"]
+    rc = read_checkpoint(d, "40_risk_check_paper-main")["data"]
+    assert not rc["approved"] and any("급등 추격" in x for x in rc["reasons"])
+    assert ctx.brokers["paper-main"].orders == []
 
 
 def test_ensure_quant_asks_registry_for_the_same_market(ctx, project, monkeypatch):
