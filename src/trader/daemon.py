@@ -1363,6 +1363,29 @@ def _theme_body(deps: DaemonDeps, market: str) -> dict:
     return {"themes": len(heat["themes"]), "alerted": bool(msg), **heat["signals"]}
 
 
+def _scalp_job(deps: DaemonDeps, market: str) -> dict | None:
+    """단타 잡: 창·일시정지·휴장(monitor_job)·꺼짐(_scalp_body)으로 tick 이 돌지 않았으면 그날
+    모아 둔 진입·청산 묶음만 보낸다(전체 검토 T3 묶음 알림이 갇히지 않게)."""
+    from trader.orchestrator.run_store import run_date_for
+    from trader.scalp import engine as scalp_engine
+
+    out = monitor_job(deps, market, lambda: _scalp_body(deps, market))
+    if isinstance(out, dict) and out.get("skipped"):
+        try:
+            scalp_engine.flush_outbox(
+                deps.state,
+                run_date_for(market, deps.now()),
+                market,
+                notifier=deps.notifier,
+                now=deps.now(),
+                settings=deps.settings,
+                dry_run=deps.dry_run,
+            )
+        except Exception:  # noqa: BLE001 - 알림 정리가 잡 결과를 바꾸지 않는다
+            logger.warning("단타 묶음 정리 실패 %s", market, exc_info=True)
+    return out
+
+
 def _scalp_body(deps: DaemonDeps, market: str) -> dict:
     """분 단위 단타 1틱(Phase 23 S). 꺼져 있으면 skipped(잡 표에는 보인다). 창·paused 는 engine 이
     다시 보고, 세션·heavy 락과 무관하다."""
@@ -2208,9 +2231,7 @@ def job_body(
             deps, job.market or "KR", lambda: _monitor_body(deps, job.market or "KR")
         )
     if job.kind == "scalp":
-        return lambda: monitor_job(
-            deps, job.market or "KR", lambda: _scalp_body(deps, job.market or "KR")
-        )
+        return lambda: _scalp_job(deps, job.market or "KR")
     if job.kind == "rebalance":
         return lambda: market_job(
             deps, job.market or "KR", "rebalance", lambda: _rebalance_body(deps, job.market or "KR")
