@@ -107,3 +107,28 @@ def test_collect_us_only_recent_8k(conn):
 
 def test_collect_without_client_skips(conn):
     assert D.collect(conn, market="KR", tickers={"1"}, now=NOW)["skipped"]
+
+
+class TwoClassEdgar(FakeEdgar):
+    def cik(self, s):
+        return "0000000001" if s in ("GOOG", "GOOGL") else None
+
+
+def test_shared_cik_filing_keeps_all_ticker_tags(conn):
+    out = D.collect(conn, market="US", tickers={"GOOG", "GOOGL"}, now=NOW, edgar=TwoClassEdgar())
+    assert out["critical"] == 1
+    for t in ("GOOG", "GOOGL"):
+        assert D.critical_recent(conn, "US", since=datetime(2026, 10, 1, tzinfo=UTC), tickers={t})
+
+
+def test_later_target_merges_tags_into_existing_row(conn):
+    D.collect(conn, market="US", tickers={"GOOG"}, now=NOW, edgar=TwoClassEdgar())
+    D.collect(conn, market="US", tickers={"GOOGL"}, now=NOW, edgar=TwoClassEdgar())
+    (c,) = D.critical_recent(conn, "US", since=datetime(2026, 10, 1, tzinfo=UTC), tickers={"GOOGL"})
+    assert sorted(c["tickers"]) == ["GOOG", "GOOGL"]
+
+
+def test_dart_published_at_is_utc(conn):
+    D.collect(conn, market="KR", tickers={"111111"}, now=NOW, dart=FakeDart())
+    pub = conn.execute("SELECT published_at FROM news_items LIMIT 1").fetchone()[0]
+    assert pub == "2026-10-25T15:00:00+00:00"  # 2026-10-26 00:00 KST

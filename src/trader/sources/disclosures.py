@@ -72,7 +72,12 @@ def _dart_items(dart: Any, day: date, tickers: set[str]) -> list[dict]:
         name = str(r.get("report_nm") or "").strip()
         raw = str(r.get("rcept_dt") or "")
         try:
-            pub = datetime(int(raw[:4]), int(raw[4:6]), int(raw[6:8]), tzinfo=KST).isoformat()
+            # 저장은 UTC — news_store.recent 가 UTC ISO 문자열로 비교한다(+09:00 면 어긋남)
+            pub = (
+                datetime(int(raw[:4]), int(raw[4:6]), int(raw[6:8]), tzinfo=KST)
+                .astimezone(UTC)
+                .isoformat()
+            )
         except ValueError:
             pub = None
         out.append(
@@ -153,6 +158,7 @@ def collect(
     except Exception as e:  # noqa: BLE001
         logger.warning("공시 수집 실패 %s: %s", market, e)
         return {"inserted": 0, "critical": 0, "error": f"{type(e).__name__}: {e}"}
+    items = _merge_same_url(items)
     n = news_store.insert_items(
         conn,
         items,
@@ -163,7 +169,50 @@ def collect(
         names={},
         extra_tickers=True,
     )
+    _merge_existing_tags(conn, items, market)
     return {"inserted": n, "critical": sum(1 for i in items if i["severity"] == "critical")}
+
+
+def _merge_same_url(items: list[dict]) -> list[dict]:
+    """같은 공시(URL)가 여러 종목에서 나오면(같은 CIK 의 GOOG·GOOGL) 종목 태그를 합치고 더 심각한
+    severity 를 남긴다 — insert_items 가 URL 로 멱등이라 첫 종목 태그만 남던 문제."""
+    by: dict[str, dict] = {}
+    for it in items:
+        cur = by.get(it["url"])
+        if cur is None:
+            by[it["url"]] = {**it, "tickers": list(it.get("tickers") or [])}
+            continue
+        cur["tickers"] = sorted(set(cur["tickers"]) | set(it.get("tickers") or []))
+        if _rank(it.get("severity")) < _rank(cur.get("severity")):
+            cur["severity"] = it.get("severity")
+    return list(by.values())
+
+
+def _merge_existing_tags(conn: sqlite3.Connection, items: list[dict], market: str) -> None:
+    """이미 적재된 같은 공시에 이번에 대상이 된 종목 태그를 더한다(나중 수집에서 다른 종목이 대상이
+    되는 경우)."""
+    import json
+
+    from trader.sources import news_store
+
+    changed = False
+    for it in items:
+        h = news_store.url_hash(it["url"], market)
+        row = conn.execute(
+            "SELECT id, tickers_json FROM news_items WHERE url_hash=?", (h,)
+        ).fetchone()
+        if row is None:
+            continue
+        have = set(json.loads(row["tickers_json"] or "[]"))
+        want = have | set(it.get("tickers") or [])
+        if want != have:
+            conn.execute(
+                "UPDATE news_items SET tickers_json=? WHERE id=?",
+                (json.dumps(sorted(want), ensure_ascii=False), row["id"]),
+            )
+            changed = True
+    if changed:
+        conn.commit()
 
 
 def critical_recent(
