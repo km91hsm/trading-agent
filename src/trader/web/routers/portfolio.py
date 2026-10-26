@@ -33,7 +33,7 @@ def portfolio(
     deps = deps_of(request)
     with closing(deps.conn_factory()) as conn:
         snap = views.latest_positions(conn, acct.id, m)
-        _attach_horizon(conn, deps, m, snap)
+        views.attach_plans(conn, m, snap)
         if format == "csv":  # Phase 23 G: 보유 표만
             return csv_response((snap or {}).get("positions") or [], f"positions_{acct.id}_{m}.csv")
         return {
@@ -45,19 +45,6 @@ def portfolio(
             "orders": views.list_orders(conn, acct.id, limit=20),
             "approvals": views.list_approvals(conn, acct.id, status="pending"),
         }
-
-
-def _attach_horizon(conn, deps, market: str, snap: dict | None) -> None:
-    """보유 행에 최근 결정의 보유기간 프로필(Phase 23 T)을 붙인다: `horizon` = short|mid|long|None,
-    `horizon_days`. 결정이 없는 보유분(수동 매수·헤지)은 None."""
-    from trader.ledger import repo
-    from trader.risk import horizon
-
-    for p in (snap or {}).get("positions") or []:
-        latest = repo.latest_decision(conn, market, p["ticker"])
-        data = (latest or {}).get("data") or {}
-        p["horizon_days"] = data.get("horizon_days")
-        p["horizon"] = horizon.name_of(data.get("horizon_days")) if latest else None
 
 
 def _sectors(deps, market: str, snap: dict | None) -> list[dict]:
@@ -75,6 +62,28 @@ def _sectors(deps, market: str, snap: dict | None) -> list[dict]:
     return views.sector_weights(
         snap["positions"], snap["nav"], sector_of, hedge_tickers=hedge, cash=snap.get("cash")
     )
+
+
+@router.get("/overview")
+def overview(request: Request) -> dict:
+    """전체 계좌 합산(Phase 24, 토큰 없음). 시장(통화)별로만 더한다."""
+    deps = deps_of(request)
+    try:
+        from trader.config import load_sectors
+
+        smap = load_sectors()
+        sector_of = smap.sector_of
+    except Exception:  # noqa: BLE001 - 섹터 맵은 선택 자료
+        sector_of = None
+    hedge = deps.settings.hedge
+
+    def hedge_tickers(m: str) -> set[str]:
+        return set(hedge.tickers(m)) if hedge.enabled else set()
+
+    with closing(deps.conn_factory()) as conn:
+        return views.account_overview(
+            conn, list(deps.accounts), sector_of=sector_of, hedge_tickers=hedge_tickers
+        )
 
 
 @router.post("/refresh", dependencies=[Depends(require_token)])

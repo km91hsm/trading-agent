@@ -1,3 +1,5 @@
+import type { SectorRow } from "./sectors";
+
 export type Market = "KR" | "US";
 
 export type Account = {
@@ -20,6 +22,46 @@ export type Position = {
   eval_amount: string | null;
   horizon?: "short" | "mid" | "long" | null; // 최근 결정의 보유기간 프로필 (Phase 23)
   horizon_days?: number | null;
+  plan?: PositionPlan | null; // 최근 결정의 계획과 현재가 대비 거리 (Phase 24)
+  weight?: number | null; // 평가금액 / NAV
+  accounts?: string[]; // 전체 합산 행: 이 종목을 가진 계좌들
+  pnl?: string | null;
+  pnl_pct?: number | null;
+};
+
+export type PositionPlan = {
+  decision_id: number | null;
+  date: string | null;
+  action: string | null;
+  target_weight: number | null;
+  take_profit: number | null;
+  stop_loss: number | null;
+  limit_price: number | null;
+  horizon_days: number | null;
+  horizon: "short" | "mid" | "long" | null;
+  dist_take_profit_pct: number | null;
+  dist_stop_pct: number | null;
+  dist_limit_pct: number | null;
+};
+
+export type OverviewEnv = { nav: string; cash: string; pnl: string; pnl_pct: number | null; accounts: string[] };
+
+export type OverviewMarket = {
+  by_env: Partial<Record<"paper" | "real", OverviewEnv>>;
+  nav: string;
+  cash: string;
+  pnl: string;
+  pnl_pct: number | null;
+  positions: Position[];
+  sectors: SectorRow[];
+  unmapped: string[];
+  accounts: Array<{ id: string; env: string; nav: string; cash: string; snapshot_date: string }>;
+};
+
+export type Overview = {
+  markets: Partial<Record<Market, OverviewMarket>>;
+  accounts_missing_snapshot: Partial<Record<Market, string[]>>;
+  pending_approvals: number;
 };
 
 export type Snapshot = { date: string; nav: string; cash: string; positions: Position[] } | null;

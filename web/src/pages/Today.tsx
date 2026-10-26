@@ -3,11 +3,13 @@ import { getJson } from "../api";
 import { Badge } from "../components/Badge";
 import { EmptyState } from "../components/EmptyState";
 import { Glyph } from "../components/Glyph";
-import { JsonView } from "../components/JsonView";
+import { StageReport } from "../components/StageReport";
+import { fileChipLabel } from "../report";
 import { Section } from "../components/Section";
 import { Skeleton } from "../components/Skeleton";
 import { ErrorBox } from "../components/Tables";
 import { Term } from "../components/Term";
+import { termLabel } from "../glossary";
 import { useApp, useLoad } from "../hooks";
 import { Link } from "react-router-dom";
 import { labelOf } from "../names";
@@ -32,6 +34,13 @@ const MARKET_FILE_LABEL: Record<string, string> = {
   _discovery_inputs: "발굴 입력",
   _discovery: "발굴 결과",
 };
+
+/** 단계 파일 이름 → 화면 제목: '리스크 게이트 · paper-main'. */
+function stageTitle(stage: string): string {
+  const key = stage.match(/^(\d\d_[a-z]+(?:_[a-z]+)?)/)?.[1] ?? stage;
+  const known = ["00_inputs", "05_quant", "10_analyst", "20_debate", "25_research_summary", "30_decision", "31_decision", "35_calibration", "40_risk_check", "41_risk_check", "45_stop_loss", "50_order", "51_order", "55_order_sl"].find((k) => stage.startsWith(k));
+  return known ? `${termLabel(`stage.${known}`)} · ${stage}` : key;
+}
 
 function marketFileLabel(f: string): string {
   if (MARKET_FILE_LABEL[f]) return MARKET_FILE_LABEL[f];
@@ -59,10 +68,9 @@ function MarketFiles({ files, market, date }: { files: string[]; market: Market;
       </div>
       <ErrorBox error={cp.error} />
       {stage && cp.data && (
-        <details open>
-          <summary>{marketFileLabel(stage)} · {stage}.json</summary>
-          <JsonView value={cp.data.data as Record<string, unknown>} depth={1} />
-        </details>
+        <div className="viewer">
+          <StageReport stage={stage} data={cp.data.data} />
+        </div>
       )}
     </Section>
   );
@@ -185,32 +193,6 @@ function ScanBlock({ scan, market, onPick }: { scan: ScanSummary; market: Market
   );
 }
 
-function DebateView({ data }: { data: Record<string, unknown> }) {
-  const s = (k: string) => String(data[k] ?? "");
-  const list = (k: string) => (Array.isArray(data[k]) ? (data[k] as unknown[]) : []);
-  const item = (a: unknown, i: number) => <li key={i}>{typeof a === "string" ? a : JSON.stringify(a)}</li>;
-  return (
-    <div className="debate">
-      <p>
-        <b>{s("side") === "bull" ? "강세" : s("side") === "bear" ? "약세" : s("side")}</b> 라운드 {s("round")} · 입장{" "}
-        <b>{s("stance")}</b> · 밸류에이션 {s("valuation_view")} · 확신 {s("conviction")}
-      </p>
-      <h3 className="sub-h">논거</h3>
-      <ul>{list("arguments").map(item)}</ul>
-      {list("rebuttals").length > 0 && (
-        <>
-          <h3 className="sub-h">반박</h3>
-          <ul>{list("rebuttals").map(item)}</ul>
-        </>
-      )}
-      <details>
-        <summary>전체 JSON</summary>
-        <JsonView value={data} depth={1} />
-      </details>
-    </div>
-  );
-}
-
 function StagePlates({
   stages,
   summaries,
@@ -246,7 +228,7 @@ function StagePlates({
                   onClick={() => onPick(f)}
                   title={f}
                 >
-                  {st.files.length > 1 ? f.replace(/^\d\d_[a-z_]+?_(?=[^_]+$)/, "").replace(/^(bull|bear)$/, (m) => (m === "bull" ? "강세" : "약세")) : "열기"}
+                  {st.files.length > 1 ? fileChipLabel(f) : "열기"}
                 </button>
               ))}
             </div>
@@ -466,7 +448,7 @@ export function TodayPage({ title = "오늘의 실행", inputsOnly = false }: { 
       {cp.loading && stage && <Skeleton rows={3} cols={3} />}
       {cp.data && cpData && (
         <Section
-          title={stage}
+          title={stageTitle(stage)}
           aside={
             <>
               <Badge kind="neutral" value={`schema v${cp.data.schema_version ?? "?"}`} />
@@ -474,13 +456,7 @@ export function TodayPage({ title = "오늘의 실행", inputsOnly = false }: { 
           }
         >
           <div className="viewer">
-            {stage.startsWith("20_debate_") ? <DebateView data={cpData} /> : <JsonView value={cpData} />}
-            {cp.data.call ? (
-              <details>
-                <summary>호출 정보(모델·비용·소요)</summary>
-                <JsonView value={cp.data.call} />
-              </details>
-            ) : null}
+            <StageReport stage={stage} data={cpData} call={cp.data.call} />
           </div>
         </Section>
       )}

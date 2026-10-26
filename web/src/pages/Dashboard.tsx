@@ -19,6 +19,7 @@ import { proposalText, regimeText, type RegimeResp } from "../sectors";
 import { type ScalpResp, scalpChip } from "../pipeline";
 import type { OpsResp } from "../ops";
 import { Advisory } from "../components/Advisory";
+import { OverviewBlock } from "../components/OverviewBlock";
 import { buildTape, gateFor, marketPhase, type TapeRow } from "../tape";
 import type {
   Approval,
@@ -26,6 +27,7 @@ import type {
   Checkpoint,
   Decision,
   Order,
+  Overview,
   PerformanceReport,
   Portfolio,
   RiskCheck,
@@ -57,9 +59,11 @@ export function Dashboard() {
   const tApprovals = tickOf("approvals", "approvals_pending");
   const tWatch = tickOf("watchlist");
   const tJobs = tickOf("jobs_done", "runs");
-  const acct = accounts.find((a) => a.id === accountId);
-  const markets = acct?.markets ?? [];
-  const otherAccounts = accounts.filter((a) => a.id !== accountId);
+  // '전체' 선택이면 게이트 열의 기준 계좌는 첫 계좌, 보유는 전체 합산(overview)을 쓴다 (Phase 24)
+  const primaryId = accountId || accounts[0]?.id || "";
+  const acct = accounts.find((a) => a.id === primaryId);
+  const markets = accountId ? (acct?.markets ?? []) : (["KR", "US"] as const).filter((m) => accounts.some((a) => a.markets.includes(m)));
+  const otherAccounts = accounts.filter((a) => a.id !== primaryId);
   const [now, setNow] = useState(() => new Date());
   useEffect(() => setNow(new Date()), [tick]); // 원장 이벤트마다 시각·운영일을 다시 잡는다
   const [minute, setMinute] = useState(0); // 원장과 무관한 것(데몬·사용량)은 60초마다 다시 읽는다
@@ -74,17 +78,17 @@ export function Dashboard() {
   const [sel, setSel] = useState<string | null>(null);
 
   const pfKR = useLoad(
-    () => (accountId && markets.includes("KR") ? getJson<Portfolio>(withAccount("/api/portfolio?market=KR", accountId)) : null),
-    [accountId, markets.join(), tRuns, tOrders],
+    () => (primaryId && markets.includes("KR") ? getJson<Portfolio>(withAccount("/api/portfolio?market=KR", primaryId)) : null),
+    [primaryId, markets.join(), tRuns, tOrders],
   );
   const pfUS = useLoad(
-    () => (accountId && markets.includes("US") ? getJson<Portfolio>(withAccount("/api/portfolio?market=US", accountId)) : null),
-    [accountId, markets.join(), tRuns, tOrders],
+    () => (primaryId && markets.includes("US") ? getJson<Portfolio>(withAccount("/api/portfolio?market=US", primaryId)) : null),
+    [primaryId, markets.join(), tRuns, tOrders],
   );
   const decisions = useLoad(() => getJson<Decision[]>("/api/decisions", { days: "2" }), [tDecisions]);
-  const checks = useLoad(() => (accountId ? getJson<RiskCheck[]>(withAccount("/api/risk-checks", accountId)) : null), [accountId, tRuns, tDecisions]);
-  const orders = useLoad(() => (accountId ? getJson<Order[]>(withAccount("/api/orders", accountId)) : null), [accountId, tOrders]);
-  const approvals = useLoad(() => (accountId ? getJson<Approval[]>(withAccount("/api/approvals", accountId)) : null), [accountId, tApprovals]);
+  const checks = useLoad(() => (primaryId ? getJson<RiskCheck[]>(withAccount("/api/risk-checks", primaryId)) : null), [primaryId, tRuns, tDecisions]);
+  const orders = useLoad(() => (primaryId ? getJson<Order[]>(withAccount("/api/orders", primaryId)) : null), [primaryId, tOrders]);
+  const approvals = useLoad(() => (primaryId ? getJson<Approval[]>(withAccount("/api/approvals", primaryId)) : null), [primaryId, tApprovals]);
   const otherChecks = useLoad(
     () =>
       otherAccounts.length
@@ -110,15 +114,19 @@ export function Dashboard() {
   const models = useLoad(() => getJson<ModelsResp>("/api/ml/models"), [tJobs]);
   const rl = useLoad(() => getJson<RlResp>("/api/rl/experiments"), [tJobs]);
   const perfKR = useLoad(
-    () => (accountId && markets.includes("KR") ? getJson<PerformanceReport>(withAccount("/api/performance?market=KR&days=30", accountId)) : null),
-    [accountId, markets.join(), tRuns],
+    () => (primaryId && markets.includes("KR") ? getJson<PerformanceReport>(withAccount("/api/performance?market=KR&days=30", primaryId)) : null),
+    [primaryId, markets.join(), tRuns],
   );
   const perfUS = useLoad(
-    () => (accountId && markets.includes("US") ? getJson<PerformanceReport>(withAccount("/api/performance?market=US&days=30", accountId)) : null),
-    [accountId, markets.join(), tRuns],
+    () => (primaryId && markets.includes("US") ? getJson<PerformanceReport>(withAccount("/api/performance?market=US&days=30", primaryId)) : null),
+    [primaryId, markets.join(), tRuns],
   );
 
-  const positions = [...(pfKR.data?.snapshot?.positions ?? []), ...(pfUS.data?.snapshot?.positions ?? [])];
+  const overview = useLoad(() => getJson<Overview>("/api/portfolio/overview"), [tRuns, tOrders, tApprovals]);
+  const positions = accountId
+    ? [...(pfKR.data?.snapshot?.positions ?? []), ...(pfUS.data?.snapshot?.positions ?? [])]
+    : [...(overview.data?.markets.KR?.positions ?? []), ...(overview.data?.markets.US?.positions ?? [])];
+  const navOf = (m: "KR" | "US") => (accountId ? (m === "KR" ? pfKR : pfUS).data?.snapshot?.nav : overview.data?.markets[m]?.nav);
   const tape = useMemo(
     () =>
       buildTape({
@@ -129,11 +137,11 @@ export function Dashboard() {
         approvals: approvals.data ?? [],
         watch: watch.data?.tickers ?? [],
         dates,
-        nav: { KR: pfKR.data?.snapshot?.nav, US: pfUS.data?.snapshot?.nav },
+        nav: { KR: navOf("KR"), US: navOf("US") },
         now,
       }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [pfKR.data, pfUS.data, decisions.data, checks.data, orders.data, approvals.data, watch.data, dates, now],
+    [pfKR.data, pfUS.data, overview.data, accountId, decisions.data, checks.data, orders.data, approvals.data, watch.data, dates, now],
   );
   // 행별 보조 정보: 결정이 있는 행만, 30_decision + 00_inputs 두 파일 (로컬 서버라 N 요청이 부담 없다)
   const decidedKeys = tape.filter((r) => r.decisionId).map((r) => r.key).join();
@@ -288,6 +296,8 @@ export function Dashboard() {
           })}
       </div>
 
+      <OverviewBlock data={overview.data} maxSectorPct={Number(settings.data?.risk?.max_sector_pct ?? 0.4)} accountCount={accounts.length} />
+
       <div className="cols">
         <div>
           <Section
@@ -316,7 +326,7 @@ export function Dashboard() {
                     <Th num>
                       <Term k="stop_loss" />
                     </Th>
-                    <Th>게이트 · {accountId}</Th>
+                    <Th>게이트 · {primaryId}</Th>
                     {otherAccounts.map((a) => (
                       <Th key={a.id}>
                         {a.id} <Badge kind="env" value={a.env} />
@@ -442,7 +452,7 @@ export function Dashboard() {
         </div>
 
         <aside>
-          <Section title="성과" aside="30일">
+          <Section title="성과" aside={`30일 · ${primaryId}`}>
             {perfKR.loading && perfUS.loading ? (
               <Skeleton rows={4} cols={2} />
             ) : perfKR.data || perfUS.data ? (

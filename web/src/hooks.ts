@@ -3,11 +3,15 @@ import { getJson, subscribeEvents, tokenStore, type EventSnapshot } from "./api"
 import { changedKeys } from "./events";
 import { groupByMarket, missingKeys, type NameMap } from "./names";
 import { applyTheme, themeStore, watchSystemTheme, type Theme } from "./theme";
+import { ALL_ACCOUNTS } from "./overview";
 import type { Account } from "./types";
 
 export type AppState = {
   accounts: Account[];
+  /** 고른 계좌 id. '전체' 를 고르면 "" (계좌 단위 API 는 부르지 않는다). */
   accountId: string;
+  /** 계좌 선택기 값: "all"(전체 합산) 또는 계좌 id (Phase 24). */
+  selection: string;
   setAccountId: (id: string) => void;
   token: string | null;
   setToken: (t: string) => void;
@@ -38,9 +42,9 @@ export function useAppState(): AppState {
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [accountId, setAccountIdRaw] = useState<string>(() => {
     try {
-      return localStorage.getItem(ACCOUNT_KEY) || "";
+      return localStorage.getItem(ACCOUNT_KEY) || ALL_ACCOUNTS;
     } catch {
-      return "";
+      return ALL_ACCOUNTS;
     }
   });
   const [token, setTokenRaw] = useState<string | null>(() => tokenStore.get());
@@ -99,7 +103,8 @@ export function useAppState(): AppState {
     getJson<Account[]>("/api/accounts")
       .then((rows) => {
         setAccounts(rows);
-        setAccountIdRaw((cur) => (cur && rows.some((a) => a.id === cur) ? cur : rows[0]?.id ?? ""));
+        // 기본은 '전체'. 사라진 계좌를 고른 채였으면 전체로 돌린다
+        setAccountIdRaw((cur) => (cur === ALL_ACCOUNTS || rows.some((a) => a.id === cur) ? cur : ALL_ACCOUNTS));
       })
       .catch(() => setAccounts([]));
   }, []);
@@ -164,7 +169,10 @@ export function useAppState(): AppState {
   return {
     ticks,
     tickOf,
-    accounts, accountId, setAccountId, token, setToken, events, connected, tick, reloadAccounts, theme, setTheme, names, ensureNames };
+    accounts,
+    accountId: accountId === ALL_ACCOUNTS ? "" : accountId,
+    selection: accountId,
+    setAccountId, token, setToken, events, connected, tick, reloadAccounts, theme, setTheme, names, ensureNames };
 }
 
 export type Loaded<T> = { data: T | null; error: string | null; loading: boolean; reload: () => void };

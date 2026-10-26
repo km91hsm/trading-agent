@@ -116,3 +116,15 @@ describe("scalp (Phase 23 단타)", () => {
     expect(scalpRows(r, "US")).toEqual([]);
   });
 });
+
+describe("stageSummary 10_analyst", () => {
+  it("signal 을 강세·중립·약세로 센다", () => {
+    const items = [
+      { file: "10_analyst_technical", data: { signal: "STRONG_BUY" } },
+      { file: "10_analyst_fundamental", data: { signal: "SELL" } },
+      { file: "10_analyst_sentiment", data: { signal: "NEUTRAL" } },
+      { file: "10_analyst_news_macro", data: { stance: "BULLISH" } },
+    ];
+    expect(stageSummary("10_analyst", items)).toBe("강세 2 · 중립 1 · 약세 1");
+  });
+});

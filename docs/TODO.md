@@ -338,3 +338,16 @@
 - [ ] 실기(사용자 확인 대기): 개장 30분 뒤 지정가 미체결이 있는 날 `[재호가]` 알림·`42_reprice_*` 체크포인트·원 주문 `cancelled`; 데몬을 꺼 둔 뒤 `trader watchdog` 가 `[감시] 데몬이 꺼져 있음` 을 보내는지; `trader install --watchdog --dry-run` 출력 확인 뒤 등록
 - [ ] 결정 대기(사용자): 종목 일정(권리·실적 발표) 블랙아웃은 DART 기준일 소스를 확인한 뒤 다음 Phase(소스 미확인으로 미구현)
 - [ ] 이연: ⌘K 팔레트의 종목명 검색은 `/api/names` 가 이미 받은 이름만 본다(원장·캐시) — 전체 상장 검색은 종목 마스터가 생기면
+
+## Phase 24 웹 보고서·실시간·사용률 (`docs/superpowers/plans/2026-10-26-phase24-25.md` 단계 1~3)
+- [x] 단계 1 웹 보고서 형식·전체/계좌 분리·섹터·목표가 (`feat/phase24-1-web-report`): 섹터 원인 진단(보유 행 없음·대시보드 블록 없음), 보유 행 `plan`(목표가·손절·지정가·보유기간·거리), `/api/portfolio/overview`(시장 × 모의/실전 합산), `report.ts`·`StageReport`(JsonView 는 '원본 보기'), 계좌 선택기 '전체' (2026-10-26)
+- [ ] 단계 2 실시간 시세·종목명 검색 (`feat/phase24-2-live-quotes`): `/api/quotes`(장중만, TTL 캐시, 레이트리미터), 리더 탭 폴링, `/api/names/search`, 차트 URL·⌘K
+- [ ] 단계 3 구독 사용률·세션 상한·텔레그램 문구 (`feat/phase24-3-usage-telegram`): stream-json `rate_limit_event` → 원장, 상한 80 + 사용률 감속, `notify/messages.py`
+- [ ] 결정 대기(사용자): 2~4주 `llm_rate_limits`·`agent_calls` 통계로 `llm.daily_session_cap` 고정값 재설정
+- [ ] 이연: KIS 실시간 웹소켓(지금은 보이는 종목 10초 조회)
+
+## Phase 25 테마·LLM 판정자·공시·리밸런스 (같은 플랜 단계 4~7)
+- [ ] 단계 4 테마 열기 감지·안전장치 (`feat/phase25-4-theme`, 머지 전 사용자 확인)
+- [ ] 단계 5 분 단위 LLM 판정자 (`feat/phase25-5-scalp-judge`, 머지 전 사용자 확인)
+- [ ] 단계 6 승인 지문·공시 중요도 (`feat/phase25-6-approval-disclosure`)
+- [ ] 단계 7 주간 리밸런스·세금 로트 (`feat/phase25-7-rebalance-tax`, 머지 전 사용자 확인)

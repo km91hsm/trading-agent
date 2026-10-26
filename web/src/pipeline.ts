@@ -71,7 +71,10 @@ export function stageSummary(key: StageKey, items: Array<{ file: string; data: u
     case "10_analyst": {
       const c = { BULLISH: 0, NEUTRAL: 0, BEARISH: 0 } as Record<string, number>;
       for (const it of items) {
-        const s = String(rec(it.data).stance ?? "").toUpperCase();
+        // 애널리스트는 `signal`(STRONG_BUY..STRONG_SELL) 을 쓴다. 옛 파일의 `stance` 도 받는다.
+        const d = rec(it.data);
+        const sig = String(d.signal ?? "").toUpperCase();
+        const s = sig.endsWith("BUY") ? "BULLISH" : sig.endsWith("SELL") ? "BEARISH" : sig === "NEUTRAL" ? "NEUTRAL" : String(d.stance ?? "").toUpperCase();
         if (s in c) c[s] += 1;
       }
       return `강세 ${c.BULLISH} · 중립 ${c.NEUTRAL} · 약세 ${c.BEARISH}`;
