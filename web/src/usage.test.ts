@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { agoText, barPct, observationStale, resetsIn, usageLevel } from "./usage";
+import { agoText, barPct, observationStale, resetsIn, sourceText, throttleText, usageLevel } from "./usage";
 
 describe("usage", () => {
   it("agoText", () => {
@@ -33,5 +33,14 @@ describe("usage", () => {
     expect(observationStale(3600)).toBe(false);
     expect(observationStale(7 * 3600)).toBe(true);
     expect(observationStale(null)).toBe(false);
+  });
+});
+
+describe("관측 출처·감속 문구 (Phase 24)", () => {
+  it("출처와 감속 상태", () => {
+    expect(sourceText("session")).toBe("분석 세션이 받은 값");
+    expect(throttleText({ enabled: true, soft_pct: 0.8, hard_pct: 0.95, state: "soft", reason: null })).toBe("감속: 보유 재평가만 (80% 이상)");
+    expect(throttleText({ enabled: true, soft_pct: 0.8, hard_pct: 0.95, state: "hard", reason: null })).toBe("감속: 새 세션 전부 중지 (95% 이상)");
+    expect(throttleText({ enabled: true, soft_pct: 0.8, hard_pct: 0.95, state: "ok", reason: null })).toBe("");
   });
 });

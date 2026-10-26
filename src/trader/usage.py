@@ -1,7 +1,8 @@
-"""Claude 사용량: 구독 한도(5시간·7일)는 비대화형으로 읽을 공식 경로가 없다. 대화형 Claude Code 의
-상태줄 스크립트가 stdin 의 `rate_limits` 를 `llm.usage_file`(기본 ~/.claude/rate_limits.json)에
-남기면 그 **마지막 관측값**을 읽고, 이 저장소 몫은 원장 `agent_calls` 를 5시간·7일 창으로
-집계한다."""
+"""Claude 사용량: 구독 한도(5시간·7일)의 관측은 두 곳이다 — (1) 세션마다 `claude -p
+--output-format stream-json` 이 내는 `rate_limit_event`(Phase 24, 원장 `llm_rate_limits`),
+(2) 대화형 Claude Code 상태줄이 남기는 `llm.usage_file`. 둘 중 **최신 관측**을 보여 주고
+(`latest_observation`), 사용률이 높으면 새 세션을 줄인다(`session_allowance`). 이 저장소 몫은
+원장 `agent_calls` 를 5시간·7일 창으로 집계한다."""
 
 from __future__ import annotations
 
@@ -76,3 +77,129 @@ def ledger_windows(conn: sqlite3.Connection, now: datetime, cap: int) -> dict:
 
 def usage_file(setting: str | None) -> Path | None:
     return Path(setting).expanduser() if setting else None
+
+
+def _info_windows(info: dict) -> dict[str, tuple[float | None, str | None] | None]:
+    """rate_limit_info → {five_hour, seven_day: (사용률 0~1, 리셋 ISO)}. `unifiedWindows` 우선,
+    없으면 `rateLimitType` + `utilization` 한 창만."""
+    out: dict[str, tuple[float | None, str | None] | None] = {"five_hour": None, "seven_day": None}
+    unified = info.get("unifiedWindows")
+    if isinstance(unified, dict):
+        for k in out:
+            w = unified.get(k)
+            if isinstance(w, dict):
+                try:
+                    util = float(w["utilization"]) if w.get("utilization") is not None else None
+                except (TypeError, ValueError):
+                    util = None
+                out[k] = (util, _iso_from_epoch(w.get("resetsAt")))
+        return out
+    kind = info.get("rateLimitType")
+    if kind in out and info.get("utilization") is not None:
+        try:
+            out[kind] = (float(info["utilization"]), _iso_from_epoch(info.get("resetsAt")))
+        except (TypeError, ValueError):
+            pass
+    return out
+
+
+def record_rate_limit(
+    conn: sqlite3.Connection, info: dict, *, now: datetime, source: str = "session"
+) -> None:
+    """세션 결과의 rate_limit_info 를 원장 `llm_rate_limits` 에 1행. 창이 없으면 쓰지 않는다."""
+    w = _info_windows(info)
+    if w["five_hour"] is None and w["seven_day"] is None:
+        return
+    fh, sd = w["five_hour"] or (None, None), w["seven_day"] or (None, None)
+    conn.execute(
+        "INSERT INTO llm_rate_limits(observed_at, source, status, five_hour_util, "
+        "five_hour_resets_at, seven_day_util, seven_day_resets_at, raw_json) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            now.astimezone(UTC).isoformat(),
+            source,
+            str(info.get("status") or "") or None,
+            fh[0],
+            fh[1],
+            sd[0],
+            sd[1],
+            json.dumps(info, ensure_ascii=False, default=str)[:4000],
+        ),
+    )
+    conn.commit()
+
+
+def _ledger_observation(conn: sqlite3.Connection, now: datetime) -> dict | None:
+    row = conn.execute(
+        "SELECT observed_at, status, five_hour_util, five_hour_resets_at, seven_day_util, "
+        "seven_day_resets_at FROM llm_rate_limits ORDER BY observed_at DESC, id DESC LIMIT 1"
+    ).fetchone()
+    if row is None:
+        return None
+    observed = row["observed_at"]
+    age = max(0, int((now - datetime.fromisoformat(observed)).total_seconds()))
+
+    def win(util, resets):
+        if util is None:
+            return None
+        return {"used_pct": round(float(util) * 100, 1), "resets_at": resets}
+
+    return {
+        "observed_at": observed,
+        "age_s": age,
+        "five_hour": win(row["five_hour_util"], row["five_hour_resets_at"]),
+        "seven_day": win(row["seven_day_util"], row["seven_day_resets_at"]),
+        "spend_limit": None,
+        "status": row["status"],
+        "source": "session",
+    }
+
+
+def latest_observation(
+    conn: sqlite3.Connection | None, now: datetime, file_path: Path | None
+) -> dict | None:
+    """원장(세션 rate_limit_event)과 상태줄 파일 중 **더 최근** 관측. 모양은 `read_rate_limits` 와
+    같고 `source`(session|statusline) 가 붙는다. 둘 다 없으면 None."""
+    cands = []
+    if conn is not None:
+        led = _ledger_observation(conn, now)
+        if led:
+            cands.append(led)
+    if file_path is not None:
+        f = read_rate_limits(file_path, now)
+        if f:
+            cands.append({**f, "source": "statusline"})
+    if not cands:
+        return None
+    return min(cands, key=lambda c: c["age_s"] if c.get("age_s") is not None else 10**12)
+
+
+def session_allowance(
+    conn: sqlite3.Connection | None, settings: Any, *, kind: str, now: datetime
+) -> tuple[bool, str | None]:
+    """구독 사용률 감속 (Phase 24, `llm.usage_throttle`). 관측 없음·오래됨·꺼짐 → 허용.
+    어느 창이든 ≥ hard → 거부, ≥ soft → 보유 재평가(`resume`)만 허용."""
+    cfg = settings.llm.usage_throttle
+    if not cfg.enabled:
+        return True, None
+    obs = latest_observation(conn, now, usage_file(settings.llm.usage_file))
+    if obs is None or obs.get("age_s") is None or obs["age_s"] > cfg.max_age_h * 3600:
+        return True, None
+    used = [
+        (name, (obs.get(k) or {}).get("used_pct"))
+        for k, name in (("five_hour", "5시간"), ("seven_day", "7일"))
+    ]
+    used = [(n, u / 100) for n, u in used if u is not None]
+    if not used:
+        return True, None
+    name, top = max(used, key=lambda x: x[1])
+    if top >= cfg.hard_pct:
+        return (
+            False,
+            f"구독 {name} 사용률 {top:.0%} ≥ {cfg.hard_pct:.0%} — 새 세션을 띄우지 않습니다",
+        )
+    if top >= cfg.soft_pct and kind != "resume":
+        return False, (
+            f"구독 {name} 사용률 {top:.0%} ≥ {cfg.soft_pct:.0%} — 보유 재평가만 허용({kind} 생략)"
+        )
+    return True, None

@@ -21,6 +21,7 @@ from trader.config import AccountConfig
 from trader.control import control
 from trader.ledger import repo, views
 from trader.ledger.repo import dead_status_sql
+from trader.notify import messages
 
 logger = logging.getLogger("trader.reconcile")
 
@@ -116,11 +117,12 @@ def reconcile_account(
             "(마감 뒤 미정리)"
             for o in stale
         ]
-        head = f"[대조 불일치] {account.id} {market} {today}: " + "; ".join(parts)
-        if mismatches:
-            head += " — 스냅샷을 KIS 값으로 맞춤"
         try:
-            notifier.send(head)
+            notifier.send(
+                messages.reconcile_mismatch(
+                    account=account.id, market=market, day=str(today), parts=parts
+                )
+            )
         except Exception:  # noqa: BLE001 - 알림 실패가 대조를 바꾸지 않는다
             logger.debug("대조 알림 실패", exc_info=True)
     logger.info(

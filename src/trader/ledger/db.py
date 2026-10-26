@@ -283,6 +283,23 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
         16,  # Phase 23: 유사 뉴스 판정(1 새 내용 / 0 유사 / NULL 미판정) — news_store.novel_items
         ["ALTER TABLE news_items ADD COLUMN novel INTEGER"],
     ),
+    (
+        17,  # Phase 24: claude -p stream-json 의 rate_limit_event (구독 5시간·7일 사용률) 관측
+        [
+            """CREATE TABLE IF NOT EXISTS llm_rate_limits (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                observed_at TEXT NOT NULL,
+                source TEXT NOT NULL,
+                status TEXT,
+                five_hour_util REAL,
+                five_hour_resets_at TEXT,
+                seven_day_util REAL,
+                seven_day_resets_at TEXT,
+                raw_json TEXT NOT NULL
+            )""",
+            "CREATE INDEX IF NOT EXISTS ix_llm_rate_limits_at ON llm_rate_limits(observed_at)",
+        ],
+    ),
 ]
 
 

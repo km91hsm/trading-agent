@@ -60,3 +60,82 @@ def test_ledger_windows_counts_sessions_cost_and_excludes_fake(conn):
     assert w["h5"] == {"sessions": 2, "cost_usd": 1.7, "avg_duration_s": 60.0, "errors": 1}
     assert w["d7"] == {"sessions": 3, "cost_usd": 3.7, "avg_duration_s": 106.7, "errors": 1}
     assert w["today"] == {"sessions": 2, "cap": 12}  # KST 오늘(10-23) 안의 비-fake 세션
+
+
+# --- Phase 24 단계 3: 세션 rate_limit_event 기록·최신 관측·감속 ---------------------------------
+from trader.config import Settings  # noqa: E402
+
+
+def _info(h5: float, d7: float):
+    return {
+        "status": "allowed",
+        "unifiedWindows": {
+            "five_hour": {"utilization": h5, "resetsAt": 1792990000},
+            "seven_day": {"utilization": d7, "resetsAt": 1793300000},
+        },
+    }
+
+
+def _settings(**throttle):
+    return Settings(llm={"usage_file": None, "usage_throttle": throttle})
+
+
+def test_record_and_latest_observation_prefers_newer_source(conn, tmp_path):
+    usage.record_rate_limit(conn, _info(0.3, 0.5), now=NOW - timedelta(minutes=10))
+    p = tmp_path / "rl.json"
+    p.write_text(
+        json.dumps(
+            {
+                "at": int((NOW - timedelta(hours=1)).timestamp()),
+                "rate_limits": {"five_hour": {"used_percentage": 99}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    got = usage.latest_observation(conn, NOW, p)
+    assert (
+        got["source"] == "session" and got["five_hour"]["used_pct"] == 30.0 and got["age_s"] == 600
+    )
+    p.write_text(
+        json.dumps(
+            {
+                "at": int((NOW - timedelta(minutes=1)).timestamp()),
+                "rate_limits": {"five_hour": {"used_percentage": 99}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert usage.latest_observation(conn, NOW, p)["source"] == "statusline"
+
+
+def test_record_rate_limit_single_window_type(conn):
+    usage.record_rate_limit(conn, {"rateLimitType": "seven_day", "utilization": 0.4}, now=NOW)
+    usage.record_rate_limit(conn, {"status": "allowed"}, now=NOW)  # 창 없음 → 기록 안 함
+    rows = conn.execute("SELECT five_hour_util, seven_day_util FROM llm_rate_limits").fetchall()
+    assert [tuple(r) for r in rows] == [(None, 0.4)]
+
+
+def test_allowance_soft_blocks_analyze_allows_resume(conn):
+    usage.record_rate_limit(conn, _info(0.85, 0.5), now=NOW)
+    s = _settings()
+    ok, why = usage.session_allowance(conn, s, kind="analyze", now=NOW)
+    assert not ok and "5시간" in why and "85%" in why
+    assert usage.session_allowance(conn, s, kind="resume", now=NOW) == (True, None)
+
+
+def test_allowance_hard_blocks_all(conn):
+    usage.record_rate_limit(conn, _info(0.2, 0.96), now=NOW)
+    ok, why = usage.session_allowance(conn, _settings(), kind="resume", now=NOW)
+    assert not ok and "7일" in why
+
+
+def test_allowance_stale_or_missing_or_disabled_allows(conn):
+    s = _settings()
+    assert usage.session_allowance(conn, s, kind="analyze", now=NOW) == (True, None)
+    usage.record_rate_limit(conn, _info(0.99, 0.99), now=NOW - timedelta(hours=7))
+    assert usage.session_allowance(conn, s, kind="analyze", now=NOW) == (True, None)
+    usage.record_rate_limit(conn, _info(0.99, 0.99), now=NOW)
+    assert usage.session_allowance(conn, _settings(enabled=False), kind="analyze", now=NOW) == (
+        True,
+        None,
+    )

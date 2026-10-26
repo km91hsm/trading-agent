@@ -23,6 +23,7 @@ from trader.broker.models import OrderRequest, OrderResult
 from trader.config import KST, AccountConfig, MemorySettings, Mode, Settings
 from trader.control import control
 from trader.ledger import repo
+from trader.notify import messages
 from trader.notify.telegram import Notifier, NullNotifier
 from trader.orchestrator.run_store import checkpoint_payload as _wrap
 from trader.orchestrator.run_store import run_dir, write_checkpoint
@@ -428,8 +429,12 @@ def execute(
             logger.exception("계좌 %s 실행 실패 %s %s", account.id, market, decision.ticker)
             _notify_quietly(
                 ctx,
-                f"[실행 실패] {account.id} {market} {_label(ctx, market, decision.ticker)}: "
-                f"{type(e).__name__}: {e}",
+                messages.execution_failure(
+                    account=account.id,
+                    market=market,
+                    label=_label(ctx, market, decision.ticker),
+                    err=e,
+                ),
             )
             results.append({"account_id": account.id, "error": f"{type(e).__name__}: {e}"})
     if bookkeeping_error is not None:
@@ -574,6 +579,10 @@ def _execute_account(
             )
         if not verdict.approved or mode == "off" or dry_run or paused:
             return entry
+        # 알림의 '최종 의견' (손절·헤지·단타는 파이썬 결정이라 붙이지 않는다)
+        opinion = (
+            None if is_stop_loss or is_hedge or is_scalp else messages.DecisionBrief.of(decision)
+        )
         request = OrderRequest(
             ticker=decision.ticker,
             market=market,  # type: ignore[arg-type]
@@ -592,10 +601,20 @@ def _execute_account(
                 verdict,
                 quote_price=price,
                 order_stage=order_stage,
+                opinion=opinion,
             )
         else:
             entry["order"] = _place(
-                ctx, d, account, broker, decision_id, request, mode, price, order_stage=order_stage
+                ctx,
+                d,
+                account,
+                broker,
+                decision_id,
+                request,
+                mode,
+                price,
+                order_stage=order_stage,
+                opinion=opinion,
             )
         return entry
 
@@ -609,6 +628,7 @@ def _request_approval(
     *,
     quote_price: Decimal | None = None,
     order_stage: str = "50_order",
+    opinion: messages.DecisionBrief | None = None,
 ) -> int:
     """승인 요청 저장. 시장가는 금액을 모르므로 요청 시 현재가(quote_price)를 함께 남겨
     승인 뒤 주문의 amount(가능금액 차감)로 쓴다. 주문 체크포인트 이름(order_stage: 재평가 51_·
@@ -621,8 +641,9 @@ def _request_approval(
     if order_stage != "50_order":
         order[STAGE_KEY] = order_stage
     shown = _label(ctx, request.market, request.ticker)
-    if shown != request.ticker:
-        order[NAME_KEY] = shown[: -len(request.ticker) - 1]
+    name = names.resolve(ctx.conn, _cache_dir(ctx), request.market, request.ticker)
+    if name and name != request.ticker:
+        order[NAME_KEY] = name
     aid = repo.create_approval(
         ctx.conn,
         decision_id=decision_id or 0,
@@ -631,11 +652,19 @@ def _request_approval(
         requested_at=now.isoformat(),
         expires_at=(now + APPROVAL_TTL).isoformat(),
     )
-    price = f" @{request.price}" if request.price is not None else " 시장가"
     ctx.notifier.send(
-        f"[승인 요청 #{aid}] {account.id} {request.side} {shown} {request.qty}주{price}\n"
-        f"사유: {'; '.join(verdict.reasons) or '한도 내'}\n"
-        f"/approve {aid} 또는 /reject {aid} (30분 내)"
+        messages.approval_request(
+            approval_id=aid,
+            account=account.id,
+            market=request.market,
+            label=shown,
+            side=request.side,
+            qty=request.qty,
+            price=request.price,
+            reasons=verdict.reasons,
+            opinion=opinion,
+            kind=_STAGE_KIND.get(order_stage.split("_r")[0], ""),
+        )
     )
     return aid
 
@@ -650,6 +679,7 @@ def _place(
     mode: Mode,
     quote_price: Decimal | None = None,
     order_stage: str = "50_order",
+    opinion: messages.DecisionBrief | None = None,
 ) -> dict:
     shown = _label(ctx, request.market, request.ticker)
     try:
@@ -665,8 +695,14 @@ def _place(
             logger.error("주문 응답 없음 %s %s: %s", account.id, request.ticker, e)
             _notify_quietly(
                 ctx,
-                f"[주문 상태 미확인] {account.id} {request.side} {shown} {request.qty}주 "
-                f"응답을 받지 못함 — KIS 앱에서 확인, 체결 동기화(fills sync)가 확정함: {e.msg1}",
+                messages.order_unknown(
+                    account=account.id,
+                    market=request.market,
+                    label=shown,
+                    side=request.side,
+                    qty=request.qty,
+                    err=e.msg1,
+                ),
             )
         else:
             status = "failed"
@@ -716,8 +752,15 @@ def _place(
         )
         _notify_quietly(
             ctx,
-            f"[긴급: 주문 기록 실패] {account.id} {request.side} {shown} {request.qty}주 "
-            f"접수번호 {result.order_no or '-'} ({status}) — 원장에 없으니 수동 확인 필요: {e}",
+            messages.bookkeeping_failure(
+                account=account.id,
+                label=shown,
+                side=request.side,
+                qty=request.qty,
+                order_no=result.order_no,
+                status=status,
+                err=e,
+            ),
         )
         raise OrderBookkeepingError(result.order_no, e) from e
     payload = {
@@ -732,11 +775,22 @@ def _place(
     except OSError as e:
         logger.warning("주문 체크포인트 기록 실패 %s %s: %s", account.id, request.ticker, e)
     if status != "unknown":  # unknown 은 위에서 이미 알렸다 (실패로 덧알리면 운영자가 재주문함)
-        head = "[주문]" if result.accepted else "[주문 실패]"
         _notify_quietly(
             ctx,
-            f"{head} {account.id} {request.side} {shown} {request.qty}주 "
-            f"({mode}) 접수번호 {result.order_no or '-'} {result.message}",
+            messages.order(
+                account=account.id,
+                market=request.market,
+                label=shown,
+                side=request.side,
+                qty=request.qty,
+                price=request.price,
+                mode=mode,
+                accepted=result.accepted,
+                order_no=result.order_no,
+                message=result.message,
+                opinion=opinion,
+                kind=_STAGE_KIND.get(order_stage.split("_r")[0], ""),
+            ),
         )
     return payload["result"] | {"status": status}
 
@@ -747,6 +801,16 @@ class OrderBookkeepingError(RuntimeError):
     def __init__(self, order_no: str | None, cause: Exception) -> None:
         super().__init__(f"주문 기록 실패 (접수번호 {order_no or '-'}): {cause}")
         self.order_no = order_no
+
+
+# 주문 체크포인트 접두 → 알림 제목 꼬리 ('[주문 · 재평가]')
+_STAGE_KIND = {
+    "51_order": "재평가",
+    "52_order_reprice": "재호가",
+    "55_order_sl": "손절",
+    "56_order_hedge": "헤지",
+    "57_order_scalp": "단타",
+}
 
 
 def _notify_quietly(ctx: ExecContext, text: str) -> None:
@@ -805,7 +869,7 @@ def approve(ctx: ExecContext, approval_id: int) -> dict:
     quote_price = Decimal(str(raw_quote)) if raw_quote is not None else None
     order_stage = str(order.pop(STAGE_KEY, None) or "50_order")
     request = OrderRequest.model_validate(order)
-    dec = repo.get_decision(ctx.conn, a["decision_id"]) if a["decision_id"] else None
+    dec = repo.get_decision(ctx.conn, a["decision_id"], hydrate=True) if a["decision_id"] else None
     day = date.fromisoformat(dec["date"]) if dec else ctx.now().astimezone(KST).date()
     d = run_dir(day, request.market, request.ticker, ctx.state)
     broker = ctx.brokers.get(account.id)
@@ -830,6 +894,7 @@ def approve(ctx: ExecContext, approval_id: int) -> dict:
             "approve",
             quote_price,
             order_stage=order_stage,
+            opinion=messages.DecisionBrief.of((dec or {}).get("data")),
         )
     except OrderBookkeepingError as e:  # 접수 뒤 기록 실패: approved 로 굳지 않게 failed 로 남긴다
         repo.decide_approval(ctx.conn, approval_id, "failed", expect="approved")
@@ -854,7 +919,10 @@ def reject(ctx: ExecContext, approval_id: int) -> dict:
         return {"ok": False, "error": f"승인 요청 #{approval_id} 은 이미 다른 프로세스가 처리함"}
     o = a["order"]
     ctx.notifier.send(
-        f"[거부] 승인 요청 #{approval_id} {a['account_id']} "
-        f"{names.label(str(o.get('ticker')), o.get(NAME_KEY))}"
+        messages.approval_rejected(
+            approval_id=approval_id,
+            account=a["account_id"],
+            label=names.label(str(o.get("ticker")), o.get(NAME_KEY)),
+        )
     )
     return {"ok": True, "approval_id": approval_id}

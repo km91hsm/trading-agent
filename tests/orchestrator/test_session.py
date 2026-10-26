@@ -69,7 +69,7 @@ def test_build_command_flags(project):
         and "--append-system-prompt-file" not in cmd
     )
     pairs = {cmd[i]: cmd[i + 1] for i in range(2, len(cmd) - 1)}
-    assert pairs["--output-format"] == "json" and pairs["--model"] == "sonnet"
+    assert pairs["--output-format"] == "stream-json" and pairs["--model"] == "sonnet"
     assert pairs["--tools"] == "Bash,Agent"
     assert pairs["--allowedTools"] == "Bash(python -m trader tool *)"
     assert pairs["--permission-mode"] == "dontAsk" and pairs["--setting-sources"] == ""
@@ -594,3 +594,125 @@ def test_start_call_checks_cap_inside_write_lock(conn):
     assert conn.execute("SELECT COUNT(*) AS n FROM agent_calls").fetchone()["n"] == 1
     assert session._start_call(conn, None, spec, session_id="f", model="fake", cap=1) is not None
     conn.execute("SELECT 1").fetchone()  # 잠금이 풀려 있다
+
+
+# --- Phase 24 단계 3: stream-json 결과 + rate_limit_event ---------------------------------------
+_RATE = {
+    "type": "rate_limit_event",
+    "rate_limit_info": {
+        "status": "allowed",
+        "unifiedWindows": {
+            "five_hour": {"utilization": 0.31, "resetsAt": 1792990000},
+            "seven_day": {"utilization": 0.72, "resetsAt": 1793300000},
+        },
+    },
+}
+
+
+def _stream(*events) -> str:
+    return "\n".join(json.dumps(e) for e in events) + "\n"
+
+
+def test_build_command_stream_json_verbose(project):
+    cmd = build_command(
+        spec(), Settings(), Path("/x/claude"), Path("/a.json"), session_id="u", prompt="P"
+    )
+    pairs = {cmd[i]: cmd[i + 1] for i in range(2, len(cmd) - 1)}
+    assert pairs["--output-format"] == "stream-json" and "--verbose" in cmd
+
+
+def test_parse_stream_result_and_rate():
+    out = _stream(
+        {"type": "system", "subtype": "init"},
+        _RATE,
+        {"type": "assistant"},
+        json.loads(_ok_result().stdout),
+    )
+    data, rate = session._parse_stream(out)
+    assert data["total_cost_usd"] == 0.42 and data["num_turns"] == 9
+    assert rate["unifiedWindows"]["five_hour"]["utilization"] == 0.31
+
+
+def test_parse_stream_single_json_object_still_ok():
+    data, rate = session._parse_stream(_ok_result().stdout)
+    assert data["session_id"] == "sess-1" and rate is None
+
+
+def test_parse_stream_without_result_line():
+    with pytest.raises(session.PipelineError):
+        session._parse_stream(_stream({"type": "system"}, _RATE))
+    with pytest.raises(session.PipelineError):
+        session._parse_stream("not json\n")
+
+
+def test_parse_stream_without_rate_event():
+    data, rate = session._parse_stream(_stream({"type": "system"}, json.loads(_ok_result().stdout)))
+    assert rate is None and data["is_error"] is False
+
+
+def test_run_session_records_rate_limit(project, conn, accounts, monkeypatch):
+    monkeypatch.delenv("FAKE_CLAUDE", raising=False)
+    _inputs()
+
+    def runner(cmd, **kw):
+        return CompletedProcess(
+            [], 0, stdout=_stream(_RATE, json.loads(_ok_result().stdout)), stderr=""
+        )
+
+    res = run_session(
+        spec(),
+        Settings(),
+        conn,
+        accounts,
+        runner=runner,
+        claude_bin=Path("/x/claude"),
+        agents_dir=REPO_AGENTS,
+    )
+    assert res.ok
+    row = conn.execute(
+        "SELECT source, five_hour_util, seven_day_util FROM llm_rate_limits"
+    ).fetchone()
+    assert tuple(row) == ("session", 0.31, 0.72)
+
+
+def test_run_session_no_result_line_is_error_not_exception(project, conn, accounts, monkeypatch):
+    monkeypatch.delenv("FAKE_CLAUDE", raising=False)
+    _inputs()
+
+    def runner(cmd, **kw):
+        return CompletedProcess([], 1, stdout=_stream(_RATE), stderr="killed")
+
+    res = run_session(
+        spec(),
+        Settings(),
+        conn,
+        accounts,
+        runner=runner,
+        claude_bin=Path("/x/claude"),
+        agents_dir=REPO_AGENTS,
+    )
+    assert not res.ok
+    assert conn.execute("SELECT status FROM agent_calls").fetchone()[0] == "error"
+
+
+def test_run_session_raises_when_throttled(project, conn, accounts, monkeypatch):
+    from datetime import UTC, datetime
+
+    from trader import usage
+
+    monkeypatch.delenv("FAKE_CLAUDE", raising=False)
+    usage.record_rate_limit(
+        conn, {"unifiedWindows": {"five_hour": {"utilization": 0.9}}}, now=datetime.now(UTC)
+    )
+    s = Settings(llm={"usage_file": None})
+    with pytest.raises(session.PipelineError, match="사용률"):
+        run_session(
+            spec(),
+            s,
+            conn,
+            accounts,
+            runner=lambda *a, **k: None,
+            claude_bin=Path("/x/claude"),
+            agents_dir=REPO_AGENTS,
+        )
+    assert conn.execute("SELECT COUNT(*) FROM agent_calls").fetchone()[0] == 0

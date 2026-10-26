@@ -101,7 +101,8 @@ def test_usage_endpoint_reports_windows_and_observed_limits(client, deps, conn, 
 
     deps.settings.llm.usage_file = None  # 개발 머신의 ~/.claude/rate_limits.json 에 기대지 않는다
     r = client.get("/api/system/usage").json()
-    assert r["rate_limits"] is None and r["windows"]["today"] == {"sessions": 0, "cap": 40}
+    assert r["rate_limits"] is None and r["windows"]["today"] == {"sessions": 0, "cap": 80}
+    assert r["throttle"]["state"] == "ok"
     p = tmp_path / "rl.json"
     p.write_text(
         json.dumps({"at": 0, "rate_limits": {"five_hour": {"used_percentage": 3}}}),
@@ -110,6 +111,19 @@ def test_usage_endpoint_reports_windows_and_observed_limits(client, deps, conn, 
     deps.settings.llm.usage_file = str(p)
     r = client.get("/api/system/usage").json()
     assert r["rate_limits"]["five_hour"]["used_pct"] == 3.0 and "/usage" in r["note"]
+    assert r["rate_limits"]["source"] == "statusline"
+    # Phase 24: 세션 rate_limit_event 가 더 최신이면 그것, 사용률이 높으면 감속 상태
+    from trader import usage
+
+    usage.record_rate_limit(
+        conn, {"unifiedWindows": {"five_hour": {"utilization": 0.85}}}, now=deps.now()
+    )
+    r = client.get("/api/system/usage").json()
+    assert (
+        r["rate_limits"]["source"] == "session"
+        and r["rate_limits"]["five_hour"]["used_pct"] == 85.0
+    )
+    assert r["throttle"]["state"] == "soft" and "보유 재평가만" in r["throttle"]["reason"]
 
 
 def test_daemon_endpoint_without_daemon_lists_schedule(client, deps):

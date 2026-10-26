@@ -92,7 +92,13 @@ export function paletteItems(query: string, names: Record<string, string> = {}, 
   else if (US_SYMBOL.test(up) && q.length >= 2) out.unshift({ kind: "ticker", label: `${names[`US:${up}`] ?? up} 차트`, hint: `US ${up}`, to: `/chart?market=US&ticker=${up}` });
   for (const h of hits) {
     if (out.length >= 12) break;
-    if (out.some((o) => o.kind === "ticker" && o.to.includes(`ticker=${encodeURIComponent(h.ticker)}`))) continue;
+    const dup = out.find((o) => o.kind === "ticker" && o.to.includes(`ticker=${encodeURIComponent(h.ticker)}`));
+    if (dup) {
+      // 정확한 코드 입력으로 만든 항목에는 거래소가 없다 → 검색 결과의 거래소·이름으로 채운다(NYS 를 NAS 로 열지 않게)
+      dup.to = chartPath(h.market, h.ticker, h.exchange);
+      if (h.name) dup.label = `${h.name} 차트`;
+      continue;
+    }
     const src = SOURCE_HINT[h.source] ?? "";
     out.push({ kind: "ticker", label: `${h.name ?? h.ticker} 차트`, hint: `${h.market} ${h.ticker}${src ? ` · ${src}` : ""}`, to: chartPath(h.market, h.ticker, h.exchange) });
   }

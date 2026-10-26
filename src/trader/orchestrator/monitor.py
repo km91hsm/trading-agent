@@ -24,6 +24,7 @@ from trader.broker.models import Position
 from trader.config import KST, MARKET_TZ, AccountConfig, HorizonProfile, Settings
 from trader.control import control
 from trader.ledger import repo
+from trader.notify import messages
 from trader.notify.telegram import Notifier, NullNotifier
 from trader.orchestrator import executor, resume, tools
 from trader.platform import paths
@@ -356,7 +357,9 @@ def monitor_once(ctx: MonitorContext, *, market: str, today: date) -> dict:
                     handled_at=ctx.now().isoformat(),
                 )
             ctx.notifier.send(
-                f"[재평가 실패] {market} {_label(ctx, market, pos.ticker)}: {type(e).__name__}: {e}"
+                messages.reevaluation_failed(
+                    market=market, label=_label(ctx, market, pos.ticker), err=e
+                )
             )
             continue
         for tid in tids[1:]:  # 같은 세션이 나머지 트리거도 처리한 것으로 표시 (실패도 같은 표시)
@@ -492,8 +495,9 @@ def _cancel_open_sells(
             ok = False
     if not ok:
         ctx.notifier.send(
-            f"[손절 보류] {account.id} {market} {_label(ctx, market, pos.ticker)} — "
-            f"당일 미체결 SELL 을 취소하지 못해 손절을 내지 않음 (다음 점검에서 재시도)"
+            messages.stop_deferred(
+                account=account.id, market=market, label=_label(ctx, market, pos.ticker)
+            )
         )
     return ok
 
@@ -529,9 +533,12 @@ def _sell_now(
         if not control.get_flag(ctx.conn, key):
             control.set_flag(ctx.conn, key, True)
             ctx.notifier.send(
-                f"[손절 보류: 일시정지] {market} {_label(ctx, market, pos.ticker)} "
-                f"현재가 {quote} ≤ 손절선 "
-                f"{sig.detail.get('level')} — 재개하면 다음 점검에서 매도"
+                messages.stop_paused(
+                    market=market,
+                    label=_label(ctx, market, pos.ticker),
+                    quote=quote,
+                    level=sig.detail.get("level"),
+                )
             )
         return 0
     dec = _stop_loss_decision(pos.ticker, market, quote, sig)
@@ -568,9 +575,15 @@ def _sell_now(
     order = r.get("order")
     if order and order.get("accepted"):
         ctx.notifier.send(
-            f"[손절] {account.id} {market} {_label(ctx, market, pos.ticker)} "
-            f"{r.get('qty')}주 즉시 매도 "
-            f"(현재가 {quote}, 손절선 {sig.detail.get('level')}) 접수번호 {order.get('order_no')}"
+            messages.stop_loss(
+                account=account.id,
+                market=market,
+                label=_label(ctx, market, pos.ticker),
+                qty=r.get("qty"),
+                quote=quote,
+                level=sig.detail.get("level"),
+                order_no=order.get("order_no"),
+            )
         )
         return 1
     return 0

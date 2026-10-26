@@ -22,6 +22,17 @@ QUOTE_TTL_S = 5.0
 MAX_TICKERS = 20
 _cache: dict[tuple[str, str], tuple[float, dict]] = {}
 _lock = threading.Lock()
+_key_locks: dict[tuple[str, str], threading.Lock] = {}  # 같은 종목 동시 조회를 한 번의 KIS 호출로
+
+
+def _key_lock(key: tuple[str, str]) -> threading.Lock:
+    with _lock:
+        return _key_locks.setdefault(key, threading.Lock())
+
+
+def _fresh(key: tuple[str, str]) -> tuple[float, dict] | None:
+    with _lock:
+        return _cache.get(key)
 
 
 def _snapshot_prices(conn, market: str, tickers: list[str]) -> dict[str, dict]:
@@ -80,33 +91,38 @@ def quotes(request: Request, market: str, tickers: str = "") -> dict:
         us_ex = _us_exchanges() if market == "US" else {}
         for t, ex in items:
             key = (market, t)
-            with _lock:
-                hit = _cache.get(key)
+            hit = _fresh(key)
             if hit and time.monotonic() - hit[0] < QUOTE_TTL_S:
                 out[t] = hit[1]
                 continue
-            try:
-                with kis_wait(deps.market):
-                    q = (
-                        deps.market.get_price_kr(t)
-                        if market == "KR"
-                        else deps.market.get_price_us(t, ex or us_ex.get(t, "NAS"))
-                    )
-            except Exception:  # noqa: BLE001 - 바쁨(503)·KIS 오류는 마지막 값으로
-                if hit:
-                    out[t] = {**hit[1], "stale": True}
-                else:
-                    missing.append(t)
-                continue
-            val = {
-                "price": str(q.price),
-                "change_pct": q.change_pct,
-                "asof": q.asof.isoformat(),
-                "stale": False,
-            }
-            with _lock:
-                _cache[key] = (time.monotonic(), val)
-            out[t] = val
+            # 종목별 락 안에서 캐시를 다시 본다: 먼저 온 요청이 받은 값을 뒤 요청이 쓴다
+            with _key_lock(key):
+                hit = _fresh(key)
+                if hit and time.monotonic() - hit[0] < QUOTE_TTL_S:
+                    out[t] = hit[1]
+                    continue
+                try:
+                    with kis_wait(deps.market):
+                        q = (
+                            deps.market.get_price_kr(t)
+                            if market == "KR"
+                            else deps.market.get_price_us(t, ex or us_ex.get(t, "NAS"))
+                        )
+                except Exception:  # noqa: BLE001 - 바쁨(503)·KIS 오류는 마지막 값으로
+                    if hit:
+                        out[t] = {**hit[1], "stale": True}
+                    else:
+                        missing.append(t)
+                    continue
+                val = {
+                    "price": str(q.price),
+                    "change_pct": q.change_pct,
+                    "asof": q.asof.isoformat(),
+                    "stale": False,
+                }
+                with _lock:
+                    _cache[key] = (time.monotonic(), val)
+                out[t] = val
     else:
         missing = [t for t, _ in items]
     if missing:

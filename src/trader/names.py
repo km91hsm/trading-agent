@@ -77,9 +77,9 @@ def resolve_many(
 
 
 def label(ticker: str, name: str | None) -> str:
-    """사람이 읽는 표기: '삼성전자 005930', 이름이 없으면 '005930'."""
+    """사람이 읽는 표기: '삼성전자(005930)', 이름이 없으면 '005930' (Phase 24, 텔레그램·STATUS)."""
     clean = (name or "").strip()
-    return f"{clean} {ticker}" if clean and clean != ticker else ticker
+    return f"{clean}({ticker})" if clean and clean != ticker else ticker
 
 
 def display(conn: sqlite3.Connection | None, cache_dir: Path, market: str, ticker: str) -> str:
