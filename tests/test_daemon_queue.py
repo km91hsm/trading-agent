@@ -404,3 +404,77 @@ def test_reevaluate_request_passes_cancel_and_skips_when_stopping(conn):
     deps.stop_event.set()
     out = daemon._reevaluate_request(deps, {**p, "trigger_id": trig()})
     assert out == {"skipped": "종료 중"} and len(seen) == 1
+
+
+def test_fast_lane_runs_reevaluate_while_heavy_lock_held(project, conn, monkeypatch):
+    """전체 검토 P2: 백필 등이 heavy 락을 쥐고 있어도 재평가·가벼운 잡은 빠른 레인이 꺼낸다."""
+    deps = _deps(conn, FakeMarket(), now=lambda: NOW)
+    ran = []
+    monkeypatch.setattr(
+        daemon, "queued_job_body", lambda d, req, prog: lambda: ran.append(req["kind"]) or {}
+    )
+    jobq.enqueue(conn, "ml_train", {}, source="web", now=NOW)
+    rid = jobq.enqueue(conn, "fills_sync", {}, source="web", now=NOW)
+    with deps.heavy_lock:
+        assert daemon._queue_tick(deps, None) == {"skipped": "다른 무거운 잡 실행 중"}
+        assert daemon._fast_queue_tick(deps, None) == {"request": rid, "kind": "fills_sync"}
+        # 무거운 잡은 빠른 레인이 가져가지 않는다
+        assert daemon._fast_queue_tick(deps, None) == {"skipped": "대기 없음"}
+    assert ran == ["fills_sync"]
+    assert daemon._queue_tick(deps, None)["kind"] == "ml_train"
+
+
+def test_claim_next_filters_kinds(conn):
+    jobq.enqueue(conn, "ml_train", {}, source="web", now=NOW)
+    assert jobq.claim_next(conn, now=NOW, kinds=jobq.FAST_KINDS) is None
+    assert jobq.claim_next(conn, now=NOW, kinds=frozenset()) is None
+    assert jobq.claim_next(conn, now=NOW)["kind"] == "ml_train"
+    assert "reevaluate" in jobq.FAST_KINDS and "features_backfill" not in jobq.FAST_KINDS
+
+
+def test_heavy_wanted_counts_waiting_crons():
+    """전체 검토 P8: cron 둘이 기다릴 때 먼저 끝난 쪽이 양보 요청을 지우지 않는다."""
+    w = daemon.HeavyWanted()
+    assert not w.is_set()
+    w.enter()
+    w.enter()
+    w.leave()
+    assert w.is_set()
+    w.leave()
+    w.leave()  # 0 아래로 내려가지 않는다
+    assert not w.is_set()
+    w.enter()
+    assert w.is_set()
+
+
+def test_main_queue_does_not_take_fast_kinds(project, conn):
+    """두 레인이 같은 재평가를 함께 꺼내지 않도록 기존 큐는 빠른 레인 종류를 건너뛴다."""
+    deps = _deps(conn, FakeMarket(), now=lambda: NOW)
+    jobq.enqueue(conn, "fills_sync", {}, source="web", now=NOW)
+    assert daemon._queue_tick(deps, None) == {"skipped": "대기 없음"}
+    assert jobq.SLOW_KINDS.isdisjoint(jobq.FAST_KINDS)
+    assert jobq.SLOW_KINDS | jobq.FAST_KINDS == frozenset(jobq.KINDS)
+
+
+def test_reevaluate_runs_under_same_ticker_lock_as_analyze(conn, monkeypatch):
+    """PR #37 리뷰: 빠른 레인의 재평가는 같은 (시장, 종목) analyze 세션과 같은 락 안에서 돈다."""
+    from trader.ledger import repo
+    from trader.orchestrator import resume
+    from trader.orchestrator.session import SessionResult
+
+    deps = _deps(conn, FakeMarket(), now=lambda: NOW)
+    lock = daemon._ticker_lock(deps, "KR", "005930")
+    assert lock is daemon._ticker_lock(deps, "KR", "005930")
+    assert lock is not daemon._ticker_lock(deps, "KR", "000660")
+    held = []
+
+    def fake_reevaluate(*a, **kw):
+        held.append(lock.locked())
+        return SessionResult(ok=True, session_id="s")
+
+    monkeypatch.setattr(resume, "reevaluate", fake_reevaluate)
+    tid = repo.insert_trigger(
+        conn, market="KR", ticker="005930", kind="move", detail={}, price=None, decision_id=None
+    )
+    daemon._reevaluate_request(deps, {"market": "KR", "ticker": "005930", "trigger_id": tid})
+    assert held == [True] and not lock.locked()
