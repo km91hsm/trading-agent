@@ -12,14 +12,15 @@ const pos = (ticker: string, qty: number, avg: string, cur: string): Position =>
 });
 
 describe("applyQuotes", () => {
-  it("실시간 값으로 평가·NAV·손익을 다시 계산, stale 는 무시", () => {
+  it("실시간 값으로 평가·손익을 다시 계산하고 NAV 는 브로커 NAV + 평가 변화분, stale 는 무시", () => {
     const r = applyQuotes([pos("005930", 2, "100", "100"), pos("000660", 1, "50", "60")], {
       "005930": { price: "110", change_pct: 0.01, asof: "x", stale: false },
       "000660": { price: "999", change_pct: null, asof: "x", stale: true },
-    }, "1000");
+    }, "1260");
     expect(r.positions[0]).toMatchObject({ current_price: "110", eval_amount: "220", live: true });
     expect(r.positions[1]).toMatchObject({ current_price: "60", live: false });
-    expect(r.nav).toBe(1000 + 220 + 60);
+    // 미결제 매수대금이 현금에 남은 KR 계좌: 현금+평가로 다시 만들지 않고 NAV 1260 에 +20 만
+    expect(r.nav).toBe(1260 + 20);
     expect(r.pnl).toBe(220 + 60 - 250);
     expect(r.liveCount).toBe(1);
   });

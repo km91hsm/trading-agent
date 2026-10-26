@@ -95,3 +95,29 @@ def test_quotes_us_exchange_suffix(project, conn):
     c, deps = _client(project, datetime(2026, 10, 9, 14, 0, tzinfo=UTC))
     r = c.get("/api/quotes", params={"market": "US", "tickers": "AAPL:NAS"}).json()
     assert r["quotes"]["AAPL"]["price"] == "227.55"
+
+
+def test_quotes_concurrent_misses_call_kis_once(project, conn):
+    """두 요청이 동시에 캐시 미스여도 KIS 호출은 한 번(종목별 락 + 다시 보기)."""
+    import threading
+    import time as _t
+
+    c, deps = _client(project, OPEN)
+    orig = deps.market.get_price_kr
+
+    def slow(t):
+        _t.sleep(0.2)
+        return orig(t)
+
+    deps.market.get_price_kr = slow
+    ths = [
+        threading.Thread(
+            target=lambda: c.get("/api/quotes", params={"market": "KR", "tickers": "005930"})
+        )
+        for _ in range(3)
+    ]
+    for th in ths:
+        th.start()
+    for th in ths:
+        th.join()
+    assert deps.market.calls.count("get_price_kr") == 1

@@ -29,6 +29,7 @@ from trader.config import KST, MARKET_TZ, AccountConfig, ScheduleConfig, Secrets
 from trader.control import control
 from trader.heartbeat import Heartbeat
 from trader.ledger import db
+from trader.notify import messages
 from trader.notify.telegram import Notifier, NullNotifier
 from trader.orchestrator import run_store
 from trader.platform import paths
@@ -510,10 +511,11 @@ def scan_line(scan: dict) -> str:
     picks = [p.get("ticker") for p in scan.get("picks") or []]
     n_t = len(scan.get("analyze_targets") or [])
     cap = " · 세션 상한" if scan.get("cap_hit") else ""
-    return (
-        f"[스캔] {scan.get('market')} {scan.get('date')}: picks {len(picks)}"
+    return messages.event(
+        "스캔",
+        f"{scan.get('market')} {scan.get('date')}: picks {len(picks)}"
         f"({', '.join(str(p) for p in picks) or '-'}) · 분석 대상 {n_t} · "
-        f"{discovery_mod.line(scan.get('discovery'))}{cap}"
+        f"{discovery_mod.line(scan.get('discovery'))}{cap}",
     )
 
 
@@ -547,7 +549,7 @@ def _analyze_body(deps: DaemonDeps, market: str, *, scan_error: str | None = Non
         # scan 이 실패했거나 결과가 없다. 조용히 ok 로 끝나면 그 시장의 하루 분석이 통째로 빠진
         # 것을 로그 말고는 알 수 없다 → 원인을 담은 알림 1건 + error 행
         cause = f"scan 실패: {scan_error}" if scan_error else "_scan.json 없음 (scan 지연·실패)"
-        msg = f"[분석 생략] {market} {today}: {cause}, 보유 재분석도 생략"
+        msg = messages.event("분석 생략", f"{market} {today}", f"{cause}, 보유 재분석도 생략")
         logger.error(msg)
         deps.notifier.send(msg)
         return {"targets": 0, "error": cause}
@@ -686,7 +688,7 @@ def _analyze_targets(
         except Exception as e:  # noqa: BLE001 - 한 종목 세션 실패가 나머지를 막지 않는다
             logger.exception("analyze 세션 기동 실패 %s %s", market, t["ticker"])
             failed.append(t["ticker"])
-            deps.notifier.send(f"[analyze 실패] {market} {shown}: {type(e).__name__}: {e}")
+            deps.notifier.send(messages.failure("analyze 실패", f"{market} {shown}", e))
             continue
         finally:
             conn.close()
@@ -697,7 +699,7 @@ def _analyze_targets(
             )
         else:
             failed.append(t["ticker"])
-            deps.notifier.send(f"[analyze 실패] {market} {shown}: {res.error}")
+            deps.notifier.send(messages.event("analyze 실패", f"{market} {shown}: {res.error}"))
     return {
         "targets": len(targets),
         "ok": ok,
@@ -807,12 +809,17 @@ def _regime_body(deps: DaemonDeps, market: str) -> dict:
             conn.close()
     except Exception as e:  # noqa: BLE001 - 국면 갱신 실패가 스캔을 막지 않는다
         logger.exception("국면 판정 실패 %s", market)
-        deps.notifier.send(f"[국면 판정 실패] {market}: {type(e).__name__}: {e} — 직전 상태 유지")
+        deps.notifier.send(
+            messages.event("국면 판정 실패", f"{market}: {type(e).__name__}: {e} — 직전 상태 유지")
+        )
         return {"error": f"{type(e).__name__}: {e}"}
     if out.get("state") != out.get("prev_state"):
         deps.notifier.send(
-            f"[국면 전환] {market} {out.get('prev_state') or '-'} → {out['state']} "
-            f"({regime_mod.count_text(out)})"
+            messages.event(
+                "국면 전환",
+                f"{market} {out.get('prev_state') or '-'} → {out['state']} "
+                f"({regime_mod.count_text(out)})",
+            )
         )
     return out
 
@@ -847,7 +854,10 @@ def _regime_apply_view(deps: DaemonDeps, market: str) -> dict:
         return {"skipped": "오늘 국면 판정 없음"}
     if out.get("state") != before:
         deps.notifier.send(
-            f"[국면 전환] {market} {before or '-'} → {out['state']} ({regime_mod.count_text(out)})"
+            messages.event(
+                "국면 전환",
+                f"{market} {before or '-'} → {out['state']} ({regime_mod.count_text(out)})",
+            )
         )
     return {**out, "agent_risk_off": on}
 
@@ -905,13 +915,18 @@ def _market_view_body(deps: DaemonDeps, market: str) -> dict:
     view = out.get("view")
     if view:
         deps.notifier.send(
-            f"[시장 뷰] {market} {view.get('stance')} 헤지 제안 "
-            f"{float(view.get('hedge_weight') or 0):.0%}"
-            f"{'' if view.get('leveraged', True) else ' (레버리지 거부)'} "
-            f"· {str(view.get('rationale') or '')[:80]}"
+            messages.event(
+                "시장 뷰",
+                f"{market} {view.get('stance')} · 헤지 제안 "
+                f"{float(view.get('hedge_weight') or 0):.0%}"
+                f"{'' if view.get('leveraged', True) else ' (레버리지 거부)'}",
+                f"근거: {messages.first_sentences(view.get('rationale'))}",
+            )
         )
     elif out.get("error"):
-        deps.notifier.send(f"[시장 세션 실패] {market}: {out['error']} — 규칙 기본값으로 진행")
+        deps.notifier.send(
+            messages.event("시장 세션 실패", f"{market}: {out['error']} — 규칙 기본값으로 진행")
+        )
     return out
 
 
@@ -933,7 +948,9 @@ def _hedge_body(deps: DaemonDeps, market: str) -> dict:
             flag = f"hedge_paused_notice:{market}:{today.isoformat()}"
             if not control.get_flag(conn, flag):
                 control.set_flag(conn, flag, True)
-                deps.notifier.send(f"[헤지 보류: 일시정지] {market} — 재개하면 다음 틱에 실행")
+                deps.notifier.send(
+                    messages.event("헤지 보류: 일시정지", f"{market} — 재개하면 다음 틱에 실행")
+                )
             return {"skipped": "일시정지"}
         ectx = ExecContext(
             settings=deps.settings,
@@ -1111,14 +1128,14 @@ def _monitor_body(deps: DaemonDeps, market: str) -> dict:
         hedge = _hedge_body(deps, market)
     except Exception as e:  # noqa: BLE001 - 헤지 실패가 손절 점검을 막지 않는다
         logger.exception("헤지 실행 실패 %s", market)
-        deps.notifier.send(f"[헤지 실패] {market}: {type(e).__name__}: {e}")
+        deps.notifier.send(messages.failure("헤지 실패", f"{market}", e))
         hedge = {"error": f"{type(e).__name__}: {e}"}
     rep: dict | None = None
     try:
         rep = _reprice_body(deps, market)
     except Exception as e:  # noqa: BLE001 - 재호가 실패가 손절 점검을 막지 않는다
         logger.exception("재호가 실행 실패 %s", market)
-        deps.notifier.send(f"[재호가 실패] {market}: {type(e).__name__}: {e}")
+        deps.notifier.send(messages.failure("재호가 실패", f"{market}", e))
         rep = {"error": f"{type(e).__name__}: {e}"}
     conn = deps.conn_factory()
     try:
@@ -1425,7 +1442,7 @@ def _news_trigger(deps: DaemonDeps, conn: sqlite3.Connection, market: str, unive
             parts.append(f"유니버스 밖 발굴 세션 #{out['discover']}")
         try:
             deps.notifier.send(
-                f"[뉴스 발굴] {market}: 새 뉴스 {len(novel)}건 — " + "; ".join(parts)
+                messages.event("뉴스 발굴", f"{market} 새 뉴스 {len(novel)}건", *parts)
             )
         except Exception:  # noqa: BLE001
             logger.debug("뉴스 발굴 알림 실패", exc_info=True)
@@ -1604,8 +1621,11 @@ def _discover_body(deps: DaemonDeps, market: str) -> dict:
                 queued.append({"ticker": t, "request_id": rid, "tier": c.get("tier")})
         if queued:
             deps.notifier.send(
-                f"[장중 발굴] {market}: "
-                + ", ".join(f"{q['ticker']}({q['tier']}) → #{q['request_id']}" for q in queued)
+                messages.event(
+                    "장중 발굴",
+                    market,
+                    *(f"{q['ticker']}({q['tier']}) → 요청 #{q['request_id']}" for q in queued),
+                )
             )
         return {
             "novel": len(novel),
@@ -1627,7 +1647,9 @@ def _reflect_body(deps: DaemonDeps) -> dict:
             features_n = int(deps.snapshot_fn(list(deps.settings.markets)))
         except Exception as e:  # noqa: BLE001 - 스냅샷 실패는 통보하고 반성은 계속
             logger.warning("피처 스냅샷 실패: %s", e)
-            deps.notifier.send(f"[피처 스냅샷 실패] {e} — 만기 결과가 채워지지 않을 수 있음")
+            deps.notifier.send(
+                messages.event("피처 스냅샷 실패", f"{e} — 만기 결과가 채워지지 않을 수 있음")
+            )
     conn = deps.conn_factory()
     try:
         matured = outcomes.mature(conn, state=deps.state, today=_today(deps))
@@ -1656,13 +1678,13 @@ def _reflect_body(deps: DaemonDeps) -> dict:
             except Exception as e:  # noqa: BLE001 - 한 시장의 실패가 다른 시장을 막지 않는다
                 logger.exception("reflect 실패 %s", market)
                 errors.append(f"{market}: {type(e).__name__}: {e}")
-                deps.notifier.send(f"[reflect 실패] {market}: {e}")
+                deps.notifier.send(messages.event("reflect 실패", f"{market}: {e}"))
                 continue
             if res.session_id or res.fake:
                 sessions += 1
             if not res.ok:
                 errors.append(f"{market}: {res.error}")
-                deps.notifier.send(f"[reflect 실패] {market}: {res.error}")
+                deps.notifier.send(messages.event("reflect 실패", f"{market}: {res.error}"))
         pr = store.promote_and_prune(conn, now=deps.now(), settings=deps.settings.memory)
     finally:
         conn.close()
@@ -1684,7 +1706,7 @@ def _ml_train_body(deps: DaemonDeps, *, market: str | None = None) -> dict:
         r = train_mod.train_quant(load_ml(), state=deps.state, now=deps.now, market=market)
     except Exception as e:  # noqa: BLE001 - 학습 실패는 통보하고 데몬은 계속
         logger.exception("ML 학습 실패")
-        deps.notifier.send(f"[ML 학습 실패] {type(e).__name__}: {e}")
+        deps.notifier.send(messages.failure("ML 학습 실패", "", e))
         return {"status": "error", "error": f"{type(e).__name__}: {e}"}
     met = r.get("metrics") or {}
     acc = (
@@ -1693,8 +1715,11 @@ def _ml_train_body(deps: DaemonDeps, *, market: str | None = None) -> dict:
         else r.get("promote_reason")
     )
     deps.notifier.send(
-        f"[ML 학습] quant {r.get('version') or '-'}: {r.get('status')} {acc} "
-        f"승격={r.get('promoted')}"
+        messages.event(
+            "ML 학습",
+            f"quant {r.get('version') or '-'}: {r.get('status')} {acc}",
+            f"승격={r.get('promoted')}",
+        )
     )
     rl = _rl_train(deps, market=market)
     if rl is not None:
@@ -1724,15 +1749,18 @@ def _rl_train(
             conn.close()
     except Exception as e:  # noqa: BLE001 - 실험 학습 실패가 데몬을 막지 않는다
         logger.exception("RL 사이저 학습 실패")
-        deps.notifier.send(f"[RL 학습 실패] {type(e).__name__}: {e}")
+        deps.notifier.send(messages.failure("RL 학습 실패", "", e))
         return {"status": "error", "error": f"{type(e).__name__}: {e}"}
     if r.get("status") == "insufficient_data":
         logger.info("RL 사이저 학습 생략: %s", r.get("promote_reason") or "데이터 부족")
         return r
     s = (r.get("summary") or {}).get("rl") or {}
     deps.notifier.send(
-        f"[RL 학습] rl_sizer {r.get('version') or '-'}: {r.get('status')} "
-        f"RL 수익 평균 {s.get('return_mean', '-')} (승격은 `trader rl promote` 수동)"
+        messages.event(
+            "RL 학습",
+            f"rl_sizer {r.get('version') or '-'}: {r.get('status')}",
+            f"RL 수익 평균 {s.get('return_mean', '-')} (승격은 `trader rl promote` 수동)",
+        )
     )
     return r
 
@@ -1746,12 +1774,12 @@ def _scan_analyze_body(deps: DaemonDeps, market: str) -> dict:
         _market_view_body(deps, market)  # 시장 세션(Phase 18): 헤지 비중 제안, 실패해도 계속
     except Exception as e:  # noqa: BLE001 - 시장 세션 실패가 스캔을 막지 않는다
         logger.exception("시장 세션 실패 %s", market)
-        deps.notifier.send(f"[시장 세션 실패] {market}: {type(e).__name__}: {e}")
+        deps.notifier.send(messages.failure("시장 세션 실패", f"{market}", e))
     try:
         _regime_apply_view(deps, market)  # Phase 19: 전략가 RISK_OFF 를 4번째 지표로 재판정
     except Exception as e:  # noqa: BLE001
         logger.exception("전략가 지표 반영 실패 %s", market)
-        deps.notifier.send(f"[국면 재판정 실패] {market}: {type(e).__name__}: {e}")
+        deps.notifier.send(messages.failure("국면 재판정 실패", f"{market}", e))
     scan_error: str | None = None
     try:
         _scan_body(deps, market)
@@ -1782,8 +1810,11 @@ def _heavy(deps: DaemonDeps, fn: Callable[[], Any], *, cron: bool = True) -> Any
                 logger.warning("cron 잡이 heavy 락을 %.0f분 기다리는 중", waited / 60)
                 try:
                     deps.notifier.send(
-                        f"[잡 대기] 예정된 잡이 다른 무거운 잡(백필·학습) 때문에 "
-                        f"{waited / 60:.0f}분 기다리는 중"
+                        messages.event(
+                            "잡 대기",
+                            f"예정된 잡이 다른 무거운 잡(백필·학습) 때문에 "
+                            f"{waited / 60:.0f}분 기다리는 중",
+                        )
                     )
                 except Exception:  # noqa: BLE001
                     logger.debug("대기 알림 실패", exc_info=True)
@@ -2071,7 +2102,11 @@ def _start_web(app: Any, host: str, port: int, *, notifier: Any = None) -> threa
             logger.error("웹 UI 서버 종료 %s:%s: %s", host, port, e)
             if notifier is not None:
                 try:
-                    notifier.send(f"[웹 UI 시작 실패] {host}:{port} — {type(e).__name__}: {e}")
+                    notifier.send(
+                        messages.event(
+                            "웹 UI 시작 실패", f"{host}:{port} — {type(e).__name__}: {e}"
+                        )
+                    )
                 except Exception:  # noqa: BLE001
                     pass
             return
@@ -2079,7 +2114,11 @@ def _start_web(app: Any, host: str, port: int, *, notifier: Any = None) -> threa
             logger.error("웹 UI 서버가 시작되지 못함 %s:%s (포트 점유?)", host, port)
             if notifier is not None:
                 try:
-                    notifier.send(f"[웹 UI 시작 실패] {host}:{port} 포트가 사용 중인지 확인하세요")
+                    notifier.send(
+                        messages.event(
+                            "웹 UI 시작 실패", f"{host}:{port} 포트가 사용 중인지 확인하세요"
+                        )
+                    )
                 except Exception:  # noqa: BLE001
                     pass
 
@@ -2182,7 +2221,7 @@ def on_cron_missed(deps: DaemonDeps, job: Job) -> dict:
     이전엔 하트비트에 missed 만 적혀 Mac 이 07:30 에 잠들어 있으면 그날 분석이 조용히 사라졌다."""
     out: dict[str, Any] = {"job": job.id, "queued": False}
     try:
-        deps.notifier.send(f"[잡 놓침] {job.id} — 예정 시각을 지나 실행되지 않음")
+        deps.notifier.send(messages.event("잡 놓침", f"{job.id} — 예정 시각을 지나 실행되지 않음"))
     except Exception:  # noqa: BLE001
         pass
     if job.kind == "scan_analyze" and job.market:

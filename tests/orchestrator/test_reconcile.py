@@ -129,7 +129,7 @@ def test_reconcile_mismatch_notifies_and_fixes_snapshot_but_keeps_orders(conn):
     ]
     assert [o["id"] for o in out["open_orders"]] == [oid]
     assert len(notes.sent) == 1 and notes.sent[0].startswith(
-        "[대조 불일치] paper-main KR 2026-10-24"
+        "[대조 불일치] paper-main · KR 2026-10-24"
     )
     assert "[005930] 원장 10↔KIS 7" in notes.sent[0] and f"주문 #{oid} BUY" in notes.sent[0]
     latest = views.latest_positions(conn, "paper-main", "KR")

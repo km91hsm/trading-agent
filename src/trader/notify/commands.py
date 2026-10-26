@@ -11,6 +11,7 @@ from typing import Any
 from trader import heartbeat, names
 from trader.control import control
 from trader.ledger import repo
+from trader.notify import messages
 from trader.notify.telegram import parse_command
 from trader.orchestrator import executor
 from trader.platform import paths
@@ -61,10 +62,10 @@ def _control_command(ectx: Any, name: str, arg: str | None) -> str:
     conn = ectx.conn
     if name == "pause":
         control.set_flag(conn, "paused", True)
-        return "[일시정지] 모든 계좌 주문 중단"
+        return messages.event("일시정지", "모든 계좌 주문 중단")
     if name == "resume":
         control.set_flag(conn, "paused", False)
-        return "[재개] 실행 중"
+        return messages.event("재개", "실행 중")
     if name == "mode":
         parts = (arg or "").split()
         if len(parts) != 2:
@@ -82,7 +83,7 @@ def _control_command(ectx: Any, name: str, arg: str | None) -> str:
             control.set_account_mode(conn, acct, mode)
         except (ValueError, control.ConfirmationRequired) as e:
             return f"거부: {e}"
-        return f"[모드] {acct.id} = {mode}"
+        return messages.event("모드", f"{acct.id} = {mode}")
     parts = (arg or "").split()
     sub = parts[0] if parts else "list"
     current = control.get_watchlist(conn)
@@ -95,7 +96,7 @@ def _control_command(ectx: Any, name: str, arg: str | None) -> str:
             return "사용법: /watch add|remove <ticker> | /watch list"
     except ValueError as e:
         return f"거부: {e}"
-    return "[관심종목] " + (", ".join(current) or "없음")
+    return messages.event("관심종목", ", ".join(current) or "없음")
 
 
 def run_command(ectx: Any, arg: str | None) -> str:
@@ -125,7 +126,7 @@ def run_command(ectx: Any, arg: str | None) -> str:
         return f"거부: {e}"
     except ValueError as e:
         return f"거부: {e}"
-    return f"[요청 #{rid}] {jobq.label(kind, p)} — 데몬이 순서대로 실행해요"
+    return messages.event(f"요청 #{rid}", f"{jobq.label(kind, p)} — 데몬이 순서대로 실행해요")
 
 
 def poll_once(ectx: Any, receiver: Any, *, echo: Callable[[str], None] = lambda s: None) -> dict:
@@ -147,7 +148,7 @@ def poll_once(ectx: Any, receiver: Any, *, echo: Callable[[str], None] = lambda 
             failed += 1
             logger.exception("텔레그램 명령 처리 실패: %s", u.text)
             try:
-                ectx.notifier.send(f"[명령 실패] {u.text}: {type(e).__name__}: {e}")
+                ectx.notifier.send(messages.failure("명령 실패", f"{u.text}", e))
             except Exception:  # noqa: BLE001
                 logger.debug("명령 실패 알림 실패", exc_info=True)
         # 업데이트마다 오프셋을 바로 전진시킨다 — 뒤 명령이 예외로 끊겨도 같은 명령을 다시 받지 않음
@@ -180,8 +181,15 @@ def _handle_command(ectx: Any, conn: Any, cmd: tuple[str, str | None], echo: Cal
 
             ops = health.headline(control.get_flag(conn, health.RESULT_FLAG))
             ectx.notifier.send(
-                f"[상태] {paused} · 계좌 모드: {modes}\n{daemon_line(ectx)}\n{ops}\n"
-                f"국면: {regime_line}\n오늘 스캔:\n{scan}\n미승인 주문:\n{body}"
+                messages.event(
+                    "상태",
+                    f"{paused} · 계좌 모드: {modes}",
+                    daemon_line(ectx),
+                    ops,
+                    f"국면: {regime_line}",
+                    f"오늘 스캔:\n{scan}",
+                    f"미승인 주문:\n{body}",
+                )
             )
             echo(f"status → 미승인 {len(pending)}건")
             return
@@ -203,4 +211,6 @@ def _handle_command(ectx: Any, conn: Any, cmd: tuple[str, str | None], echo: Cal
         )
         echo(f"{name} #{arg} → {'ok' if r['ok'] else r.get('error') or '실패'}")
         if not r["ok"]:
-            ectx.notifier.send(f"[{name} 실패] {r.get('error') or r.get('order')}")
+            ectx.notifier.send(
+                messages.failure(f"{name} 실패", "", r.get("error") or r.get("order"))
+            )

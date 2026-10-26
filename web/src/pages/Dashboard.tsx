@@ -130,7 +130,8 @@ export function Dashboard() {
   const positions = accountId
     ? [...(pfKR.data?.snapshot?.positions ?? []), ...(pfUS.data?.snapshot?.positions ?? [])]
     : allHeld.filter((p, i) => allHeld.findIndex((x) => x.market === p.market && x.ticker === p.ticker) === i);
-  const navOf = (m: "KR" | "US") => (m === "KR" ? pfKR : pfUS).data?.snapshot?.nav;
+  // '전체'의 보유 행은 여러 계좌·환경의 합이라 대표 계좌 NAV 로 나누면 비중이 틀린다 → 비중을 비운다
+  const navOf = (m: "KR" | "US") => (accountId ? (m === "KR" ? pfKR : pfUS).data?.snapshot?.nav : undefined);
   const tape = useMemo(
     () =>
       buildTape({

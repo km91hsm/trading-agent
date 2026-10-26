@@ -20,6 +20,7 @@ from trader.config import MARKET_TZ, AccountConfig, Settings
 from trader.control import control
 from trader.ledger import repo
 from trader.ledger.repo import dead_status_sql
+from trader.notify import messages
 from trader.orchestrator import tools
 from trader.orchestrator.run_store import run_date_for
 from trader.platform import paths
@@ -355,7 +356,7 @@ def escalate(conn: sqlite3.Connection, result: dict) -> str | None:
     if LEVELS.index(result["level"]) <= LEVELS.index(prev_level):
         return None
     heads = "; ".join(i["text"] for i in result["items"][:4])
-    return f"[점검 격상] {LABEL[prev_level]} → {result['label']}: {heads}"
+    return messages.event("점검 격상", f"{LABEL[prev_level]} → {result['label']}", heads)
 
 
 def headline(result: dict | None) -> str:

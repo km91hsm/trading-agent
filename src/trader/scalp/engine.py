@@ -19,10 +19,12 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
+from trader import names
 from trader.agents.schemas import Decision
 from trader.broker.errors import KisApiError
 from trader.config import MARKET_TZ, AccountConfig, ScalpCfg, Settings
 from trader.control import control
+from trader.notify import messages
 from trader.notify.telegram import Notifier, NullNotifier
 from trader.orchestrator import executor, run_store, tools
 from trader.orchestrator.run_store import read_checkpoint
@@ -33,6 +35,11 @@ from trader.scalp import signals
 logger = logging.getLogger("trader.scalp")
 
 MINUTES_NEEDED = 60  # 틱마다 받는 1분봉 수 (진입 판정 25봉 + 여유)
+
+
+def _label(ctx: ScalpContext, market: str, ticker: str) -> str:
+    """알림용 '종목명(코드)' (원장·캐시만)."""
+    return names.display(ctx.conn, (ctx.state or paths.state_dir()) / "cache", market, ticker)
 
 
 @dataclass
@@ -295,15 +302,21 @@ def tick(ctx: ScalpContext, *, market: str, today: date) -> dict:
         out["exits"].append({"ticker": pos["ticker"], "reason": reason, "ret": round(ret, 5)})
         _event(ctx.state, today, market, "exit", **closed)
         ctx.notifier.send(
-            f"[단타 청산] {market} {pos['ticker']} {reason} {ret:+.2%} @ {q}"
-            + (" (dry-run)" if ctx.dry_run else "")
+            messages.scalp(
+                leg="exit",
+                market=market,
+                label=_label(ctx, market, pos["ticker"]),
+                price=q,
+                reason=reason + (" (dry-run)" if ctx.dry_run else ""),
+                ret=ret,
+            )
         )
     st["open"] = still_open
     # 일일 손실 한도: 청산된 거래의 (수익률 × 비중) 합
     realized = sum(float(c.get("ret") or 0) for c in st.get("closed") or []) * cfg.max_weight_pct
     if realized <= -cfg.daily_stop_pct and not st.get("halted"):
         st["halted"] = f"실현 {realized:+.2%} ≤ -{cfg.daily_stop_pct:.2%}"
-        ctx.notifier.send(f"[단타 중단] {market} {st['halted']} — 오늘 신규 진입 없음")
+        ctx.notifier.send(messages.scalp(leg="halt", market=market, label="", reason=st["halted"]))
         _event(ctx.state, today, market, "halt", realized=realized)
     # --- 진입 ---
     if not st.get("halted") and len(st["open"]) < cfg.max_positions:
@@ -355,8 +368,13 @@ def tick(ctx: ScalpContext, *, market: str, today: date) -> dict:
             out["entries"].append({"ticker": c["ticker"], "price": str(e.price), "qty": qty})
             _event(ctx.state, today, market, "entry", **pos)
             ctx.notifier.send(
-                f"[단타 진입] {market} {c['ticker']} @ {e.price} {e.reason()}"
-                + (" (dry-run)" if ctx.dry_run else "")
+                messages.scalp(
+                    leg="entry",
+                    market=market,
+                    label=_label(ctx, market, c["ticker"]),
+                    price=e.price,
+                    reason=e.reason() + (" (dry-run)" if ctx.dry_run else ""),
+                )
             )
     save_state(ctx.state, today, market, st)
     return out

@@ -27,6 +27,7 @@ from trader.broker.errors import KisApiError
 from trader.config import HedgeCfg, HedgeInstrument
 from trader.control import control
 from trader.ledger import repo
+from trader.notify import messages
 from trader.orchestrator import executor
 from trader.orchestrator import market_view as market_view_mod
 from trader.risk import regime as regime_mod
@@ -188,7 +189,7 @@ def rebalance(
             control.set_flag(
                 ctx.conn, key, {"state": st, "action": "deferred", "done": [], "pending": []}
             )
-            executor._notify_quietly(ctx, f"[헤지 보류] {market} {deferred}")
+            executor._notify_quietly(ctx, messages.event("헤지 보류", f"{market} {deferred}"))
         return out
     if st == "bear" and not held:
         leveraged = int(state.get("count") or 0) >= 3 and (
@@ -283,7 +284,10 @@ def rebalance(
             control.set_flag(ctx.conn, switch_key(market), None)
             sold = ", ".join(sorted(held))
             executor._notify_quietly(
-                ctx, f"[헤지 교체] {market} {sold} 매도 → 다음 운영일 {want.symbol} 진입"
+                ctx,
+                messages.event(
+                    "헤지 교체", f"{market} {sold} 매도 → 다음 운영일 {want.symbol} 진입"
+                ),
             )
     elif st != "bear" and held:
         out["action"] = "exit"
@@ -322,8 +326,11 @@ def rebalance(
         if failed and flag["retry"] >= MAX_RETRIES:
             executor._notify_quietly(
                 ctx,
-                f"[헤지 보류] {market} 계좌 {', '.join(sorted(failed))} 는 {MAX_RETRIES}회 실패해 "
-                f"오늘은 더 시도하지 않음",
+                messages.event(
+                    "헤지 보류",
+                    f"{market} 계좌 {', '.join(sorted(failed))}",
+                    f"{MAX_RETRIES}회 실패해 오늘은 더 시도하지 않아요.",
+                ),
             )
         out["pending_accounts"] = sorted(failed)
     return out
@@ -366,7 +373,9 @@ def _execute(
         price = Decimal(str(quote_fn(inst)))
     except (KisApiError, ValueError) as e:
         logger.warning("헤지 시세 실패 %s %s: %s", market, inst.symbol, e)
-        executor._notify_quietly(ctx, f"[헤지 보류] {market} {inst.symbol} 시세 실패: {e}")
+        executor._notify_quietly(
+            ctx, messages.failure("헤지 보류", f"{market} {inst.symbol} 시세", e)
+        )
         return [{"error": f"시세 실패: {e}", "account_id": a} for a in targets] or [
             {"error": f"시세 실패: {e}"}
         ]
@@ -399,13 +408,26 @@ def _execute(
         if o and o.get("accepted"):
             executor._notify_quietly(
                 ctx,
-                f"[헤지 {'진입' if action == 'BUY' else '해제'}] {r['account_id']} {market} "
-                f"{executor._label(ctx, market, inst.symbol)} {r['qty']}주 "
-                f"(국면 {state.get('state')} {state.get('count')}/3) 접수번호 {o.get('order_no')}",
+                messages.hedge(
+                    entering=action == "BUY",
+                    account=r["account_id"],
+                    market=market,
+                    label=executor._label(ctx, market, inst.symbol),
+                    qty=r["qty"],
+                    detail=(
+                        f"국면 {state.get('state')} {state.get('count')}/3 · "
+                        f"접수번호 {o.get('order_no')}"
+                    ),
+                ),
             )
         elif r.get("approval_id"):
             executor._notify_quietly(
                 ctx,
-                f"[헤지 승인 요청] {r['account_id']} {market} {inst.symbol} #{r['approval_id']}",
+                messages.hedge_approval(
+                    approval_id=r["approval_id"],
+                    account=r["account_id"],
+                    market=market,
+                    label=executor._label(ctx, market, inst.symbol),
+                ),
             )
     return results

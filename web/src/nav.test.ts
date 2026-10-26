@@ -35,6 +35,12 @@ describe("종목 검색 연결 (Phase 24)", () => {
     expect(t[0]).toMatchObject({ label: "삼성전기 차트", hint: "KR 009150 · 보유", to: "/chart?market=KR&ticker=009150" });
     expect(t[1].to).toBe("/chart?market=US&ticker=SSNLF&exchange=NYS");
   });
+  it("정확한 코드 항목은 검색 결과의 거래소로 채운다", () => {
+    const items = paletteItems("JPM", {}, [{ market: "US", ticker: "JPM", name: "JPMorgan", exchange: "NYS", source: "universe" }]);
+    const t = items.filter((i) => i.kind === "ticker");
+    expect(t).toHaveLength(1);
+    expect(t[0]).toMatchObject({ to: "/chart?market=US&ticker=JPM&exchange=NYS", label: "JPMorgan 차트" });
+  });
   it("차트 URL 질의를 읽는다", () => {
     expect(parseChartQuery(new URLSearchParams("market=US&ticker=TSLA&exchange=NYS"))).toEqual({ ticker: "TSLA", market: "US", exchange: "NYS" });
     expect(parseChartQuery(new URLSearchParams(""))).toEqual({ ticker: "005930", market: "KR", exchange: "NAS" });

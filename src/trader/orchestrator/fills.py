@@ -15,9 +15,12 @@ from datetime import UTC, date, datetime, time
 from decimal import Decimal
 from typing import Any
 
+from trader import names
 from trader.broker.models import Fill
 from trader.config import MARKET_TZ, AccountConfig
 from trader.ledger import repo
+from trader.notify import messages
+from trader.platform import paths
 
 logger = logging.getLogger("trader.fills")
 
@@ -159,9 +162,17 @@ def _flag_ambiguous(
     if notifier is not None:
         try:
             notifier.send(
-                f"[체결 매칭 모호] {account_id} {f.market} {f.ticker} {f.side}: 응답 없는 주문 "
-                f"{len(order_ids)}건(#{', #'.join(str(i) for i in order_ids)}) 중 어느 것의 "
-                "체결인지 알 수 없어 붙이지 않음 — KIS 앱에서 확인 뒤 정리"
+                messages.fill_ambiguous(
+                    account=account_id,
+                    market=f.market,
+                    label=names.display(conn, paths.state_dir() / "cache", f.market, f.ticker),
+                    side=f.side,
+                    detail=(
+                        f"응답 없는 주문 {len(order_ids)}건"
+                        f"(#{', #'.join(str(i) for i in order_ids)}) 중 어느 것의 체결인지 알 수 "
+                        "없어 붙이지 않았어요 — KIS 앱에서 확인 뒤 정리"
+                    ),
+                )
             )
         except Exception:  # noqa: BLE001
             logger.debug("체결 매칭 모호 알림 실패", exc_info=True)

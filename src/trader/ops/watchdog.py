@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from trader.config import AccountConfig, Settings
+from trader.notify import messages
 from trader.ops import health
 from trader.platform import paths
 
@@ -78,7 +79,7 @@ def run_once(
         head = daemon_items[0]["text"] if daemon_items else health.headline(result)
         rest = "; ".join(i["text"] for i in result["items"] if i not in daemon_items[:1])[:600]
         try:
-            sent = bool(notifier.send(f"[감시] {head}" + (f" — {rest}" if rest else "")))
+            sent = bool(notifier.send(messages.event("감시", head, rest)))
         except Exception:  # noqa: BLE001 - 알림 실패는 다음 회차에 다시
             logger.warning("watchdog 알림 실패", exc_info=True)
     rec = {

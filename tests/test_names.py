@@ -67,12 +67,12 @@ def test_resolve_prefers_ledger_then_cache_and_records_cache_hit(conn, project):
 
 
 def test_label_and_display(conn, project):
-    assert names.label("005930", "삼성전자") == "삼성전자 005930"
+    assert names.label("005930", "삼성전자") == "삼성전자(005930)"
     assert names.label("005930", None) == "005930"
     assert names.label("005930", "") == "005930"
     assert names.display(conn, project / "state" / "cache", "KR", "005930") == "005930"
     repo.upsert_ticker_name(conn, "KR", "005930", "삼성전자", "inputs")
-    assert names.display(conn, project / "state" / "cache", "KR", "005930") == "삼성전자 005930"
+    assert names.display(conn, project / "state" / "cache", "KR", "005930") == "삼성전자(005930)"
     assert names.display(None, project / "state" / "cache", "KR", "005930") == "005930"  # 원장 없음
 
 
@@ -150,13 +150,13 @@ def test_approval_request_and_status_use_names(conn, project):
     executor.execute(
         ectx, dec, date=d, market="KR", price=Decimal("71000"), exchange=None, dry_run=False
     )
-    assert any("삼성전자 005930" in m for m in ectx.notifier.sent)
+    assert any("삼성전자(005930)" in m for m in ectx.notifier.sent)
     pending = repo.pending_approvals(conn)
     assert pending and pending[0]["order"].get("name") == "삼성전자"
-    assert "삼성전자 005930" in commands.approval_line(pending[0])
+    assert "삼성전자(005930)" in commands.approval_line(pending[0])
     (project / "docs" / "TODO.md").write_text("", encoding="utf-8")
     text = status.build_status(conn, Settings(), [acct], project / "docs" / "TODO.md", now=t0)
-    assert "BUY 삼성전자 005930" in text
+    assert "BUY 삼성전자(005930)" in text
     # 승인 실행은 order 의 name 을 벗겨 OrderRequest 를 만든다
     r = executor.approve(ectx, pending[0]["id"])
     assert r["ok"] is True and broker.orders[0].ticker == "005930"

@@ -18,7 +18,7 @@ const ENV_LABEL = { paper: "모의", real: "실전" } as const;
 function EnvHoldings({ row }: { row: OverviewRow }) {
   const { market, data } = row;
   const live = useLiveQuotes(market, data.positions.map((p) => p.ticker));
-  const applied = applyQuotes(data.positions, live?.quotes, data.cash);
+  const applied = applyQuotes(data.positions, live?.quotes, data.nav);
   return (
     <>
       <h3 className="sub-h">

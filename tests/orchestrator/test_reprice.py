@@ -110,7 +110,7 @@ def test_reprice_cancels_and_resubmits_at_quote_once_per_day(conn):
     assert read_checkpoint(d, "42_reprice_paper-main")["data"]["approved"] is True
     assert read_checkpoint(d, "52_order_reprice_paper-main")["data"]["status"] == "accepted"
     assert read_checkpoint(d, "50_order_paper-main") is None  # 오늘 분석의 50_ 는 건드리지 않는다
-    assert any("[재호가]" in m and "70000→70300" in m for m in ctx.notifier.sent)
+    assert any("[재호가]" in m and "70,000원 → 70,300원" in m for m in ctx.notifier.sent)
     # 운영일 1회
     assert (
         reprice.reprice(ctx, market="KR", today=D, cfg=CFG, quote_fn=lambda t, e: Decimal(1))[

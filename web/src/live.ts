@@ -10,20 +10,24 @@ export type LiveQuote = { price: string; change_pct: number | null; asof: string
 export type QuotesResp = { session: "open" | "closed"; asof: string; quotes: Record<string, LiveQuote> };
 export type LivePosition = Position & { live?: boolean; change_pct?: number | null };
 
-/** 보유 행에 실시간 현재가를 입힌다. 평가 = 수량 × 현재가, NAV = 현금 + 평가 합(현금은 스냅샷 그대로).
- * stale 값은 쓰지 않는다(스냅샷이 이미 같은 값을 갖고 있다). */
+/** 보유 행에 실시간 현재가를 입힌다. 평가 = 수량 × 현재가.
+ * NAV 는 스냅샷의 브로커 NAV(KR 총평가 — 미결제 매수대금이 현금에 남아 있어 '현금 + 평가' 로 다시 만들면
+ * 이중으로 센다)에 **평가 변화분만** 더한다. stale 값은 쓰지 않는다(스냅샷이 이미 같은 값). */
 export function applyQuotes(
   positions: Position[],
   quotes: Record<string, LiveQuote> | null | undefined,
-  cash?: string | null,
+  snapshotNav?: string | null,
 ): { positions: LivePosition[]; nav: number | null; pnl: number; liveCount: number } {
   let evalSum = 0;
+  let snapEval = 0;
   let cost = 0;
   let liveCount = 0;
   const out = positions.map((p): LivePosition => {
     const q = quotes?.[p.ticker];
     const avg = Number(p.avg_price ?? 0);
     cost += avg * p.qty;
+    const before = Number(p.eval_amount ?? 0);
+    snapEval += before;
     if (q && !q.stale && Number.isFinite(Number(q.price))) {
       const px = Number(q.price);
       const ev = px * p.qty;
@@ -31,11 +35,11 @@ export function applyQuotes(
       liveCount += 1;
       return { ...p, current_price: q.price, eval_amount: String(ev), live: true, change_pct: q.change_pct };
     }
-    evalSum += Number(p.eval_amount ?? 0);
+    evalSum += before;
     return { ...p, live: false };
   });
-  const c = cash === null || cash === undefined || cash === "" ? null : Number(cash);
-  return { positions: out, nav: c === null ? null : c + evalSum, pnl: evalSum - cost, liveCount };
+  const base = snapshotNav === null || snapshotNav === undefined || snapshotNav === "" ? null : Number(snapshotNav);
+  return { positions: out, nav: base === null ? null : base + (evalSum - snapEval), pnl: evalSum - cost, liveCount };
 }
 
 /** 다음 폴링까지 대기: 장중 10초, 장 밖 5분. */

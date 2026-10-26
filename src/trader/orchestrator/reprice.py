@@ -21,6 +21,7 @@ from trader.broker.errors import KisApiError
 from trader.config import RepriceCfg
 from trader.control import control
 from trader.ledger import repo
+from trader.notify import messages
 from trader.orchestrator import executor
 
 logger = logging.getLogger("trader.reprice")
@@ -97,8 +98,15 @@ def reprice(
                 why = f"현재가 {quote} 가 원 지정가 {limit} 대비 {cfg.max_chase_pct:.1%} 넘게 불리"
                 out["skipped"].append({"order_id": row["id"], "why": why})
                 ctx.notifier.send(
-                    f"[재호가 보류] {account.id} {market} {name(ticker)} {row['side']} "
-                    f"{row['qty']}주 @{limit}: {why} — 원 주문 유지"
+                    messages.reprice_deferred(
+                        account=account.id,
+                        market=market,
+                        label=name(ticker),
+                        side=row["side"],
+                        qty=row["qty"],
+                        limit=limit,
+                        why=why,
+                    )
                 )
                 continue
             try:
@@ -159,8 +167,16 @@ def reprice(
                 else f"게이트 거부: {'; '.join(r0.get('reasons') or [])}"
             )
             ctx.notifier.send(
-                f"[재호가] {account.id} {market} {name(ticker)} {row['side']} {row['qty']}주 "
-                f"{limit}→{quote}: 원 주문 취소, {tail}"
+                messages.reprice(
+                    account=account.id,
+                    market=market,
+                    label=name(ticker),
+                    side=row["side"],
+                    qty=row["qty"],
+                    old=limit,
+                    new=quote,
+                    tail=tail,
+                )
             )
     control.set_flag(ctx.conn, done_key(market, today), True)
     return out

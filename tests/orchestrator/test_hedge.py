@@ -316,7 +316,7 @@ def test_retry_cap_stops_after_max(project, conn):
     assert hedge.rebalance(ctx, market="KR", today=D, cfg=CFG, quote_fn=boom) == {
         "skipped": "오늘 이미 실행"
     }
-    assert any("더 시도하지 않음" in m for m in ctx.notifier.sent)
+    assert any("더 시도하지 않아요" in m for m in ctx.notifier.sent)
 
 
 # --- Phase 19: 전략가 RISK_ON 하루 보류 -------------------------------------------------

@@ -39,7 +39,7 @@ export function AccountPage() {
   const snap = pf.data?.snapshot ?? null;
   const stance = acct?.stance_by_market[market];
   const live = useLiveQuotes(market, (snap?.positions ?? []).map((p) => p.ticker));
-  const applied = applyQuotes(snap?.positions ?? [], live?.quotes, snap?.cash);
+  const applied = applyQuotes(snap?.positions ?? [], live?.quotes, snap?.nav);
   const perf = useLoad(
     () => (accountId ? getJson<PerformanceReport>(withAccount(`/api/performance?market=${market}&days=30`, accountId)) : null),
     [accountId, market, tick],
