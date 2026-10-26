@@ -731,3 +731,117 @@ def test_long_horizon_holding_uses_wider_threshold_and_longer_interval(conn):
     ctx.now = lambda: NOW + timedelta(minutes=45)
     r3 = monitor.monitor_once(ctx, market="KR", today=D)
     assert r3["reevaluated"] == 0 and len(ctx.calls) == 1
+
+
+def test_stop_loss_does_not_cancel_resting_sell_when_paused_or_off(conn):
+    """전체 검토 O5: 일시정지·off 계좌에서는 손절 전 미체결 SELL 을 KIS 에서 취소하지 않는다
+    (취소만 하고 손절은 안 나가면 보호 매도만 사라진다)."""
+    from trader.control import control
+
+    pos = _pos()
+    ctx = _ctx(conn, positions=[pos])
+    _decision(conn, action="HOLD", stop_loss=65000.0)
+    did = repo.decision_id(conn, D, "KR", "005930")
+    repo.insert_order(
+        conn,
+        decision_id=did,
+        account_id="paper-main",
+        ticker="005930",
+        market="KR",
+        side="SELL",
+        qty=3,
+        order_type="LIMIT",
+        price=Decimal("72000"),
+        status="accepted",
+        order_no="T1",
+        message=None,
+        mode="auto",
+        org_no="91252",
+        created_at=NOW.isoformat(),
+    )
+    control.set_flag(conn, "paused", True)
+    monitor.monitor_once(ctx, market="KR", today=D)
+    assert ctx.brokers["paper-main"].cancelled == []
+    control.set_flag(conn, "paused", False)
+    control.set_account_mode(conn, ctx.accounts[0], "off")
+    monitor.monitor_once(ctx, market="KR", today=D)
+    assert ctx.brokers["paper-main"].cancelled == []
+    assert conn.execute("SELECT status FROM orders WHERE order_no='T1'").fetchone()[0] == "accepted"
+
+
+def test_off_mode_stop_record_does_not_block_after_switch_to_auto(conn):
+    """전체 검토 O15: off 의 "오늘 기록함" 플래그가 같은 날 auto 전환 뒤 손절을 막지 않는다."""
+    from trader.control import control
+
+    pos = _pos()
+    ctx = _ctx(conn, positions=[pos])
+    _decision(conn, action="HOLD", stop_loss=65000.0)
+    control.set_account_mode(conn, ctx.accounts[0], "off")
+    monitor.monitor_once(ctx, market="KR", today=D)
+    assert ctx.brokers["paper-main"].orders == []
+    control.set_account_mode(conn, ctx.accounts[0], "auto")
+    out = monitor.monitor_once(ctx, market="KR", today=D)
+    assert out["stop_loss_orders"] == 1
+
+
+def test_stop_loss_cancels_same_day_resting_buy(conn):
+    """전체 검토 O13: 손절 때 같은 종목 당일 미체결 BUY 를 취소해 손절 뒤 재보유를 막는다."""
+    pos = _pos()
+    ctx = _ctx(conn, positions=[pos])
+    _decision(conn, action="ADD", stop_loss=65000.0)
+    did = repo.decision_id(conn, D, "KR", "005930")
+    repo.insert_order(
+        conn,
+        decision_id=did,
+        account_id="paper-main",
+        ticker="005930",
+        market="KR",
+        side="BUY",
+        qty=2,
+        order_type="LIMIT",
+        price=Decimal("60000"),
+        status="accepted",
+        order_no="B1",
+        message=None,
+        mode="auto",
+        org_no="91252",
+        created_at=NOW.isoformat(),
+    )
+    out = monitor.monitor_once(ctx, market="KR", today=D)
+    assert out["stop_loss_orders"] == 1
+    assert ctx.brokers["paper-main"].cancelled == ["B1"]
+    assert (
+        conn.execute("SELECT status FROM orders WHERE order_no='B1'").fetchone()[0] == "cancelled"
+    )
+
+
+def test_stop_loss_is_monotone_across_holding_decisions(conn):
+    """전체 검토 L5: 보유 재분석 HOLD 가 손절가를 비워도 보유 기간 중 이전 손절선(최고값)을 지킨다.
+    (평단 70000·현재 63000: 기본 −15% 손절선 59500 은 안 닿지만 이전 결정의 65000 은 닿는다)"""
+    from datetime import timedelta
+
+    prev = D - timedelta(days=1)
+    first = Decision(**ok_decision(stop_loss=65000.0))
+    did = repo.ingest_checkpoint(
+        conn, prev, "KR", "005930", "30_decision", {"data": first.model_dump()}
+    )
+    repo.insert_order(
+        conn,
+        decision_id=did,
+        account_id="paper-main",
+        ticker="005930",
+        market="KR",
+        side="BUY",
+        qty=10,
+        order_type="LIMIT",
+        price=Decimal("70000"),
+        status="filled",
+        order_no="F1",
+        message=None,
+        mode="auto",
+        created_at=(NOW - timedelta(days=1)).isoformat(),
+    )
+    _decision(conn, action="HOLD", target_weight=0.0, stop_loss=None)  # 오늘 HOLD, 손절가 없음
+    ctx = _ctx(conn, positions=[_pos(cur="63000")], price="63000")
+    out = monitor.monitor_once(ctx, market="KR", today=D)
+    assert out["stop_loss_orders"] == 1

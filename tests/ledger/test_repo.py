@@ -684,3 +684,29 @@ def test_dead_statuses_shared_and_include_expired():
     """살아 있는 주문 판정은 한 곳(repo.DEAD_STATUSES)에서 정의한다. expired 도 죽은 주문."""
     assert set(repo.DEAD_STATUSES) == {"rejected", "cancelled", "failed", "expired"}
     assert "'expired'" in repo.dead_status_sql()
+
+
+def test_has_open_order_include_filled_flag(conn):
+    """전체 검토 O3: 재평가 라운드는 체결 완료 주문을 중복으로 보지 않는다."""
+    from decimal import Decimal
+
+    from trader.ledger import repo
+
+    oid = repo.insert_order(
+        conn,
+        decision_id=7,
+        account_id="a",
+        ticker="005930",
+        market="KR",
+        side="SELL",
+        qty=1,
+        order_type="LIMIT",
+        price=Decimal("1"),
+        status="filled",
+        order_no="1",
+        message="",
+        mode="auto",
+        created_at="2026-10-26T00:00:00+00:00",
+    )
+    assert oid and repo.has_open_order_or_approval(conn, 7, "a", "SELL")
+    assert not repo.has_open_order_or_approval(conn, 7, "a", "SELL", include_filled=False)

@@ -301,6 +301,17 @@ def line(conn: sqlite3.Connection, markets: list[str], *, today: date | None = N
     return " · ".join(parts)
 
 
+def core_count(state: dict | None) -> int:
+    """정량 3지표(200일선·모멘텀·변동성) 중 켜진 수 — 전략가·수급 보조 지표는 빼고. −2x 레버리지
+    판정('3지표 모두')은 이것만 본다(전체 검토 O14). 신호가 없으면 0."""
+    sig = (state or {}).get("signals") or {}
+    return (
+        int(bool(sig.get("ma_below")))
+        + int(bool(sig.get("momentum_weak")))
+        + int(bool(sig.get("vol_high")))
+    )
+
+
 def count_text(r: dict) -> str:
     """'2/3', 전략가 지표가 켜졌으면 '1/3+전략가', 수급 지표가 켜졌으면 '+수급'."""
     sig = r.get("signals") or {}
