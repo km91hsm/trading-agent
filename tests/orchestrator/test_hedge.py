@@ -328,7 +328,8 @@ def test_risk_on_defers_entry_only_at_boundary(project, conn):
     ctx = _ctx(conn)
     _set_regime(conn, "bear", 2)
     _view(conn, stance="RISK_ON", confidence=0.9)
-    cfg = CFG.model_copy(update={"agent_signal": True})  # 전체 검토 L8 뒤 기본 끔 — Phase 19 동작 확인
+    # 전체 검토 L8 뒤 기본 끔 — Phase 19 동작은 켜서 확인
+    cfg = CFG.model_copy(update={"agent_signal": True})
     out = hedge.rebalance(ctx, market="KR", today=D, cfg=cfg, quote_fn=lambda i: Decimal("5000"))
     assert out["action"] == "deferred" and "보류" in out["reason"]
     assert ctx.brokers["paper-main"].orders == []
