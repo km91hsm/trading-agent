@@ -19,7 +19,8 @@ uv run trader readiness
 | paper_days | ≥ 20 | `runs` 의 analyze ok 날짜 수(KST), FAKE 세션 제외 |
 | run_error_rate | ≤ 10% | 최근 28일 runs (monitor·텔레그램 같은 interval 잡은 오류일 때만 기록되므로 보수적) |
 | order_failed_rate | ≤ 10% | 최근 28일 orders(failed·rejected) |
-| return_vs_benchmark | ≥ 0 | 모의 30일 수익률 − 1/N 벤치마크(피처 스토어 종가). 벤치마크 없으면 0 대비 |
+| return_vs_benchmark | 정보 | 모의 30일 수익률 − 유니버스 1/N(피처 스토어 종가). NAV 가 대부분 현금이면 시장 움직임과 섞여 선택 능력을 재지 못해 판정에서 뺐다 |
+| llm_alpha | 만기 ≥ 20쌍 ∧ 95% 구간 하한 > 0 | 섀도 포트폴리오: 같은 날 LLM 이 산 종목(BUY/ADD 목표 비중) − 같은 scan 후보 균등의 5거래일 수익 차이, 부트스트랩 구간. 웹 `/performance` 'LLM 종목 선택 효과' |
 | mdd | ≥ −10% | 모의 30일 최대 낙폭 |
 | calibration_active | 정보 | 만기 결정 ≥ `ml.yaml` min_decisions(60) |
 | stale_approvals | 0건 | 만료됐는데 pending 인 승인 |

@@ -49,6 +49,37 @@ def _navs(conn, values, account="paper-main"):
         )
 
 
+def _shadow_pairs(conn, diffs, start=date(2026, 9, 1)):
+    for i, dlt in enumerate(diffs):
+        day = (start + timedelta(days=i)).isoformat()
+        for strat, ret in (("llm", 0.01 + dlt), ("candidates_1n", 0.01)):
+            conn.execute(
+                "INSERT INTO shadow_portfolios(market, date, strategy, weights_json, created_at, "
+                "fwd_ret, matured_at) VALUES ('KR', ?, ?, '{}', ?, ?, ?)",
+                (day, strat, day, ret, day),
+            )
+    conn.commit()
+
+
+def test_llm_alpha_needs_enough_pairs_and_positive_ci(project, conn):
+    """전체 검토 L1: 계좌 수익률 − 1/N 대신 섀도 llm − 후보 1/N 의 신뢰구간 하한으로 판정."""
+    accounts = [make_account("paper-main", "paper", "auto")]
+
+    def item():
+        r = readiness.check(
+            conn, accounts=accounts, settings=Settings(), state=project / "state", today=TODAY
+        )
+        return next(i for i in r["items"] if i["key"] == "llm_alpha")
+
+    assert item()["ok"] is False and "0쌍" in item()["note"]
+    _shadow_pairs(conn, [0.01] * (readiness.MIN_SHADOW_PAIRS - 1))
+    assert item()["ok"] is False  # 쌍 부족
+    _shadow_pairs(conn, [0.01], start=date(2026, 12, 1))
+    assert item()["ok"] is True
+    _shadow_pairs(conn, [-0.05] * 20, start=date(2027, 1, 1))  # 열위가 섞이면 하한이 0 아래
+    assert item()["ok"] is False
+
+
 def test_readiness_items_and_thresholds(project, conn):
     accounts = [
         make_account("paper-main", "paper", "auto"),
@@ -63,6 +94,7 @@ def test_readiness_items_and_thresholds(project, conn):
         "run_error_rate",
         "order_failed_rate",
         "return_vs_benchmark",
+        "llm_alpha",
         "mdd",
         "calibration_active",
         "stale_approvals",
@@ -73,6 +105,7 @@ def test_readiness_items_and_thresholds(project, conn):
     _runs(conn, 22, n_err=1)
     _navs(conn, [100, 101, 102, 101, 103, 104])
     seed_matured(conn, 60)
+    _shadow_pairs(conn, [0.004 + 0.001 * (i % 3) for i in range(readiness.MIN_SHADOW_PAIRS)])
     r = readiness.check(
         conn, accounts=accounts, settings=Settings(), state=project / "state", today=TODAY
     )
@@ -80,7 +113,8 @@ def test_readiness_items_and_thresholds(project, conn):
     assert by["paper_days"]["ok"] and by["paper_days"]["value"] == 22
     assert by["run_error_rate"]["ok"] and by["run_error_rate"]["value"] < 0.1
     assert by["order_failed_rate"]["ok"]
-    assert by["return_vs_benchmark"]["ok"]
+    assert by["return_vs_benchmark"]["ok"] and by["return_vs_benchmark"]["note"].startswith("정보")
+    assert by["llm_alpha"]["ok"] and by["llm_alpha"]["value"] > 0
     assert by["mdd"]["ok"] and by["mdd"]["value"] < 0
     assert by["calibration_active"]["value"] is True
     assert by["stale_approvals"]["ok"] and by["stale_approvals"]["value"] == 0
@@ -110,6 +144,7 @@ def test_readiness_never_changes_modes(project, conn):
     _runs(conn, 25)
     _navs(conn, [100, 102, 104])
     seed_matured(conn, 60)
+    _shadow_pairs(conn, [0.005] * readiness.MIN_SHADOW_PAIRS)
     r = readiness.check(
         conn, accounts=accounts, settings=Settings(), state=project / "state", today=TODAY
     )

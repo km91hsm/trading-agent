@@ -9,7 +9,7 @@ from contextlib import closing
 
 from fastapi import APIRouter, Query, Request
 
-from trader.ledger import performance
+from trader.ledger import performance, shadow
 from trader.platform import paths
 from trader.web.routers._common import deps_of, require_account, require_market
 
@@ -70,3 +70,29 @@ def performance_report(
     deps = deps_of(request)
     with closing(deps.conn_factory()) as conn:
         return cached_report(conn, deps.state, acct.id, m, days)
+
+
+@router.get("/shadow")
+def shadow_report(request: Request, market: str | None = None) -> dict:
+    """섀도 포트폴리오(전체 검토 L1): LLM 선택 − 같은 날 후보 1/N·정량 상위의 만기 쌍 통계.
+    계좌와 무관한 시장 단위 비교라 account_id 를 받지 않는다."""
+    from trader import readiness
+
+    m = (market or "KR").upper()
+    if m not in ("KR", "US"):
+        m = "KR"
+    deps = deps_of(request)
+    with closing(deps.conn_factory()) as conn:
+        pairs = {
+            b: shadow.paired_stats(conn, b=b, market=m) for b in ("candidates_1n", "quant_topn")
+        }
+        by_date: dict[str, dict] = {}
+        for r in shadow.rows(conn, market=m):
+            by_date.setdefault(r["date"], {"date": r["date"]})[r["strategy"]] = r["fwd_ret"]
+    recent = sorted(by_date.values(), key=lambda x: x["date"], reverse=True)[:10]
+    return {
+        "market": m,
+        "min_pairs": readiness.MIN_SHADOW_PAIRS,
+        "pairs": pairs,
+        "recent": recent,
+    }

@@ -193,6 +193,14 @@ export type PerformanceReport = {
   convergence_rate: number | null;
 };
 
+export type ShadowStats = { n: number; mean_diff: number | null; ci_low: number | null; ci_high: number | null };
+export type ShadowReport = {
+  market: string;
+  min_pairs: number;
+  pairs: { candidates_1n: ShadowStats; quant_topn: ShadowStats };
+  recent: Array<{ date: string; llm?: number | null; candidates_1n?: number | null; quant_topn?: number | null }>;
+};
+
 export type Run = {
   id: number;
   kind: string;
