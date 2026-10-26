@@ -21,6 +21,7 @@ import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from pydantic import BaseModel, ValidationError
 
@@ -90,6 +91,7 @@ def ask_json(
     claude_bin: Path | None = None,
     agents_dir: Path | None = None,
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
+    cancel: Any = None,
 ) -> BaseModel | None:
     """에이전트 md 본문(+정본 스키마)을 시스템 프롬프트로, payload JSON 을 stdin 으로 넘겨 schema 로
     검증한 결과를 돌려준다. None = 판정 없음(상한·실패). FAKE_CLAUDE=1 이면 고정 응답."""
@@ -157,7 +159,11 @@ def ask_json(
             cwd=str(cwd),
             shell=False,
             timeout=timeout_s,
+            **({"cancel": cancel} if cancel is not None else {}),
         )
+    except session.SessionCancelled:  # TimeoutExpired 의 하위라 먼저 잡는다
+        finish("error", error="데몬 종료 요청으로 중단")
+        return None
     except subprocess.TimeoutExpired:
         finish("error", error=f"타임아웃 ({timeout_s}s)")
         return None

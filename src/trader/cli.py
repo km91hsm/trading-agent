@@ -2343,10 +2343,16 @@ def scalp_report(
     judge = {"cfg": settings.scalp, "close_hm": close_hm, "minutes_fn": None}
     if live:  # 오늘 NO_GO 신호의 가상 수익 — KIS 당일 분봉(실전 시세 키)
         mc = _build_market(config.load_secrets())
+        us_ex: dict[str, str] = {}
+        if market == "US":
+            try:
+                us_ex = {u.symbol: u.exchange for u in config.load_universe().us}
+            except config.ConfigError:
+                us_ex = {}
         judge["minutes_fn"] = (
-            (lambda t: mc.get_minute_kr(t, count=400))
+            (lambda t, ex=None: mc.get_minute_kr(t, count=400))
             if market == "KR"
-            else (lambda t: mc.get_minute_us(t, "NAS", count=400))
+            else (lambda t, ex=None: mc.get_minute_us(t, ex or us_ex.get(t, "NAS"), count=400))
         )
     out = scalp_engine.report(
         paths.state_dir(),

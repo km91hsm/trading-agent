@@ -1182,6 +1182,8 @@ def _scalp_judge(deps: DaemonDeps):
         cfg = deps.settings.scalp
 
         def ask(payload: dict, schema: type):
+            if deps.stop_event.is_set():  # 종료 중: 대기열에 남은 판정은 띄우지 않는다
+                return None
             conn = deps.conn_factory()
             try:
                 return quick.ask_json(
@@ -1193,6 +1195,7 @@ def _scalp_judge(deps: DaemonDeps):
                     cap=cfg.judge_daily_cap,
                     timeout_s=cfg.judge_timeout_s,
                     now=deps.now,
+                    cancel=deps.stop_event,  # 종료 요청이면 실행 중인 claude 도 정리
                 )
             finally:
                 conn.close()
@@ -2373,6 +2376,9 @@ def run(
         hb.stop(datetime.now(UTC))
         return {"ok": True, "jobs": len(jobs)}
     finally:
+        if deps.scalp_judge is not None:  # 대기 중 판정 취소(실행 중인 것은 stop_event 로 정리)
+            deps.stop_event.set()
+            deps.scalp_judge.shutdown()
         lock.release()
 
 

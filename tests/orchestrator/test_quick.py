@@ -52,7 +52,7 @@ def _runner(result_text, *, rc=0, seen=None):
     return run
 
 
-def _ask(conn, runner, cap=60):
+def _ask(conn, runner, cap=60, **kw):
     return quick.ask_json(
         Settings(),
         conn,
@@ -65,6 +65,7 @@ def _ask(conn, runner, cap=60):
         claude_bin=Path("/x/claude"),
         agents_dir=REPO_AGENTS,
         now=lambda: NOW,
+        **kw,
     )
 
 
@@ -86,6 +87,24 @@ def test_ask_json_timeout_returns_none(conn):
 
     assert _ask(conn, boom) is None
     assert conn.execute("SELECT status FROM agent_calls").fetchone()[0] == "error"
+
+
+def test_ask_json_passes_cancel_and_handles_cancelled(conn):
+    import threading
+
+    from trader.orchestrator import session
+
+    ev = threading.Event()
+    seen = {}
+
+    def run(cmd, **kw):
+        seen.update(kw)
+        raise session.SessionCancelled(cmd, 5)
+
+    assert _ask(conn, run, cancel=ev) is None
+    assert seen["cancel"] is ev
+    row = conn.execute("SELECT status, error FROM agent_calls").fetchone()
+    assert row[0] == "error" and "종료" in row[1]
 
 
 def test_ask_json_schema_violation_or_text_is_none(conn):

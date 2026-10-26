@@ -97,8 +97,23 @@ class ScalpJudge:
             logger.warning("단타 판정 실패 %s: %s", key, e)
             return None
 
+    def discard(self, key: str) -> None:
+        """포지션이 닫히면 그 포지션의 남은 조언을 버린다(다음 포지션이 옛 결과를 읽지 않게)."""
+        f = self._futs.pop(key, None)
+        if f is not None:
+            f.cancel()
+
     def shutdown(self) -> None:
         self._pool.shutdown(wait=False, cancel_futures=True)
+
+
+def entry_key(market: str, today: date, ticker: str) -> str:
+    return f"entry:{market}:{today.isoformat()}:{ticker}"
+
+
+def advice_key(market: str, pos: dict) -> str:
+    """조언 키는 포지션 단위(시장·종목·진입 시각) — 같은 종목의 다른 날 포지션과 섞이지 않는다."""
+    return f"hold:{market}:{pos['ticker']}:{pos.get('entry_at') or pos.get('entry_time')}"
 
 
 # --- 상태 파일 -------------------------------------------------------------------------
@@ -419,6 +434,7 @@ def _enter(
     pos = {
         "ticker": c["ticker"],
         "exchange": c.get("exchange"),
+        "weight": cfg.max_weight_pct * weight_mult,  # 일일 손실 계산이 실제 비중을 쓰게
         "entry_price": str(price),
         "entry_time": time_hms,
         "entry_at": ctx.now().isoformat(),
@@ -449,18 +465,31 @@ def _settle_pending(
     cfg = ctx.settings.scalp
     entered: list[dict] = []
     pend: dict = st.setdefault("pending", {})
+    now_m = signals.hm_minutes(_local_hms(ctx, market))
+    cutoff = now_m >= signals.hm_minutes(ctx.close_hm) - cfg.close_before_min
     for t, p in list(pend.items()):
-        v = ctx.judge.poll(f"entry:{t}") if ctx.judge is not None else None
+        key = entry_key(market, today, t)
         age = (ctx.now() - datetime.fromisoformat(p["submitted_at"])).total_seconds()
-        if v == "pending":
-            if age <= cfg.judge_timeout_s:
-                continue
+        v = ctx.judge.poll(key) if ctx.judge is not None else None
+        if v == "pending" and age <= cfg.judge_timeout_s and not cutoff:
+            continue
+        if v == "pending" or age > cfg.judge_timeout_s:
+            # 제출 시각 기준 시한: 대기열에서 늦게 끝난 판정도 버린다(그 사이 시장이 움직였다)
+            if ctx.judge is not None:
+                ctx.judge.discard(key)
             v, why = None, f"판정 시간 초과({cfg.judge_timeout_s:.0f}초)"
+        elif cutoff:
+            v, why = None, "마감 전 진입 금지 시각 — 판정을 쓰지 않음"
         elif v is None:
             why = "판정 없음(재시작·실패·상한)"
         else:
             why = None
-        base = {"ticker": t, "signal_price": p["signal_price"], "signal_time": p["signal_time"]}
+        base = {
+            "ticker": t,
+            "signal_price": p["signal_price"],
+            "signal_time": p["signal_time"],
+            "exchange": p.get("exchange"),
+        }
         pend.pop(t, None)
         st.setdefault("done", []).append(t)
         if v is None:
@@ -538,7 +567,7 @@ def tick(ctx: ScalpContext, *, market: str, today: date) -> dict:
             close_hm=ctx.close_hm,
         )
         if reason is None and judge_on:
-            key = f"hold:{pos['ticker']}"
+            key = advice_key(market, pos)
             adv = ctx.judge.poll(key)
             if adv not in (None, "pending") and getattr(adv, "action", None) == "exit":
                 reason = "judge_exit"
@@ -571,6 +600,8 @@ def tick(ctx: ScalpContext, *, market: str, today: date) -> dict:
         if reason is None:
             still_open.append(pos)
             continue
+        if ctx.judge is not None:
+            ctx.judge.discard(advice_key(market, pos))
         dec = _decision("SELL", pos["ticker"], market, q, cfg, reason)
         results = executor.execute(
             ectx,
@@ -609,7 +640,10 @@ def tick(ctx: ScalpContext, *, market: str, today: date) -> dict:
         )
     st["open"] = still_open
     # 일일 손실 한도: 청산된 거래의 (수익률 × 비중) 합
-    realized = sum(float(c.get("ret") or 0) for c in st.get("closed") or []) * cfg.max_weight_pct
+    realized = sum(
+        float(c.get("ret") or 0) * float(c.get("weight") or cfg.max_weight_pct)
+        for c in st.get("closed") or []
+    )
     if realized <= -cfg.daily_stop_pct and not st.get("halted"):
         st["halted"] = f"실현 {realized:+.2%} ≤ -{cfg.daily_stop_pct:.2%}"
         ctx.notifier.send(messages.scalp(leg="halt", market=market, label="", reason=st["halted"]))
@@ -649,7 +683,9 @@ def tick(ctx: ScalpContext, *, market: str, today: date) -> dict:
                     "bars": _bars_json(bars),
                     "limits": _limits(cfg),
                 } | _judge_context(ctx, market, c["ticker"], c.get("exchange"))
-                ctx.judge.submit(f"entry:{c['ticker']}", payload, schemas.ScalpVerdict)
+                ctx.judge.submit(
+                    entry_key(market, today, c["ticker"]), payload, schemas.ScalpVerdict
+                )
                 st.setdefault("pending", {})[c["ticker"]] = {
                     "signal_price": str(e.price),
                     "signal_time": e.time,
@@ -702,6 +738,14 @@ def hypothetical_return(
     return float(after[-1].close / entry_price - 1)
 
 
+def _bars_for(minutes_fn: Callable, ticker: str, exchange: str | None) -> list:
+    """minutes_fn(ticker[, exchange]) — 판정 사건에 남긴 거래소를 넘길 수 있으면 넘긴다."""
+    try:
+        return minutes_fn(ticker, exchange)
+    except TypeError:
+        return minutes_fn(ticker)
+
+
 def judge_summary(
     state: Path | None,
     *,
@@ -744,7 +788,7 @@ def judge_summary(
                 if minutes_fn is not None and d == today:
                     try:
                         r = hypothetical_return(
-                            minutes_fn(e["ticker"]),
+                            _bars_for(minutes_fn, e["ticker"], e.get("exchange")),
                             entry_price=Decimal(str(e["signal_price"])),
                             entry_time=str(e["signal_time"]),
                             cfg=cfg,

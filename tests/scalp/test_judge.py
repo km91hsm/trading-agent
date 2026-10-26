@@ -55,12 +55,17 @@ def test_judge_go_enters_next_tick(conn, project):
     out = engine.tick(ctx, market="KR", today=D)
     assert out["entries"] == []  # 이번 틱은 제출만
     key, payload, schema = ctx.judge.seen[0]
-    assert key == "entry:005930" and schema is ScalpVerdict and len(payload["bars"]) == 20
+    assert (
+        key == engine.entry_key("KR", D, "005930")
+        and schema is ScalpVerdict
+        and len(payload["bars"]) == 20
+    )
     out = engine.tick(ctx, market="KR", today=D)
     assert [e["ticker"] for e in out["entries"]] == ["005930"]
     st = engine.load_state(None, D, "KR")
     pos = st["open"][0]
     assert pos["judged"] is True and pos["qty"] == {"paper-main": 24}  # half → 비중 2.5%
+    assert pos["weight"] == ctx.settings.scalp.max_weight_pct * 0.5  # 일일 손실 계산용 실제 비중
 
 
 def test_verdict_cannot_widen_stop(conn, project):
@@ -183,3 +188,45 @@ def test_report_go_vs_nogo_summary(conn, project):
     assert j["counts"] == {"go": 1, "no_go": 1, "none": 0}
     assert j["go_trades"] == 1 and j["go_avg_ret"] > 0
     assert j["no_go_measured"] in (0, 1)
+
+
+def test_late_completed_verdict_after_deadline_is_dropped(conn, project):
+    """대기열에서 늦게 끝난 판정(제출 뒤 시한 초과)은 완료돼 있어도 쓰지 않는다."""
+    _scan(["005930"])
+    ctx = _judged_ctx(conn, GO)
+    engine.tick(ctx, market="KR", today=D)
+    ctx.now = lambda: NOW + timedelta(seconds=ctx.settings.scalp.judge_timeout_s + 5)
+    out = engine.tick(ctx, market="KR", today=D)
+    st = engine.load_state(None, D, "KR")
+    assert out["entries"] == [] and st["open"] == [] and st["pending"] == {}
+
+
+def test_verdict_after_close_cutoff_no_entry(conn, project):
+    """마감 전 신규 진입 금지 시각을 넘긴 뒤 회수한 GO 는 진입하지 않는다."""
+    _scan(["005930"])
+    ctx = _judged_ctx(conn, GO)
+    engine.tick(ctx, market="KR", today=D)
+    ctx.close_hm = "10:05"  # 지금 10:00 KST, close_before_min 이 이 시각을 덮는다
+    out = engine.tick(ctx, market="KR", today=D)
+    st = engine.load_state(None, D, "KR")
+    assert out["entries"] == [] and st["open"] == [] and st["pending"] == {}
+
+
+def test_advice_key_is_per_position():
+    a = engine.advice_key("KR", {"ticker": "005930", "entry_at": "2026-10-24T01:00:00+00:00"})
+    b = engine.advice_key("KR", {"ticker": "005930", "entry_at": "2026-10-25T01:00:00+00:00"})
+    assert a != b and a.startswith("hold:KR:005930:")
+
+
+def test_daily_loss_uses_position_weight(conn, project):
+    """half 진입 손실은 full 비중이 아니라 실제 비중으로 일일 손실에 들어간다."""
+    _scan(["005930"])
+    ctx = _judged_ctx(conn, GO)
+    cfg = ctx.settings.scalp
+    # full 비중이면 한도를 넘고 half 비중이면 넘지 않는 손실
+    ret = -cfg.daily_stop_pct / (cfg.max_weight_pct * 0.75)
+    st = engine.load_state(None, D, "KR")
+    st["closed"] = [{"ticker": "000660", "ret": ret, "weight": cfg.max_weight_pct * 0.5}]
+    engine.save_state(None, D, "KR", st)
+    engine.tick(ctx, market="KR", today=D)
+    assert not engine.load_state(None, D, "KR").get("halted")
