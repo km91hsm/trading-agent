@@ -260,3 +260,32 @@ def test_train_reports_survivorship_caveat(project):
     r = train.train_quant(fast_cfg(), now=lambda: NOW)
     assert r["caveats"] and "생존 편향" in r["caveats"][0]
     assert "생존 편향" in registry.latest("quant")[1]["caveats"][0]
+
+
+def test_relative_labels_recomputed_within_population():
+    """Codex: 상대 삼분위는 걸러진 모집단 안에서 — 빠진 종목의 큰 수익이 순위를 밀어내지 않는다."""
+    import pandas as pd
+
+    from trader.ml import dataset
+
+    day = pd.Timestamp("2026-09-01")
+    rets = {"A": 0.01, "B": 0.02, "C": 0.03, "X": 1.0, "Y": 2.0, "Z": 3.0}
+    df = pd.DataFrame(
+        [{"date": day, "market": "KR", "ticker": t, "fwd_return": r} for t, r in rets.items()]
+    )
+    members = df[df.ticker.isin(["A", "B", "C"])]
+    if len(members) < dataset.MIN_CROSS_SECTION:
+        members = pd.concat([members] * dataset.MIN_CROSS_SECTION, ignore_index=True)
+    labels = dataset.relative_labels(members)
+    by = dict(zip(members.ticker, labels, strict=True))
+    assert by["A"] == 0.0 and by["C"] == 2.0
+
+
+def test_strict_pit_aborts_when_ledger_unreadable(project, monkeypatch):
+    _write(signal=True, n_tickers=3, n_days=60)
+    cfg = fast_cfg(train={"pit": {"strict": True}})
+    monkeypatch.setattr(train, "_apply_pit", lambda df, c, s: (df, {"error": "no such table"}))
+    df, cols, reason = train.prepare_dataset(
+        cfg, state=None, market=None, now=lambda: NOW, min_rows=10
+    )
+    assert df.empty and "strict" in reason

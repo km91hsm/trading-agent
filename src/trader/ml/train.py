@@ -102,6 +102,13 @@ def prepare_dataset(
     # 라벨은 종목의 연속 봉으로 먼저 계산하고(행을 먼저 빼면 앞으로의 수익이 틀어진다) 그다음 그날
     # 유니버스 구성원이 아니었던 행을 학습에서 뺀다(시점 기준 유니버스, Stock D-037)
     df, pit_info = _apply_pit(df, cfg, state)
+    if "error" in pit_info and cfg.train.pit.strict:
+        return df.iloc[0:0], [], f"시점 기준 유니버스(strict)를 읽지 못함: {pit_info['error']}"
+    if cfg.label.mode == "relative_tercile" and pit_info.get("rows_after") != pit_info.get(
+        "rows_before"
+    ):
+        # 상대 삼분위는 학습 모집단 안에서 다시 매긴다(빠진 종목의 수익이 순위를 오염시키지 않게)
+        df = df.assign(label=dataset.relative_labels(df))
     labeled = df[df["label"].notna()]
     cols = dataset.feature_columns(df)
     if len(labeled) < min_rows or labeled["label"].nunique() < 2 or not cols:

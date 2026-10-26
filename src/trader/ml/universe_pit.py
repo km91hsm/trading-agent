@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 import sqlite3
 from collections.abc import Iterable
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 import pandas as pd
 
@@ -26,6 +26,21 @@ logger = logging.getLogger("trader.ml")
 GRACE = timedelta(days=5)  # 기록이 하루이틀 빠져도(휴장·데몬 정지) 구성원으로 본다
 
 
+MERGE_GAP = timedelta(days=7)  # 기록 사이가 이보다 벌어지면(편출 뒤 재편입) 새 구간
+
+
+def effective_day(market: str, now: datetime) -> date:
+    """구성 관측의 효력 거래일: 그 시장 정규장이 이미 끝난 뒤의 관측은 다음 날부터(장 마감 뒤 새로
+    편입한 종목의 그날 행을 당시 구성원으로 소급하지 않는다)."""
+    from trader.config import MARKET_TZ
+    from trader.market_hours import REGULAR
+
+    local = now.astimezone(MARKET_TZ[market])
+    close_h, close_m = (int(x) for x in REGULAR[market][1].split(":"))
+    after = (local.hour, local.minute) >= (close_h, close_m)
+    return local.date() + timedelta(days=1) if after else local.date()
+
+
 def record(
     conn: sqlite3.Connection,
     *,
@@ -34,25 +49,45 @@ def record(
     day: date,
     source: str = "universe",
 ) -> int:
-    """그날 구성원을 남긴다(멱등): 새 종목은 first_seen=day, 있던 종목은 last_seen 을 늘린다."""
+    """그날 구성원을 남긴다(멱등): 마지막 구간과 MERGE_GAP 안이면 그 구간을 늘리고, 아니면(편출 뒤
+    재편입) 새 구간 — 재편입이 편출 기간을 소급해 덮지 않는다."""
     n = 0
     d = day.isoformat()
     for t in sorted({str(x) for x in tickers if x}):
-        conn.execute(
-            "INSERT INTO universe_members(market, ticker, first_seen, last_seen, source) "
-            "VALUES (?,?,?,?,?) ON CONFLICT(market, ticker) DO UPDATE SET "
-            "first_seen=min(first_seen, excluded.first_seen), "
-            "last_seen=max(last_seen, excluded.last_seen)",
-            (market, t, d, d, source),
-        )
+        rows = conn.execute(
+            "SELECT first_seen, last_seen FROM universe_members WHERE market=? AND ticker=?",
+            (market, t),
+        ).fetchall()
+        hit = None
+        for r in rows:
+            lo, hi = date.fromisoformat(r[0]), date.fromisoformat(r[1])
+            if lo - MERGE_GAP <= day <= hi + MERGE_GAP:
+                hit = (r[0], lo, hi)
+                break
+        if hit is None:
+            conn.execute(
+                "INSERT INTO universe_members(market, ticker, first_seen, last_seen, source) "
+                "VALUES (?,?,?,?,?)",
+                (market, t, d, d, source),
+            )
+        else:
+            key, lo, hi = hit
+            conn.execute(
+                "UPDATE universe_members SET first_seen=?, last_seen=? "
+                "WHERE market=? AND ticker=? AND first_seen=?",
+                (min(lo, day).isoformat(), max(hi, day).isoformat(), market, t, key),
+            )
         n += 1
     conn.commit()
     return n
 
 
 def members(conn: sqlite3.Connection, market: str) -> pd.DataFrame:
+    """구간 목록 [ticker, first_seen, last_seen] (한 종목이 여러 행일 수 있다)."""
     rows = conn.execute(
-        "SELECT ticker, first_seen, last_seen FROM universe_members WHERE market=?", (market,)
+        "SELECT ticker, first_seen, last_seen FROM universe_members WHERE market=? "
+        "ORDER BY ticker, first_seen",
+        (market,),
     ).fetchall()
     return pd.DataFrame(
         [(r[0], date.fromisoformat(r[1]), date.fromisoformat(r[2])) for r in rows],
@@ -61,13 +96,32 @@ def members(conn: sqlite3.Connection, market: str) -> pd.DataFrame:
 
 
 def _liquidity_mask(df: pd.DataFrame, top_n: int, window: int) -> pd.Series:
-    """그날까지의 window 일 평균 거래대금(종가×거래량) 순위가 (날짜·시장) 안 top_n 이하인 행."""
-    turnover = (df["close"].astype(float) * df["volume"].astype(float)).fillna(0.0)
-    trailing = turnover.groupby(df["ticker"]).transform(
+    """그날까지의 window 일 평균 거래대금(종가×거래량) 순위가 (날짜·시장) 안 top_n 이하인 행.
+    (시장·종목·날짜) 순으로 굴려 입력 순서·다른 시장의 같은 코드와 섞이지 않는다."""
+    order = df.sort_values(["market", "ticker", "date"])
+    turnover = (order["close"].astype(float) * order["volume"].astype(float)).fillna(0.0)
+    trailing = turnover.groupby([order["market"], order["ticker"]]).transform(
         lambda s: s.rolling(window, min_periods=1).mean()
     )
+    trailing = trailing.reindex(df.index)
     rank = trailing.groupby([df["date"], df["market"]]).rank(ascending=False, method="first")
     return rank <= top_n
+
+
+def _member_mask(df_m: pd.DataFrame, mem: pd.DataFrame) -> pd.Series:
+    """구간 중 하나라도 date 를 덮으면(마지막 기록 + GRACE 까지) 구성원."""
+    days = df_m["date"].dt.date
+    out = pd.Series(False, index=df_m.index)
+    for t, spans in mem.groupby("ticker"):
+        rows = df_m["ticker"] == t
+        if not rows.any():
+            continue
+        d = days[rows]
+        ok = pd.Series(False, index=d.index)
+        for lo, hi in zip(spans["first_seen"], spans["last_seen"], strict=True):
+            ok |= (d >= lo) & (d <= hi + GRACE)
+        out[ok.index] = ok
+    return out
 
 
 def apply(
@@ -90,14 +144,8 @@ def apply(
             continue
         start = min(mem["first_seen"])
         recorded = in_m & (days >= start)
-        span = mem.set_index("ticker")
-        first = df["ticker"].map(span["first_seen"])
-        last = df["ticker"].map(span["last_seen"])
-        member = (
-            first.notna()
-            & (days >= first.fillna(date.max))
-            & (days <= last.map(lambda x: x + GRACE if pd.notna(x) else date.min))
-        )
+        member = pd.Series(False, index=df.index)
+        member[in_m] = _member_mask(df[in_m], mem)
         keep &= ~recorded | member
         if cfg.strict:
             keep &= ~in_m | recorded

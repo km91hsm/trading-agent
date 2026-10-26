@@ -1631,7 +1631,6 @@ def _universe_members_body(deps: DaemonDeps) -> dict:
     """그날의 유니버스(제외 목록 뺌) + 계좌 보유 종목을 시장별 운영일로 기록한다(시점 기준 학습)."""
     from trader.ledger import views
     from trader.ml import universe_pit
-    from trader.orchestrator.run_store import run_date_for
 
     uni = deps.universe
     out: dict[str, int] = {}
@@ -1650,7 +1649,7 @@ def _universe_members_body(deps: DaemonDeps) -> dict:
                     tickers |= {str(p["ticker"]) for p in snap.get("positions") or []}
             tickers -= deps.settings.excluded_tickers(m)  # 헤지·현금 운용 ETF 는 학습 대상 아님
             out[m] = universe_pit.record(
-                conn, market=m, tickers=tickers, day=run_date_for(m, deps.now())
+                conn, market=m, tickers=tickers, day=universe_pit.effective_day(m, deps.now())
             )
     finally:
         conn.close()

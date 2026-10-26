@@ -90,6 +90,12 @@ def make_labels(
     return out
 
 
+def relative_labels(df: pd.DataFrame) -> pd.Series:
+    """이미 붙은 fwd_return 으로 상대 삼분위 라벨을 다시 매긴다 — 학습 모집단을 거른 뒤(시점 기준
+    유니버스) 그 안에서 순위를 내야 빠진 종목의 수익이 라벨을 오염시키지 않는다."""
+    return _tercile_labels(df)
+
+
 def _tercile_labels(out: pd.DataFrame) -> pd.Series:
     """(date, market) 그룹 안 fwd_return 백분위 순위 → 0/1/2. 그룹이 작으면 NaN."""
     valid = out[out["fwd_return"].notna()]

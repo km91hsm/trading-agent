@@ -19,13 +19,81 @@ def _df():
 
 def test_record_is_idempotent_and_extends(conn):
     assert pit.record(conn, market="KR", tickers=["A", "B"], day=date(2026, 9, 10)) == 2
-    pit.record(conn, market="KR", tickers=["A"], day=date(2026, 9, 20))
+    pit.record(conn, market="KR", tickers=["A"], day=date(2026, 9, 14))
     pit.record(conn, market="KR", tickers=["A"], day=date(2026, 9, 5))
+    pit.record(conn, market="KR", tickers=["A"], day=date(2026, 9, 14))  # 멱등
     m = pit.members(conn, "KR").set_index("ticker")
     assert m.loc["A", "first_seen"] == date(2026, 9, 5) and m.loc["A", "last_seen"] == date(
-        2026, 9, 20
+        2026, 9, 14
     )
     assert m.loc["B", "last_seen"] == date(2026, 9, 10)
+
+
+def test_reentry_opens_new_interval_not_backfill(conn):
+    # A 가 9/1~9/3 구성원 → 편출 → 9/30 재편입: 9/15 행은 구성원이 아니다
+    for d in (1, 2, 3):
+        pit.record(conn, market="KR", tickers=["A", "B"], day=date(2026, 9, d))
+    for d in range(4, 31):
+        pit.record(conn, market="KR", tickers=["B"], day=date(2026, 9, d))
+    pit.record(conn, market="KR", tickers=["A"], day=date(2026, 9, 30))
+    assert len(pit.members(conn, "KR").query("ticker == 'A'")) == 2
+    out, _ = pit.apply(_df(), conn, PitCfg())
+    a_days = set(out[out.ticker == "A"]["date"].dt.day)
+    assert 15 not in a_days and 30 in a_days and 2 in a_days
+
+
+def test_liquidity_rolling_ignores_input_order_and_other_markets():
+    rows = [
+        {
+            "date": pd.Timestamp("2026-09-02"),
+            "ticker": "A",
+            "market": "KR",
+            "close": 10.0,
+            "volume": 100,
+        },
+        {
+            "date": pd.Timestamp("2026-09-01"),
+            "ticker": "A",
+            "market": "KR",
+            "close": 1.0,
+            "volume": 1,
+        },
+        {
+            "date": pd.Timestamp("2026-09-01"),
+            "ticker": "B",
+            "market": "KR",
+            "close": 10.0,
+            "volume": 10,
+        },
+        {
+            "date": pd.Timestamp("2026-09-02"),
+            "ticker": "B",
+            "market": "KR",
+            "close": 10.0,
+            "volume": 10,
+        },
+        # 다른 시장의 같은 코드 A 는 거래대금이 커도 KR 의 A 와 섞이지 않는다
+        {
+            "date": pd.Timestamp("2026-08-31"),
+            "ticker": "A",
+            "market": "US",
+            "close": 1e6,
+            "volume": 1e6,
+        },
+    ]
+    out, _ = pit.apply(pd.DataFrame(rows), None, PitCfg(liquidity_top_n=1, liquidity_window=5))
+    kr = out[out.market == "KR"]
+    assert kr[kr["date"] == "2026-09-01"]["ticker"].tolist() == ["B"]
+
+
+def test_effective_day_after_close_is_next_day():
+    from datetime import UTC, datetime
+
+    # 10/27 06:40 KST = 뉴욕 10/26 17:40(마감 뒤) → 10/27 부터, KR 은 장 전이라 당일
+    now = datetime(2026, 10, 26, 21, 40, tzinfo=UTC)
+    assert pit.effective_day("US", now) == date(2026, 10, 27)
+    assert pit.effective_day("KR", now) == date(2026, 10, 27)
+    assert pit.effective_day("KR", datetime(2026, 10, 27, 7, 0, tzinfo=UTC)) == date(2026, 10, 28)
 
 
 def test_apply_membership_coverage_and_strict(conn):
