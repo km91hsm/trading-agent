@@ -80,3 +80,17 @@ describe("bumpsGlobalTick", () => {
     expect(bumpsGlobalTick([], true)).toBe(true);
   });
 });
+
+import { chunk, mergeQuotes } from "./hooks";
+
+describe("시세 나눠 받기", () => {
+  it("20개씩 나누고 응답을 합친다(하나라도 열렸으면 open)", () => {
+    expect(chunk(Array.from({ length: 45 }, (_, i) => i), 20).map((c) => c.length)).toEqual([20, 20, 5]);
+    const m = mergeQuotes([
+      { session: "closed", asof: "a", quotes: { A: { price: "1", change_pct: null, asof: "", stale: true } } },
+      { session: "open", asof: "b", quotes: { B: { price: "2", change_pct: 1, asof: "", stale: false } } },
+    ]);
+    expect(m.session).toBe("open");
+    expect(Object.keys(m.quotes).sort()).toEqual(["A", "B"]);
+  });
+});

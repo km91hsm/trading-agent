@@ -148,19 +148,28 @@ export function Dashboard() {
     ? [...(pfKR.data?.snapshot?.positions ?? []), ...(pfUS.data?.snapshot?.positions ?? [])]
     : mergeHoldings(allHeld);
   // 실시간 시세는 페이지에서 시장별로 한 번(보유 + 결정 종목, ≤20) — 시세표·합산·보유 표가 같은 값을 쓴다
+  // 고른 계좌의 보유가 먼저(요청 상한에 걸려도 빠지지 않게), 그다음 전체 보유·오늘 결정 종목
   const liveTickers = (m: string) =>
     Array.from(
       new Set([
-        ...allHeld.filter((p) => (p.market ?? "KR") === m).map((p) => p.ticker),
         ...rawPositions.filter((p) => (p.market ?? "KR") === m).map((p) => p.ticker),
+        ...allHeld.filter((p) => (p.market ?? "KR") === m).map((p) => p.ticker),
         ...(decisions.data ?? []).filter((d) => d.market === m).map((d) => d.ticker),
       ]),
-    ).slice(0, 20);
+    );
   const liveKR = useLiveQuotes("KR", liveTickers("KR"));
   const liveUS = useLiveQuotes("US", liveTickers("US"));
   const positions = applyQuotes(rawPositions, { ...(liveUS?.quotes ?? {}), ...(liveKR?.quotes ?? {}) }).positions;
-  // '전체'의 보유 행은 여러 계좌·환경의 합이라 대표 계좌 NAV 로 나누면 비중이 틀린다 → 비중을 비운다
-  const navOf = (m: "KR" | "US") => (accountId ? (m === "KR" ? pfKR : pfUS).data?.snapshot?.nav : undefined);
+  // 시세표 비중의 분모도 실시간 NAV(브로커 총평가 + 평가 변화분) — 평가만 움직이고 NAV 가 그대로면
+  // 비중이 100% 를 넘어 보인다. '전체'의 보유 행은 여러 계좌·환경의 합이라 비중을 비운다
+  const navOf = (m: "KR" | "US") => {
+    if (!accountId) return undefined;
+    const snap = (m === "KR" ? pfKR : pfUS).data?.snapshot;
+    if (!snap) return undefined;
+    const a = applyQuotes(snap.positions ?? [], (m === "KR" ? liveKR : liveUS)?.quotes, snap.nav);
+    return a.liveCount && a.nav !== null ? String(a.nav) : snap.nav;
+  };
+
   const tape = useMemo(
     () =>
       buildTape({

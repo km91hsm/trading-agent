@@ -315,11 +315,29 @@ export function useNameSearch(q: string, market?: string, delayMs = 300): Search
   return hits;
 }
 
+export const MAX_LIVE_TICKERS = 60;
+
+export function chunk<T>(xs: T[], n: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < xs.length; i += n) out.push(xs.slice(i, i + n));
+  return out;
+}
+
+/** 나눠 받은 시세 응답을 하나로: 종목 시세는 합치고, 세션은 하나라도 열려 있으면 open. */
+export function mergeQuotes(parts: QuotesResp[]): QuotesResp {
+  return {
+    session: parts.some((p) => p.session === "open") ? "open" : "closed",
+    asof: parts[0]?.asof ?? "",
+    quotes: Object.assign({}, ...parts.map((p) => p.quotes)),
+  };
+}
+
 /** 보이는 종목의 실시간 시세 (Phase 24). 장중 10초, 장 밖 5분마다 세션만 확인, 가려진 탭은 쉰다.
  * tickers 는 'AAPL:NAS' 처럼 거래소 접미를 붙여도 된다. 종목이 없으면 부르지 않는다. */
 export function useLiveQuotes(market: string, tickers: string[]): QuotesResp | null {
   const [resp, setResp] = useState<QuotesResp | null>(null);
-  const key = tickers.slice(0, 20).join(",");
+  // 서버는 요청당 20종목 — 넘으면 20개씩 나눠 받아 합친다(앞쪽이 우선, 최대 MAX_LIVE_TICKERS)
+  const key = Array.from(new Set(tickers)).slice(0, MAX_LIVE_TICKERS).join(",");
   useEffect(() => {
     setResp(null);
     if (!key) return;
@@ -330,7 +348,8 @@ export function useLiveQuotes(market: string, tickers: string[]): QuotesResp | n
         timer = window.setTimeout(run, LIVE_INTERVAL_MS);
         return;
       }
-      getJson<QuotesResp>("/api/quotes", { market, tickers: key })
+      Promise.all(chunk(key.split(","), 20).map((part) => getJson<QuotesResp>("/api/quotes", { market, tickers: part.join(",") })))
+        .then(mergeQuotes)
         .then((r) => {
           if (!alive) return;
           setResp(r);
