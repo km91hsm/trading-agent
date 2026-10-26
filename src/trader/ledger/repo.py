@@ -422,6 +422,26 @@ def set_order_status(conn: sqlite3.Connection, order_id: int, status: str) -> No
     conn.commit()
 
 
+def has_pending_approval(
+    conn: sqlite3.Connection,
+    account_id: str,
+    ticker: str,
+    side: str,
+    *,
+    market: str,
+    now: str,
+) -> bool:
+    """만료 전 pending 승인 요청이 같은 계좌·시장·종목·방향에 있으면 True (결정 무관 —
+    리밸런스처럼 decision_id 가 없는 주문이 같은 감축·증액을 두 번 요청하지 않게)."""
+    row = conn.execute(
+        "SELECT 1 FROM approvals WHERE account_id=? AND status='pending' AND expires_at > ? "
+        "AND json_extract(order_json, '$.ticker')=? AND json_extract(order_json, '$.side')=? "
+        "AND json_extract(order_json, '$.market')=? LIMIT 1",
+        (account_id, now, ticker, side, market),
+    ).fetchone()
+    return row is not None
+
+
 def has_open_order_today(
     conn: sqlite3.Connection,
     account_id: str,

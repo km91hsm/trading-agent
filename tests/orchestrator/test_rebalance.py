@@ -213,3 +213,55 @@ def test_daemon_registers_friday_rebalance_cron():
     assert jobs["us_rebalance"].cron["timezone"] == SCHED.us.tz  # 그 시장 스케줄의 tz
     off = daemon.build_jobs(SCHED, Settings(rebalance={"enabled": False}), markets=["KR"])
     assert not any(j.kind == "rebalance" for j in off)
+
+
+def test_rebalance_skips_pending_approval(ctx, conn):
+    """approve 계좌에 같은 감축의 pending 승인이 있으면 리밸런스가 두 번째 요청을 만들지 않는다."""
+    from trader.ledger import repo
+
+    _seed(conn)
+    did = conn.execute("SELECT id FROM decisions WHERE ticker='005930'").fetchone()[0]
+    repo.create_approval(
+        conn,
+        decision_id=did,
+        account_id="paper-main",
+        order={"ticker": "005930", "market": "KR", "side": "SELL", "qty": 15},
+        requested_at=(NOW - timedelta(minutes=5)).isoformat(),
+        expires_at=(NOW + timedelta(minutes=25)).isoformat(),
+    )
+    out = rebalance.run(
+        ctx, market="KR", today=D, dry_run=False, quote_fn=lambda t: Decimal("100000")
+    )
+    assert any(leg.get("skipped") for leg in out["legs"] if leg["ticker"] == "005930")
+    assert [o.ticker for o in ctx.brokers["paper-main"].orders] == ["000660"]
+
+
+def test_rebalance_add_passes_change_pct_to_chase_gate(ctx, conn):
+    """시세의 당일 등락률이 게이트로 가서 급등 종목 ADD 는 추격 금지로 거부된다."""
+    from types import SimpleNamespace
+
+    _seed(conn)
+    q = SimpleNamespace(price=Decimal("100000"), change_pct=0.12)
+    out = rebalance.run(ctx, market="KR", today=D, dry_run=False, quote_fn=lambda t: q)
+    rs = {o["ticker"]: o["results"][0] for o in out["orders"]}
+    assert rs["000660"]["approved"] is False
+    assert any("급등" in r for r in rs["000660"]["reasons"])
+    assert [o.side for o in ctx.brokers["paper-main"].orders] == ["SELL"]  # TRIM 은 면제
+
+
+def test_rebalance_keeps_zero_confidence(ctx, conn, monkeypatch):
+    _seed(conn)
+    conn.execute(
+        "UPDATE decisions SET json=json_set(json, '$.confidence', 0.0) WHERE ticker='000660'"
+    )
+    conn.commit()
+    seen = []
+    real = executor.execute
+
+    def spy(ctx_, dec, **kw):
+        seen.append((dec.ticker, dec.confidence))
+        return real(ctx_, dec, **kw)
+
+    monkeypatch.setattr(executor, "execute", spy)
+    rebalance.run(ctx, market="KR", today=D, dry_run=True, quote_fn=lambda t: Decimal("100000"))
+    assert ("000660", 0.0) in seen

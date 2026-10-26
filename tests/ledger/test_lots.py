@@ -78,3 +78,9 @@ def test_report_from_ledger_and_csv(client, conn):
     )
     assert csv.status_code == 200 and "wash_sale" in csv.text.splitlines()[0]
     assert client.get("/api/tax-lots", params={"market": "US"}).status_code == 400
+
+
+def test_wash_sale_same_day_second_buy_counts():
+    """같은 날 두 번 산 뒤 첫 로트를 손실 매도하면, 둘째 매수(로트 원천 아님)는 대체 매수다."""
+    fills = [f("BUY", 1, "100", 0), f("BUY", 1, "100", 0), f("SELL", 1, "80", 9)]
+    assert lots.fifo(fills, market="US")["realized"][0].wash_sale is True

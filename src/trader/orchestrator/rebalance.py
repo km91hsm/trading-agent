@@ -101,10 +101,11 @@ def run(
     market: str,
     today: date,
     dry_run: bool,
-    quote_fn: Callable[[str], Decimal],
+    quote_fn: Callable[[str], Any],
     exchange_of: Callable[[str], str | None] = lambda t: None,
 ) -> dict:
-    """운영일 1회. 반환 {legs, orders, skipped?}. quote_fn(ticker) 는 현재가."""
+    """운영일 1회. 반환 {legs, orders, skipped?}. quote_fn(ticker) 는 현재가(Decimal) 또는
+    `.price`·`.change_pct` 를 가진 시세 — 당일 등락률은 게이트의 급등 추격 금지로 넘긴다."""
     cfg = ctx.settings.rebalance
     if not cfg.enabled:
         return {"skipped": "rebalance.enabled=false"}
@@ -135,9 +136,17 @@ def run(
                 )
         for leg in drift_legs(positions, pf.nav, targets, band=cfg.band_pct, exclude=exclude):
             side = "SELL" if leg.action == "TRIM" else "BUY"
-            if repo.has_open_order_today(ctx.conn, a.id, leg.ticker, side, today, market=market):
+            if repo.has_open_order_today(
+                ctx.conn, a.id, leg.ticker, side, today, market=market
+            ) or repo.has_pending_approval(
+                ctx.conn, a.id, leg.ticker, side, market=market, now=ctx.now().isoformat()
+            ):
                 legs_out.append(
-                    {"account_id": a.id, **leg.__dict__, "skipped": "오늘 같은 방향 주문 있음"}
+                    {
+                        "account_id": a.id,
+                        **leg.__dict__,
+                        "skipped": "오늘 같은 방향 주문·대기 승인 있음",
+                    }
                 )
                 continue
             need.setdefault((leg.action, leg.ticker), set()).add(a.id)
@@ -149,7 +158,9 @@ def run(
             if act != action:
                 continue
             try:
-                price = Decimal(str(quote_fn(ticker)))
+                q = quote_fn(ticker)
+                price = Decimal(str(getattr(q, "price", q)))
+                change_pct = getattr(q, "change_pct", None)
             except Exception as e:  # noqa: BLE001 - 시세 실패는 그 종목만 건너뛴다
                 logger.warning("리밸런스 시세 실패 %s: %s", ticker, e)
                 continue
@@ -169,7 +180,9 @@ def run(
                 stop_loss=stop,
                 take_profit=data.get("take_profit"),
                 horizon_days=int(data.get("horizon_days") or 5),
-                confidence=float(data.get("confidence") or 0.6),
+                confidence=float(
+                    data["confidence"] if data.get("confidence") is not None else 0.6
+                ),  # 0.0 도 원 결정 값 그대로(기본값은 값이 없을 때만)
                 rationale=(
                     f"주간 리밸런스: 목표 비중 {tgt:.0%}(결정 #{src.get('id')} {src.get('date')})"
                     f"에서 {cfg.band_pct:.0%}p 넘게 벗어남"
@@ -187,6 +200,7 @@ def run(
                 decision_id=None,
                 skip_accounts=frozenset(all_ids - accts),
                 is_rebalance=True,
+                change_pct=change_pct,
             )
             orders.append(
                 {

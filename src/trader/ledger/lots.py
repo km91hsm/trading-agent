@@ -51,12 +51,17 @@ def fifo(fills: list[FillRow], *, market: str) -> dict:
     원가를 모르므로 실현 로트에서 뺀다(`unmatched` 로 센다)."""
     book: dict[str, list[Lot]] = {}
     realized: list[Realized] = []
+    origin: list[int] = []  # realized[i] 를 만든 매수 체결의 순번(같은 날 다른 매수와 구분)
+    lot_src: dict[int, int] = {}  # id(Lot) → 매수 체결 순번
     unmatched = 0
-    for f in sorted(fills, key=lambda x: x.filled_at):
+    ordered = sorted(fills, key=lambda x: x.filled_at)
+    for i, f in enumerate(ordered):
         if f.qty <= 0:
             continue
         if f.side == "BUY":
-            book.setdefault(f.ticker, []).append(Lot(f.ticker, f.qty, f.price, f.filled_at))
+            lot = Lot(f.ticker, f.qty, f.price, f.filled_at)
+            lot_src[id(lot)] = i
+            book.setdefault(f.ticker, []).append(lot)
             continue
         left = f.qty
         lots = book.setdefault(f.ticker, [])
@@ -80,21 +85,22 @@ def fifo(fills: list[FillRow], *, market: str) -> dict:
                     else ("long" if held_days > LONG_TERM_DAYS else "short"),
                 )
             )
+            origin.append(lot_src[id(lot)])
             lot.qty -= take
             left -= take
             if lot.qty == 0:
                 lots.pop(0)
         unmatched += left
-    buys = [f for f in fills if f.side == "BUY"]
-    for r in realized:
+    buys = [(i, f) for i, f in enumerate(ordered) if f.side == "BUY" and f.qty > 0]
+    for r, src in zip(realized, origin, strict=True):
         if r.pnl >= 0:
             continue
         lo, hi = r.sell_date - timedelta(days=WASH_DAYS), r.sell_date + timedelta(days=WASH_DAYS)
         r.wash_sale = any(
             b.ticker == r.ticker
             and lo <= b.filled_at.date() <= hi
-            and b.filled_at.date() != r.buy_date  # 이 로트를 만든 매수 자신은 제외
-            for b in buys
+            and i != src  # 이 로트를 만든 매수 체결 자신만 제외(같은 날 다른 매수는 대체 매수)
+            for i, b in buys
         )
     open_lots = [lot for lots in book.values() for lot in lots if lot.qty > 0]
     return {"open_lots": open_lots, "realized": realized, "unmatched_sell_qty": unmatched}

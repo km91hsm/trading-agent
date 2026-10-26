@@ -1198,12 +1198,20 @@ def _rebalance_body(deps: DaemonDeps, market: str) -> dict:
     if deps.market_client is None:
         return {"skipped": "시세 클라이언트 없음"}
     universe = deps.universe
-    us_ex = {u.symbol: u.exchange for u in (universe.us if universe else [])}
+    ex_cache: dict[str, str | None] = {}
+
+    def exchange_of(t: str) -> str | None:
+        # 유니버스 밖(발굴·제외된) US 보유도 브로커 보유의 거래소로 시세·주문을 낸다
+        if market != "US":
+            return None
+        if t not in ex_cache:
+            ex_cache[t] = _exchange_of(deps, market, t, universe)
+        return ex_cache[t]
 
     def quote(t: str):
         if market == "KR":
-            return deps.market_client.get_price_kr(t).price
-        return deps.market_client.get_price_us(t, us_ex.get(t, "NAS")).price
+            return deps.market_client.get_price_kr(t)  # price·change_pct(급등 추격 게이트)
+        return deps.market_client.get_price_us(t, exchange_of(t) or "NAS")
 
     conn = deps.conn_factory()
     try:
@@ -1222,7 +1230,7 @@ def _rebalance_body(deps: DaemonDeps, market: str) -> dict:
             today=run_date_for(market, deps.now()),
             dry_run=deps.dry_run,
             quote_fn=quote,
-            exchange_of=lambda t: us_ex.get(t) if market == "US" else None,
+            exchange_of=exchange_of,
         )
     finally:
         conn.close()
