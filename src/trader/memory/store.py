@@ -1,6 +1,7 @@
 """메모리 저장소 (스펙 §6.5): 3층 반감기 검색, 승격·삭제, 엠바고, 워밍업, 서킷브레이커.
 
-검색 점수 = recency(2^(−age/half_life)) × 0.4 + relevance(코사인) × 0.4 + importance × 0.2.
+검색 점수 = recency(2^(−age/half_life)) × 0.4 + relevance(코사인) × 0.4 + importance × 0.2,
+재평가 라운드 엔트리는 × REEVAL_WEIGHT.
 """
 
 from __future__ import annotations
@@ -28,11 +29,30 @@ def _breaker_key(market: str | None) -> str:
 
 
 W_RECENCY, W_RELEVANCE, W_IMPORTANCE = 0.4, 0.4, 0.2
+REEVAL_WEIGHT = 0.5  # 재평가 라운드(round ≥ 1) 엔트리의 검색 점수 배율 — 아침 판단 우선
 
 
 def _next_tier(tier: str) -> str:
     i = TIERS.index(tier) if tier in TIERS else 0
     return TIERS[min(i + 1, len(TIERS) - 1)]
+
+
+def held_at(
+    conn: sqlite3.Connection, *, account_id: str, market: str, ticker: str, d: str
+) -> bool | None:
+    """결정일 d 기준 보유 여부: d 이하 최신 스냅샷 날짜에 그 종목 qty>0 이면 True.
+    그 계좌·시장 스냅샷이 아예 없으면 None(모름)."""
+    last = conn.execute(
+        "SELECT MAX(date) AS d FROM positions_snapshot WHERE account_id=? AND market=? AND date<=?",
+        (account_id, market, d),
+    ).fetchone()["d"]
+    if last is None:
+        return None
+    row = conn.execute(
+        "SELECT qty FROM positions_snapshot WHERE account_id=? AND date=? AND ticker=?",
+        (account_id, last, ticker),
+    ).fetchone()
+    return bool(row and int(row["qty"] or 0) > 0)
 
 
 def record_decision(
@@ -47,40 +67,35 @@ def record_decision(
     row: dict | None,
     horizon_days: int,
     vector: list[float] | None = None,
+    round_no: int = 0,
+    held_at_decision: bool | None = None,
 ) -> int:
-    """결정 1건당 엔트리 1건 (decision_id UNIQUE, 멱등). importance 초기값 = confidence.
+    """결정·라운드 1건당 엔트리 1건 ((decision_id, round) UNIQUE, 멱등). importance 초기값 =
+    confidence.
 
-    같은 decision_id 로 다시 오면(재평가 31_decision_r<n> 이 decisions 행을 갱신) 만기 전 엔트리의
-    결정·horizon 만 새 값으로 바꾼다 — 실제로 팔아 버린 종목을 BUY 로 채점하지 않도록. 상황 벡터는
-    같은 운영일 상황이라 그대로 두고, 결과가 채워진 엔트리는 바꾸지 않는다."""
+    아침 결정(30_decision)은 round 0, 장중 재평가(31_decision_r<n>)는 round n 의 **별도 엔트리**다
+    (전체 검토 L2 — 덮어쓰면 아침 판단의 채점이 사라진다). 같은 라운드로 다시 오면(세션 재시도)
+    기존 id 를 돌려준다. held_at_decision 은 결정 시점 보유(판정 때 잔고 스냅샷)이고 HOLD
+    채점에 쓴다."""
     if decision_id is None:
         raise ValueError("memory_entries 는 decision_id 가 있어야 멱등이 성립합니다")
     existing = conn.execute(
-        "SELECT id, outcome_at FROM memory_entries WHERE decision_id=?", (decision_id,)
+        "SELECT id FROM memory_entries WHERE decision_id=? AND round=?", (decision_id, round_no)
     ).fetchone()
     if existing:
-        if existing["outcome_at"] is None:
-            conn.execute(
-                "UPDATE memory_entries SET decision=?, horizon_days=? WHERE id=?",
-                (
-                    json.dumps(decision, ensure_ascii=False, default=str),
-                    horizon_days,
-                    existing["id"],
-                ),
-            )
-            conn.commit()
         return int(existing["id"])
     v = vector or vec.situation_vector(row or {}, market)
     importance = float(decision.get("confidence") or 0.5)
     cur = conn.execute(
-        "INSERT INTO memory_entries(ticker, market, account_id, decision_id, decided_at, "
+        "INSERT INTO memory_entries(ticker, market, account_id, decision_id, round, decided_at, "
         "situation_vector, situation_summary, decision, horizon_days, tier, importance, "
-        "created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'short', ?, ?)",
+        "created_at, held_at_decision) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'short', ?, ?, ?)",
         (
             ticker,
             market,
             account_id,
             decision_id,
+            int(round_no),
             decided_at,
             json.dumps(v),
             vec.summary(row or {}, market),
@@ -88,6 +103,7 @@ def record_decision(
             horizon_days,
             max(0.0, min(1.0, importance)),
             now_iso(),
+            None if held_at_decision is None else int(bool(held_at_decision)),
         ),
     )
     conn.commit()
@@ -115,30 +131,44 @@ def fill_outcome(
     alpha: float,
     outcome_at: str,
     price_return: float | None = None,
+    direction_score: float | None = None,
+    avoided_loss: float | None = None,
+    realized_pnl_pct: float | None = None,
 ) -> None:
-    """결과 채움(실현수익은 결정 방향 기준, price_return 은 원시 가격수익). |실현| ≥ 5% 승격."""
+    """결과 채움. realized_return·alpha 는 하위 호환(옛 채점), 판단 품질은 direction_score·
+    avoided_loss(outcomes 모듈 docstring). 방향 점수(없으면 실현수익)나 회피 손실이 5% 이상이면
+    승격."""
     e = get_entry(conn, entry_id)
     if e is None:
         return
     tier = e["tier"]
     importance = float(e["importance"] or 0.0)
-    if abs(realized_return) >= BIG_RETURN:
+    magnitude = abs(realized_return if direction_score is None else direction_score)
+    if max(magnitude, avoided_loss or 0.0) >= BIG_RETURN:
         tier = _next_tier(tier)
         importance = min(1.0, importance + 0.3)
     conn.execute(
         "UPDATE memory_entries SET realized_return=?, alpha_vs_benchmark=?, outcome_at=?, tier=?, "
-        "importance=?, price_return=? WHERE id=?",
+        "importance=?, price_return=?, direction_score=?, avoided_loss=?, realized_pnl_pct=? "
+        "WHERE id=?",
         (
             float(realized_return),
             float(alpha),
             outcome_at,
             tier,
             importance,
-            None if price_return is None else float(price_return),
+            _opt(price_return),
+            _opt(direction_score),
+            _opt(avoided_loss),
+            _opt(realized_pnl_pct),
             entry_id,
         ),
     )
     conn.commit()
+
+
+def _opt(x: float | None) -> float | None:
+    return None if x is None else float(x)
 
 
 def set_reflection(conn: sqlite3.Connection, entry_id: int, reflection: dict) -> None:
@@ -159,9 +189,11 @@ def set_reflection(conn: sqlite3.Connection, entry_id: int, reflection: dict) ->
 
 
 def matured_count(conn: sqlite3.Connection) -> int:
+    """만기 결정 수 — 아침 라운드(round 0)만 센다(재평가 엔트리로 워밍업·보정 기준이 부풀지
+    않게)."""
     return int(
         conn.execute(
-            "SELECT COUNT(*) AS n FROM memory_entries WHERE outcome_at IS NOT NULL"
+            "SELECT COUNT(*) AS n FROM memory_entries WHERE outcome_at IS NOT NULL AND round=0"
         ).fetchone()["n"]
     )
 
@@ -231,7 +263,7 @@ def retrieve(
         return {"entries": [], "warmup": True, "breaker": None}
     # 점수에 필요한 열만 읽어 순위를 매기고, 상위 k 만 전체 행(decision·reflection JSON)으로 복원
     sql = (
-        "SELECT id, decided_at, tier, importance, situation_vector FROM memory_entries "
+        "SELECT id, round, decided_at, tier, importance, situation_vector FROM memory_entries "
         "WHERE outcome_at IS NOT NULL"
     )
     args: list = []
@@ -257,6 +289,8 @@ def retrieve(
             + W_RELEVANCE * relevance
             + W_IMPORTANCE * float(row["importance"] or 0)
         )
+        if int(row["round"] or 0) > 0:
+            score *= REEVAL_WEIGHT
         scores.append((round(score, 4), int(row["id"])))
     scores.sort(key=lambda t: (-t[0], t[1]))
     top = scores[:k]

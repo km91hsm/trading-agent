@@ -38,13 +38,14 @@ def _run_day(iso: str) -> pd.Timestamp:
 
 def _memory_steps(conn: sqlite3.Connection, market: str | None) -> pd.DataFrame:
     sql = (
-        "SELECT decided_at, ticker, situation_vector, decision, price_return, horizon_days "
-        "FROM memory_entries "
-        "WHERE price_return IS NOT NULL"
+        "SELECT m.decided_at, m.ticker, m.situation_vector, m.decision, m.price_return, "
+        "m.horizon_days, d.date AS run_date FROM memory_entries m "
+        "LEFT JOIN decisions d ON d.id = m.decision_id "
+        "WHERE m.price_return IS NOT NULL AND m.round=0"
     )
     args: list = []
     if market:
-        sql += " AND market=?"
+        sql += " AND m.market=?"
         args.append(market)
     rows = conn.execute(sql, args).fetchall()
     out = []
@@ -57,7 +58,8 @@ def _memory_steps(conn: sqlite3.Connection, market: str | None) -> pd.DataFrame:
         w = float(dec.get("target_weight") or 0.0)
         out.append(
             {
-                "date": _run_day(r["decided_at"]),
+                # 결정 행의 운영일(US 는 뉴욕 날짜)이 정본, 없으면 decided_at 의 KST 날짜
+                "date": pd.Timestamp(r["run_date"]) if r["run_date"] else _run_day(r["decided_at"]),
                 "ticker": r["ticker"],
                 "obs": [*vec, conf, w],
                 "fwd_return": float(r["price_return"]),

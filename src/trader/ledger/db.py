@@ -363,6 +363,65 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
             "CREATE INDEX IF NOT EXISTS ix_agent_calls_run ON agent_calls(run_id)",
         ],
     ),
+    (
+        # 전체 검토 L2·L3: 재평가 라운드는 별도 엔트리(UNIQUE(decision_id, round)) + 방향 점수.
+        # decision_id UNIQUE 제약은 ALTER 로 풀 수 없어 테이블을 다시 만든다(행·id 보존, 전부
+        # round 0). 만기 행은 price_return·결정일 보유로 direction_score·avoided_loss 를 채운다
+        # (옛 행의 action 은 재평가가 덮어쓴 값일 수 있다 — 되돌릴 원본이 없다)
+        23,
+        [
+            """CREATE TABLE memory_entries_new (
+                id INTEGER PRIMARY KEY,
+                ticker TEXT NOT NULL, market TEXT NOT NULL, account_id TEXT,
+                decision_id INTEGER, round INTEGER NOT NULL DEFAULT 0,
+                decided_at TEXT NOT NULL,
+                situation_vector TEXT NOT NULL, situation_summary TEXT,
+                decision TEXT NOT NULL, horizon_days INTEGER NOT NULL,
+                realized_return REAL, alpha_vs_benchmark REAL, reflection TEXT,
+                outcome_at TEXT, tier TEXT NOT NULL, importance REAL NOT NULL,
+                created_at TEXT NOT NULL, price_return REAL,
+                held_at_decision INTEGER, direction_score REAL, avoided_loss REAL,
+                realized_pnl_pct REAL,
+                UNIQUE(decision_id, round)
+            )""",
+            "INSERT INTO memory_entries_new(id, ticker, market, account_id, decision_id, round, "
+            "decided_at, situation_vector, situation_summary, decision, horizon_days, "
+            "realized_return, alpha_vs_benchmark, reflection, outcome_at, tier, importance, "
+            "created_at, price_return) SELECT id, ticker, market, account_id, decision_id, 0, "
+            "decided_at, situation_vector, situation_summary, decision, horizon_days, "
+            "realized_return, alpha_vs_benchmark, reflection, outcome_at, tier, importance, "
+            "created_at, price_return FROM memory_entries",
+            "DROP TABLE memory_entries",
+            "ALTER TABLE memory_entries_new RENAME TO memory_entries",
+            "CREATE INDEX IF NOT EXISTS ix_memory_outcome ON memory_entries(outcome_at, market)",
+            # 보유 = 결정일 이하 그 계좌·시장 최신 스냅샷에 qty>0 (store.held_at 과 같은 규칙,
+            # 스냅샷이 없으면 NULL=모름)
+            "UPDATE memory_entries SET held_at_decision = CASE "
+            "WHEN _LAST_ IS NULL THEN NULL "
+            "WHEN EXISTS (SELECT 1 FROM positions_snapshot q "
+            "WHERE q.account_id = memory_entries.account_id AND q.ticker = memory_entries.ticker "
+            "AND q.qty > 0 AND q.date = _LAST_) THEN 1 ELSE 0 END".replace(
+                "_LAST_",
+                "(SELECT MAX(p.date) FROM positions_snapshot p "
+                "WHERE p.account_id = memory_entries.account_id "
+                "AND p.market = memory_entries.market AND p.date <= "
+                "(SELECT d.date FROM decisions d WHERE d.id = memory_entries.decision_id))",
+            ),
+            """UPDATE memory_entries SET
+                direction_score = CASE upper(json_extract(decision, '$.action'))
+                    WHEN 'BUY' THEN price_return WHEN 'ADD' THEN price_return
+                    WHEN 'SELL' THEN -price_return WHEN 'TRIM' THEN -price_return
+                    ELSE CASE WHEN held_at_decision = 1 THEN price_return ELSE 0.0 END
+                END,
+                avoided_loss = CASE
+                    WHEN upper(json_extract(decision, '$.action')) IN ('BUY', 'ADD') THEN NULL
+                    WHEN upper(json_extract(decision, '$.action')) IN ('SELL', 'TRIM')
+                        OR coalesce(held_at_decision, 0) = 0
+                    THEN max(0.0, -price_return)
+                END
+            WHERE outcome_at IS NOT NULL AND price_return IS NOT NULL""",
+        ],
+    ),
 ]
 
 

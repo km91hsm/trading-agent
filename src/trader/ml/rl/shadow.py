@@ -130,7 +130,7 @@ def recent(conn: sqlite3.Connection, account_id: str, *, days: int = 30) -> list
         "s.proposed_weight, s.applied, d.ticker, d.market, d.date AS decision_date, "
         "m.price_return FROM rl_shadow s "
         "LEFT JOIN decisions d ON d.id = s.decision_id "
-        "LEFT JOIN memory_entries m ON m.decision_id = s.decision_id "
+        "LEFT JOIN memory_entries m ON m.decision_id = s.decision_id AND m.round = 0 "
         "WHERE s.account_id=? AND s.created_at >= ? ORDER BY s.created_at DESC, s.id DESC",
         (account_id, since),
     ).fetchall()

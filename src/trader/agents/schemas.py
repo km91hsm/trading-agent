@@ -149,8 +149,19 @@ class RoleCalibration(BaseModel):
     bias: float
 
 
+class DecisionCalibration(BaseModel):
+    """결정 판단 품질(direction_score 기준, 재평가 라운드는 가중 낮춤 — 전체 검토 L3)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    n: int
+    hit_rate: float | None  # direction_score > 0 비율 (미보유 HOLD 의 0 은 분모에서 뺀다)
+    avg_direction_score: float | None
+    avg_avoided_loss: float | None
+
+
 class CalibrationReport(BaseModel):
-    """35_calibration: 역할별 신호 적중률 (스펙 §9.3, 결정 60건 이상일 때만)."""
+    """35_calibration: 역할별 신호 적중률 (스펙 §9.3, 결정 60건 이상일 때만) + 결정 품질."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -159,6 +170,7 @@ class CalibrationReport(BaseModel):
     active: bool
     min_decisions: int
     roles: dict[str, RoleCalibration]
+    decisions: DecisionCalibration | None = None
 
 
 class Pick(BaseModel):
