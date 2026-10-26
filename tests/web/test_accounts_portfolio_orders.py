@@ -148,3 +148,9 @@ def test_balance_refresh_skips_when_same_market_already_running(deps, conn):
     finally:
         lock.release()
     assert out["busy"] is True and out["refreshed"] == []
+
+
+def test_portfolio_risk_requires_account_and_reports_insufficient(client):
+    assert client.get("/api/portfolio/risk").status_code in (400, 422)
+    r = client.get("/api/portfolio/risk", params={"account_id": "paper-main", "market": "KR"})
+    assert r.status_code == 200 and r.json()["insufficient"] == "잔고 스냅샷 없음"

@@ -50,6 +50,29 @@ def portfolio(
         }
 
 
+@router.get("/risk")
+def risk(request: Request, account_id: str | None = None, market: str | None = None) -> dict:
+    """위험 카드(Stock D-088): VaR·CVaR 95%·베타·상관·위험 기여. 피처 스토어 종가, 표시 전용."""
+    from trader.ledger import risk_card
+    from trader.orchestrator.run_store import run_date_for
+
+    acct = require_account(request, account_id)
+    m = require_market(market, acct)
+    deps = deps_of(request)
+    with closing(deps.conn_factory()) as conn:
+        return {
+            "account_id": acct.id,
+            "market": m,
+            **risk_card.compute(
+                conn,
+                account_id=acct.id,
+                market=m,
+                today=run_date_for(m, deps.now()),
+                state=deps.state,
+            ),
+        }
+
+
 def _resolver(deps, market: str):
     """yaml → 자동 분류 캐시(`sector_suggest.resolver`). 웹 조회 경로는 네트워크를 부르지 않는다."""
     from trader.scan import sector_suggest

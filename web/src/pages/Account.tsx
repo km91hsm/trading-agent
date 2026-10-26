@@ -6,6 +6,9 @@ import { Glyph } from "../components/Glyph";
 import { Section } from "../components/Section";
 import { Skeleton } from "../components/Skeleton";
 import { SectorTable } from "../components/Sectors";
+import { RiskCard } from "../components/RiskCard";
+import { asOfInfo, DAY_MS } from "../asof";
+import type { RiskResp } from "../riskCard";
 import { ApprovalsTable, ErrorBox, OrdersTable, PositionsTable } from "../components/Tables";
 import { CsvLink } from "../components/CsvLink";
 import { Term } from "../components/Term";
@@ -46,6 +49,12 @@ export function AccountPage() {
     () => (accountId ? getJson<PerformanceReport>(withAccount(`/api/performance?market=${market}&days=30`, accountId)) : null),
     [accountId, market, tick],
   );
+  const risk = useLoad(
+    () => (accountId ? getJson<RiskResp>(withAccount(`/api/portfolio/risk?market=${market}`, accountId)) : null),
+    [accountId, market, tick],
+  );
+  // 주말·휴장을 넘겨도 사흘이면 오래된 잔고다(데몬·갱신 멈춤을 드러낸다, Stock D-096)
+  const snapAsOf = asOfInfo(snap?.date, new Date(), 3 * DAY_MS, "스냅샷");
   if (!accountId)
     return (
       <>
@@ -85,7 +94,23 @@ export function AccountPage() {
         {!token && <span className="note">새로고침은 설정/제어에서 토큰을 넣어야 해요.</span>}
       </div>
       <ErrorBox error={pf.error} />
-      <Section title="요약" aside={snap ? `스냅샷 ${snap.date}` : "스냅샷 없음"}>
+      <Section
+        title="요약"
+        aside={
+          snapAsOf ? (
+            <span className="row tight">
+              {snapAsOf.text}
+              {snapAsOf.stale && (
+                <span className="badge badge-pending" title="잔고 스냅샷이 오래됐어요 — 데몬·잔고 갱신을 확인하세요">
+                  오래됨
+                </span>
+              )}
+            </span>
+          ) : (
+            "스냅샷 없음"
+          )
+        }
+      >
         {pf.loading && !pf.data ? (
           <Skeleton rows={3} cols={2} />
         ) : snap ? (
@@ -138,6 +163,9 @@ export function AccountPage() {
           )}
         </Section>
       </div>
+      <Section title="위험" aside="VaR·CVaR 95% · 베타 · 위험 기여 · 표시 전용">
+        {risk.loading && !risk.data ? <Skeleton rows={3} cols={3} /> : risk.data ? <RiskCard data={risk.data} market={market} /> : null}
+      </Section>
       <Section title="승인 요청">
         <ApprovalsTable rows={pf.data?.approvals ?? []} realAccounts={acct?.env === "real" ? [acct.id] : []} />
       </Section>
