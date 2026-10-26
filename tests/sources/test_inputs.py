@@ -908,3 +908,96 @@ def test_sentiment_saveticker_section_from_local_dir(project, monkeypatch):
         deps=deps(),
     )
     assert d3["sentiment"]["saveticker"]["error"] == "no saveticker dir"
+
+
+def test_build_inputs_returns_at_shared_deadline_without_waiting_stuck_section(project):
+    """전체 검토 P7: 멈춘 절을 기다리지 않고 공통 기한에 돌아온다(예전 `with` 풀은 닫힐 때 대기)."""
+    import threading
+    import time
+
+    import pytest
+
+    from trader.sources import inputs as inputs_mod
+
+    release = threading.Event()
+
+    def stuck(*a, **kw):
+        release.wait(5)
+        return {}
+
+    mp = pytest.MonkeyPatch()
+    mp.setattr(inputs_mod, "SECTION_TIMEOUT_S", 0.3)
+    mp.setattr(inputs_mod, "_fundamental", lambda *a, **kw: {})
+    mp.setattr(inputs_mod, "_news_macro", stuck)
+    mp.setattr(inputs_mod, "_sentiment", stuck)
+    t0 = time.monotonic()
+    try:
+        d = build_inputs(
+            ticker="005930",
+            market="KR",
+            exchange=None,
+            asof=T0,
+            cfg=cfg(),
+            secrets=Secrets(),
+            deps=deps(),
+        )
+    finally:
+        mp.undo()
+        release.set()
+    assert time.monotonic() - t0 < 2.0  # 절마다 0.3초씩 따로 기다리지도 않는다
+    assert "timeout" in d["news_macro"]["error"] and "timeout" in d["sentiment"]["error"]
+    for _ in range(100):  # 풀어 준 뒤 멈춘 작업이 끝나면 수가 돌아온다
+        if not any(inputs_mod._STUCK.values()):
+            break
+        time.sleep(0.02)
+    assert not any(inputs_mod._STUCK.values())
+
+
+def test_stuck_sections_are_not_resubmitted_beyond_cap(project):
+    """시간 초과 뒤에도 안 끝난 절이 상한만큼 쌓이면 그 절은 새로 띄우지 않는다."""
+    import threading
+
+    import pytest
+
+    from trader.sources import inputs as inputs_mod
+
+    release = threading.Event()
+    started = {"n": 0}
+
+    def stuck(*a, **kw):
+        started["n"] += 1
+        release.wait(5)
+        return {}
+
+    mp = pytest.MonkeyPatch()
+    mp.setattr(inputs_mod, "SECTION_TIMEOUT_S", 0.1)
+    mp.setattr(inputs_mod, "_fundamental", lambda *a, **kw: {})
+    mp.setattr(inputs_mod, "_news_macro", stuck)
+    mp.setattr(inputs_mod, "_sentiment", lambda *a, **kw: {})
+    kw = dict(
+        ticker="005930",
+        market="KR",
+        exchange=None,
+        asof=T0,
+        cfg=cfg(),
+        secrets=Secrets(),
+        deps=deps(),
+    )
+    try:
+        for _ in range(inputs_mod.MAX_STUCK_PER_SECTION):
+            build_inputs(**kw)
+        d = build_inputs(**kw)
+    finally:
+        mp.undo()
+        release.set()
+    assert started["n"] == inputs_mod.MAX_STUCK_PER_SECTION
+    assert "skipped" in d["news_macro"]["error"]
+    # 역할 단위 실패도 errors 집계에 들어간다(PR #37 리뷰)
+    assert any(e.startswith("news_macro:") and "skipped" in e for e in d["errors"])
+    import time
+
+    for _ in range(100):
+        if not any(inputs_mod._STUCK.values()):
+            break
+        time.sleep(0.02)
+    assert not any(inputs_mod._STUCK.values())

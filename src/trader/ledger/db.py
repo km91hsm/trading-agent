@@ -355,11 +355,20 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
         ],
     ),
     (
+        22,  # 전체 검토: 시장별 최근 뉴스 조회(news_store.recent·novel_items) 인덱스
+        [
+            "CREATE INDEX IF NOT EXISTS ix_news_market_received "
+            "ON news_items(market, received_at)",
+            # 보존 정리의 '세션 있는 runs 유지'(NOT EXISTS agent_calls.run_id)가 풀 스캔하지 않게
+            "CREATE INDEX IF NOT EXISTS ix_agent_calls_run ON agent_calls(run_id)",
+        ],
+    ),
+    (
         # 전체 검토 L2·L3: 재평가 라운드는 별도 엔트리(UNIQUE(decision_id, round)) + 방향 점수.
         # decision_id UNIQUE 제약은 ALTER 로 풀 수 없어 테이블을 다시 만든다(행·id 보존, 전부
         # round 0). 만기 행은 price_return·결정일 보유로 direction_score·avoided_loss 를 채운다
         # (옛 행의 action 은 재평가가 덮어쓴 값일 수 있다 — 되돌릴 원본이 없다)
-        23,  # (v22 는 #37 뉴스 인덱스 몫)
+        23,
         [
             """CREATE TABLE memory_entries_new (
                 id INTEGER PRIMARY KEY,

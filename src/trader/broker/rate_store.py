@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -39,14 +40,37 @@ class SharedRateLimiter(RateLimiter):
         self._path = Path(path)
         self._env = env
         self._disabled = False
+        # 스레드마다 연결 하나를 재사용한다(전체 검토 P13): KIS 호출마다 연결·PRAGMA·DDL 을 다시
+        # 하면 호출당 수 ms 와 fsync 가 더 든다. sqlite3 연결은 만든 스레드에서만 쓴다
+        self._conns = threading.local()
+        self._ddl_done = False
+        self._ddl_lock = threading.Lock()
 
     def _connect(self) -> sqlite3.Connection:
+        conn = getattr(self._conns, "conn", None)
+        if conn is not None:
+            return conn
         self._path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(self._path, timeout=DB_TIMEOUT_S, isolation_level=None)
         conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("CREATE TABLE IF NOT EXISTS calls(env TEXT NOT NULL, ts REAL NOT NULL)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_calls_env_ts ON calls(env, ts)")
+        with self._ddl_lock:
+            if not self._ddl_done:
+                conn.execute(
+                    "CREATE TABLE IF NOT EXISTS calls(env TEXT NOT NULL, ts REAL NOT NULL)"
+                )
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_calls_env_ts ON calls(env, ts)")
+                self._ddl_done = True
+        self._conns.conn = conn
         return conn
+
+    def _drop_conn(self) -> None:
+        conn = getattr(self._conns, "conn", None)
+        self._conns.conn = None
+        if conn is not None:
+            try:
+                conn.close()
+            except sqlite3.Error:
+                pass
 
     def _try_take(self, conn: sqlite3.Connection) -> float | None:
         """자리를 잡으면 None, 아니면 기다릴 초."""
@@ -77,18 +101,21 @@ class SharedRateLimiter(RateLimiter):
             logger.warning("공유 레이트리미터 파일을 열 수 없어 프로세스 안 리미터로 동작: %s", e)
             super().acquire()
             return
-        try:
-            while True:
-                try:
-                    wait = self._try_take(conn)
-                except sqlite3.OperationalError as e:  # 잠금 대기 초과 등: 한 틱 뒤 재시도
-                    logger.debug("레이트리미터 잠금 대기: %s", e)
-                    wait = 0.05
-                if wait is None:
-                    return
-                if limit is not None and waited + wait > limit:
-                    raise RateLimitBusy(limit)
-                waited += wait
-                self._sleep(wait)
-        finally:
-            conn.close()
+        while True:
+            try:
+                wait = self._try_take(conn)
+            except sqlite3.OperationalError as e:  # 잠금 대기 초과 등: 한 틱 뒤 재시도
+                logger.debug("레이트리미터 잠금 대기: %s", e)
+                if conn.in_transaction:
+                    try:
+                        conn.execute("ROLLBACK")
+                    except sqlite3.Error:
+                        self._drop_conn()
+                        conn = self._connect()
+                wait = 0.05
+            if wait is None:
+                return
+            if limit is not None and waited + wait > limit:
+                raise RateLimitBusy(limit)
+            waited += wait
+            self._sleep(wait)

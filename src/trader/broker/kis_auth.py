@@ -21,6 +21,7 @@ from trader.broker.tr_ids import BASE_URL, TOKEN_PATH
 from trader.config import Env
 from trader.logging_setup import quiet_httpx
 from trader.platform import paths
+from trader.platform.fsutil import atomic_replace
 
 logger = logging.getLogger("trader.kis")
 
@@ -84,7 +85,7 @@ class KisAuth:
             self.cache_path.parent.mkdir(parents=True, exist_ok=True)
             tmp = self.cache_path.with_name(f"{self.cache_path.name}.{os.getpid()}.tmp")
             tmp.write_text(json.dumps(payload), encoding="utf-8")
-            tmp.replace(self.cache_path)
+            atomic_replace(tmp, self.cache_path)
         except OSError as e:
             logger.warning("토큰 캐시 쓰기 실패(%s): %s", self.env, type(e).__name__)
 

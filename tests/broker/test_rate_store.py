@@ -46,3 +46,28 @@ def test_max_wait_raises_busy(tmp_path):
     with b.max_wait(0.5), pytest.raises(RateLimitBusy):
         b.acquire()
     assert slept == []
+
+
+def test_connection_reused_per_thread(tmp_path, monkeypatch):
+    """전체 검토 P13: 호출마다 SQLite 연결·DDL 을 다시 하지 않는다(스레드당 1개)."""
+    import sqlite3
+    import threading
+
+    from trader.broker import rate_store
+
+    made = []
+    real = sqlite3.connect
+
+    def spy(*a, **kw):
+        made.append(threading.get_ident())
+        return real(*a, **kw)
+
+    monkeypatch.setattr(rate_store.sqlite3, "connect", spy)
+    lim = rate_store.SharedRateLimiter(100, tmp_path / "rate.db", "real")
+    for _ in range(5):
+        lim.acquire()
+    assert len(made) == 1
+    t = threading.Thread(target=lim.acquire)
+    t.start()
+    t.join()
+    assert len(made) == 2 and made[0] != made[1]
