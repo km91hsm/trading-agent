@@ -220,3 +220,19 @@ def test_digest_every_min_bundles_and_dry_run_is_korean(conn, project):
     ctx.now = lambda: NOW + timedelta(minutes=31)
     engine.tick(ctx, market="KR", today=D)
     assert len(ctx.notifier.msgs) == 2 and "진입 000660" in ctx.notifier.msgs[1]
+
+
+def test_digest_kept_when_send_fails(conn, project):
+    """Codex 리뷰: 텔레그램 실패(False)·예외면 묶음을 버리지 않고 다음 틱에 다시 보낸다."""
+    _scan(["005930"])
+    ctx = _ctx(conn, minutes={"005930": _bars(True)})
+    ctx.notifier.send = lambda text, *, escape=True: False
+    engine.tick(ctx, market="KR", today=D)
+    st = engine.load_state(None, D, "KR")
+    assert len(st["outbox"]) == 1 and not st.get("digest_at")
+    sent = []
+    ctx.notifier.send = lambda text, *, escape=True: sent.append(text) or True
+    ctx.now = lambda: NOW + timedelta(minutes=1)
+    engine.tick(ctx, market="KR", today=D)
+    assert len(sent) == 1 and "진입 005930" in sent[0]
+    assert engine.load_state(None, D, "KR")["outbox"] == []

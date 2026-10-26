@@ -251,7 +251,8 @@ def _queue_note(st: dict, **item: Any) -> None:
 
 def _flush_digest(ctx: ScalpContext, market: str, st: dict, *, force: bool = False) -> None:
     """outbox 를 `messages.scalp_digest` 한 통으로 보낸다. 그날 첫 묶음은 바로, 그 뒤는
-    `digest_every_min` 마다, 중단·마감 청산·허용 해제 때는 즉시(force). 보내면 비운다."""
+    `digest_every_min` 마다, 중단·마감 청산·허용 해제 때는 즉시(force). 보내지면 비우고, 실패하면
+    남겨 다음 틱에 다시 보낸다."""
     box = st.get("outbox") or []
     if not box:
         return
@@ -261,9 +262,14 @@ def _flush_digest(ctx: ScalpContext, market: str, st: dict, *, force: bool = Fal
     if not force and last and (now - datetime.fromisoformat(last)).total_seconds() < every:
         return
     try:
-        ctx.notifier.send(messages.scalp_digest(market=market, items=box, dry_run=ctx.dry_run))
+        sent = ctx.notifier.send(
+            messages.scalp_digest(market=market, items=box, dry_run=ctx.dry_run)
+        )
     except Exception:  # noqa: BLE001 - 알림 실패가 단타 상태를 바꾸지 않는다
         logger.warning("단타 묶음 알림 실패", exc_info=True)
+        sent = False
+    if sent is False:  # 텔레그램은 실패를 False 로 돌려준다 — 묶음을 남겨 다음 틱에 다시
+        return
     st["outbox"] = []
     st["digest_at"] = now.isoformat()
 
