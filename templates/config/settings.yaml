@@ -88,6 +88,7 @@ llm:
 web:
   bind: 127.0.0.1
   port: 8787
+  realtime_ws: true   # 국내 현재가를 KIS 웹소켓으로(화면 1초 갱신). false 면 10초 REST 폴링
 
 # 메모리 검색 (스펙 §6.5): 3층 반감기(일), 워밍업 건수, 서킷브레이커 기준
 memory:

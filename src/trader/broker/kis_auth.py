@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -17,7 +18,7 @@ from pathlib import Path
 import httpx
 
 from trader.broker.errors import KisApiError
-from trader.broker.tr_ids import BASE_URL, TOKEN_PATH
+from trader.broker.tr_ids import APPROVAL_PATH, BASE_URL, TOKEN_PATH
 from trader.config import Env
 from trader.logging_setup import quiet_httpx
 from trader.platform import paths
@@ -27,6 +28,7 @@ logger = logging.getLogger("trader.kis")
 
 REFRESH_MARGIN = timedelta(hours=1)
 FAIL_BACKOFF = timedelta(seconds=60)
+APPROVAL_TTL = timedelta(hours=20)  # 접속키 유효 24시간 — 여유를 두고 새로
 
 
 def _utc_now() -> datetime:
@@ -52,6 +54,8 @@ class KisAuth:
         self._state = state
         self._clock = clock
         self._mem: tuple[str, datetime] | None = None  # (token, expires_at) 프로세스 메모
+        self._approval: tuple[str, datetime] | None = None  # 웹소켓 접속키 (프로세스 메모)
+        self._approval_lock = threading.Lock()
 
     @property
     def cache_path(self) -> Path:
@@ -173,6 +177,41 @@ class KisAuth:
                 logger.warning("토큰 갱신 실패(%s), 기존 토큰 사용: %s", self.env, e.msg_cd)
                 return token
             raise
+
+    # --- 웹소켓 접속키 -------------------------------------------------------
+
+    def approval_key(self) -> str:
+        """실시간 웹소켓 접속키(토큰과 별개, 프로세스 메모 `APPROVAL_TTL`). 여러 스레드가 동시에
+        요구해도 한 번만 발급한다 — 같은 앱키로 새 키를 받으면 옛 키는 거절된다."""
+        with self._approval_lock:
+            now = self._clock()
+            if self._approval is not None and now < self._approval[1]:
+                return self._approval[0]
+            body = {
+                "grant_type": "client_credentials",
+                "appkey": self._app_key,
+                "secretkey": self._app_secret,
+            }
+            try:
+                resp = self._http.post(BASE_URL[self.env] + APPROVAL_PATH, json=body)
+            except httpx.HTTPError as e:
+                raise KisApiError("NETWORK", f"접속키 발급 요청 실패: {type(e).__name__}") from None
+            if resp.status_code != 200:
+                raise KisApiError(f"HTTP{resp.status_code}", "접속키 발급 거부") from None
+            try:
+                key = str(resp.json()["approval_key"])
+            except (ValueError, KeyError, TypeError):
+                raise KisApiError("INVALID_JSON", "접속키 응답을 해석할 수 없습니다") from None
+            if not key:
+                raise KisApiError("INVALID_JSON", "접속키 응답이 비어 있습니다")
+            self._approval = (key, now + APPROVAL_TTL)
+            logger.info("KIS 웹소켓 접속키 발급 (%s)", self.env)
+            return key
+
+    def invalidate_approval(self) -> None:
+        """서버가 접속키를 거절했을 때(새 키를 받은 다른 연결 등) 버린다."""
+        with self._approval_lock:
+            self._approval = None
 
     def headers(self) -> dict[str, str]:
         return {

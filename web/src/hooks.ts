@@ -329,10 +329,12 @@ export function mergeQuotes(parts: QuotesResp[]): QuotesResp {
     session: parts.some((p) => p.session === "open") ? "open" : "closed",
     asof: parts[0]?.asof ?? "",
     quotes: Object.assign({}, ...parts.map((p) => p.quotes)),
+    stream: parts.some((p) => p.stream),
   };
 }
 
-/** 보이는 종목의 실시간 시세 (Phase 24). 장중 10초, 장 밖 5분마다 세션만 확인, 가려진 탭은 쉰다.
+/** 보이는 종목의 실시간 시세 (Phase 24). 장중 10초(국내 웹소켓이면 1초), 장 밖 1분마다 세션만
+ * 확인, 가려진 탭은 쉰다.
  * tickers 는 'AAPL:NAS' 처럼 거래소 접미를 붙여도 된다. 종목이 없으면 부르지 않는다. */
 export function useLiveQuotes(market: string, tickers: string[]): QuotesResp | null {
   const [resp, setResp] = useState<QuotesResp | null>(null);

@@ -2,7 +2,9 @@
 
 정규장(`market_hours.is_open`)에만 KIS 를 부르고, 같은 종목은 `QUOTE_TTL_S` 동안 캐시해 여러 탭·
 요청이 KIS 호출을 늘리지 않게 한다. 장 밖·리미터 바쁨·조회 실패는 마지막 캐시 또는 최신 스냅샷
-현재가를 `stale: true` 로 돌려준다(오류로 만들지 않는다 — 폴링이 오류 배너를 반복하지 않게)."""
+현재가를 `stale: true` 로 돌려준다(오류로 만들지 않는다 — 폴링이 오류 배너를 반복하지 않게).
+국내는 실시간 허브(`web/live_quotes`, KIS 웹소켓)에 틱이 있으면 그 값을 먼저 쓰고(`source: "ws"`),
+허브가 붙어 있으면 `stream: true` — 화면은 그때 1초마다 읽는다."""
 
 from __future__ import annotations
 
@@ -87,6 +89,10 @@ def quotes(request: Request, market: str, tickers: str = "") -> dict:
     is_open = market_hours.is_open(market, now)
     out: dict[str, dict] = {}
     missing: list[str] = []
+    hub = deps.quote_hub if market == "KR" else None
+    if is_open and hub is not None:
+        out.update(hub.request([t for t, _ in items]))
+        items = [(t, ex) for t, ex in items if t not in out]
     if is_open and deps.market is not None:
         us_ex = _us_exchanges() if market == "US" else {}
         for t, ex in items:
@@ -128,4 +134,9 @@ def quotes(request: Request, market: str, tickers: str = "") -> dict:
     if missing:
         with closing(deps.conn_factory()) as conn:
             out.update(_snapshot_prices(conn, market, missing))
-    return {"session": "open" if is_open else "closed", "asof": now.isoformat(), "quotes": out}
+    return {
+        "session": "open" if is_open else "closed",
+        "asof": now.isoformat(),
+        "quotes": out,
+        "stream": bool(is_open and hub is not None and hub.status()["connected"]),
+    }

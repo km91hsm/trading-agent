@@ -344,7 +344,7 @@
 - [x] 단계 2(PR [#24](https://github.com/km91hsm/trading-agent/pull/24) 머지) 실시간 시세·종목명 검색 (`feat/phase24-2-live-quotes`): `/api/quotes`(정규장만, 5초 캐시, 레이트리미터·stale 폴백), 보이는 탭 10초 폴링(`live.ts`), `/api/names/search`, 차트 URL·자동완성·⌘K (2026-10-26)
 - [x] 단계 3(PR [#25](https://github.com/km91hsm/trading-agent/pull/25) 머지) 구독 사용률·세션 상한·텔레그램 문구 (`feat/phase24-3-usage-telegram`): stream-json `rate_limit_event` → 원장 `llm_rate_limits`(v17), 상한 40→80 + 사용률 감속(80% 재평가만·95% 중지), `notify/messages.py`(최종 의견 블록·'종목명(코드)'·골든 테스트) (2026-10-26)
 - [ ] 결정 대기(사용자): 2~4주 `llm_rate_limits`·`agent_calls` 통계로 `llm.daily_session_cap` 고정값 재설정
-- [ ] 이연: KIS 실시간 웹소켓(지금은 보이는 종목 10초 조회)
+- [x] KIS 실시간 웹소켓 — 국내 체결가 `H0STCNT0`, 화면 임차 40칸, 1초 화면 갱신(2026-10-27, 「국내 실시간 시세 웹소켓」)
 
 ## Phase 25 테마·LLM 판정자·공시·리밸런스 (같은 플랜 단계 4~7)
 - [ ] 단계 4 테마 열기 감지·안전장치 (`feat/phase25-4-theme`, 머지 전 사용자 확인): KIS 순위 3종(관대한 파서), `scan/theme.py`, 원장 v18 `theme_heat`, 데몬 `<시장>_theme`·알림·CLI·API·대시보드, scout 규칙 1 완화, 게이트(+10% 추격 금지·테마 20%·테마 종목 10일·익절가) — 구현·테스트 완료, PR 확인 대기
@@ -396,3 +396,8 @@
 - [ ] 실기(사용자 확인 대기, 다른 PC): 번들 폴더를 복사 → `secrets/saveticker.env` 확인 → `Trader.app` 실행 → 1분 안에 `state/external/saveticker/runtime/daemon-service.log` 에 Chromium 설치·수집 시작, 브라우저 창 4개, `./trader saveticker status` 의 스트림 `ok`
 - [ ] 실기(사용자 확인 대기, Windows): Chromium 자동 설치·일반 창 로그인·앱 종료 때 `taskkill /T` 로 브라우저까지 닫히는지
 - [x] 결정(사용자 2026-10-27): 이 맥의 launchd 수집기(`com.user.saveticker.collector`·`monitor`)를 내리고 앱(데몬)이 수집을 맡는다 — plist 는 `~/Library/LaunchAgents/disabled-saveticker/` 로 옮김(되돌리려면 제자리로 옮겨 `launchctl bootstrap`). 앱이 꺼져 있는 동안은 수집이 멈춘다
+
+## 국내 실시간 시세 웹소켓 (2026-10-27, 사용자 요청 — Stock 프로젝트 중단·이 프로젝트로 일원화)
+- [x] `broker/kis_ws`(프레임 묶음·부호·핑퐁·제어)·`KisAuth.approval_key`·`web/live_quotes.QuoteHub`(임차·백오프·거절)·`/api/quotes` 허브 우선 + `stream`·프런트 1초 주기, 실기: 접속키 발급·`SUBSCRIBE SUCCESS`/`UNSUBSCRIBE SUCCESS` 확인(장 밖) (2026-10-27)
+- [ ] 실기(사용자 확인 대기, 장중): 대시보드를 열어 둔 채 국내 보유·관심 종목 현재가가 1초 단위로 바뀌는지, 표 머리 '실시간 n종목 · 체결 즉시', `state/logs` 에 '실시간 시세 접속'·끊김 재접속 로그
+- [ ] 다음 후보: 지수(KOSPI·KOSDAQ `H0UPCNT0`) 상단 표시, 호가 10단(`H0STASP0`), 체결통보(`H0STCNI0`, HTS ID·AES 복호화)로 체결 즉시 잔고 갱신

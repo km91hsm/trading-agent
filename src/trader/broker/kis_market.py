@@ -54,6 +54,14 @@ class KisMarket:
     def client(self):
         return self._client
 
+    # --- 실시간 웹소켓 접속키 (화면 시세 허브 `web/live_quotes`) ----------------
+
+    def approval_key(self) -> str:
+        return self._client.auth.approval_key()
+
+    def invalidate_approval(self) -> None:
+        self._client.auth.invalidate_approval()
+
     # --- 현재가 -------------------------------------------------------------
 
     def get_price_kr(self, ticker: str) -> Quote:

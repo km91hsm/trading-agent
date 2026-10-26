@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Callable
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -40,6 +41,7 @@ class WebDeps:
     now: Callable[[], datetime] = field(default=lambda: datetime.now(UTC))
     extra_hosts: list[str] = field(default_factory=list)  # --host 로 다른 바인드를 쓸 때
     schedule: Any | None = None  # ScheduleConfig: /api/system/daemon 의 잡 예정표 (없으면 빈 목록)
+    quote_hub: Any | None = None  # 국내 실시간 시세 허브(web/live_quotes.QuoteHub), 없으면 REST 만
 
     def account(self, account_id: str) -> AccountConfig | None:
         return next((a for a in self.accounts if a.id == account_id), None)
@@ -65,7 +67,15 @@ def create_app(deps: WebDeps) -> FastAPI:
         system,
     )
 
-    app = FastAPI(title="trader", docs_url="/api/docs", openapi_url="/api/openapi.json")
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        yield
+        if deps.quote_hub is not None:  # 실시간 시세 허브의 KIS 웹소켓·스레드를 함께 내린다
+            deps.quote_hub.stop()
+
+    app = FastAPI(
+        title="trader", docs_url="/api/docs", openapi_url="/api/openapi.json", lifespan=lifespan
+    )
     app.state.deps = deps
     # 로컬 전용: DNS 리바인딩으로 토큰 없는 조회 API 를 읽지 못하게 Host 를 제한한다
     app.add_middleware(

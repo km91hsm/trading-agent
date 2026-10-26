@@ -15,6 +15,12 @@ BASE_URL: dict[Env, str] = {
 }
 
 TOKEN_PATH = "/oauth2/tokenP"
+APPROVAL_PATH = "/oauth2/Approval"  # 실시간 웹소켓 접속키
+# 실시간 웹소켓(시세는 실전 env 만 쓴다 — 모의 서버는 시세를 주지 않는다)
+WS_URL: dict[Env, str] = {
+    "real": "ws://ops.koreainvestment.com:21000",
+    "paper": "ws://ops.koreainvestment.com:31000",
+}
 
 # 이름 -> (경로, 실전 tr_id, 모의 tr_id | None)
 _TR: dict[str, tuple[str, str, str | None]] = {
