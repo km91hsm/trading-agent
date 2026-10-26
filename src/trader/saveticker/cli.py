@@ -155,9 +155,7 @@ def run_cmd(
 
         chromium.prepare_env()
     except ImportError:
-        typer.echo(
-            "uv sync 및 uv run trader saveticker install-browser 를 실행하세요", err=True
-        )
+        typer.echo("uv sync 및 uv run trader saveticker install-browser 를 실행하세요", err=True)
         raise typer.Exit(1) from None
     except (ValueError, ConfigError) as exc:
         typer.echo(

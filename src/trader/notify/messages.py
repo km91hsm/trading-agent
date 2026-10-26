@@ -178,7 +178,7 @@ def killswitch_on(reason: str) -> str:
         "킬스위치",
         "신규 매수를 멈췄어요",
         f"사유: {reason}",
-        "매도·손절·헤지는 계속돼요. 해제: trader control killswitch off --note \"원인\"",
+        '매도·손절·헤지는 계속돼요. 해제: trader control killswitch off --note "원인"',
     )
 
 

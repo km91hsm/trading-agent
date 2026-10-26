@@ -35,3 +35,12 @@ def test_unconfigured_host_still_rejected(project, conn):
     c = _client(project, hosts=(), users=())
     assert c.get("/api/system/health", headers={"host": TS}).status_code == 400
     assert c.get("/api/system/health").status_code == 200  # 로컬 그대로
+
+
+def test_proxied_request_cannot_bypass_with_localhost_host(project, conn):
+    """프록시를 거친 요청(X-Forwarded-For·Tailscale-User-Login)은 Host 와 무관하게 사용자 검사."""
+    c = _client(project)
+    r = c.get("/api/system/health", headers={"x-forwarded-for": "100.64.0.9"})
+    assert r.status_code == 403
+    r = c.get("/api/system/health", headers={"tailscale-user-login": "x@y.z"})
+    assert r.status_code == 403

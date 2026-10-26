@@ -64,3 +64,16 @@ def test_risk_card_insufficient(conn, project):
     _snap(conn, DAYS[-1].isoformat(), [("ZZZ", 500)], 1000)
     r = risk_card.compute(conn, account_id="paper-main", market="KR", today=DAYS[-1])
     assert r["insufficient"].startswith("종가 부족") and r["missing"] == ["ZZZ"]
+
+
+def test_risk_card_ignores_future_and_thin_history(conn, project):
+    rng = np.random.default_rng(1)
+    full = list(100 * np.cumprod(1 + rng.normal(0, 0.01, 80)))
+    thin = [100.0, 101.0] + [float("nan")] * 78  # 처음 이틀만
+    _store({"A": full, "T": thin, "B": full})
+    _snap(conn, DAYS[-1].isoformat(), [("A", 500), ("T", 300)], 1000)
+    r = risk_card.compute(conn, account_id="paper-main", market="KR", today=DAYS[-1])
+    assert r["missing"] == ["T"] and r["partial"] is True
+    assert [x["ticker"] for x in r["contributions"]] == ["A"]
+    early = risk_card.compute(conn, account_id="paper-main", market="KR", today=DAYS[40])
+    assert early["asof"] <= DAYS[40].isoformat()  # 조회 기준일 이후 종가는 쓰지 않는다

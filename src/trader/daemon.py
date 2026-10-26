@@ -1634,8 +1634,7 @@ def _backup_body(deps: DaemonDeps) -> dict:
 
 
 def _ksd_body(deps: DaemonDeps) -> dict:
-    """예탁원 권리 일정 수집(평일 07:05 KST) → control.ksd_events:KR. 시세 클라이언트 없으면 생략.
-    """
+    """예탁원 권리 일정 수집(평일 07:05 KST) → control.ksd_events:KR. 시세 없으면 생략."""
     from trader.risk import blackout
 
     if deps.market_client is None or not hasattr(deps.market_client, "ksd_schedule"):

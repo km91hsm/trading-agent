@@ -468,6 +468,7 @@ class Settings(BaseModel):
         if self.cash_park.enabled and market == "KR":
             out.add(self.cash_park.ticker)
         return out
+
     theme: ThemeCfg = Field(default_factory=ThemeCfg)  # Phase 25 테마 열기 감지
     rebalance: RebalanceCfg = Field(default_factory=RebalanceCfg)  # Phase 25 주간 리밸런스
     # 보존 정리(검토 P12): reflect 잡이 이 일수보다 오래된 runs 폴더·날짜 플래그·잡 기록 삭제

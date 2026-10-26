@@ -142,8 +142,12 @@ def test_balance_refresh_skips_when_same_market_already_running(deps, conn):
     lock.acquire()
     try:
         out = balance.refresh(
-            conn, accounts=deps.accounts, brokers=deps.brokers, market="KR",
-            settings=deps.settings, now=datetime(2026, 10, 26, 1, 0, tzinfo=UTC),
+            conn,
+            accounts=deps.accounts,
+            brokers=deps.brokers,
+            market="KR",
+            settings=deps.settings,
+            now=datetime(2026, 10, 26, 1, 0, tzinfo=UTC),
         )
     finally:
         lock.release()

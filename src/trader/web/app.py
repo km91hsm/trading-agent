@@ -84,10 +84,18 @@ def create_app(deps: WebDeps) -> FastAPI:
 
     @app.middleware("http")
     async def tailscale_gate(request: Request, call_next):
+        if not ts_hosts:
+            return await call_next(request)
         host = (request.headers.get("host") or "").split(":")[0].lower()
-        if host in ts_hosts:
+        client = request.client.host if request.client else ""
+        # 프록시를 거친 요청은 Host 와 무관하게 사용자 검사(Host: localhost 로 바꿔 우회 못 하게,
+        # Codex 리뷰) — tailscale serve 는 Tailscale-User-Login·X-Forwarded-For 를 붙인다
+        proxied = host in ts_hosts or any(
+            request.headers.get(h)
+            for h in ("tailscale-user-login", "x-forwarded-for", "forwarded", "x-real-ip")
+        )
+        if proxied:
             login = (request.headers.get("tailscale-user-login") or "").lower()
-            client = request.client.host if request.client else ""
             if client not in ("127.0.0.1", "::1") or not login or login not in ts_users:
                 return JSONResponse({"detail": "tailnet 허용 사용자가 아닙니다"}, status_code=403)
         return await call_next(request)

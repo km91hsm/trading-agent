@@ -53,9 +53,10 @@ def test_subscribe_message_shape():
         "content-type": "utf-8",
     }
     assert msg["body"]["input"] == {"tr_id": "H0STCNT0", "tr_key": "005930"}
-    assert json.loads(kis_ws.subscribe_message("KEY", "005930", release=True))["header"][
-        "tr_type"
-    ] == "2"
+    assert (
+        json.loads(kis_ws.subscribe_message("KEY", "005930", release=True))["header"]["tr_type"]
+        == "2"
+    )
 
 
 @respx.mock

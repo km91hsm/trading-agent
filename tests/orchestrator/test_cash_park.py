@@ -43,8 +43,13 @@ def test_bear_parks_spare_cash_once(conn, project):
     (o,) = r["orders"]
     v = o["results"][0]
     assert o["action"] == "BUY" and v["approved"] and v["qty"] == 800  # (1000만 − 200만)/1만
+    # dry_run 은 기록하지 않는다 — 같은 날 실제 실행을 막지 않게
+    real = cash_park.run(
+        _ctx(conn, ON), market_client=Market(), today=D, regime="bear", dry_run=False
+    )
+    assert real["orders"][0]["results"][0]["order"]["status"] == "accepted"
     again = cash_park.run(
-        _ctx(conn, ON), market_client=Market(), today=D, regime="bear", dry_run=True
+        _ctx(conn, ON), market_client=Market(), today=D, regime="bear", dry_run=False
     )
     assert again == {"skipped": "오늘 이미 실행"}
     assert "357870" in ON.excluded_tickers("KR") and "357870" not in Settings().excluded_tickers(
@@ -76,3 +81,13 @@ def test_unparks_when_not_bear(conn, project):
         dry_run=True,
     )
     assert r2["orders"] == []
+
+
+def test_approve_mode_accounts_skipped(conn, project):
+    from trader.control import control
+
+    ctx = _ctx(conn, ON)
+    control.set_account_mode(conn, ctx.accounts[0], "approve")
+    assert cash_park.run(ctx, market_client=Market(), today=D, regime="bear", dry_run=False) == {
+        "skipped": "오늘 이미 실행"
+    }

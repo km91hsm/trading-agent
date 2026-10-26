@@ -40,7 +40,9 @@ def compute(
     }
     if not held:
         return {"insufficient": "보유 없음(전액 현금)"}
-    df = dataset.load_all(state, market=market, since=today - timedelta(days=window * 2 + 30))
+    df = dataset.load_all(
+        state, market=market, since=today - timedelta(days=window * 2 + 30), until=today
+    )
     table = (
         df.pivot_table(index="date", columns="ticker", values="close", aggfunc="last").sort_index()
         if not df.empty
@@ -48,10 +50,14 @@ def compute(
     )
     missing = sorted(t for t in held if t not in table.columns)
     rets = table.pct_change(fill_method=None).iloc[1:].tail(window) if not table.empty else table
+    # 보유 종목별 유효 수익률이 MIN_OBS 미만이면 '종가 부족' — 0 으로 채우면 위험이 사라진다(Codex)
+    thin = [t for t in held if t not in missing and int(rets[t].notna().sum()) < MIN_OBS]
+    missing = sorted(set(missing) | set(thin))
     have = [t for t in held if t not in missing]
-    if not have or len(rets) < MIN_OBS:
-        return {"insufficient": f"종가 부족({len(rets)}일)", "missing": missing}
-    sub = rets[have].fillna(0.0)
+    sub = rets[have].dropna() if have else rets.iloc[0:0]
+    if not have or len(sub) < MIN_OBS:
+        return {"insufficient": f"종가 부족({len(sub)}일)", "missing": missing}
+    rets = rets.loc[sub.index]
     w = np.array([held[t] for t in have])
     port = sub.to_numpy() @ w
     q = float(np.quantile(port, 0.05))
@@ -84,5 +90,7 @@ def compute(
         },
         "contributions": sorted(contributions, key=lambda x: -x["contribution"]),
         "missing": missing,
+        # 빠진 보유 종목이 있으면 그 비중만큼 위험을 덜 본 부분 추정
+        "partial": bool(missing),
         "snapshot_date": snap["date"],
     }
