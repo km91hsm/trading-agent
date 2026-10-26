@@ -243,3 +243,16 @@ def test_auto_classify_groups_etf_by_brand_name(tmp_path):
         names={"357870": "TIGER CD금리투자KIS(합성)", "336260": "두산퓨얼셀"},
     )
     assert got == {"357870": "ETF"}
+
+
+def test_auto_classify_merges_concurrent_writers_and_skips_unknown_us_exchange(tmp_path):
+    """두 쓰기(데몬·웹)의 서로 다른 종목이 둘 다 남고, 거래소 모르는 US 빈 결과는 굳히지 않는다."""
+    m = FakeMarket(industries={"357870": "전기전자", "000660": "은행"})
+    sector_suggest.auto_classify(SECTORS, m, market="KR", tickers=["357870"], state=tmp_path)
+    sector_suggest.auto_classify(SECTORS, m, market="KR", tickers=["000660"], state=tmp_path)
+    kr = sector_suggest.load_auto(tmp_path)["KR"]
+    assert set(kr) == {"357870", "000660"}
+    sector_suggest.auto_classify(
+        SECTORS, FakeMarket(industries={}), market="US", tickers=["XYZ"], state=tmp_path
+    )
+    assert "XYZ" not in sector_suggest.load_auto(tmp_path).get("US", {})

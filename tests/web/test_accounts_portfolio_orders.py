@@ -130,3 +130,21 @@ def test_ensure_fresh_refreshes_stale_snapshot_once_and_throttles(client, deps, 
     r = client.post("/api/portfolio/ensure-fresh?market=KR").json()
     assert "paper-main" in r["skipped"]  # 방금 갱신해 신선함
     assert client.post("/api/portfolio/ensure-fresh?market=XX").status_code == 400
+
+
+def test_balance_refresh_skips_when_same_market_already_running(deps, conn):
+    """데몬 잡과 웹 접속 갱신이 같은 시장 잔고를 겹쳐 읽지 않는다(Codex 리뷰)."""
+    from datetime import UTC, datetime
+
+    from trader.orchestrator import balance
+
+    lock = balance._RUNNING["KR"]
+    lock.acquire()
+    try:
+        out = balance.refresh(
+            conn, accounts=deps.accounts, brokers=deps.brokers, market="KR",
+            settings=deps.settings, now=datetime(2026, 10, 26, 1, 0, tzinfo=UTC),
+        )
+    finally:
+        lock.release()
+    assert out["busy"] is True and out["refreshed"] == []

@@ -262,7 +262,8 @@ export function useNow(stepMs = 1000): Date {
       stop();
       if (document.visibilityState === "visible") start();
     };
-    start();
+    // 가려진 상태로 마운트되면 타이머를 돌리지 않고 보일 때 시작한다
+    if (typeof document === "undefined" || document.visibilityState !== "hidden") start();
     document.addEventListener("visibilitychange", onVis);
     return () => {
       stop();

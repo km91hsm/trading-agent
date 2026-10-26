@@ -1085,15 +1085,42 @@ def test_usage_probe_job_skips_when_recent_observation(conn, monkeypatch):
     from trader.orchestrator import quick
 
     now = datetime(2026, 10, 26, 3, 0, tzinfo=UTC)
+    from trader.config import LlmSettings
+
     deps = _deps(conn, FakeMarket(), now=lambda: now)
+    deps.settings = Settings(llm=LlmSettings(usage_file=None))  # 이 PC 의 상태줄 파일에 기대지 않게
     called = []
     monkeypatch.setattr(quick, "probe_usage", lambda *a, **kw: called.append(1) or {"ok": True})
     assert daemon._usage_probe_body(deps) == {"ok": True} and called == [1]
     conn.execute(
-        "INSERT INTO llm_rate_limits(observed_at, source, raw_json) VALUES (?, 'session', '{}')",
+        "INSERT INTO llm_rate_limits(observed_at, source, five_hour_util, raw_json) "
+        "VALUES (?, 'session', 0.2, '{}')",
         ((now - timedelta(minutes=2)).isoformat(),),
     )
     conn.commit()
     assert "최근 관측" in daemon._usage_probe_body(deps)["skipped"] and called == [1]
     jobs = {j.id: j for j in daemon.build_jobs(SCHED, Settings(), markets=["KR"])}
     assert jobs["usage_probe"].interval_s == 30 * 60
+
+
+def test_usage_probe_skips_when_statusline_file_is_recent(conn, monkeypatch, tmp_path):
+    """원장 관측이 없어도 대화형 상태줄 파일이 방금 갱신됐으면 확인 호출을 하지 않는다."""
+    import json as _json
+
+    import pytest
+
+    from trader.config import LlmSettings
+    from trader.orchestrator import quick
+
+    now = datetime(2026, 10, 26, 3, 0, tzinfo=UTC)
+    f = tmp_path / "rate_limits.json"
+    f.write_text(
+        _json.dumps(
+            {"at": int(now.timestamp()) - 60, "rate_limits": {"five_hour": {"used_percentage": 10}}}
+        ),
+        encoding="utf-8",
+    )
+    deps = _deps(conn, FakeMarket(), now=lambda: now)
+    deps.settings = Settings(llm=LlmSettings(usage_file=str(f)))
+    monkeypatch.setattr(quick, "probe_usage", lambda *a, **kw: pytest.fail("호출하면 안 됨"))
+    assert "최근 관측" in daemon._usage_probe_body(deps)["skipped"]

@@ -1466,14 +1466,11 @@ def _usage_probe_body(deps: DaemonDeps) -> dict:
     now = deps.now()
     conn = deps.conn_factory()
     try:
-        row = conn.execute("SELECT MAX(observed_at) FROM llm_rate_limits").fetchone()
-        if row and row[0]:
-            try:
-                age = (now - datetime.fromisoformat(row[0])).total_seconds()
-            except ValueError:
-                age = None
-            if age is not None and age < cfg.skip_if_recent_min * 60:
-                return {"skipped": f"최근 관측 {int(age)}초 전"}
+        # 원장(세션·확인)과 대화형 상태줄 파일을 합친 최신 관측 — 둘 중 하나라도 최근이면 쉰다
+        obs = usage.latest_observation(conn, now, usage.usage_file(deps.settings.llm.usage_file))
+        age = (obs or {}).get("age_s")
+        if age is not None and age < cfg.skip_if_recent_min * 60:
+            return {"skipped": f"최근 관측 {int(age)}초 전"}
         ok, reason = usage.session_allowance(conn, deps.settings, kind="resume", now=now)
         if not ok:
             return {"skipped": f"감속: {reason}"}

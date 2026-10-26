@@ -204,19 +204,20 @@ def auto_classify(
     names: dict[str, str] | None = None,
 ) -> dict[str, str]:
     """yaml·캐시에 없는 종목만 업종을 조회해 캐시에 적는다. 새로 대분류된 {종목: 섹터}.
-    업종 표에 없는데 이름이 ETF 상표면(`names`) 'ETF' 로 묶는다."""
-    cache = load_auto(state)
-    seen = cache.setdefault(market, {})
+    업종 표에 없는데 이름이 ETF 상표면(`names`) 'ETF' 로 묶는다. US 는 거래소를 모르면(`exchanges`
+    에 없음) NAS 로 조회하되 업종이 비면 캐시하지 않는다(다른 거래소일 수 있어 다음에 다시)."""
+    seen_before = load_auto(state).get(market, {})
+    new: dict[str, dict] = {}
     got: dict[str, str] = {}
-    changed = False
     for t in dict.fromkeys(str(x) for x in tickers):
-        if sectors.sector_of(t, market) is not None or t in seen:  # type: ignore[arg-type]
+        if sectors.sector_of(t, market) is not None or t in seen_before:  # type: ignore[arg-type]
             continue
+        exchange = (exchanges or {}).get(t)
         try:
             industry = (
                 market_client.get_industry_kr(t)
                 if market == "KR"
-                else market_client.get_industry_us(t, (exchanges or {}).get(t) or "NAS")
+                else market_client.get_industry_us(t, exchange or "NAS")
             )
         except Exception as e:  # noqa: BLE001 - 종목 단위 격리, 다음 관측 때 다시
             logger.info("업종 조회 실패 %s %s: %s", market, t, e)
@@ -224,17 +225,31 @@ def auto_classify(
         sector = sectors.classify(industry, market)  # type: ignore[arg-type]
         if sector is None and _etf_by_name((names or {}).get(t)):
             sector = ETF_SECTOR
-        seen[t] = {"sector": sector, "industry": industry, "at": datetime.now(UTC).isoformat()}
-        changed = True
+        if sector is None and market == "US" and not exchange and not industry:
+            continue  # 거래소 추정(NAS)이 틀렸을 수 있다 — 빈 결과는 굳히지 않는다
+        new[t] = {"sector": sector, "industry": industry, "at": datetime.now(UTC).isoformat()}
         if sector:
             got[t] = sector
-    if changed:
-        p = _auto_path(state)
-        p.parent.mkdir(parents=True, exist_ok=True)
-        tmp = p.with_name(f"{p.name}.tmp")
+    if new:
+        _merge_auto(state, market, new)
+    return got
+
+
+def _merge_auto(state: Path | None, market: str, new: dict[str, dict]) -> None:
+    """프로세스 간 파일 락 안에서 최신 캐시를 다시 읽어 합친다(데몬·웹이 동시에 쓰면 한쪽 항목이
+    사라지던 문제). 임시 파일은 pid 접미라 서로의 교체를 깨지 않는다."""
+    import os
+
+    from trader.platform.filelock import locked
+
+    p = _auto_path(state)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with locked(p.with_name(f"{p.name}.lock"), timeout=30):
+        cache = load_auto(state)
+        cache.setdefault(market, {}).update(new)
+        tmp = p.with_name(f"{p.name}.{os.getpid()}.tmp")
         tmp.write_text(json.dumps(cache, ensure_ascii=False, indent=1), encoding="utf-8")
         atomic_replace(tmp, p)
-    return got
 
 
 class SectorResolver:

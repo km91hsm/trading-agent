@@ -154,18 +154,26 @@ def ensure_fresh(request: Request, market: str | None = None) -> dict:
         if time.monotonic() - last < ENSURE_MIN_INTERVAL_S:
             return {"market": m, "throttled": True}
         _ENSURE_LAST[m] = time.monotonic()
-    with closing(deps.conn_factory()) as conn:
-        out = balance.refresh(
-            conn,
-            accounts=list(deps.accounts),
-            brokers=deps.brokers,
-            market=m,
-            settings=deps.settings,
-            now=now,
-            market_client=deps.market,
-            state=deps.state,
-            only_stale=True,
-        )
+    try:
+        with closing(deps.conn_factory()) as conn:
+            # 업종 자동 분류(KIS 추가 조회)는 데몬 잔고 갱신에만 — 토큰 없는 요청이 조회 안 늘림
+            out = balance.refresh(
+                conn,
+                accounts=list(deps.accounts),
+                brokers=deps.brokers,
+                market=m,
+                settings=deps.settings,
+                now=now,
+                market_client=None,
+                state=deps.state,
+                only_stale=True,
+                broker_ctx=kis_wait,
+            )
+    except HTTPException as e:  # kis_wait 의 503(리미터 점유) — 다음 접속 때 다시
+        return {"market": m, "busy": True, "detail": e.detail}
+    finally:
+        with _ENSURE_LOCK:  # 쿨다운은 완료 시각부터(긴 조회 뒤 바로 다시 들어오지 않게)
+            _ENSURE_LAST[m] = time.monotonic()
     return {"market": m, **out}
 
 

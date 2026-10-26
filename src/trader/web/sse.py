@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import threading
 import time
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -142,6 +143,23 @@ def _file_keys(state: Path | None, now) -> dict:
     }
 
 
+SHARED_TTL_S = 1.5  # 여러 연결(탭·리더 교체)이 같은 지문을 이 시간 안에서는 한 번만 계산한다
+_SHARED: dict = {"at": 0.0, "key": None, "snap": None}
+_SHARED_LOCK = threading.Lock()
+
+
+def shared_snapshot(conn: sqlite3.Connection, state: Path | None = None) -> dict:
+    """연결이 몇 개든 2초 틱마다 원장 집계를 연결 수만큼 반복하지 않게, 최근 계산값을 나눠 쓴다
+    (Codex 리뷰: 표가 커지면 탭 수에 비례한 비용)."""
+    key = str(state)
+    with _SHARED_LOCK:
+        if _SHARED["key"] == key and time.monotonic() - _SHARED["at"] < SHARED_TTL_S:
+            return _SHARED["snap"]
+        snap = snapshot(conn, state)
+        _SHARED.update(at=time.monotonic(), key=key, snap=snap)
+        return snap
+
+
 async def stream(
     deps, *, interval_s: float = 2.0, max_events: int | None = None
 ) -> AsyncIterator[str]:
@@ -160,7 +178,7 @@ async def _ticks(
     sent = 0
     last_ping = time.monotonic()
     while True:
-        snap = await run_in_threadpool(snapshot, conn, state)
+        snap = await run_in_threadpool(shared_snapshot, conn, state)
         if snap != last:
             last = snap
             sent += 1
