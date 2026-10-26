@@ -351,7 +351,8 @@
 - [ ] 실기(사용자 확인 대기): 장중 `uv run trader theme show --live --market KR` 의 `signals.ranks` 가 0 이 아닌지(순위 API 파라미터·필드명 확인), 대시보드 '테마 열기' 블록과 `[테마 열기]` 알림
 - [ ] 결정 대기(사용자): 2~4주 뒤 `theme_heat.fwd_ret_5d`(상위 테마 사후 초과수익)로 `theme.weights`·`top_n`·`chase_limit_pct` 조정
 - [ ] 단계 5 분 단위 LLM 판정자 (`feat/phase25-5-scalp-judge`, 머지 전 사용자 확인)
-- [ ] 단계 6 승인 지문·공시 중요도 (`feat/phase25-6-approval-disclosure`)
+- [x] 단계 6 승인 지문·공시 중요도 (`feat/phase25-6-approval-disclosure`): 원장 v19 `approvals.fingerprint`·`news_items.severity`, `sources/disclosures.py`(DART 키워드·8-K item), 데몬 `_disclosure_trigger`(critical 즉시 재분석·알림 1회), 운영 점검 `disclosure` 영역 (2026-10-26)
+- [ ] 실기(사용자 확인 대기): DART 키가 있는 날 데몬 `news_collect` 로그의 `disclosure:KR` inserted·critical, EDGAR `submissions` 가 User-Agent 로 200 을 주는지
 - [ ] 단계 7 주간 리밸런스·세금 로트 (`feat/phase25-7-rebalance-tax`, 머지 전 사용자 확인)
 
 

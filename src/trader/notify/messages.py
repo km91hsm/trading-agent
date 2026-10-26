@@ -386,6 +386,11 @@ def fill_ambiguous(*, account: str, market: str, label: str, side: str, detail: 
     )
 
 
+def disclosure(*, market: str, label: str, title: str, url: str, action: str) -> str:
+    """중요 공시(critical, Phase 25) — 보유·유니버스 종목. action 은 '재분석 요청 #n' 등."""
+    return render("중요 공시", f"{market} {label}", [title, url, action])
+
+
 def theme_heat(*, market: str, themes: list[dict]) -> str:
     """테마 열기 상위 테마가 바뀌었을 때 (Phase 25)."""
     lines = []

@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import sqlite3
 from collections.abc import Callable
@@ -38,6 +39,21 @@ APPROVAL_TTL = timedelta(minutes=30)
 QUOTE_PRICE_KEY = "quote_price"  # approvals.order_json 에 덧붙이는 요청 시 현재가
 STAGE_KEY = "order_stage"  # approvals.order_json 에 덧붙이는 주문 체크포인트 이름(50_ 외일 때)
 NAME_KEY = "name"  # approvals.order_json 에 덧붙이는 종목명 (표시용, OrderRequest 에는 없다)
+
+
+def approval_fingerprint(account_id: str, decision_id: int | None, order: dict) -> str:
+    """승인 지문(Phase 25): 계좌·결정·주문 내용(표시용 이름 제외)의 정렬 키 JSON sha256.
+    요청 때 저장하고 실행 직전 다시 계산해 다르면(원장 행 변조·버그) 주문하지 않는다."""
+    import hashlib
+
+    body = {k: v for k, v in order.items() if k != NAME_KEY}
+    raw = json.dumps(
+        {"account_id": account_id, "decision_id": decision_id or 0, "order": body},
+        sort_keys=True,
+        ensure_ascii=False,
+        default=str,
+    )
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
 @dataclass
@@ -690,6 +706,7 @@ def _request_approval(
         order=order,
         requested_at=now.isoformat(),
         expires_at=(now + APPROVAL_TTL).isoformat(),
+        fingerprint=approval_fingerprint(account.id, decision_id, order),
     )
     ctx.notifier.send(
         messages.approval_request(
@@ -908,6 +925,21 @@ def approve(ctx: ExecContext, approval_id: int) -> dict:
             "ok": False,
             "error": f"계좌 모드가 approve 가 아님({mode}): 승인 미실행 (요청은 pending 유지)",
         }
+    fp = a.get("fingerprint")
+    if fp and fp != approval_fingerprint(a["account_id"], a["decision_id"], a["order"]):
+        # 요청 뒤 order_json 이 바뀌었다 — 주문하지 않고 실패로 닫는다(지문 없는 옛 행은 통과)
+        logger.critical("승인 지문 불일치 #%s %s", approval_id, a["account_id"])
+        repo.decide_approval(ctx.conn, approval_id, "failed", decided_at=ctx.now().isoformat())
+        o = a["order"]
+        _notify_quietly(
+            ctx,
+            messages.approval_tampered(
+                approval_id=approval_id,
+                account=a["account_id"],
+                label=names.label(str(o.get("ticker")), o.get(NAME_KEY)),
+            ),
+        )
+        return {"ok": False, "error": f"승인 요청 #{approval_id} 지문 불일치: 주문 내용이 바뀜"}
     order = dict(a["order"])
     order.pop(NAME_KEY, None)  # 표시용 — OrderRequest(extra=forbid) 에는 없다
     raw_quote = order.pop(QUOTE_PRICE_KEY, None)
