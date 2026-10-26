@@ -101,3 +101,61 @@ def test_daemon_handler_enqueues_fills_sync_once(conn):
     rows = conn.execute("SELECT kind, source FROM job_requests").fetchall()
     assert [(r["kind"], r["source"]) for r in rows] == [("fills_sync", "notice:paper")]
     assert "fills_sync" in jobs.FAST_KINDS
+
+
+def test_trailing_notice_is_not_lost_and_running_sync_retries():
+    """디바운스로 미룬 마지막 통보도 간격이 지나면 동기화하고, 동기화가 실행 중이면 다시 요청."""
+    c = Conn(["1|H0STCNI9|001|A"])
+    lst, clock, fired, _, _ = _listener([c])
+    answers = [True, False, True]
+    lst._on_notice = lambda env: fired.append(env) or answers.pop(0)
+    lst.step()  # 접속
+    lst.step()  # 첫 통보 → 즉시
+    clock[0] = 4.0
+    c.inbox.append("1|H0STCNI9|001|B")
+    lst.step()  # 5초 안 → 미룸
+    assert len(fired) == 1
+    clock[0] = 5.5
+    lst.step()  # 수신 없음(타임아웃)이어도 미룬 것을 보낸다 — 실행 중(False) 이라 남김
+    clock[0] = 11.0
+    lst.step()
+    assert len(fired) == 3 and not lst._pending
+
+
+def test_transient_error_reconnects_ping_failure_and_ack_catches_up():
+    err = json.dumps(
+        {"header": {"tr_id": "H0STCNI9"}, "body": {"rt_cd": "1", "msg1": "SERVER BUSY"}}
+    )
+    ok = json.dumps(
+        {"header": {"tr_id": "H0STCNI9"}, "body": {"rt_cd": "0", "msg1": "SUBSCRIBE SUCCESS"}}
+    )
+
+    class PingFail(Conn):
+        def send(self, t):
+            if "PINGPONG" in t:
+                raise ConnectionError("x")
+            super().send(t)
+
+    ping = json.dumps({"header": {"tr_id": "PINGPONG"}})
+    lst, clock, fired, _, made = _listener([Conn([err]), PingFail([ping]), Conn([ok])])
+    lst.step()
+    lst.step()  # 일시 오류 → 영구 거절 아님, 다시 접속
+    assert lst.rejected is None and not lst.status()["connected"]
+    clock[0] = 2.0
+    lst.step()
+    lst.step()  # 핑 응답 실패 → 끊김으로 처리(스레드 유지)
+    assert not lst.status()["connected"]
+    clock[0] = 10.0
+    lst.step()
+    lst.step()  # 구독 성공 응답 → 끊긴 동안 체결 보충 동기화
+    assert fired == ["paper"]
+
+
+def test_subscribe_send_failure_closes_socket():
+    class SendFail(Conn):
+        def send(self, t):
+            raise ConnectionError("x")
+
+    c = SendFail()
+    lst, _, _, _, _ = _listener([c])
+    assert not lst.step() and c.closed

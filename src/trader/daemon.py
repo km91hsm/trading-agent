@@ -1715,16 +1715,21 @@ def _paper_review_body(deps: DaemonDeps) -> dict:
     return {"items": len(r["items"]), "alerts": len(r["alerts"])}
 
 
-def notice_handler(conn_factory: Callable[[], sqlite3.Connection]) -> Callable[[str], None]:
-    """체결통보 → 작업 대기열 `fills_sync`(빠른 레인). 이미 대기·실행 중이면 그것으로 충분하다."""
+def notice_handler(conn_factory: Callable[[], sqlite3.Connection]) -> Callable[[str], bool]:
+    """체결통보 → 작업 대기열 `fills_sync`(빠른 레인). 이미 **대기 중**이면 충분하다(True).
+    **실행 중**이면 그 실행이 이 통보 전 조회였을 수 있어 False — 리스너가 미뤄 두고 다시 요청."""
 
-    def on_notice(env: str) -> None:
+    def on_notice(env: str) -> bool:
         conn = conn_factory()
         try:
             rid = jobq.enqueue(conn, "fills_sync", {}, source=f"notice:{env}")
             logger.info("체결통보(%s) → 체결 동기화 요청 #%s", env, rid)
+            return True
         except jobq.DuplicateRequest:
-            pass
+            queued = conn.execute(
+                "SELECT 1 FROM job_requests WHERE kind='fills_sync' AND status='queued' LIMIT 1"
+            ).fetchone()
+            return queued is not None
         finally:
             conn.close()
 

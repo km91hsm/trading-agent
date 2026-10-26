@@ -39,7 +39,7 @@ class NoticeListener:
         hts_id: str,
         approval: Callable[[], str],
         invalidate: Callable[[], None],
-        on_notice: Callable[[str], None],
+        on_notice: Callable[[str], bool | None],
         connect: Callable[[str], Any] = _default_connect,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
@@ -58,6 +58,7 @@ class NoticeListener:
         self._attempt = 0
         self._retry_at = 0.0
         self._last_fire = -1e9
+        self._pending = False  # 동기화를 요청해야 할 통보가 남아 있다
         self.rejected: str | None = None
         self.notices = 0
         self._stop = threading.Event()
@@ -73,7 +74,7 @@ class NoticeListener:
         self._stop.set()
         t = self._thread
         if t is not None and t.is_alive() and t is not threading.current_thread():
-            t.join(timeout=5)
+            t.join(timeout=15)  # 접속 제한(10초)보다 길게 — 종료 뒤 구독·콜백이 돌지 않게
         self._close()
 
     def status(self) -> dict:
@@ -96,25 +97,42 @@ class NoticeListener:
             self._close()
             logger.info("체결통보 리스너 종료 (%s)", self.env)
 
+    def _flush(self) -> None:
+        """미뤄 둔 통보가 있고 디바운스 간격이 지났으면 동기화를 요청한다. 받아들여지지 않으면
+        (동기화가 이미 실행 중 — 그 실행은 이 통보 전 조회일 수 있다) 다음 바퀴에 다시."""
+        if not self._pending or self._clock() - self._last_fire < DEBOUNCE_S:
+            return
+        self._last_fire = self._clock()
+        try:
+            done = self._on_notice(self.env)
+        except Exception:  # noqa: BLE001 — 콜백 실패가 연결을 끊지 않는다
+            logger.exception("체결통보 처리 실패 (%s)", self.env)
+            return
+        if done is not False:
+            self._pending = False
+
     def step(self) -> bool:
-        """한 바퀴: (필요하면) 접속·구독 → 프레임 하나. 일을 했으면 True."""
-        if self.rejected is not None:
+        """한 바퀴: (필요하면) 접속·구독 → 프레임 하나 → 미뤄 둔 동기화 요청. 일을 했으면 True."""
+        if self.rejected is not None or self._stop.is_set():
             return False
         if self._conn is None and not self._open():
+            self._flush()
             return False
         try:
             raw = self._conn.recv(timeout=RECV_TIMEOUT_S)
+            raw = raw if isinstance(raw, str) else raw.decode("utf-8", "replace")
+            if kis_ws.is_pingpong(raw):
+                self._conn.send(raw)  # 핑 응답 실패도 끊김으로 본다(Codex 리뷰)
+                self._attempt = 0
+                self._flush()
+                return True
         except TimeoutError:
+            self._flush()
             return True
         except Exception as e:  # noqa: BLE001 — 끊김: 백오프 뒤 다시
             logger.warning("체결통보 연결 끊김 (%s): %s", self.env, type(e).__name__)
             self._drop(backoff=True)
             return False
-        raw = raw if isinstance(raw, str) else raw.decode("utf-8", "replace")
-        if kis_ws.is_pingpong(raw):
-            self._conn.send(raw)
-            self._attempt = 0
-            return True
         problem = kis_ws.control_problem(raw)
         if problem is not None:
             msg = problem[2].lower()
@@ -124,35 +142,46 @@ class NoticeListener:
                 return False
             if "already" in msg:
                 return True
-            # HTS ID 거절 등: 다시 붙어도 같다 — 이 env 는 정기 동기화만
-            self.rejected = problem[2]
-            logger.error(
-                "체결통보 구독 거절 (%s): %s — 정기 체결 동기화만 씁니다", self.env, problem[2]
-            )
-            self._close()
+            if "htsid" in msg.replace(" ", "") or "hts id" in msg:
+                # HTS ID 거절은 다시 붙어도 같다 — 이 env 는 정기 동기화만
+                self.rejected = problem[2]
+                logger.error(
+                    "체결통보 구독 거절 (%s): %s — 정기 체결 동기화만 씁니다", self.env, problem[2]
+                )
+                self._close()
+                return False
+            logger.warning("체결통보 구독 오류 (%s): %s — 다시 접속합니다", self.env, problem[2])
+            self._drop(backoff=True)
             return False
         self._attempt = 0
-        if kis_ws.is_notice(raw):
+        if raw.lstrip().startswith("{"):
+            # 구독 성공 응답: 끊겨 있던 동안의 체결을 보충하도록 한 번 동기화를 당긴다
+            self._pending = True
+        elif kis_ws.is_notice(raw):
             self.notices += 1
-            now = self._clock()
-            if now - self._last_fire >= DEBOUNCE_S:
-                self._last_fire = now
-                try:
-                    self._on_notice(self.env)
-                except Exception:  # noqa: BLE001 — 콜백 실패가 연결을 끊지 않는다
-                    logger.exception("체결통보 처리 실패 (%s)", self.env)
+            self._pending = True
+        self._flush()
         return True
 
     def _open(self) -> bool:
-        if self._clock() < self._retry_at:
+        if self._clock() < self._retry_at or self._stop.is_set():
             return False
+        conn = None
         try:
             key = self._approval()
             conn = self._connect(self._url)
+            if self._stop.is_set():  # 접속하는 동안 데몬이 내려갔다
+                conn.close()
+                return False
             for tr in self._trs:
                 conn.send(kis_ws.subscribe_message(key, self._hts, tr_id=tr))
         except Exception as e:  # noqa: BLE001
             logger.warning("체결통보 접속 실패 (%s): %s", self.env, type(e).__name__)
+            if conn is not None:  # 구독 전송 실패: 열린 소켓을 닫는다
+                try:
+                    conn.close()
+                except Exception:  # noqa: BLE001
+                    pass
             self._drop(backoff=True)
             return False
         self._conn = conn
