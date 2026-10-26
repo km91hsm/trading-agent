@@ -3,7 +3,7 @@ import type { EventSnapshot } from "./api";
 import { canLead, changedKeys, createEventsClient, HEARTBEAT_MS, LEADER_KEY, parseLeader, STALE_MS, type EventsDeps } from "./events";
 
 const snap = (n: number): EventSnapshot =>
-  ({ orders: n, approvals_pending: 0, approvals: 0, runs: 0, decisions: 0, triggers: 0, watchlist: "", paused: false }) as EventSnapshot;
+  ({ orders: `${n}:${n}`, approvals_pending: 0, approvals: "0:0", runs: "0:0", decisions: 0, triggers: 0, watchlist: "", paused: false }) as EventSnapshot;
 
 class FakeBus {
   channels: FakeChannel[] = [];
@@ -69,7 +69,7 @@ describe("changedKeys", () => {
     const a = snap(1);
     expect(changedKeys(null, a)).toEqual(Object.keys(a).sort());
     expect(changedKeys(a, { ...a })).toEqual([]);
-    expect(changedKeys(a, { ...a, orders: 2, paused: true })).toEqual(["orders", "paused"]);
+    expect(changedKeys(a, { ...a, orders: "2:2:filled=1", paused: true })).toEqual(["orders", "paused"]);
     expect(changedKeys(a, { ...a, jobs_done: 3 })).toEqual(["jobs_done"]);
   });
 });
@@ -91,8 +91,8 @@ describe("SSE 리더 탭", () => {
     h.mk("b", (s) => got.b.push(s));
     expect(h.opened.length).toBe(1);
     h.opened[0].onSnap(snap(1));
-    expect(got.a.map((s) => s.orders)).toEqual([1]);
-    expect(got.b.map((s) => s.orders)).toEqual([1]);
+    expect(got.a.map((s) => s.orders)).toEqual(["1:1"]);
+    expect(got.b.map((s) => s.orders)).toEqual(["1:1"]);
     expect(parseLeader(h.store.get(LEADER_KEY) ?? null)?.id).toBe("a");
   });
 

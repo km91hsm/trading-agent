@@ -7,7 +7,7 @@ import pytest
 from conftest import make_account
 
 from trader.broker.fake import FakeBroker, FakeMarket
-from trader.broker.models import Candle, Cash, Position
+from trader.broker.models import Candle, Cash, Fill, Position
 from trader.config import HedgeCfg, ScalpCfg, Settings
 from trader.control import control
 from trader.orchestrator import run_store
@@ -40,6 +40,59 @@ def _bars(burst: bool, price="10000"):
             Candle(date=D, open=p, high=p, low=p, close=p, volume=vol, time=f"{h:02d}{m:02d}00")
         )
     return out
+
+
+def _fill(order_no, side, qty, price, at):
+    return Fill(
+        order_no=order_no,
+        ticker="005930",
+        market="KR",
+        side=side,
+        qty=qty,
+        price=Decimal(price),
+        filled_at=at,
+    )
+
+
+def fill_all(ctx, conn, price=None):
+    """접수된 주문을 전부 체결시킨다(모의 브로커 체결 조회에 반영 — 다음 틱의 동기화가 읽는다).
+    가격은 지정가, 시장가는 price(없으면 현재가)."""
+    for o in conn.execute("SELECT * FROM orders WHERE status IN ('accepted','partial')"):
+        px = o["price"] or price or str(ctx.market_client.prices[o["ticker"]])
+        b = ctx.brokers[o["account_id"]]
+        fills = b.fills.setdefault(("KR", D), [])
+        if any(f.order_no == o["order_no"] for f in fills):
+            continue
+        fills.append(
+            Fill(
+                order_no=o["order_no"],
+                ticker=o["ticker"],
+                market="KR",
+                side=o["side"],
+                qty=o["qty"],
+                price=Decimal(str(px)),
+                filled_at=ctx.now(),
+            )
+        )
+        held = {x.ticker: x.qty for x in b.positions}
+        q = held.get(o["ticker"], 0) + (o["qty"] if o["side"] == "BUY" else -o["qty"])
+        others = [x for x in b.positions if x.ticker != o["ticker"]]
+        p = Decimal(str(px))
+        b.positions = others + (
+            [
+                Position(
+                    ticker=o["ticker"],
+                    market="KR",
+                    qty=q,
+                    avg_price=p,
+                    current_price=p,
+                    eval_amount=p * q,
+                    pnl_pct=0.0,
+                )
+            ]
+            if q > 0
+            else []
+        )
 
 
 def _ctx(
@@ -93,7 +146,10 @@ def test_tick_enters_on_signal_paper_only_and_once_per_ticker(conn, project):
     assert conn.execute("SELECT COUNT(*) FROM decisions").fetchone()[0] == 0
     row = conn.execute("SELECT decision_id, side, qty FROM orders").fetchone()
     assert row["decision_id"] is None and row["side"] == "BUY"
-    assert any("[단타 진입]" in m for m in ctx.notifier.msgs)
+    # 그날 첫 묶음은 바로 — 진입은 '[단타]' 묶음 한 통 안의 한 줄 (전체 검토 T3)
+    assert [m.splitlines()[1] for m in ctx.notifier.msgs if m.startswith("[단타]")] == [
+        "진입 005930 @10,050원 · " + engine.load_state(None, D, "KR")["open"][0]["reason"]
+    ]
     # 다음 틱: 같은 종목은 보유 중이라 후보에서 빠지고, 신호가 있어도 다시 사지 않는다
     out2 = engine.tick(ctx, market="KR", today=D)
     assert out2["entries"] == [] and out2["candidates"] == 1
@@ -115,13 +171,21 @@ def test_tick_exits_on_take_profit_and_halts_on_daily_stop(conn, project):
             pnl_pct=2.5,
         )
     ]
+    fills = ctx.brokers["paper-main"].fills
+    fills[("KR", D)] = [_fill("FAKE-1", "BUY", 49, "10050", NOW + timedelta(minutes=1))]
     ctx.market_client.prices["005930"] = Decimal("10300")  # +2.5% ≥ 1.5%
     later = NOW + timedelta(minutes=5)
     ctx.now = lambda: later
     out = engine.tick(ctx, market="KR", today=D)
+    assert out["exits"] == []  # 청산 주문 접수 — 체결을 기다린다
+    fills[("KR", D)].append(_fill("FAKE-2", "SELL", 49, "10300", later))
+    out = engine.tick(ctx, market="KR", today=D)
     assert out["exits"] == [
         {"ticker": "005930", "reason": "take_profit", "ret": pytest.approx(0.0249, abs=1e-3)}
     ]
+    # 첫 묶음 5분 뒤 청산은 묶음 주기(30분) 안이라 모아 둔다 — 틱마다 오지 않는다
+    assert sum(m.startswith("[단타]") for m in ctx.notifier.msgs) == 1
+    assert engine.load_state(None, D, "KR")["outbox"][0]["leg"] == "exit"
     st = engine.load_state(None, D, "KR")
     assert st["open"] == [] and st["closed"][0]["exit_price"] == "10300"
     sells = conn.execute("SELECT side, order_type FROM orders WHERE side='SELL'").fetchall()
@@ -136,6 +200,10 @@ def test_tick_exits_on_take_profit_and_halts_on_daily_stop(conn, project):
     assert out3["entries"] == [] and "실현" in engine.load_state(None, D, "KR")["halted"]
     assert "skipped" in engine.tick(ctx, market="KR", today=D)
     assert any("[단타 중단]" in m for m in ctx.notifier.msgs)
+    # 중단 때는 모아 둔 청산을 즉시 보낸다 (한글 사유·영문 코드 없음)
+    digest = [m for m in ctx.notifier.msgs if m.startswith("[단타]")][-1]
+    assert "청산 005930 @10,300원 · 익절" in digest and "take_profit" not in digest
+    assert engine.load_state(None, D, "KR")["outbox"] == []
 
 
 def test_allowed_blocks_disabled_paused_bear_and_strategist(conn, project):
@@ -194,3 +262,35 @@ def test_dry_run_records_without_orders(conn, project):
     assert engine.load_state(None, D, "KR")["open"][0]["dry_run"] is True
     rep = engine.report(None, market="KR", days=3, today=D)
     assert rep["days"][0]["date"] == D.isoformat() and rep["summary"]["trades"] == 0
+
+
+def test_digest_every_min_bundles_and_dry_run_is_korean(conn, project):
+    """전체 검토 T3: 묶음 주기가 지나면 모인 알림을 한 통으로, dry_run 은 '주문 없이 판정'."""
+    _scan(["005930", "000660"])
+    ctx = _ctx(conn, minutes={"005930": _bars(True)}, dry_run=True)
+    engine.tick(ctx, market="KR", today=D)
+    assert len(ctx.notifier.msgs) == 1 and "(주문 없이 판정)" in ctx.notifier.msgs[0]
+    assert "dry-run" not in ctx.notifier.msgs[0]
+    ctx.market_client.minutes["000660"] = _bars(True)
+    ctx.now = lambda: NOW + timedelta(minutes=10)
+    engine.tick(ctx, market="KR", today=D)
+    assert len(ctx.notifier.msgs) == 1  # 주기 안 — 보류
+    ctx.now = lambda: NOW + timedelta(minutes=31)
+    engine.tick(ctx, market="KR", today=D)
+    assert len(ctx.notifier.msgs) == 2 and "진입 000660" in ctx.notifier.msgs[1]
+
+
+def test_digest_kept_when_send_fails(conn, project):
+    """Codex 리뷰: 텔레그램 실패(False)·예외면 묶음을 버리지 않고 다음 틱에 다시 보낸다."""
+    _scan(["005930"])
+    ctx = _ctx(conn, minutes={"005930": _bars(True)})
+    ctx.notifier.send = lambda text, *, escape=True: False
+    engine.tick(ctx, market="KR", today=D)
+    st = engine.load_state(None, D, "KR")
+    assert len(st["outbox"]) == 1 and not st.get("digest_at")
+    sent = []
+    ctx.notifier.send = lambda text, *, escape=True: sent.append(text) or True
+    ctx.now = lambda: NOW + timedelta(minutes=1)
+    engine.tick(ctx, market="KR", today=D)
+    assert len(sent) == 1 and "진입 005930" in sent[0]
+    assert engine.load_state(None, D, "KR")["outbox"] == []

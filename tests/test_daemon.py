@@ -546,7 +546,7 @@ def test_reflect_body_continues_after_market_error(conn, monkeypatch):
     deps.notifier = type("N", (), {"send": lambda self, t, **k: sent.append(t) or True})()
     r = daemon._reflect_body(deps)
     assert calls == ["KR", "US"] and len(r["errors"]) == 1 and "KR" in r["errors"][0]
-    assert any("reflect 실패" in m for m in sent)
+    assert any("복기 실패" in m for m in sent)
 
 
 def test_monitor_body_uses_market_run_date(conn, monkeypatch):
@@ -962,7 +962,7 @@ def test_scan_line_and_listed_discovery_snapshot(conn, monkeypatch):
         }
     )
     assert line == (
-        "[스캔] KR 2026-10-08: picks 2(005930, 247540) · 분석 대상 3 · "
+        "[스캔] KR 2026-10-08: 선정 2(005930, 247540) · 분석 대상 3 · "
         "뉴스 발굴 1(유니버스 0·밖 1·미해결 1) · 세션 상한"
     )
 

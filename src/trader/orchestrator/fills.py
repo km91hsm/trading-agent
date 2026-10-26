@@ -196,12 +196,14 @@ def sync_fills(
     replaced = 0
     expired = 0
     updated: set[int] = set()
+    failed: list[str] = []  # 조회 실패 시장(호출자가 '체결 확인됨' 으로 보지 않게)
     days = {m: _day_for(m, d) for m in account.markets}
     for market in account.markets:
         try:
             fills = broker.get_fills(market, days[market])
         except Exception as e:  # noqa: BLE001 - 한 시장 실패가 다른 시장을 막지 않는다
             logger.warning("체결 조회 실패 %s %s: %s", account.id, market, e)
+            failed.append(market)
             continue
         for f in fills:
             oid = _order_id_for(conn, account.id, f, notifier=notifier)
@@ -244,4 +246,5 @@ def sync_fills(
         "updated": replaced,
         "orders_updated": len(updated),
         "expired": expired,
+        "failed_markets": failed,
     }

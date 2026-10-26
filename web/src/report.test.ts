@@ -71,7 +71,7 @@ describe("stageReport", () => {
     const b = stageReport("50_order_paper-main", { request: { side: "BUY", qty: 3, order_type: "LIMIT", price: "70000" }, result: { order_no: "123", message: "정상" }, mode: "auto", status: "accepted" });
     expect(b[0].title).toBe("주문 · paper-main");
     expect(b[0].lead).toBe("접수");
-    expect(b[0].rows).toContainEqual(["요청", "BUY 3주 @70,000"]);
+    expect(b[0].rows).toContainEqual(["요청", "매수 3주 @70,000"]);
     expect(b[0].rows).toContainEqual(["접수번호", "123"]);
   });
 

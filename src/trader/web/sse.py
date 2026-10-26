@@ -23,6 +23,19 @@ router = APIRouter(tags=["events"])
 PING_EVERY_S = 15.0
 
 
+def _fingerprint(conn: sqlite3.Connection, table: str, *, status: bool = False) -> str:
+    """테이블 지문: 건수·최대 id(+ 상태별 건수). MAX(id) 만 보면 체결·만료 같은 UPDATE 를
+    못 잡는다(전체 검토 W5). 상태별 건수는 행이 많아도 GROUP BY 한 번이다."""
+    row = conn.execute(f"SELECT COUNT(*) AS n, COALESCE(MAX(id), 0) AS m FROM {table}").fetchone()
+    fp = f"{row['n']}:{row['m']}"
+    if status:
+        groups = conn.execute(
+            f"SELECT status, COUNT(*) AS n FROM {table} GROUP BY status ORDER BY status"
+        ).fetchall()
+        fp += ":" + ",".join(f"{g['status']}={g['n']}" for g in groups)
+    return fp
+
+
 def snapshot(conn: sqlite3.Connection) -> dict:
     def _max(table: str) -> int:
         row = conn.execute(f"SELECT COALESCE(MAX(id), 0) AS m FROM {table}").fetchone()
@@ -32,10 +45,11 @@ def snapshot(conn: sqlite3.Connection) -> dict:
         "n"
     ]
     return {
-        "orders": _max("orders"),
+        # 주문 표는 상태 변경(체결·만료·취소)과 체결 적재도 다시 읽어야 한다
+        "orders": _fingerprint(conn, "orders", status=True) + "|" + _fingerprint(conn, "fills"),
         "approvals_pending": int(pending),
-        "approvals": _max("approvals"),
-        "runs": _max("runs"),
+        "approvals": _fingerprint(conn, "approvals", status=True),
+        "runs": _fingerprint(conn, "runs", status=True),
         # agent_calls 는 분석 세션 중 서브에이전트 호출마다 늘어 change 가 쏟아지므로 넣지 않는다
         "decisions": _max("decisions"),
         "triggers": _max("triggers"),

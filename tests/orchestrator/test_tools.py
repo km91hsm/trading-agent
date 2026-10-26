@@ -885,8 +885,10 @@ def test_trader_context_memory_top5_after_warmup(ctx, project):
         "decided_at",
         "situation_summary",
         "decision",
-        "realized_return",
-        "alpha_vs_benchmark",
+        "round",
+        "direction_score",
+        "avoided_loss",
+        "realized_pnl_pct",
         "lesson",
         "score",
     }

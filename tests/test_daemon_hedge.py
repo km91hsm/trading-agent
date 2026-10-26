@@ -59,7 +59,7 @@ def test_regime_body_updates_flag_and_notifies_transition(conn):
     out = daemon._regime_body(deps, "KR")
     assert out["state"] == "bear" and out["count"] == 2
     assert regime.load(conn, "KR")["state"] == "bear"
-    assert any("[국면 전환] KR - → bear" in m for m in deps.notifier.msgs)
+    assert any("[국면 전환] KR — → 하락" in m for m in deps.notifier.msgs)
     # 데이터가 없으면 error 로 보고하고 직전 상태 유지
     deps.market_client.candles = {}
     assert "error" in daemon._regime_body(deps, "KR") and regime.load(conn, "KR")["state"] == "bear"
@@ -122,7 +122,7 @@ def test_market_view_body_runs_fake_session_once_and_notifies(conn, monkeypatch)
     daemon._regime_body(deps, "KR")
     out = daemon._market_view_body(deps, "KR")
     assert out["view"]["stance"] == "RISK_OFF" and out["view"]["hedge_weight"] == 0.1
-    assert any("[시장 뷰] KR RISK_OFF" in m for m in deps.notifier.msgs)
+    assert any("[시장 뷰] KR 위험 회피" in m for m in deps.notifier.msgs)
     assert conn.execute("SELECT COUNT(*) FROM runs WHERE kind='market'").fetchone()[0] == 1
     # 같은 날 다시 부르면 세션을 띄우지 않는다
     assert daemon._market_view_body(deps, "KR")["skipped"] == "오늘 이미 제안 있음"
@@ -237,7 +237,7 @@ def test_regime_apply_view_turns_strategist_risk_off_into_fourth_signal(conn, mo
     )
     r = daemon._regime_apply_view(deps, "KR")
     assert r["state"] == "bear" and r["agent_risk_off"] is True
-    assert any("[국면 전환] KR neutral → bear (1/3+전략가)" in m for m in deps.notifier.msgs)
+    assert any("[국면 전환] KR 중립 → 하락 (1/3+전략가)" in m for m in deps.notifier.msgs)
     n = len(deps.notifier.msgs)
     assert daemon._regime_apply_view(deps, "KR")["state"] == "bear" and len(deps.notifier.msgs) == n
     assert regime.load(conn, "KR")["streak"] == 0

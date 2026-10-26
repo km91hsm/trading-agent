@@ -42,6 +42,8 @@ def _matured(conn, i=1, ticker="005930"):
         realized_return=0.03,
         alpha=0.01,
         outcome_at=(NOW - timedelta(days=1)).isoformat(),
+        price_return=0.03,
+        direction_score=0.03,
     )
     return eid
 
@@ -73,7 +75,7 @@ def test_pending_reflections_lists_matured_without_reflection(conn):
     items = reflect.pending(conn, market="KR")
     assert len(items) == 1 and items[0]["entry_id"] == eid
     assert (
-        items[0]["analyst_signals"] == {"technical": "BUY"} and items[0]["realized_return"] == 0.03
+        items[0]["analyst_signals"] == {"technical": "BUY"} and items[0]["direction_score"] == 0.03
     )
     store.set_reflection(conn, eid, {"decision_review": {"verdict": "GOOD"}})
     assert reflect.pending(conn, market="KR") == []

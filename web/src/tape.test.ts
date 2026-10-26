@@ -108,7 +108,7 @@ describe("buildTape", () => {
     expect(by["000660"].weight).toBeCloseTo(0.459, 3);
     expect(by["000660"].action).toBe("ADD");
     expect(by["AAPL"].gate).toEqual({ approved: false, text: "거부 · 주 2회 상한" });
-    expect(by["005930"].gate).toEqual({ approved: null, text: "보유 · 주문 없음" });
+    expect(by["005930"].gate).toEqual({ approved: null, text: "관망 · 주문 없음" });
     expect(by["035420"].gate).toEqual({ approved: null, text: "분석 없음" });
     expect(by["035420"].action).toBeNull();
   });

@@ -282,3 +282,28 @@ def test_trigger_priced_resume_skips_chase_check_on_morning_change_pct(conn):
     assert r["ok"], r
     rc = run_store.read_checkpoint(d, "41_risk_check_r1_paper-main")["data"]
     assert not any("급등 추격" in x for x in rc["reasons"])
+
+
+def test_resume_records_separate_memory_entry_and_keeps_morning_entry(conn):
+    """전체 검토 L2: 재평가가 아침 엔트리의 action 을 덮어쓰면 아침 판단의 채점이 사라진다."""
+    from trader.memory import store
+
+    ctx, _, _ = _prepare(conn)
+    r = tools.submit_decision(
+        ctx,
+        ticker="005930",
+        market="KR",
+        date=D,
+        stage="31_decision_r1",
+        payload=ok_decision(action="SELL", target_weight=0.0),
+    )
+    assert r["ok"]
+    rows = conn.execute(
+        "SELECT id, round, decision, held_at_decision FROM memory_entries ORDER BY round"
+    ).fetchall()
+    assert [x["round"] for x in rows] == [0, 1]
+    assert store.get_entry(conn, rows[0]["id"])["decision"]["action"] == "BUY"
+    assert store.get_entry(conn, rows[1]["id"])["decision"]["action"] == "SELL"
+    assert r["memory_entry_id"] == rows[1]["id"]
+    # 아침엔 보유 없음(판정 때 잔고), 결정 시점 보유가 기록된다
+    assert rows[0]["held_at_decision"] == 0

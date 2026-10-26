@@ -1,4 +1,5 @@
 /** 결정 추적(Phase 23 E) — /api/decisions/{id}/trace 응답과 행 변환(순수 함수). */
+import { GLOSSARY, sideLabel, termLabel } from "./glossary";
 
 export type TraceAnalyst = { role: string; label: string; signal: string | null; confidence: number | null; summary: string | null; evidence: string[] };
 export type TraceDebate = { round: number | null; side: string | null; stance: string | null; conviction: number | null; timing: string | null };
@@ -69,13 +70,13 @@ export function traceSteps(t: TraceResp): TraceStep[] {
 }
 
 export function gateLine(g: TraceGate): string {
-  const head = g.approved ? `승인 ${g.qty ?? 0}주` : "거부";
+  const head = g.approved ? `${termLabel("gate.pass")} ${g.qty ?? 0}주` : termLabel("gate.reject");
   const why = (g.reasons ?? []).join("; ");
-  return `${g.account_id}: ${head}${why ? ` · ${why}` : ""}${g.note ? ` (${g.note})` : ""}${g.dry_run ? " · dry-run" : ""}`;
+  return `${g.account_id}: ${head}${why ? ` · ${why}` : ""}${g.note ? ` (${g.note})` : ""}${g.dry_run ? ` · ${termLabel("dry_run")}` : ""}`;
 }
 
 export function orderLine(o: TraceOrder): string {
-  return `${o.account_id}: ${o.side ?? ""} ${o.qty ?? ""}주${o.price ? ` @${o.price}` : " 시장가"} → ${o.status ?? "—"}${o.order_no ? ` #${o.order_no}` : ""}${o.message ? ` · ${o.message}` : ""}`;
+  return `${o.account_id}: ${sideLabel(o.side)} ${o.qty ?? ""}주${o.price ? ` @${o.price}` : " 시장가"} → ${o.status ? (GLOSSARY[`status.${o.status}`]?.label ?? o.status) : "—"}${o.order_no ? ` #${o.order_no}` : ""}${o.message ? ` · ${o.message}` : ""}`;
 }
 
 /** 지정가까지 거리(%): 당시 현재가 대비 지정가. 시장가·현재가 없음은 null. */

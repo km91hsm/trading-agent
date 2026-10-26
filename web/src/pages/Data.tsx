@@ -3,7 +3,7 @@ import { getJson, postJson } from "../api";
 import { EmptyState } from "../components/EmptyState";
 import { Section } from "../components/Section";
 import { Skeleton } from "../components/Skeleton";
-import { Table, Td, Th } from "../components/Table";
+import { RowButton, Table, Td, Th } from "../components/Table";
 import { ErrorBox } from "../components/Tables";
 import { useApp, useLoad } from "../hooks";
 import { labelOf } from "../names";
@@ -116,12 +116,17 @@ function FeatureStore() {
                 <tr
                   key={String(r.ticker)}
                   className={r.ticker === ticker ? "sel clickable" : "clickable"}
-                  aria-selected={r.ticker === ticker}
                   onClick={() => setTicker(String(r.ticker))}
                 >
                   {KEY_COLUMNS.map((c) => (
                     <Td key={c} num={NUMERIC.has(c)}>
-                      {c === "ticker" ? <Ticker market={market} ticker={String(r.ticker)} showMarket={false} /> : fmt(r[c])}
+                      {c === "ticker" ? (
+                        <RowButton pressed={r.ticker === ticker} onClick={() => setTicker(String(r.ticker))}>
+                          <Ticker market={market} ticker={String(r.ticker)} showMarket={false} />
+                        </RowButton>
+                      ) : (
+                        fmt(r[c])
+                      )}
                     </Td>
                   ))}
                 </tr>

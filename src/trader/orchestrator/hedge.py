@@ -351,7 +351,7 @@ def _risk_on_deferral(state: dict, view: dict | None, cfg: HedgeCfg) -> str | No
     n = sum(int(bool(sig.get(k))) for k in ("ma_below", "momentum_weak", "vol_high"))
     if n >= 3 or n != cfg.bear_min_signals:
         return None
-    return f"전략가 RISK_ON(확신 {conf:.2f}) · 지표 {n}/3 경계 — 오늘 진입 보류"
+    return f"전략가 위험 선호(확신 {conf:.2f}) · 지표 {n}/3 경계 — 오늘은 진입을 보류해요"
 
 
 def _execute(

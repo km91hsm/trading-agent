@@ -223,8 +223,10 @@ def _memory_context(ctx: ToolContext, inputs: dict, market: Market) -> dict:
             "decided_at": e["decided_at"],
             "situation_summary": e["situation_summary"],
             "decision": e["decision"],
-            "realized_return": e["realized_return"],
-            "alpha_vs_benchmark": e["alpha_vs_benchmark"],
+            "round": e["round"],
+            "direction_score": e["direction_score"],
+            "avoided_loss": e["avoided_loss"],
+            "realized_pnl_pct": e["realized_pnl_pct"],
             "lesson": (e.get("reflection") or {}).get("lesson") if e.get("reflection") else None,
             "score": e["score"],
         }
@@ -768,7 +770,7 @@ def submit_decision(
     if resume_stage is None and "30_decision" in stages:
         # 같은 날 재제출(세션 재시도·재실행)은 기존 결정을 돌려주고 실행을 반복하지 않는다 (멱등).
         # 단, 판정(40_risk_check_*)이 하나도 없으면 저장 뒤 execute 가 끊긴 것이므로 실행을 마친다
-        # (executor 는 살아 있는 주문·승인으로 멱등, memory_entries 는 decision_id UNIQUE).
+        # (executor 는 살아 있는 주문·승인으로 멱등, memory_entries 는 (decision_id, round) UNIQUE).
         existing = read_checkpoint(d, "30_decision") or {}
         out = {
             "ok": True,
@@ -941,6 +943,8 @@ def _execute_and_record(
         holiday_fn=ctx.holiday_fn,
         rl_sizer=_load_sizer(ctx.state),
     )
+    # 메모리의 decided_at 은 실행 직전 시각 — 이 라운드의 주문이 그 뒤에 생겨 체결가 채점 창이 된다
+    decided_at = _decided_at(ctx.now(), date, market)
     executions = executor.execute(
         ectx,
         decision,
@@ -954,7 +958,9 @@ def _execute_and_record(
         extra_note=extra_note,
         change_pct=change_pct,
     )
-    memory_entry_id = _record_memory(ctx, decision, market, date)
+    memory_entry_id = _record_memory(
+        ctx, decision, market, date, round_no=resume_round or 0, decided_at=decided_at
+    )
     return executions, memory_entry_id
 
 
@@ -970,19 +976,32 @@ def _load_sizer(state: Path | None):
         return None
 
 
-def _decided_at(now: datetime, run_date: date) -> datetime:
-    """운영일(run date)이 오늘(KST)이면 현재 시각, 아니면 그날 장 마감(15:30 KST) 시각(UTC)."""
-    from trader.orchestrator.fills import MARKET_CLOSE
+def _decided_at(now: datetime, run_date: date, market: Market = "KR") -> datetime:
+    """운영일(run date)이 지금의 운영일이면 현재 시각, 아니면 그날 장 마감(15:30 KST) 시각(UTC).
 
-    if now.astimezone(KST).date() == run_date:
+    운영일은 시장 기준(`run_date_for`) — US 는 KST 자정을 넘긴 장중 재평가도 같은 운영일이라
+    현재 시각을 써야 라운드 순서(체결 귀속 창)가 뒤집히지 않는다."""
+    from trader.orchestrator.fills import MARKET_CLOSE
+    from trader.orchestrator.run_store import run_date_for
+
+    if run_date_for(market, now) == run_date:
         return now
     return datetime.combine(run_date, MARKET_CLOSE["KR"], KST).astimezone(UTC)
 
 
 def _record_memory(
-    ctx: ToolContext, decision: schemas.Decision, market: Market, date: date
+    ctx: ToolContext,
+    decision: schemas.Decision,
+    market: Market,
+    date: date,
+    *,
+    round_no: int = 0,
+    decided_at: datetime | None = None,
 ) -> int | None:
-    """결정 1건을 메모리 엔트리로 기록한다 (decision_id 멱등). 실패해도 결정 제출을 막지 않는다."""
+    """결정 1건(라운드별)을 메모리 엔트리로 기록한다 ((decision_id, round) 멱등).
+
+    결정 시점 보유는 방금 판정이 남긴 잔고 스냅샷(주문 전)으로 정한다. 실패해도 결정 제출을 막지
+    않는다."""
     if ctx.conn is None:
         return None
     try:
@@ -997,16 +1016,21 @@ def _record_memory(
             ctx.accounts[0].id if ctx.accounts else "",
         )
         row = quant_report.latest_row(decision.ticker, market, ctx.state, asof=date)
+        held = store.held_at(
+            ctx.conn, account_id=paper, market=market, ticker=decision.ticker, d=date.isoformat()
+        )
         return store.record_decision(
             ctx.conn,
             decision_id=decision_id,
             ticker=decision.ticker,
             market=market,
             account_id=paper,
-            decided_at=_decided_at(ctx.now(), date).isoformat(),
+            decided_at=(decided_at or _decided_at(ctx.now(), date, market)).isoformat(),
             decision=decision.model_dump(),
             row=row,
             horizon_days=decision.horizon_days,
+            round_no=round_no,
+            held_at_decision=held,
         )
     except Exception as e:  # noqa: BLE001
         logger.warning("메모리 기록 실패 %s %s: %s", market, decision.ticker, e)

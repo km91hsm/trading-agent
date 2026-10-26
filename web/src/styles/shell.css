@@ -248,6 +248,19 @@ main {
   .tape.responsive td:not(.core) {
     display: none;
   }
+  /* 숨긴 열은 행 끝 '상세' 버튼으로 펼친다 (Table.tsx DetailRow, 전체 검토 W9) */
+  .tape.responsive th.row-more,
+  .tape.responsive td.row-more {
+    display: table-cell;
+    width: 1%;
+    text-align: right;
+  }
+  .tape.responsive td.row-more .btn {
+    min-height: 32px; /* 손가락 대상 (WCAG 2.2 2.5.8 24px 이상) */
+  }
+  .tape.responsive tr.row-detail:not([hidden]) {
+    display: table-row;
+  }
 }
 .palette {
   width: min(560px, 92vw);

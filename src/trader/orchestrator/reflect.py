@@ -20,15 +20,22 @@ logger = logging.getLogger("trader.memory")
 
 def pending(conn: sqlite3.Connection, *, market: str | None = None, limit: int = 20) -> list[dict]:
     """반성이 없는 만기 엔트리 + 당시 애널리스트 신호 {role: signal}."""
-    sql = "SELECT * FROM memory_entries WHERE outcome_at IS NOT NULL AND reflection IS NULL"
+    sql = (
+        "SELECT m.*, d.date AS run_date FROM memory_entries m "
+        "LEFT JOIN decisions d ON d.id = m.decision_id "
+        "WHERE m.outcome_at IS NOT NULL AND m.reflection IS NULL"
+    )
     args: list = []
     if market:
-        sql += " AND market=?"
+        sql += " AND m.market=?"
         args.append(market)
     out = []
-    for r in conn.execute(sql + " ORDER BY outcome_at LIMIT ?", [*args, limit]).fetchall():
+    for r in conn.execute(sql + " ORDER BY m.outcome_at LIMIT ?", [*args, limit]).fetchall():
+        # 보고서 날짜 = 결정 행의 운영일(US 는 뉴욕 날짜), 없으면 decided_at 의 KST 날짜
         try:
-            day = datetime.fromisoformat(r["decided_at"]).astimezone(KST).date().isoformat()
+            day = r["run_date"] or (
+                datetime.fromisoformat(r["decided_at"]).astimezone(KST).date().isoformat()
+            )
         except ValueError:
             day = None
         signals = {}
@@ -47,8 +54,14 @@ def pending(conn: sqlite3.Connection, *, market: str | None = None, limit: int =
                 "decision": json.loads(r["decision"] or "{}"),
                 "situation_summary": r["situation_summary"],
                 "horizon_days": r["horizon_days"],
-                "realized_return": r["realized_return"],
-                "alpha_vs_benchmark": r["alpha_vs_benchmark"],
+                "round": r["round"],
+                "price_return": r["price_return"],
+                "held_at_decision": None
+                if r["held_at_decision"] is None
+                else bool(r["held_at_decision"]),
+                "direction_score": r["direction_score"],
+                "avoided_loss": r["avoided_loss"],
+                "realized_pnl_pct": r["realized_pnl_pct"],
                 "analyst_signals": signals,
             }
         )
