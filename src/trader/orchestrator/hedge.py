@@ -192,7 +192,8 @@ def rebalance(
             executor._notify_quietly(ctx, messages.event("헤지 보류", f"{market} {deferred}"))
         return out
     if st == "bear" and not held:
-        leveraged = int(state.get("count") or 0) >= 3 and (
+        # −2x 는 정량 3지표가 모두 켜졌을 때만(전략가·수급 보조 신호는 세지 않는다, 검토 O14)
+        leveraged = regime_mod.core_count(state) >= 3 and (
             view is None or bool(view.get("leveraged", True))
         )
         inst = cfg.instrument(market, leveraged=leveraged)
@@ -253,7 +254,7 @@ def rebalance(
                 held=held,
                 want=cfg.instrument(
                     market,
-                    leveraged=int(state.get("count") or 0) >= 3
+                    leveraged=regime_mod.core_count(state) >= 3
                     and (view is None or bool(view.get("leveraged", True))),
                 ),
             )

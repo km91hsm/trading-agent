@@ -223,3 +223,14 @@ Claude 리뷰어 4 + Codex 2 교차검증 결과 중 비주문 항목. 표의 �
 - **프로세스(P1·P3·P5·P10).** 재평가·복기 세션에도 `cancel=stop_event` 를 넘기고 뉴스 재수집 뒤 종료 중이면 세션을 띄우지 않는다. `news_store.novel_items` 는 판정을 메모리에서 끝내고 `executemany` 한 번으로 커밋(쓰기 잠금 최소), 제목 특징은 한 번만 계산. `jobs.enqueue` 는 중복 검사·삽입을 `BEGIN IMMEDIATE` 하나로. 로그: apscheduler 는 WARNING 이상·"maximum number of running instances" 버림, 터미널이 아닌 stderr 는 WARNING 이상만, 데몬 웹 서버 `access_log=False`.
 - **퀀트 모델 시장(L4).** `tools.ensure_quant` 가 `registry.latest(..., market=)` 로 그 시장 모델만(다른 시장 한정 모델 제외 계약).
 - **2차(주문 경로)·3차(설계 결정)** 항목은 보고서 §6 과 `docs/TODO.md` 에 있다.
+
+## 전체 검토 보완 2차 — 주문 경로 (2026-10-26, `docs/reviews/2026-10-26-full-review.md` §1)
+- **US NAV(O1).** `KisBroker.get_cash("US")` 는 `nav=None` — executor 가 USD 예수금 + USD 평가 합으로 NAV 를 만든다. `output3.tot_asst_amt` 는 원화 환산 총자산이라 USD 로 쓰면 비중·현금 유보·섹터/테마 상한·TRIM·헤지·서킷브레이커가 모두 틀어진다(미결제 매수대금 이중 계산은 KR 만 `tot_evlu_amt` 로 피한다; US T+1 은 감수).
+- **재호가 후보(O2).** `reprice.candidates` 는 결정 행과 JOIN 해 `source != 'hedge'` 이고 주문 방향이 결정 행동(BUY/ADD→BUY, SELL/TRIM→SELL)과 같은 주문만 — 손절 SELL(BUY 결정에 붙음)·헤지 주문은 재호가하지 않는다.
+- **중복 방지(O3·O17).** `repo.has_open_order_or_approval(include_filled=, now=)`: 재평가 라운드(`51_`)는 체결 완료 주문을 중복으로 보지 않고(아침 TRIM 체결 뒤 오후 SELL 허용), 첫 실행 재시도는 체결분까지 막는다. `now` 가 있으면 만료 시각이 지난 pending 승인은 살아 있지 않다 — `today_order_amount(now=)` 의 현금 예약도 같다(텔레그램 poll 의 expire 가 안 돌아도).
+- **주문 응답 불명(O4).** `KisClient.post` 는 게이트웨이 5xx(비JSON)·`rt_cd` 없는 본문을 `UNKNOWN_RESPONSE_CODE` 로 올린다 → executor 가 unknown 으로 남겨 중복 방지가 살아 있다. KIS 본문 거부(msg_cd)는 그대로 실패.
+- **손절(O5·O13·O15·L5).** `monitor._sell_now` 는 실제로 주문을 낼 수 있을 때(dry-run 아님·mode≠off·일시정지 아님)만 미체결 SELL 취소·**같은 종목 당일 미체결 BUY 취소**(손절 뒤 재보유 방지) 같은 KIS 쓰기를 한다. 기록만 하는 손절의 하루 1회 억제 키에 실행 상태(`dry|live-<mode>`)를 넣어 같은 날 auto 로 바꾸면 실제 손절이 나간다. 손절선은 `_monotone_stop` 이 **보유 묶음 시작 이후 결정들의 손절선 최고값**(`repo.max_stop_since`)으로 단조 유지 — 보유 재분석 HOLD 가 손절가를 비우거나 낮춰도 기본 −15% 로 풀리지 않는다.
+- **재개(O9).** `submit-decision` 재제출의 '실행 끝난 계좌' 는 `tools._account_finished`: 판정 통과·실전인데 `50_order_<id>`(auto)·승인 행(approve)이 없으면 끝나지 않은 것 — 판정 저장 뒤 주문 전에 끊겨도 그날 주문이 영구 생략되지 않는다(재실행은 executor 중복 방지가 지킴).
+- **승인 실행(O11).** `executor.approve` 는 요청 뒤 결정 행동이 바뀌었으면(HOLD·반대 방향, 헤지 결정 제외) 실행하지 않고 요청을 expired 로 닫는다.
+- **헤지 레버리지(O14).** −2x 는 `regime.core_count`(200일선·모멘텀·변동성 3지표)가 3 일 때만 — 전략가·수급 보조 신호로 count 가 3 이 돼도 −1x.
+- **가격 검증(O16).** `Decision.limit_price·stop_loss·take_profit` 은 양수만(gt=0).

@@ -203,8 +203,10 @@ def build_portfolio(
     memory_settings: MemorySettings | None = None,
     sector_of: Callable[[str], str | None] | None = None,
     hedge_tickers: frozenset[str] = frozenset(),
+    now: datetime | None = None,
 ) -> rules.Portfolio:
-    """브로커 잔고·현금 + 원장 집계로 Portfolio 를 만들고 positions_snapshot 을 남긴다."""
+    """브로커 잔고·현금 + 원장 집계로 Portfolio 를 만들고 positions_snapshot 을 남긴다.
+    now 가 있으면 만료된 승인 요청은 현금 예약에서 뺀다(전체 검토 O17)."""
     get_balance = getattr(broker, "get_balance", None)
     if get_balance is not None:  # KR 은 잔고 API 1회로 보유·예수금을 함께 (모의 2/s)
         pos_list, cash = get_balance(market)
@@ -250,7 +252,12 @@ def build_portfolio(
         today_buy_tickers=repo.today_buy_tickers(conn, account.id, today, market=market),
         # 가능금액(prvs_rcdl_excc_amt)은 체결된 매수를 이미 반영하므로 미체결 live 주문만 더 뺀다
         today_order_amount=repo.today_order_amount(
-            conn, account.id, today, market=market, exclude_filled=True
+            conn,
+            account.id,
+            today,
+            market=market,
+            exclude_filled=True,
+            now=now.isoformat() if now is not None else None,
         ),
         held_since=repo.held_since(conn, account.id, tickers=list(positions)),
         trades_this_week=repo.trades_this_week(conn, account.id, today, market=market),
@@ -514,6 +521,7 @@ def _execute_account(
                 market,
                 date,
                 memory_settings=ctx.settings.memory,
+                now=ctx.now(),
                 sector_of=sector_of,
                 hedge_tickers=hedge_tickers,
             )
@@ -557,7 +565,14 @@ def _execute_account(
             verdict.approved
             and decision_id is not None
             and not is_stop_loss
-            and repo.has_open_order_or_approval(ctx.conn, decision_id, account.id, verdict.side)
+            and repo.has_open_order_or_approval(
+                ctx.conn,
+                decision_id,
+                account.id,
+                verdict.side,
+                include_filled=not order_stage.startswith("51_"),  # 재평가 라운드(O3)
+                now=ctx.now().isoformat(),
+            )
         ):
             verdict = verdict.model_copy(
                 update={
@@ -874,6 +889,9 @@ def _take_pending(ctx: ExecContext, approval_id: int) -> tuple[dict | None, str 
     return a, None
 
 
+_SIDE_OF = {"BUY": "BUY", "ADD": "BUY", "SELL": "SELL", "TRIM": "SELL"}
+
+
 def approve(ctx: ExecContext, approval_id: int) -> dict:
     """pending·미만료 승인 요청을 주문으로 실행한다. 두 번째 호출은 거부된다."""
     a, err = _take_pending(ctx, approval_id)
@@ -897,6 +915,17 @@ def approve(ctx: ExecContext, approval_id: int) -> dict:
     order_stage = str(order.pop(STAGE_KEY, None) or "50_order")
     request = OrderRequest.model_validate(order)
     dec = repo.get_decision(ctx.conn, a["decision_id"], hydrate=True) if a["decision_id"] else None
+    # 요청 뒤 재평가가 같은 결정을 HOLD·반대 방향으로 바꿨으면 옛 요청을 실행하지 않는다(검토 O11)
+    want = _SIDE_OF.get(str((dec or {}).get("action") or ""))
+    if dec is not None and dec.get("source") != "hedge" and want != request.side:
+        repo.decide_approval(ctx.conn, approval_id, "expired", decided_at=ctx.now().isoformat())
+        return {
+            "ok": False,
+            "error": (
+                f"승인 요청 #{approval_id} 뒤 결정이 {dec.get('action')} 로 바뀌어 실행하지 않음 "
+                "(요청은 만료 처리)"
+            ),
+        }
     day = date.fromisoformat(dec["date"]) if dec else ctx.now().astimezone(KST).date()
     d = run_dir(day, request.market, request.ticker, ctx.state)
     broker = ctx.brokers.get(account.id)

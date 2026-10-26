@@ -179,14 +179,14 @@ class KisBroker:
             (r for r in _rows(data.get("output2")) if str(r.get("crcy_cd", "")).upper() == "USD"),
             {},
         )
-        o3 = _rows(data.get("output3"))
-        tot = (o3[0] if o3 else {}).get("tot_asst_amt") if o3 else None
         return Cash(
             currency="USD",
             available=_dec(usd.get("frcr_drwg_psbl_amt_1")),
             total=_dec(usd.get("frcr_dncl_amt_2")),
-            # 총자산(output3.tot_asst_amt, 외화 평가 합) — 실기 확인 항목. 없으면 None → 합산 방식
-            nav=_dec(tot) if tot not in (None, "") else None,
+            # NAV 는 비워 둔다 → executor 가 USD 예수금 + USD 평가 합으로 계산한다. output3 의
+            # tot_asst_amt 는 원화 환산 총자산(저장소 fixture 1,725,000 = $1,250.5 × 1,380.5)이라
+            # USD 로 쓰면 비중·현금 유보·섹터 상한·TRIM 수량·헤지가 전부 틀어진다(전체 검토 O1).
+            nav=None,
         )
 
     # --- 체결 조회 (Phase 6 fills 동기화) ---------------------------------------------

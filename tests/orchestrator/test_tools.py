@@ -1304,3 +1304,23 @@ def test_ensure_quant_asks_registry_for_the_same_market(ctx, project, monkeypatc
     _inputs(project, ticker="AAPL", market="US")
     assert tools.ensure_quant(ctx, ticker="AAPL", market="US", date=D) is None
     assert seen.get("market") == "US"
+
+
+def test_resume_reruns_account_whose_order_never_went_out(ctx, project):
+    """전체 검토 O9: 통과 판정(40_)만 남고 주문(50_)·승인 흔적이 없으면 재제출이 그 계좌를 다시
+    실행한다(예전엔 40_ 만 보고 그날 주문을 영구 생략)."""
+    ctx.dry_run = False
+    _ready_for_submit(ctx, project)
+    d = run_dir(D, "KR", "005930")
+    dec = Decision(**ok_decision())
+    run_store.write_checkpoint(d, "30_decision", {"schema_version": 1, "data": dec.model_dump()})
+    for acct in ("paper-main", "real-main"):
+        run_store.write_checkpoint(
+            d,
+            f"40_risk_check_{acct}",
+            {"schema_version": 1, "data": {"approved": True, "mode": "auto", "dry_run": False}},
+        )
+    run_store.write_checkpoint(d, "50_order_real-main", {"schema_version": 1, "data": {}})
+    r = tools.submit_decision(ctx, ticker="005930", market="KR", date=D, payload=ok_decision())
+    assert r["resumed_execution"] is True
+    assert [e["account_id"] for e in r["executions"]] == ["paper-main"]

@@ -193,3 +193,15 @@ def test_kr_fills_merge_continuation_pages(paper_client, respx_mock):
     broker = KisBroker(make_account("paper-main", "paper", "auto"), paper_client)
     fills = broker.get_fills("KR", _date(2026, 10, 9))
     assert [(f.order_no, f.qty) for f in fills] == [("1", 3), ("2", 5)]
+
+
+def test_cash_us_nav_is_not_krw_total_assets(paper_client, respx_mock):
+    """전체 검토 O1: output3.tot_asst_amt(원화 환산 총자산)를 US NAV(USD)로 쓰지 않는다."""
+    from conftest_broker import load
+
+    respx_mock.get(PAPER + "/uapi/overseas-stock/v1/trading/inquire-present-balance").mock(
+        return_value=httpx.Response(200, json=load("present_balance_us.json"))
+    )
+    broker = KisBroker(make_account("paper-main", "paper", "auto", ["KR", "US"]), paper_client)
+    cash = broker.get_cash("US")
+    assert cash.currency == "USD" and cash.nav is None  # executor 가 USD 예수금 + 평가 합으로

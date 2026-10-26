@@ -759,9 +759,7 @@ def submit_decision(
             s[len("40_risk_check_") :]
             for s in stages
             if s.startswith("40_risk_check_")
-            and (
-                ctx.dry_run or not ((read_checkpoint(d, s) or {}).get("data") or {}).get("dry_run")
-            )
+            and _account_finished(ctx, d, s, stages, date, market, ticker)
         }
         wanted = {a.id for a in ctx.accounts if market in a.markets}
         if executed and not (wanted - executed):
@@ -1000,6 +998,36 @@ def _input_change_pct(inputs: dict) -> float | None:
         return float(v) if v is not None else None
     except (KeyError, TypeError, ValueError, AttributeError):
         return None
+
+
+def _account_finished(
+    ctx: ToolContext,
+    d: Path,
+    risk_stage: str,
+    stages: list[str],
+    day: date,
+    market: str,
+    ticker: str,
+) -> bool:
+    """재개 판단: 이 계좌의 실행이 끝났는가. 판정(40_)만 있고 **통과했는데 주문·승인 흔적이 없으면**
+    (판정 저장 뒤 주문 전에 끊김) 끝나지 않은 것으로 본다 — 예전엔 40_ 만 보고 그날 주문을 영구
+    생략했다(전체 검토 O9). 재실행은 executor 의 살아 있는 주문·승인 중복 방지가 지킨다.
+    dry-run 판정은 지금 실전이면 실행이 아니다(Phase 21)."""
+    v = (read_checkpoint(d, risk_stage) or {}).get("data") or {}
+    if v.get("dry_run") and not ctx.dry_run:
+        return False
+    if not v.get("approved") or v.get("dry_run") or v.get("mode") == "off":
+        return True
+    acct = risk_stage[len("40_risk_check_") :]
+    if f"50_order_{acct}" in stages:
+        return True
+    if v.get("mode") == "approve" and ctx.conn is not None:
+        did = repo.decision_id(ctx.conn, day, market, ticker)
+        row = ctx.conn.execute(
+            "SELECT 1 FROM approvals WHERE decision_id=? AND account_id=? LIMIT 1", (did, acct)
+        ).fetchone()
+        return row is not None
+    return False
 
 
 def _requote(

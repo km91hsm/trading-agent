@@ -252,7 +252,7 @@ def monitor_once(ctx: MonitorContext, *, market: str, today: date) -> dict:
                 continue
             result["checked"] += 1
             latest = repo.latest_decision(ctx.conn, market, pos.ticker)
-            dec_data = (latest or {}).get("data")
+            dec_data = _monotone_stop(ctx, account, market, pos, (latest or {}).get("data"))
             pname, profile = horizon.of_decision(ctx.settings.risk, dec_data)
             signals = check_position(
                 pos,
@@ -502,6 +502,53 @@ def _cancel_open_sells(
     return ok
 
 
+def _cancel_open_buys(
+    ctx: MonitorContext, account: AccountConfig, market: str, pos: Position, local_day: date
+) -> int:
+    """손절할 종목의 당일 미체결 BUY(아침 ADD 지정가 등)를 취소한다 — 손절 뒤 체결돼 다시 보유하게
+    되는 것을 막는다(전체 검토 O13). 실패는 경고만(손절은 그대로 진행). 취소한 건수."""
+    broker = ctx.brokers.get(account.id)
+    if broker is None:
+        return 0
+    n = 0
+    for r in repo.open_orders_today(
+        ctx.conn, account.id, pos.ticker, "BUY", local_day, market=market
+    ):
+        if not r["order_no"]:
+            continue  # 응답 없는 주문은 번호가 없어 취소할 수 없다
+        try:
+            res = broker.cancel_order(
+                str(r["order_no"]),
+                market=market,
+                org_no=r["org_no"],
+                ticker=pos.ticker,
+                exchange=_exchange(ctx, pos),
+                qty=int(r["qty"]),
+            )
+        except (KisApiError, ValueError) as e:
+            logger.warning("손절 전 미체결 BUY 취소 실패 %s %s: %s", account.id, pos.ticker, e)
+            continue
+        if res.accepted:
+            repo.set_order_status(ctx.conn, int(r["id"]), "cancelled")
+            n += 1
+    return n
+
+
+def _monotone_stop(
+    ctx: MonitorContext, account: AccountConfig, market: str, pos: Position, data: dict | None
+) -> dict | None:
+    """손절선을 보유 기간 중 결정들의 최고값으로 단조 유지한다(전체 검토 L5). 최신 결정이 손절가를
+    비웠거나(보유 재분석 HOLD) 더 낮게 냈어도 이전 손절선이 살아 있다 — 기본 −15% 로 풀리지 않게."""
+    since = repo.held_since(ctx.conn, account.id, [pos.ticker]).get(pos.ticker)
+    best = repo.max_stop_since(ctx.conn, market, pos.ticker, since)
+    if best is None:
+        return data
+    cur = (data or {}).get("stop_loss")
+    if cur is not None and Decimal(str(cur)) >= best:
+        return data
+    return {**(data or {}), "stop_loss": float(best)}
+
+
 def _sell_now(
     ctx: MonitorContext,
     account: AccountConfig,
@@ -517,15 +564,24 @@ def _sell_now(
     "같은 날" 은 시장 현지 날짜다 (US 는 KST 자정을 넘겨 장이 열려 있어 KST 날짜로 보면
     23:30 KST 에 낸 손절 매도를 00:30 KST 점검이 놓치고 다시 낸다)."""
     local_day = ctx.now().astimezone(MARKET_TZ.get(market, KST)).date()
-    if _blocked_by_open_sell(ctx, account, market, pos.ticker, local_day):
+    mode, _ = executor.effective_mode(ctx.conn, account)
+    # 실제로 손절 주문을 낼 수 있는 상태인가 — 아니면 KIS 쓰기(미체결 SELL 취소)를 하지 않는다.
+    # 일시정지·off·dry-run 에서 취소만 하고 손절은 안 내면 보호 매도만 사라진다(전체 검토 O5)
+    live = not ctx.dry_run and mode != "off" and not control.is_paused(ctx.conn)
+    if live and _blocked_by_open_sell(ctx, account, market, pos.ticker, local_day):
         # 아침 TRIM 지정가 같은 미체결 SELL 이 하루 종일 손절을 막으면 안 된다 → 취소하고 진행.
         # 취소가 안 되면(응답 실패·이미 체결 중) 보수적으로 막힌 채 둔다
         if not _cancel_open_sells(ctx, account, market, pos, local_day, quote):
             return 0
+    if live:
+        _cancel_open_buys(ctx, account, market, pos, local_day)
     unrecorded = f"sl_unrecorded:{account.id}:{market}:{pos.ticker}:{local_day.isoformat()}"
     if control.get_flag(ctx.conn, unrecorded):
         return 0  # 접수됐지만 원장에 못 적은 손절이 있다 (아래) — 오늘은 다시 내지 않는다
-    recorded = f"sl_recorded:{account.id}:{market}:{pos.ticker}:{local_day.isoformat()}"
+    # 기록만 하는 손절(dry-run·off)의 하루 1회 억제는 **그 상태에서만** — 같은 날 auto 로 바꾸면
+    # 실제 손절이 나가야 한다(전체 검토 O15). 키에 실행 상태를 넣는다
+    state = f"{'dry' if ctx.dry_run else 'live'}-{mode}"
+    recorded = f"sl_recorded:{account.id}:{market}:{pos.ticker}:{local_day.isoformat()}:{state}"
     if control.get_flag(ctx.conn, recorded):
         return 0  # dry-run·off 계좌의 손절은 기록만 하므로 하루 1회면 충분하다(매 분 반복 금지)
     if control.is_paused(ctx.conn):

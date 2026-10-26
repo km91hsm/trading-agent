@@ -75,9 +75,10 @@ class Decision(BaseModel):
     action: Action
     target_weight: float = Field(ge=0, le=0.25)
     order_type: OrderType
-    limit_price: float | None = None
-    stop_loss: float | None = None
-    take_profit: float | None = None
+    # 가격은 양수만(전체 검토 O16): 음수·0 손절가는 기본 −15% 손절까지 무력화한다
+    limit_price: float | None = Field(default=None, gt=0)
+    stop_loss: float | None = Field(default=None, gt=0)
+    take_profit: float | None = Field(default=None, gt=0)
     horizon_days: int = Field(ge=1)
     confidence: float = Field(ge=0, le=1)
     rationale: str = Field(max_length=500)

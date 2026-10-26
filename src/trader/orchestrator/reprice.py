@@ -32,14 +32,22 @@ def done_key(market: str, today: date) -> str:
 
 
 def candidates(conn, account_id: str, market: str, today: date) -> list[dict]:
-    """오늘 낸 지정가 accepted 주문 중 체결 0·결정 있음·외부 아님."""
+    """오늘 낸 지정가 accepted 주문 중 체결 0·결정 있음·외부 아님 + **그 결정이 낸 주문**만.
+
+    손절 SELL(결정은 며칠 전 BUY)·헤지(결정 source='hedge')는 재호가가 "최신 결정 + 일반 게이트"
+    로 재제출하면 손절이 사라지거나(BUY 로 재실행) bear 에서 헤지가 거부되므로 뺀다 — 주문 방향이
+    결정 행동(BUY/ADD→BUY, SELL/TRIM→SELL)과 같고 일반(LLM) 결정일 때만(전체 검토 O2)."""
     lo, hi = repo.day_bounds(today, market)
     rows = conn.execute(
         "SELECT o.id, o.decision_id, o.ticker, o.side, o.qty, o.price, o.order_no, o.org_no, "
         "o.mode, COALESCE((SELECT SUM(f.qty) FROM fills f WHERE f.order_id=o.id), 0) AS filled "
-        "FROM orders o WHERE o.account_id=? AND o.market=? AND o.status='accepted' "
-        "AND o.order_type='LIMIT' AND o.order_no IS NOT NULL AND o.decision_id IS NOT NULL "
-        "AND o.mode != 'external' AND o.created_at >= ? AND o.created_at < ? ORDER BY o.id",
+        "FROM orders o JOIN decisions d ON d.id = o.decision_id "
+        "WHERE o.account_id=? AND o.market=? AND o.status='accepted' "
+        "AND o.order_type='LIMIT' AND o.order_no IS NOT NULL "
+        "AND o.mode != 'external' AND o.created_at >= ? AND o.created_at < ? "
+        "AND d.source != 'hedge' "
+        "AND ((o.side='BUY' AND d.action IN ('BUY','ADD')) "
+        "OR (o.side='SELL' AND d.action IN ('SELL','TRIM'))) ORDER BY o.id",
         (account_id, market, lo, hi),
     ).fetchall()
     return [dict(r) for r in rows if int(r["filled"] or 0) == 0 and r["price"] is not None]
