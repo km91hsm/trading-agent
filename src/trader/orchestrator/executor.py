@@ -29,8 +29,8 @@ from trader.notify.telegram import Notifier, NullNotifier
 from trader.orchestrator.run_store import checkpoint_payload as _wrap
 from trader.orchestrator.run_store import run_dir, write_checkpoint
 from trader.platform import paths
+from trader.risk import killswitch, rules
 from trader.risk import regime as regime_mod
-from trader.risk import rules
 from trader.risk import stance as stance_mod
 
 logger = logging.getLogger("trader.executor")
@@ -238,14 +238,29 @@ def build_portfolio(
     sector_of: Callable[[str], str | None] | None = None,
     hedge_tickers: frozenset[str] = frozenset(),
     now: datetime | None = None,
+    killswitch_pct: float = 0.0,
 ) -> rules.Portfolio:
     """브로커 잔고·현금 + 원장 집계로 Portfolio 를 만들고 positions_snapshot 을 남긴다.
-    now 가 있으면 만료된 승인 요청은 현금 예약에서 뺀다(전체 검토 O17)."""
+    now 가 있으면 만료된 승인 요청은 현금 예약에서 뺀다(전체 검토 O17).
+    killswitch_pct > 0 이면 실제 NAV 로 누적 손실 킬스위치를 본다(`risk/killswitch`).
+    계좌의 `capital_cap`(실전 자본 상한, Stock D-074)이 있으면 게이트가 쓰는 NAV·가능금액을 그
+    금액까지로 자른다 — 원장 스냅샷·성과·킬스위치는 실제 NAV 그대로."""
     pos_list, cash = _balance(broker, market)
     positions = {p.ticker: p for p in pos_list}
     for p in positions.values():  # 잔고 응답의 종목명은 추가 호출 없이 얻는 이름이다
         repo.upsert_ticker_name(conn, p.market, p.ticker, getattr(p, "name", None), "balance")
     nav = _nav_of(pos_list, cash)
+    if killswitch_pct > 0:
+        from trader.risk import killswitch
+
+        killswitch.observe(
+            conn,
+            account_id=account.id,
+            market=market,
+            nav=nav,
+            today=today,
+            limit_pct=killswitch_pct,
+        )
     prev = repo.latest_nav_before(conn, account.id, today, market=market)
     today_pnl = float(nav / prev - 1) if prev else 0.0
     if account.env == "paper":
@@ -269,11 +284,17 @@ def build_portfolio(
             for p in positions.values()
         ],
     )
+    sizing_nav, available = nav, cash.available
+    cap = (account.capital_cap or {}).get(market)  # type: ignore[call-overload]
+    if cap is not None and nav > cap:
+        invested = nav - cash.total
+        sizing_nav = Decimal(cap)
+        available = max(Decimal(0), min(cash.available, Decimal(cap) - invested))
     return rules.Portfolio(
         account_id=account.id,
         market=market,
-        nav=nav,
-        cash_available=cash.available,
+        nav=sizing_nav,
+        cash_available=available,
         positions=positions,
         today_pnl_pct=today_pnl,
         today_buy_tickers=repo.today_buy_tickers(conn, account.id, today, market=market),
@@ -400,12 +421,14 @@ def execute(
     is_rebalance: bool = False,
     change_pct: float | None = None,
     max_qty: dict[str, int] | None = None,
+    trade_block: str | None = None,
 ) -> list[dict]:
     """계좌마다 판정·기록·(모드별) 주문. 계좌 하나의 실패가 다른 계좌를 막지 않는다.
     scalp_leg(Phase 23 S, "entry"|"exit")는 분 단위 단타: 결정 행 없이(decision_id None 유지 —
     오늘 LLM 결정과 섞지 않는다) 체크포인트 47_/57_ 에 남기고 게이트는 단타 면제 규칙을 쓴다.
     extra_note 는 판정 note 에 덧붙이는 호출자 문구(재시세 등, Phase 21).
     change_pct 는 판정 시점 당일 등락률(소수, 재시세 값 우선) — 게이트의 급등 추격 금지(Phase 25).
+    trade_block 은 매매 제한 종목 사유(관리·경고·정지, `risk/tradability`) — BUY 를 거부한다.
     max_qty 는 계좌별 수량 상한(단타 청산: 그 계좌가 단타로 체결받은 수량만 판다 — 같은 종목의
     일반 보유분을 건드리지 않게, 전체 검토 O6). 판정 수량을 줄이기만 한다.
 
@@ -490,6 +513,7 @@ def execute(
                     theme_of=theme_of,
                     change_pct=change_pct,
                     max_qty=None if max_qty is None else max_qty.get(account.id),
+                    trade_block=trade_block,
                 )
             )
         except OrderBookkeepingError as e:  # 접수 뒤 기록 실패: 다른 계좌를 마친 뒤 올린다
@@ -548,6 +572,7 @@ def _execute_account(
     theme_of: Callable[[str], list[str] | None] | None = None,
     change_pct: float | None = None,
     max_qty: int | None = None,
+    trade_block: str | None = None,
 ) -> dict:
     """계좌 하나의 판정·기록·(모드별) 주문. 반환은 results 항목 하나."""
     if True:  # 들여쓰기 유지(execute 루프 본문을 그대로 옮김)
@@ -568,6 +593,7 @@ def _execute_account(
                 now=ctx.now(),
                 sector_of=sector_of,
                 hedge_tickers=hedge_tickers,
+                killswitch_pct=ctx.settings.risk.killswitch_drawdown_pct,
             )
             portfolio.theme_of = theme_of  # Phase 25: 오늘 상위 테마(없으면 테마 규칙 생략)
             sized = decision
@@ -593,6 +619,8 @@ def _execute_account(
                 agent_tilt=agent_tilt,
                 is_scalp=is_scalp,
                 change_pct=change_pct,
+                killswitch=killswitch.reason(ctx.conn),
+                trade_block=trade_block,
             )
         except (KisApiError, ValueError) as e:
             verdict = rules.RiskVerdict(

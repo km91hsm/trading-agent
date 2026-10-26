@@ -1394,6 +1394,10 @@ def control_show() -> None:
     conn, accounts = _control_conn()
     try:
         typer.echo(f"일시정지: {'예' if control.is_paused(conn) else '아니오'}")
+        from trader.risk import killswitch
+
+        ks = killswitch.reason(conn)
+        typer.echo(f"킬스위치: {'켜짐 — ' + ks if ks else '꺼짐'}")
         from trader.orchestrator.executor import effective_mode
 
         for a in accounts:
@@ -1446,6 +1450,34 @@ def control_pause() -> None:
     finally:
         conn.close()
     typer.echo("일시정지: 예")
+
+
+@control_app.command("killswitch")
+@_config_errors
+def control_killswitch(
+    action: str = typer.Argument(..., help="on | off | show"),
+    note: str = typer.Option("", "--note", help="off 때 원인 메모(10자 이상)"),
+) -> None:
+    """누적 손실 킬스위치(신규 매수 중단). off 는 원인 메모가 필요하고 기준 NAV 를 다시 잡는다."""
+    from trader.risk import killswitch
+
+    conn, _ = _control_conn()
+    try:
+        if action == "on":
+            killswitch.engage(conn, reason=note or "수동(CLI)", source="cli")
+        elif action == "off":
+            try:
+                killswitch.release(conn, note=note)
+            except ValueError as e:
+                typer.echo(f"오류: {e}", err=True)
+                raise typer.Exit(code=1) from e
+        elif action != "show":
+            typer.echo("오류: on | off | show", err=True)
+            raise typer.Exit(code=1)
+        r = killswitch.reason(conn)
+        typer.echo(f"킬스위치: {'켜짐 — ' + r if r else '꺼짐'}")
+    finally:
+        conn.close()
 
 
 @control_app.command("resume")

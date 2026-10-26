@@ -165,6 +165,8 @@ def evaluate(
     agent_tilt: int = 0,
     is_scalp: bool = False,
     change_pct: float | None = None,
+    killswitch: str | None = None,
+    trade_block: str | None = None,
 ) -> RiskVerdict:
     """regime(bull|neutral|bear)·is_hedge 는 Phase 17 H: neutral 은 신규 매수 한도 축소, bear 는
     일반 BUY/ADD 거부(SELL·TRIM·손절·헤지만 통과). 헤지 주문은 비용·보유기간·주 2회·중복·종목 수·
@@ -175,7 +177,9 @@ def evaluate(
     비중·현금·중복·종목 수·섹터·일일손실·bear 거부는 그대로 본다.
     change_pct·theme_of(Phase 25 테마 매매 안전장치, 일반 BUY/ADD 만 — 헤지·손절·단타 면제):
     당일 등락률 ≥ chase_limit_pct 면 신규 매수 금지, 오늘 상위 테마 종목이면 같은 테마 합계
-    ≤ max_theme_pct 와 보유 ≤ theme_max_horizon_days·익절가 필수."""
+    ≤ max_theme_pct 와 보유 ≤ theme_max_horizon_days·익절가 필수.
+    killswitch(누적 손실, Stock D-049)·trade_block(관리·경고·정지 종목, D-030)은 사유가 있으면
+    일반 BUY/ADD·단타 진입을 거부한다(매도·손절·헤지는 그대로)."""
     acct = portfolio.account_id
     if decision.action == "HOLD":
         return RiskVerdict(
@@ -294,6 +298,10 @@ def evaluate(
         if qty <= 0 and not rejected:
             rejected.append("가능금액 부족으로 주문 수량 0")
     elif side == "BUY":
+        if killswitch:
+            rejected.append(f"킬스위치(신규 매수 중단): {killswitch}")
+        if trade_block:
+            rejected.append(f"매매 제한 종목: {trade_block}")
         if regime == "bear" and tilt <= 0:
             rejected.append("하락 국면(bear): 신규 매수·추가 매수 금지")
         elif regime == "bear":

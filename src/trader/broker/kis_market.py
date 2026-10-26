@@ -78,6 +78,11 @@ class KisMarket:
             change_pct=float(_dec(out.get("prdy_ctrt"))) / 100,
             volume=_int(out.get("acml_vol")),
             asof=self._now(),
+            status_code=str(out.get("iscd_stat_cls_code") or "").strip() or None,
+            warn_code=str(out.get("mrkt_warn_cls_code") or "").strip() or None,
+            halted=(str(out.get("temp_stop_yn") or "").strip().upper() == "Y")
+            if out.get("temp_stop_yn") is not None
+            else None,
         )
 
     def get_industry_kr(self, ticker: str) -> str | None:

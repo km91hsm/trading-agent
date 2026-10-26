@@ -201,3 +201,13 @@ def test_real_approve_requires_confirm_word_and_unknown_command_gets_help(conn, 
     assert calls == [aid]
     commands.poll_once(ctx, Recv(["/aprove 1"]))
     assert sent.msgs[-1].startswith("[명령 안내]") and "/status" in sent.msgs[-1]
+
+
+def test_telegram_kill_engages_only(conn):
+    from trader.risk import killswitch
+
+    sent = Sent()
+    ctx = _ctx(conn, sent)
+    commands.poll_once(ctx, Recv(["/kill"]))
+    assert killswitch.reason(conn) == "텔레그램 /kill"
+    assert sent.msgs[-1].startswith("[킬스위치]") and "control killswitch off" in sent.msgs[-1]

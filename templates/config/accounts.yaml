@@ -1,3 +1,5 @@
 accounts:
   - {id: paper-main, env: paper, cano: "00000000", acnt_prdt_cd: "01", markets: [KR, US], mode: auto}
   - {id: real-main,  env: real,  cano: "00000000", acnt_prdt_cd: "01", markets: [KR, US], mode: "off"}
+# 실전 자본 상한(선택): 게이트가 쓰는 NAV·가능금액을 시장(통화)별로 이 금액까지로 자른다. 사람이 단계적으로 올린다
+#   예) real-main 줄 끝에 , capital_cap: {KR: 3000000, US: 2000}

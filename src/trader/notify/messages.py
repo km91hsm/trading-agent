@@ -153,6 +153,16 @@ def event(tag: str, text: str = "", *lines: str) -> str:
     return render(tag, text, lines)
 
 
+def killswitch_on(reason: str) -> str:
+    """킬스위치 켜짐: 신규 매수 중단(매도·손절·헤지는 계속), 해제는 사람만."""
+    return event(
+        "킬스위치",
+        "신규 매수를 멈췄어요",
+        f"사유: {reason}",
+        "매도·손절·헤지는 계속돼요. 해제: trader control killswitch off --note \"원인\"",
+    )
+
+
 def saveticker_health(text: str) -> str:
     """세이브티커 수집 장애·복구(수집기 감시가 만든 고정 문구 한 줄)."""
     return event("세이브티커 수집", text)
