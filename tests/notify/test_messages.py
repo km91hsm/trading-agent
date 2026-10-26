@@ -90,12 +90,12 @@ def test_approval_request():
     )
     assert text == (
         "[승인 요청 #12] real-main · 삼성전자(005930)\n"
-        "매수 2주 @70,000원\n"
-        "게이트: confidence<0.5 → 수량 반감\n"
+        "매수 2주 @70,000원 = 140,000원\n"
+        "리스크 판정: confidence<0.5 → 수량 반감\n"
         "\n"
         "최종 의견: 매수 · 목표 비중 10% · 확신 0.45\n"
         "\n"
-        "/approve 12 또는 /reject 12 (30분 안)"
+        "/approve 12 · /reject 12 (30분 안)"
     )
 
 
@@ -135,3 +135,36 @@ def test_decision_brief_from_dict_and_model():
     assert M.DecisionBrief.of(d).action == "TRIM"
     assert M.DecisionBrief.of({"action": "SELL", "confidence": 0.8}).confidence == 0.8
     assert M.DecisionBrief.of(None) is None and M.DecisionBrief.of({}) is None
+
+
+def test_approval_request_shows_env_amount_and_kst_expiry():
+    """전체 검토 T1: 모의/실전·금액·만료 시각(KST)·실전 확인어."""
+    text = M.approval_request(
+        approval_id=12,
+        account="real-main",
+        market="KR",
+        label="삼성전자(005930)",
+        side="BUY",
+        qty=10,
+        price=Decimal("71500"),
+        reasons=[],
+        env="real",
+        expires_at="2026-10-26T01:42:00+00:00",
+    )
+    assert text.splitlines()[0] == "[승인 요청 #12 · 실전] real-main · 삼성전자(005930)"
+    assert "매수 10주 @71,500원 = 715,000원" in text and "리스크 한도 통과" in text
+    assert text.endswith("/approve 12 실전 · /reject 12 — 10:42 KST 까지")
+    paper = M.approval_request(
+        approval_id=3,
+        account="paper-main",
+        market="US",
+        label="AAPL",
+        side="BUY",
+        qty=2,
+        price=None,
+        quote_price="200",
+        reasons=["확신 0.45 → 수량 절반"],
+        env="paper",
+    )
+    assert "시장가 = $400.00 (현재가 기준)" in paper and "리스크 판정: 확신 0.45" in paper
+    assert "/approve 3 · /reject 3 (30분 안)" in paper

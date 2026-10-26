@@ -1222,3 +1222,19 @@ def test_submit_decision_requotes_when_inputs_are_stale(ctx, project):
         Decimal("1"),
         None,
     )
+
+
+def test_ensure_quant_asks_registry_for_the_same_market(ctx, project, monkeypatch):
+    """전체 검토 L4: 05_quant 는 그 시장 모델을 고른다(다른 시장 한정 모델 제외 계약)."""
+    from trader.ml import registry
+
+    seen = {}
+
+    def fake_latest(name, **kw):
+        seen.update(kw)
+        return None
+
+    monkeypatch.setattr(registry, "latest", fake_latest)
+    _inputs(project, ticker="AAPL", market="US")
+    assert tools.ensure_quant(ctx, ticker="AAPL", market="US", date=D) is None
+    assert seen.get("market") == "US"

@@ -99,6 +99,15 @@ def _decide(request: Request, approval_id: int, action: str) -> dict:
         r = fn(ectx, approval_id)
     if not r["ok"]:
         order = r.get("order")
+        if order is not None and order.get("status") == "unknown":
+            # 요청은 나갔는데 응답이 없다 — 접수됐을 수 있어 '거부'로 안내하지 않는다(검토 W2).
+            # 다시 누르면 중복 주문이 될 수 있어 200 + unknown 으로 돌려주고 화면이 경고한다
+            return {
+                **r,
+                "unknown": True,
+                "message": "주문 응답을 받지 못했어요. 접수됐을 수 있으니 다시 누르지 말고 "
+                "KIS 앱에서 확인하세요. 체결 동기화가 상태를 확정해요.",
+            }
         if order is not None:  # 승인은 됐으나 브로커가 거부·실패 → 게이트웨이 오류
             raise HTTPException(
                 status_code=502, detail=f"브로커 거부: {order.get('message') or '알 수 없음'}"

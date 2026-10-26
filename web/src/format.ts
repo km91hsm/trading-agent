@@ -68,6 +68,19 @@ export function fmtDate(iso: string | null | undefined): string {
   }).format(d);
 }
 
+/** 그 시장 현지 날짜(YYYY-MM-DD). KR=KST, US=뉴욕 — '오늘' 필터를 시장별로(전체 검토 W11). */
+export function marketDate(iso: string | null | undefined, market: Market | string): string {
+  if (!iso) return DASH;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return DASH;
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: market === "US" ? "America/New_York" : "Asia/Seoul",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(d);
+}
+
 /** 만료까지 남은 분(음수면 0). */
 export function minutesLeft(expiresIso: string | null | undefined, now = new Date()): number | null {
   if (!expiresIso) return null;
