@@ -51,12 +51,43 @@ class SessionSpec:
     tickers: list[dict[str, Any]]  # [{"ticker": str, "exchange": str | None}]
     dry_run: bool = True
     asof: datetime | None = None  # tool collect 에 넘길 기준 시각 (없으면 세션 시작 시각)
-    kind: str = "analyze"  # analyze | screen | resume | reflect | market | discover
+    # analyze | screen | resume | reflect | market | discover | fo | fo_resume (RUN_KINDS)
+    kind: str = "analyze"
     candidates: list[dict[str, Any]] = field(default_factory=list)  # screen 모드 입력
     # screen 모드 보조 입력(Phase 21): {regime, market_view} — 국면·시장 세션 제안을 스크리너도 본다
     context: dict[str, Any] | None = None
     entries: list[dict[str, Any]] = field(default_factory=list)  # reflect 모드 입력
     trigger: dict[str, Any] | None = None  # resume 모드 입력 (Phase 6 monitor)
+    # fo_resume 모드 봉투(Phase 26): {account_id, position_id, expected_version, request_id, round}
+    position: dict[str, Any] | None = None
+
+
+# 세션 종류 → `runs.kind`(상한·집계 단위). 없는 종류는 analyze
+RUN_KINDS: dict[str, str] = {
+    "screen": "scan",
+    "discover": "scan",
+    "resume": "monitor",
+    "reflect": "reflect",
+    "market": "market",
+    "fo": "fo",
+    "fo_resume": "monitor",
+}
+
+
+def run_kind_of(kind: str) -> str:
+    return RUN_KINDS.get(kind, "analyze")
+
+
+def agents_for(kind: str) -> tuple[str, ...]:
+    """세션 종류별 서브에이전트 목록(`--agents` JSON)."""
+    return {
+        "screen": registry.SCREEN_AGENTS,
+        "discover": registry.DISCOVER_AGENTS,
+        "reflect": registry.REFLECT_AGENTS,
+        "market": registry.MARKET_AGENTS,
+        "fo": registry.FO_AGENTS,
+        "fo_resume": registry.FO_AGENTS,
+    }.get(kind, registry.AGENTS)
 
 
 @dataclass
@@ -130,6 +161,9 @@ def _stdin_payload(spec: SessionSpec, asof: datetime) -> str:
             payload["context"] = spec.context
     if spec.kind == "resume":
         payload["trigger"] = spec.trigger
+    if spec.kind == "fo_resume":
+        payload["position"] = spec.position
+        payload["trigger"] = spec.trigger
     if spec.kind == "reflect":
         payload["entries"] = spec.entries
     return json.dumps(payload, ensure_ascii=False, default=str)
@@ -178,10 +212,12 @@ def _start_call(
     model: str,
     cap: int | None = None,
     now: datetime | None = None,
+    extra_cap: tuple[str, int] | None = None,
 ) -> int | None:
     """세션 시작 시 running 행을 먼저 쓴다 (크래시·동시 실행 때도 상한 집계에 잡히도록).
     cap 이 있으면 같은 쓰기 잠금(`BEGIN IMMEDIATE`) 안에서 오늘 세션 수를 세어 두 프로세스가
-    동시에 마지막 자리를 잡는 경합을 막는다(넘으면 PipelineError, 행 없음)."""
+    동시에 마지막 자리를 잡는 경합을 막는다(넘으면 PipelineError, 행 없음). `extra_cap=(runs.kind,
+    상한)` 은 그 종류만의 상한(Phase 26 `fo.session_cap`)을 같은 트랜잭션에서 함께 본다."""
     if conn is None:
         return None
     conn.execute("BEGIN IMMEDIATE")
@@ -190,6 +226,11 @@ def _start_call(
             n = tools.sessions_today(conn, now or datetime.now(UTC))
             if n >= cap:
                 raise PipelineError(f"오늘 세션 상한({cap})에 도달해 세션을 띄우지 않습니다")
+        if extra_cap is not None and model != "fake":
+            k, kcap = extra_cap
+            n = tools.sessions_today(conn, now or datetime.now(UTC), kind=k)
+            if n >= kcap:
+                raise PipelineError(f"오늘 {k} 세션 상한({kcap})에 도달해 세션을 띄우지 않습니다")
         cur = conn.execute(
             "INSERT INTO agent_calls(run_id, ticker, market, agent, model, session_id, status, "
             "created_at) VALUES (?, ?, ?, 'orchestrator', ?, ?, 'running', ?)",
@@ -377,13 +418,11 @@ def run_session(
         ok, why = usage.session_allowance(conn, settings, kind=spec.kind, now=now())
         if not ok:
             raise PipelineError(why or "구독 사용률 감속")
-    run_kind = {
-        "screen": "scan",
-        "discover": "scan",
-        "resume": "monitor",
-        "reflect": "reflect",
-        "market": "market",
-    }.get(spec.kind, "analyze")
+    run_kind = run_kind_of(spec.kind)
+    # 파생 세션(Phase 26)은 `fo.session_cap` 도 본다(아침 fo 만 — 재평가는 runs.kind=monitor)
+    extra_cap = ("fo", settings.fo.session_cap) if run_kind == "fo" else None
+    if extra_cap and tools.sessions_today(conn, now(), kind="fo") >= extra_cap[1]:
+        raise PipelineError(f"오늘 fo 세션 상한({extra_cap[1]})에 도달해 세션을 띄우지 않습니다")
     run_id = db.start_run(conn, run_kind, spec.market) if conn is not None else None
     started = now()
 
@@ -455,12 +494,7 @@ def run_session(
         # cwd 는 저장소 밖 임시 디렉터리 (claude 가 상위 CLAUDE.md·settings 를 탐색하지 못하게)
         cwd = Path(tempfile.mkdtemp(prefix="trader-claude-"))
         agents_file = cwd / "agents.json"
-        names = {
-            "screen": registry.SCREEN_AGENTS,
-            "discover": registry.DISCOVER_AGENTS,
-            "reflect": registry.REFLECT_AGENTS,
-            "market": registry.MARKET_AGENTS,
-        }.get(spec.kind, registry.AGENTS)
+        names = agents_for(spec.kind)
         agents_file.write_text(
             json.dumps(registry.agents_json(names, settings, agents_dir), ensure_ascii=False),
             encoding="utf-8",
@@ -489,6 +523,7 @@ def run_session(
             model=model,
             cap=settings.llm.daily_session_cap,
             now=started,
+            extra_cap=extra_cap,
         )
     except Exception as e:
         # 기동 전 단계(실행파일·에이전트 md·프롬프트) 실패: runs 행이 running 으로 남고 임시 cwd 가

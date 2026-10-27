@@ -193,6 +193,10 @@ def latest_observation(
     return out
 
 
+# soft 감속에서도 허용하는 보유 재평가 종류(현물 `resume`, 파생 `fo_resume` — Phase 26 R14)
+RESUME_KINDS = frozenset({"resume", "fo_resume"})
+
+
 def session_allowance(
     conn: sqlite3.Connection | None, settings: Any, *, kind: str, now: datetime
 ) -> tuple[bool, str | None]:
@@ -222,7 +226,7 @@ def session_allowance(
             False,
             f"구독 {name} 사용률 {top:.0%} ≥ {cfg.hard_pct:.0%} — 새 세션을 띄우지 않습니다",
         )
-    if top >= cfg.soft_pct and kind != "resume":
+    if top >= cfg.soft_pct and kind not in RESUME_KINDS:
         return False, (
             f"구독 {name} 사용률 {top:.0%} ≥ {cfg.soft_pct:.0%} — 보유 재평가만 허용({kind} 생략)"
         )

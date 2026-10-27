@@ -1540,15 +1540,27 @@ def submit_reflection(
 # --- status -----------------------------------------------------------------
 
 
-def sessions_today(conn: sqlite3.Connection | None, now: datetime) -> int:
+def sessions_today(
+    conn: sqlite3.Connection | None, now: datetime, *, kind: str | None = None
+) -> int:
+    """오늘(KST) 시작한 세션 수(FAKE 제외, 실패 포함). `kind` 를 주면 그 `runs.kind`(예: `fo`,
+    Phase 26 `fo.session_cap`)만 센다."""
     if conn is None:
         return 0
     start, _ = repo.day_bounds(now.astimezone(KST).date(), None)
-    row = conn.execute(
-        "SELECT COUNT(*) AS n FROM agent_calls WHERE agent='orchestrator' "
-        "AND COALESCE(model, '') != 'fake' AND created_at >= ?",
-        (start,),
-    ).fetchone()
+    if kind is None:
+        row = conn.execute(
+            "SELECT COUNT(*) AS n FROM agent_calls WHERE agent='orchestrator' "
+            "AND COALESCE(model, '') != 'fake' AND created_at >= ?",
+            (start,),
+        ).fetchone()
+    else:
+        row = conn.execute(
+            "SELECT COUNT(*) AS n FROM agent_calls a JOIN runs r ON r.id = a.run_id "
+            "WHERE a.agent='orchestrator' AND COALESCE(a.model, '') != 'fake' "
+            "AND a.created_at >= ? AND r.kind = ?",
+            (start, kind),
+        ).fetchone()
     return int(row["n"])
 
 
