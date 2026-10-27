@@ -28,10 +28,17 @@ def state(conn: sqlite3.Connection) -> dict:
     return control.get_flag(conn, FLAG, {}) or {}
 
 
-def reason(conn: sqlite3.Connection) -> str | None:
-    """켜져 있으면 사유, 아니면 None."""
+def reason(conn: sqlite3.Connection, account_id: str | None = None) -> str | None:
+    """켜져 있으면 사유, 아니면 None. 수동(`/kill`·CLI)은 전 계좌, 자동 발동은 **발동한 계좌만**
+    (`accounts`) — 모의 계좌의 누적 손실이 실전 계좌의 신규 매수까지 막던 문제(전체 검토
+    2026-10-27). account_id 가 None 이면(표시·리포트) 어느 계좌든 켜져 있으면 사유."""
     st = state(conn)
-    return str(st.get("reason") or "킬스위치") if st.get("on") else None
+    if not st.get("on"):
+        return None
+    scope = st.get("accounts")
+    if account_id is not None and scope is not None and account_id not in scope:
+        return None
+    return str(st.get("reason") or "킬스위치")
 
 
 def _dec(raw) -> Decimal | None:
@@ -67,11 +74,33 @@ def _baseline(
     return base
 
 
-def engage(conn: sqlite3.Connection, *, reason: str, source: str) -> None:
+def engage(
+    conn: sqlite3.Connection, *, reason: str, source: str, account_id: str | None = None
+) -> None:
+    """켠다. account_id 가 있으면(자동 발동) 그 계좌만 범위에 더하고, 없으면(수동) 전 계좌.
+    읽기~쓰기를 한 쓰기 트랜잭션으로 묶는다 — 자동 발동이 읽은 직후 `/kill` 이 저장되면 계좌 한정
+    상태가 전체 차단을 덮어쓸 수 있었다(Codex 리뷰). set_flag 의 commit 이 트랜잭션을 끝낸다."""
+    if not conn.in_transaction:
+        conn.execute("BEGIN IMMEDIATE")
+    prev = state(conn)
+    scope: list[str] | None = None
+    if account_id is not None:
+        if prev.get("on") and prev.get("accounts") is None:
+            conn.commit()  # 이미 전 계좌로 켜져 있다 — 트랜잭션만 닫는다
+            return
+        scope = sorted({*(prev.get("accounts") or [] if prev.get("on") else []), account_id})
+        if prev.get("on"):
+            reason = f"{prev.get('reason')}; {reason}"
     control.set_flag(
         conn,
         FLAG,
-        {"on": True, "reason": reason, "source": source, "at": datetime.now(UTC).isoformat()},
+        {
+            "on": True,
+            "reason": reason,
+            "source": source,
+            "accounts": scope,
+            "at": datetime.now(UTC).isoformat(),
+        },
     )
 
 
@@ -88,7 +117,7 @@ def observe(
     if limit_pct <= 0 or nav <= 0:
         return False
     base = _baseline(conn, account_id, market, nav)  # 켜져 있어도 기준은 처음에 한 번 남긴다
-    if base is None or state(conn).get("on"):
+    if base is None or reason(conn, account_id):  # 이 계좌는 이미 막혀 있다
         return False
     dd = float(nav / base - 1)
     if dd > -limit_pct:
@@ -100,6 +129,7 @@ def observe(
             f"한도 -{limit_pct:.0%}, {today.isoformat()})"
         ),
         source="auto",
+        account_id=account_id,
     )
     return True
 

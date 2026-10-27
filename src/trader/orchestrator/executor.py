@@ -343,7 +343,7 @@ def build_portfolio(
     # (킬스위치 중에도 헤지는 허용, Codex 리뷰). 잔고를 볼 때마다 다시 보므로 실패분도 재시도된다
     from trader.risk import killswitch as _ks
 
-    if cancel_buys and _ks.reason(conn):
+    if cancel_buys and _ks.reason(conn, account.id):
         on_killswitch(conn, broker, account.id, market, today, keep=hedge_tickers)
     prev = repo.latest_nav_before(conn, account.id, today, market=market)
     today_pnl = float(nav / prev - 1) if prev else 0.0
@@ -754,7 +754,7 @@ def _execute_account(
                 agent_tilt=agent_tilt,
                 is_scalp=is_scalp,
                 change_pct=change_pct,
-                killswitch=killswitch.reason(ctx.conn),
+                killswitch=killswitch.reason(ctx.conn, account.id),
                 trade_block=trade_block,
             )
         except (KisApiError, ValueError) as e:
@@ -1312,7 +1312,7 @@ def _approval_recheck(
     from trader.orchestrator.run_store import run_date_for
 
     today = run_date_for(market, ctx.now())
-    ks = killswitch.reason(ctx.conn)
+    ks = killswitch.reason(ctx.conn, account.id)
     if ks:  # 요청 뒤 킬스위치(/kill·누적 손실)가 켜졌다 — 신규 매수 중단을 승인으로 우회하지 않게
         return f"킬스위치 켜짐({ks}) — 신규 매수 중단", None
     if regime_state(ctx, market) == "bear" and _agent_tilt(ctx, market, today) <= 0:

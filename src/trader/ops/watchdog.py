@@ -46,9 +46,19 @@ def save(state: Path | None, data: dict) -> None:
     atomic_replace(tmp, p)
 
 
-def should_notify(prev: dict, level: str, now: datetime) -> bool:
+DAEMON_KEYS = ("jobs.daemon", "jobs.stale")  # 데몬 사망·멈춤 — 데몬이 스스로 못 알리는 것
+
+
+def should_notify(
+    prev: dict, level: str, now: datetime, *, daemon_down: bool = True, new_keys: bool = False
+) -> bool:
+    """데몬이 죽었거나 멈췄으면 단계 격상은 즉시, 같은 단계는 1시간마다. 데몬이 살아 있으면 다른
+    문제는 데몬의 `ops_check` 가 알리므로 여기서는 **새 경고 항목**이 생겼을 때만(오래 가는 공시·
+    잡 오류로 1시간마다 울리던 경보 피로, 전체 검토 2026-10-27)."""
     if level not in ALERT_LEVELS:
         return False
+    if not daemon_down:
+        return new_keys
     last_level = str(prev.get("last_level") or "ok")
     if health.LEVELS.index(level) > health.LEVELS.index(last_level):
         return True
@@ -73,7 +83,12 @@ def run_once(
         conn, settings, accounts, now=now, state=state, schedule_jobs=schedule_jobs or []
     )
     prev = load(state)
-    notify = notifier is not None and should_notify(prev, result["level"], now)
+    keys = sorted(i["key"] for i in result["items"] if i["level"] in ALERT_LEVELS)
+    daemon_down = any(i["key"] in DAEMON_KEYS for i in result["items"])
+    new_keys = bool(set(keys) - set(prev.get("keys") or []))
+    notify = notifier is not None and should_notify(
+        prev, result["level"], now, daemon_down=daemon_down, new_keys=new_keys
+    )
     sent = False
     if notify:
         daemon_items = [i for i in result["items"] if i["key"].startswith("jobs.")]
@@ -87,6 +102,8 @@ def run_once(
         "last_run_at": now.isoformat(),
         "last_level": result["level"],
         "last_notified_at": now.isoformat() if sent else prev.get("last_notified_at"),
+        # 알린(또는 알릴 필요가 없던) 경고 키 — 보내지 못했으면 이전 키를 유지해 다음 회차에 다시
+        "keys": keys if (sent or not notify) else prev.get("keys") or [],
     }
     if result["level"] == "ok":
         rec["last_notified_at"] = None  # 정상으로 돌아오면 다음 문제는 바로 알린다

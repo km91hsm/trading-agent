@@ -320,3 +320,12 @@ def test_ambiguous_unknown_candidates_are_not_attached_and_flagged(conn):
     assert len(sent) == 1 and "[체결 매칭 모호]" in sent[0]
     fills_mod.sync_fills(conn, broker, acct, D, notifier=notifier, now=in_session)  # 재알림 없음
     assert len(sent) == 1
+
+
+def test_stale_open_days_lists_past_live_orders(conn):
+    """오늘 이전 7일 안에 아직 살아 있는 주문이 있는 현지 날짜(동기화 실패·놓친 날 다시 조회)."""
+    _order_with(conn, status="accepted", order_no="A", created_at="2026-10-07T01:00:00+00:00")
+    _order_with(conn, status="filled", order_no="B", created_at="2026-10-08T01:00:00+00:00")
+    _order_with(conn, status="unknown", order_no="C", created_at="2026-10-09T01:00:00+00:00")
+    days = fills_mod.stale_open_days(conn, "paper-main", "KR", D)
+    assert days == [date(2026, 10, 7)]  # 오늘(10-09)·체결 완료는 제외

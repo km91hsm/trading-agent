@@ -148,6 +148,10 @@ def run_command(ectx: Any, arg: str | None) -> str:
     return messages.event(f"요청 #{rid}", f"{jobq.label(kind, p)} — 데몬이 순서대로 실행해요")
 
 
+# 보낸 사람을 확인할 수 없어도 처리하는 명령: 조회와 위험을 줄이는 것(일시정지·킬스위치)만
+UNTRUSTED_OK = frozenset({"status", "pause", "kill", "daily"})
+
+
 def poll_once(ectx: Any, receiver: Any, *, echo: Callable[[str], None] = lambda s: None) -> dict:
     """getUpdates 1회: 명령을 처리하고 오프셋을 control `telegram_offset` 에 저장한다."""
     conn = ectx.conn
@@ -165,6 +169,17 @@ def poll_once(ectx: Any, receiver: Any, *, echo: Callable[[str], None] = lambda 
                 control.set_flag(conn, "telegram_offset", int(u.update_id) + 1)
             continue
         handled += 1
+        if not getattr(u, "trusted", True) and cmd[0] not in UNTRUSTED_OK:
+            # 그룹 채팅의 아무 구성원이 승인·재개·모드를 바꾸지 못하게(전체 검토 2026-10-27)
+            ectx.notifier.send(
+                messages.event(
+                    "명령 거부",
+                    f"/{cmd[0]} 은 1:1 채팅 또는 허용 사용자"
+                    "(TELEGRAM_ALLOWED_USERS)만 쓸 수 있어요",
+                )
+            )
+            control.set_flag(conn, "telegram_offset", int(u.update_id) + 1)
+            continue
         try:
             _handle_command(ectx, conn, cmd, echo)
         except Exception as e:  # noqa: BLE001 - 명령 하나의 실패가 나머지·오프셋을 막지 않는다

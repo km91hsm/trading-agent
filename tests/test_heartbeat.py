@@ -74,3 +74,21 @@ def test_read_status_alive_and_stale(tmp_path, monkeypatch):
     monkeypatch.setattr(heartbeat, "pid_alive", lambda pid: pid == 777)
     st = heartbeat.read_status(tmp_path, NOW, JOBS)
     assert st["alive"] is True and st["heartbeat_pid"] == 1 and st["pid_mismatch"] is True
+
+
+def test_restart_keeps_previous_job_states(tmp_path):
+    from datetime import UTC, datetime
+    from types import SimpleNamespace
+
+    from trader.heartbeat import Heartbeat
+
+    p = tmp_path / "hb.json"
+    job = SimpleNamespace(id="kr_scan_analyze", kind="scan_analyze", market="KR")
+    t = datetime(2026, 10, 27, 0, 0, tzinfo=UTC)
+    a = Heartbeat(p)
+    a.start(pid=1, started_at=t, jobs=[job])
+    a.job_finished("kr_scan_analyze", t, "error", "boom")
+    b = Heartbeat(p)  # 재시작
+    b.start(pid=2, started_at=t, jobs=[job])
+    j = b._data["jobs"]["kr_scan_analyze"]
+    assert j["last_status"] == "error" and j["last_error"] == "boom"

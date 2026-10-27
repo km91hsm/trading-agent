@@ -218,3 +218,27 @@ def test_telegram_daily_without_snapshot(conn):
     ctx = _ctx(conn, sent)
     commands.poll_once(ctx, Recv(["/daily"]))
     assert sent.msgs[-1].startswith("[일일 리포트]") and "스냅샷" in sent.msgs[-1]
+
+
+def test_untrusted_sender_cannot_approve_but_can_pause(conn):
+    from trader.notify.commands import poll_once
+    from trader.notify.telegram import Update
+
+    sent = Sent()
+    cctx = _ctx(conn, sent)
+
+    class R:
+        last_update_id = None
+
+        def __init__(self, text):
+            self.text = text
+
+        def poll(self, offset=None):
+            return [Update(update_id=1, text=self.text, chat_id="-100", trusted=False)]
+
+    poll_once(cctx, R("/resume"))
+    assert any("명령 거부" in m for m in sent.msgs)
+    poll_once(cctx, R("/pause"))
+    from trader.control import control
+
+    assert control.is_paused(cctx.conn)

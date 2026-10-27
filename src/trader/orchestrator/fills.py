@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 import sqlite3
 from collections.abc import Callable
-from datetime import UTC, date, datetime, time
+from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -110,6 +110,25 @@ def _day_for(market: str, d: date | datetime) -> date:
     if isinstance(d, datetime):
         return d.astimezone(MARKET_TZ[market]).date()
     return d
+
+
+LOOKBACK_DAYS = 7  # 정리되지 않은 지난 주문을 다시 조회하는 범위(현지 날짜)
+
+
+def stale_open_days(
+    conn: sqlite3.Connection, account_id: str, market: str, today: date
+) -> list[date]:
+    """오늘(현지) 이전 LOOKBACK_DAYS 안에 아직 살아 있는(접수·부분체결·응답없음) 주문이 있는 현지
+    날짜들. 그날 체결 동기화가 실패하거나 놓치면 다음 날부터는 오늘만 조회해 영구히 '접수' 로
+    남던 주문을 다시 조회한다(전체 검토 2026-10-27)."""
+    lo, _ = repo.day_bounds(today - timedelta(days=LOOKBACK_DAYS), market)
+    hi, _ = repo.day_bounds(today, market)
+    rows = conn.execute(
+        "SELECT DISTINCT created_at FROM orders WHERE account_id=? AND market=? "
+        "AND status IN ('accepted','partial','unknown') AND created_at >= ? AND created_at < ?",
+        (account_id, market, lo, hi),
+    ).fetchall()
+    return sorted({_day_for(market, datetime.fromisoformat(r[0])) for r in rows})
 
 
 def _session_closed(market: str, day: date, now: datetime) -> bool:
