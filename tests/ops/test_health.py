@@ -101,3 +101,22 @@ def test_daemon_ops_job_registered_and_body_records_result(conn, project):
     assert control.get_flag(conn, health.RESULT_FLAG)["level"] == "critical"
     assert sent and sent[0].startswith("[점검 격상]")
     assert daemon._ops_body(deps)["notified"] is False
+
+
+def test_reconcile_due_follows_cron_timezone(conn, project):
+    """US 대조 cron 이 KST 06:40 이면 거래소 시각으로는 그날(ET) 17:40 — 장중에 '미실행' 으로
+    잡지 않는다(Codex 리뷰)."""
+    from datetime import UTC, date, datetime
+
+    from trader import daemon
+
+    job = daemon.Job(
+        "us_reconcile",
+        "reconcile",
+        market="US",
+        cron={"hour": 6, "minute": 40, "day_of_week": "tue-sat", "timezone": "Asia/Seoul"},
+    )
+    due = health._reconcile_due(
+        "US", date(2026, 10, 27), [job], datetime(2026, 10, 27, 15, tzinfo=UTC)
+    )
+    assert (due.month, due.day, due.hour, due.minute) == (10, 27, 17, 40)

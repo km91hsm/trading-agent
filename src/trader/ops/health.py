@@ -246,14 +246,21 @@ def _orders(conn, settings, accounts, now) -> list[Item]:
     return out
 
 
-def _reconcile_due_hm(m: str, schedule_jobs) -> time:
-    """설정의 대조 시각(`<시장>_reconcile` 잡 cron), 없으면 16:40 — 설정을 바꿔도 점검이 고정
-    16:40 을 보던 문제(전체 검토 2026-10-27)."""
+def _reconcile_due(m: str, local_day, schedule_jobs, now) -> datetime:
+    """그 시장 운영일(local_day)의 대조 예정 시각(거래소 시간대). 설정 cron(`<시장>_reconcile`,
+    cron 시간대 그대로 — KST 06:40 이 전날 ET 17:40 인 것처럼 날짜가 넘어가는 경우 포함)의 최근 실행
+    시각을 거래소 시각으로 바꿔 쓰고, 잡이 없으면 현지 16:40(Codex 리뷰)."""
     for j in schedule_jobs:
         if getattr(j, "id", None) == f"{m.lower()}_reconcile" and getattr(j, "cron", None):
-            c = j.cron
-            return time(int(c.get("hour", 16)), int(c.get("minute", 40)))
-    return time(16, 40)
+            from trader.daemon import _trigger
+
+            trig = _trigger(j)
+            if hasattr(trig, "get_next_fire_time"):
+                start = datetime.combine(local_day, time(0, 0), tzinfo=MARKET_TZ[m])
+                fire = trig.get_next_fire_time(None, start)
+                if fire is not None:
+                    return fire.astimezone(MARKET_TZ[m])
+    return datetime.combine(local_day, time(16, 40), tzinfo=MARKET_TZ[m])
 
 
 def _reconcile_skipped_today(m: str, local_day, state, schedule_jobs, now) -> bool:
@@ -284,12 +291,7 @@ def _reconcile(conn, settings, accounts, now, schedule_jobs=(), state=None) -> l
             d = run_date_for(m, now)
             flag = control.get_flag(conn, f"reconcile:{a.id}:{m}:{d.isoformat()}")
             local = now.astimezone(MARKET_TZ[m])
-            due = (
-                datetime.combine(
-                    local.date(), _reconcile_due_hm(m, schedule_jobs), tzinfo=MARKET_TZ[m]
-                )
-                + RECONCILE_GRACE
-            )
+            due = _reconcile_due(m, local.date(), schedule_jobs, now) + RECONCILE_GRACE
             if flag:
                 if not flag.get("ok", True):
                     n = len(flag.get("mismatches") or []) + len(flag.get("open_orders") or [])
