@@ -462,7 +462,7 @@ def run_session(
             # tool 서브프로세스가 상속한다. "0" 일 때만 실제 주문·승인 요청 (LLM 인자 의존 없음)
             "TRADER_DRY_RUN": "1" if spec.dry_run else "0",
             "TRADER_HOME": str(paths.project_root()),
-            "PATH": venv_bin + os.pathsep + os.environ.get("PATH", ""),
+            "PATH": venv_bin + os.pathsep + claude_bin_mod.child_path(bin_path),
         }
         model = settings.models.get("orchestrator", "sonnet")
         call_id = _start_call(

@@ -33,6 +33,27 @@ def _known_locations() -> list[Path]:
     ]
 
 
+def _runnable(path: Path) -> bool:
+    """파일이고 (POSIX 는) 실행 권한까지 — 권한 없는 후보에서 멈추지 않고 다음 후보로."""
+    if not path.is_file():
+        return False
+    return sys.platform.startswith("win") or os.access(path, os.X_OK)
+
+
+def child_path(bin_path: Path, base: str | None = None) -> str:
+    """claude 자식 프로세스의 PATH: 최소 PATH(Finder·로그인 항목 앱)에서도 claude 디렉터리와
+    Homebrew·/usr/local 이 보이게 앞뒤로 보탠다(npm 판 claude 는 `#!/usr/bin/env node`)."""
+    base = os.environ.get("PATH", "") if base is None else base
+    parts = [p for p in base.split(os.pathsep) if p]
+    extra = [str(bin_path.parent)]
+    if not sys.platform.startswith("win"):
+        extra += ["/opt/homebrew/bin", "/usr/local/bin"]
+    for d in extra:
+        if d not in parts:
+            parts.append(d)
+    return os.pathsep.join(parts)
+
+
 def find_claude(override: str | None = None) -> Path:
     """override 경로가 있으면 그것을 쓰고, 없으면 PATH(Windows 는 .cmd/.exe 우선), 그다음 흔한
     설치 위치(`_known_locations`)에서 찾는다."""
@@ -50,7 +71,7 @@ def find_claude(override: str | None = None) -> Path:
         if found:
             return Path(found)
     for path in _known_locations():
-        if path.is_file():
+        if _runnable(path):
             return path
     raise ClaudeNotFound(
         "PATH 와 흔한 설치 위치(~/.local/bin 등)에서 claude 실행파일을 찾을 수 없습니다. "
