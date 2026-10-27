@@ -198,3 +198,35 @@ def test_daemon_events_check_alerts_once(conn, project, monkeypatch):
     r = daemon._events_check(deps, conn, "KR")
     assert r["alerted"] == ["war_geopolitics"] and "[사건 감지]" in Sent.msgs[0]
     assert daemon._events_check(deps, conn, "KR")["alerted"] == []
+
+
+def test_english_keywords_need_word_boundary():
+    assert events._matches("Software award season", ["war"]) is False
+    assert events._matches("War escalates in region", ["war"]) is True
+    assert events._matches("중동 공습 확대", ["공습"]) is True
+
+
+def test_event_cap_counts_universe_members_too():
+    watch = [
+        {"id": "a", "label": "a", "kind": "shock", "hits": 3, "news": [],
+         "tickers": [{"ticker": "005930", "name": "삼성전자", "role": "x"}]},
+        {"id": "b", "label": "b", "kind": "shock", "hits": 3, "news": [],
+         "tickers": [{"ticker": "000660", "name": "SK하이닉스", "role": "x"}]},
+    ]  # fmt: skip
+    disc = {
+        "candidates": [
+            {"name": "삼성전자", "ticker": "005930", "market": "KR", "tier": "event",
+             "catalyst": "x", "confidence": 0.5, "source_ids": []},
+            {"name": "SK하이닉스", "ticker": "000660", "market": "KR", "tier": "event",
+             "catalyst": "x", "confidence": 0.5, "source_ids": []},
+        ]
+    }  # fmt: skip
+    r = discovery.resolve(
+        disc,
+        market="KR",
+        universe=config.Universe(kr=["005930", "000660"]),
+        cache_names={},
+        event_watch=watch,
+        max_event=1,
+    )
+    assert [c["ticker"] for c in r["candidates"]] == ["005930"]

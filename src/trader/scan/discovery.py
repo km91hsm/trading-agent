@@ -331,15 +331,16 @@ def resolve(
                     {"name": name, "ticker": ticker, "reason": f"사건당 상한 {max_per_event}"}
                 )
                 continue
+            # 합계 상한은 유니버스 종목이든 아니든 사건 후보 전체에(Codex 리뷰)
+            if event_n >= max_event:
+                unresolved.append(
+                    {"name": name, "ticker": ticker, "reason": f"사건 후보 상한 {max_event}"}
+                )
+                continue
         if event is not None and ticker not in uni_codes:
             code = ticker
             if code in excl or code in seen:
                 unresolved.append({"name": name, "ticker": code, "reason": "제외·중복"})
-                continue
-            if event_n >= max_event:
-                unresolved.append(
-                    {"name": name, "ticker": code, "reason": f"사건 후보 상한 {max_event}"}
-                )
                 continue
             exchange = event.get("exchange") if market == "US" else None
             if market == "KR" and not _check_kr(market_client, code):
@@ -406,6 +407,7 @@ def resolve(
         seen.add(code)
         if event is not None:
             per_event[event["event_id"]] = per_event.get(event["event_id"], 0) + 1
+            event_n += 1
         out.append(
             {
                 "ticker": code,

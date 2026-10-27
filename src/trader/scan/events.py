@@ -29,8 +29,19 @@ def _flag(market: str) -> str:
 
 
 def _matches(text: str, keywords: list[str]) -> bool:
+    """한글 키워드는 부분 문자열, 영문(ASCII) 키워드는 단어 경계로 — `war` 가 software·award 에
+    걸리지 않게(Codex 리뷰)."""
+    import re
+
     low = text.casefold()
-    return any(k.casefold() in low for k in keywords)
+    for k in keywords:
+        kk = k.casefold()
+        if kk.isascii():
+            if re.search(rf"(?<![a-z0-9]){re.escape(kk)}(?![a-z0-9])", low):
+                return True
+        elif kk in low:
+            return True
+    return False
 
 
 def detect(
