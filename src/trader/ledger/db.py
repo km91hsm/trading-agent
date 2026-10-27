@@ -472,6 +472,19 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
             )""",
         ],
     ),
+    (
+        # 전체 검토 2차 2-O3·2-O8: 주문 행의 실행 종류 origin(llm|stop|hedge|scalp|rebalance|
+        # reprice|
+        # park|external, repo.ORIGINS). NULL(옛 행)은 llm 으로 본다. LLM 결정의 주 2회 한도·5일
+        # 실현손익 성향은 llm·stop 만 세고, 재호가 후보는 llm 만. 옛 행은 알 수 있는 것만 채운다
+        28,
+        [
+            "ALTER TABLE orders ADD COLUMN origin TEXT",
+            "UPDATE orders SET origin='external' WHERE mode='external'",
+            "UPDATE orders SET origin='hedge' WHERE origin IS NULL AND decision_id IN "
+            "(SELECT id FROM decisions WHERE source='hedge')",
+        ],
+    ),
 ]
 
 

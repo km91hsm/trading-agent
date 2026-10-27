@@ -1628,6 +1628,47 @@ def control_killswitch(
         conn.close()
 
 
+@control_app.command("exec-key")
+@_config_errors
+def control_exec_key(
+    action: str = typer.Argument(..., help="list | release"),
+    key: str = typer.Argument("", help="release 할 실행 키(`trader control exec-key list` 의 key)"),
+    note: str = typer.Option("", "--note", help="release 때 확인 메모(10자 이상, KIS 주문 유무)"),
+) -> None:
+    """실행 키(원장 exec_keys, 검토 O8) 조회·해제. 보낸 뒤(sent_at) 기록 전에 예외로 끊긴 키는 영구
+    선점이라 같은 결정·계좌·방향의 주문이 다시 나가지 않는다 — KIS 에 주문이 없음을 확인한 뒤
+    release 로 푼다(전체 검토 2차 2-O13). 해제 기록은 control `exec_key_released:<key>`."""
+    import json
+
+    from trader.control import control
+    from trader.ledger import repo
+
+    conn, _ = _control_conn()
+    try:
+        if action == "list":
+            rows = repo.list_exec_keys(conn)
+            typer.echo(json.dumps(rows, ensure_ascii=False, indent=1) if rows else "실행 키 없음")
+            return
+        if action != "release":
+            typer.echo("오류: list | release", err=True)
+            raise typer.Exit(code=1)
+        if len(note.strip()) < 10:
+            typer.echo("오류: --note 에 확인 메모(10자 이상)가 필요합니다", err=True)
+            raise typer.Exit(code=1)
+        if not any(r["key"] == key for r in repo.list_exec_keys(conn)):
+            typer.echo(f"오류: 실행 키 없음: {key}", err=True)
+            raise typer.Exit(code=1)
+        repo.release_exec_key(conn, key)
+        control.set_flag(
+            conn,
+            f"exec_key_released:{key}",
+            {"note": note.strip(), "at": datetime.now(UTC).isoformat()},
+        )
+        typer.echo(f"실행 키 해제: {key}")
+    finally:
+        conn.close()
+
+
 @control_app.command("resume")
 @_config_errors
 def control_resume() -> None:

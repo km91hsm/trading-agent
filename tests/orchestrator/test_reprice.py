@@ -85,6 +85,35 @@ def test_candidates_only_unfilled_limit_accepted_today(conn):
     assert [r["id"] for r in rows] == [1] and o2 != 1 and o3 != 1
 
 
+def test_candidates_exclude_stop_loss_orders_by_origin(conn):
+    """전체 검토 2차 2-O3: 최신 결정이 SELL/TRIM 인 날의 손절 지정가 SELL(US 손절)은 origin='stop'
+    으로 가려 재호가 후보가 아니다 — 재제출이 "최신 결정 + 일반 게이트" 로 보호 매도를
+    없애지 않게."""
+    did = repo.ingest_checkpoint(
+        conn, D, "KR", "005930", "30_decision", {"data": ok_decision(action="SELL")}
+    )
+    for origin, order_no in (("stop", "S1"), ("llm", "L1"), (None, "OLD")):
+        repo.insert_order(
+            conn,
+            decision_id=did,
+            account_id="paper-main",
+            ticker="005930",
+            market="KR",
+            side="SELL",
+            qty=10,
+            order_type="LIMIT",
+            price=Decimal("70000"),
+            status="accepted",
+            order_no=order_no,
+            message="",
+            mode="auto",
+            created_at="2026-10-23T00:05:00+00:00",
+            origin=origin,
+        )
+    rows = reprice.candidates(conn, "paper-main", "KR", D)
+    assert [r["order_no"] for r in rows] == ["L1", "OLD"]
+
+
 def test_too_far_rule():
     assert reprice.too_far("BUY", Decimal("100"), Decimal("101.5"), 0.01)
     assert not reprice.too_far("BUY", Decimal("100"), Decimal("100.9"), 0.01)

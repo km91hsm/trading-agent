@@ -578,6 +578,70 @@ def test_apply_mode_rejected_by_gate_not_marked_applied(ectx):
     assert len(rows) == 1 and rows[0]["applied"] == 0
 
 
+def test_orders_record_origin_per_execution_kind(ectx):
+    """전체 검토 2차 2-O3·2-O8: 주문 행에 실행 종류(origin)를 남긴다 — llm(결정)·stop(손절)·
+    reprice(재호가)·approve 경로도 원래 origin 유지. 주 2회·실현손익·재호가 후보가 이것으로
+    가른다."""
+    from trader.broker.models import Position
+
+    _run(ectx)  # 50_order → llm
+    pos = Position(
+        ticker="005930",
+        market="KR",
+        qty=10,
+        avg_price=Decimal("70000"),
+        current_price=Decimal("71500"),
+        eval_amount=Decimal("715000"),
+        pnl_pct=0.02,
+    )
+    ectx.brokers["paper-main"].positions = [pos]
+    dec_id = repo.decision_id(ectx.conn, D, "KR", "005930")
+    sl = Decision(**ok_decision(action="SELL", target_weight=0.0, order_type="MARKET"))
+    executor.execute(
+        ectx,
+        sl,
+        date=D,
+        market="KR",
+        price=PRICE,
+        dry_run=False,
+        is_stop_loss=True,
+        decision_id=dec_id,
+    )
+    # 재호가는 원 지정가를 취소한 뒤 재제출한다(reprice.py) — 취소 전이면 체결 전 BUY 가 같은 종목
+    # 비중에 들어가(2-O4) 거부된다
+    ectx.conn.execute(
+        "UPDATE orders SET status='cancelled' WHERE account_id='paper-main' AND side='BUY'"
+    )
+    ectx.conn.commit()
+    rp = Decision(**ok_decision(limit_price=70500.0))
+    res = executor.execute(
+        ectx,
+        rp,
+        date=D + timedelta(days=1),
+        market="KR",
+        price=PRICE,
+        dry_run=False,
+        decision_id=dec_id,
+        is_reprice=True,
+        skip_accounts=frozenset({"real-main"}),
+    )
+    assert res[0]["approved"], res[0]["reasons"]
+    rows = ectx.conn.execute(
+        "SELECT origin FROM orders WHERE account_id='paper-main' ORDER BY id"
+    ).fetchall()
+    assert [r["origin"] for r in rows] == ["llm", "stop", "reprice"]
+    # approve 계좌: 요청 → 승인 실행이 origin 을 이어 받는다
+    control.set_account_mode(ectx.conn, ectx.accounts[0], "approve")
+    ectx.brokers["paper-main"].positions = []
+    r = _run(ectx, ok_decision(ticker="000660"))
+    aid = next(x for x in r if x["account_id"] == "paper-main")["approval_id"]
+    assert executor.approve(ectx, aid)["ok"]
+    row = ectx.conn.execute(
+        "SELECT origin FROM orders WHERE ticker='000660' AND account_id='paper-main'"
+    ).fetchone()
+    assert row["origin"] == "llm"
+
+
 def test_stop_loss_not_blocked_by_pending_sell_approval(ectx):
     """approve 계좌에 같은 결정의 SELL 승인 요청이 pending 이어도 손절은 즉시 나간다."""
     from trader.broker.models import Position
@@ -1039,7 +1103,12 @@ def test_closed_approval_key_is_reclaimed(ectx):
 def test_pending_approval_key_blocks_other_process(ectx):
     """다른 프로세스가 잡은 살아 있는 승인 키가 있으면 승인 요청을 또 만들지 않는다."""
     aid = _pending(ectx)
-    ectx.conn.execute("UPDATE approvals SET decision_id=0 WHERE id=?", (aid,))  # 중복 확인 우회
+    # 중복 확인·같은 종목 체결 전 비중(2-O4) 우회 — 실행 키만 남긴다
+    ectx.conn.execute(
+        "UPDATE approvals SET decision_id=0, "
+        "order_json=json_set(order_json, '$.ticker', '000660') WHERE id=?",
+        (aid,),
+    )
     ectx.conn.commit()
     r = next(x for x in _run(ectx) if x["account_id"] == "paper-main")
     assert r["approval_id"] is None and any("실행 키" in s for s in r["reasons"])

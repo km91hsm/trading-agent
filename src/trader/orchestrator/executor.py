@@ -42,6 +42,7 @@ QUOTE_PRICE_KEY = "quote_price"  # approvals.order_json 에 덧붙이는 요청 
 STAGE_KEY = "order_stage"  # approvals.order_json 에 덧붙이는 주문 체크포인트 이름(50_ 외일 때)
 EXEC_KEY_KEY = "exec_key"  # approvals.order_json 에 덧붙이는 실행 키(검토 O8, 승인 실행이 이어 씀)
 NAME_KEY = "name"  # approvals.order_json 에 덧붙이는 종목명 (표시용, OrderRequest 에는 없다)
+ORIGIN_KEY = "origin"  # approvals.order_json 에 덧붙이는 실행 종류(repo.ORIGINS, llm 외일 때)
 
 
 def approval_fingerprint(account_id: str, decision_id: int | None, order: dict) -> str:
@@ -566,6 +567,14 @@ def execute(
         risk_stage, order_stage = f"41_risk_check_r{resume_round}", f"51_order_r{resume_round}"
     else:
         risk_stage, order_stage = "40_risk_check", "50_order"
+    origin = _origin_of(
+        is_stop_loss=is_stop_loss,
+        is_scalp=is_scalp,
+        is_reprice=is_reprice,
+        is_rebalance=is_rebalance,
+        is_hedge=is_hedge,
+        is_park=is_park,
+    )
     paused = control.is_paused(ctx.conn)
     if market == "KR" and decision.action in ("BUY", "ADD") and not is_hedge and not is_park:
         # 권리 일정 블랙아웃(기본 끔, Stock D-113): 모든 매수 경로(분석·리밸런스·단타)가 지난다
@@ -623,6 +632,7 @@ def execute(
                     agent_tilt=agent_tilt,
                     is_scalp=is_scalp,
                     theme_of=theme_of,
+                    origin=origin,
                     change_pct=change_pct,
                     max_qty=None if max_qty is None else max_qty.get(account.id),
                     trade_block=trade_block,
@@ -716,6 +726,7 @@ def _execute_account(
     max_qty: int | None = None,
     trade_block: str | None = None,
     park_max_weight: float | None = None,
+    origin: str = "llm",
 ) -> dict:
     """계좌 하나의 판정·기록·(모드별) 주문. 반환은 results 항목 하나."""
     if True:  # 들여쓰기 유지(execute 루프 본문을 그대로 옮김)
@@ -912,6 +923,7 @@ def _execute_account(
                     order_stage=order_stage,
                     opinion=opinion,
                     exec_key=exec_key,
+                    origin=origin,
                 )
             except BaseException:
                 if exec_key is not None and not repo.exec_key_has_approval(ctx.conn, exec_key):
@@ -930,8 +942,34 @@ def _execute_account(
                 order_stage=order_stage,
                 opinion=opinion,
                 exec_key=exec_key,
+                origin=origin,
             )
         return entry
+
+
+def _origin_of(
+    *,
+    is_stop_loss: bool,
+    is_scalp: bool,
+    is_reprice: bool,
+    is_rebalance: bool,
+    is_hedge: bool,
+    is_park: bool,
+) -> str:
+    """실행 종류 → `orders.origin`(repo.ORIGINS, 2-O3·2-O8). 체크포인트 이름 분기와 같은 순서."""
+    if is_stop_loss:
+        return "stop"
+    if is_scalp:
+        return "scalp"
+    if is_reprice:
+        return "reprice"
+    if is_rebalance:
+        return "rebalance"
+    if is_hedge:
+        return "hedge"
+    if is_park:
+        return "park"
+    return "llm"
 
 
 def _exec_key(
@@ -970,11 +1008,12 @@ def _request_approval(
     order_stage: str = "50_order",
     opinion: messages.DecisionBrief | None = None,
     exec_key: str | None = None,
+    origin: str = "llm",
 ) -> int:
     """승인 요청 저장. 시장가는 금액을 모르므로 요청 시 현재가(quote_price)를 함께 남겨
     승인 뒤 주문의 amount(가능금액 차감)로 쓴다. 주문 체크포인트 이름(order_stage: 재평가 51_·
-    헤지 56_)도 남겨 승인 실행이 오늘 분석의 50_order 를 덮지 않게 한다. OrderRequest 복원
-    때는 이 키들을 뺀다."""
+    헤지 56_)과 실행 종류(origin)도 남겨 승인 실행이 오늘 분석의 50_order 를 덮지 않고 주문 행의
+    origin 을 이어 받게 한다. OrderRequest 복원 때는 이 키들을 뺀다."""
     now = ctx.now()
     order = request.model_dump(mode="json")
     if quote_price is not None:
@@ -983,6 +1022,8 @@ def _request_approval(
         order[STAGE_KEY] = order_stage
     if exec_key is not None:
         order[EXEC_KEY_KEY] = exec_key
+    if origin != "llm":
+        order[ORIGIN_KEY] = origin
     shown = _label(ctx, request.market, request.ticker)
     name = names.resolve(ctx.conn, _cache_dir(ctx), request.market, request.ticker)
     if name and name != request.ticker:
@@ -1030,9 +1071,10 @@ def _place(
     order_stage: str = "50_order",
     opinion: messages.DecisionBrief | None = None,
     exec_key: str | None = None,
+    origin: str = "llm",
 ) -> dict:
     """exec_key(검토 O8)가 있으면 브로커가 거부·실패한 주문은 키를 놓고(KIS 에 주문 없음 → 재시도
-    허용), 접수·unknown 은 키를 남겨 주문 행에 묶는다."""
+    허용), 접수·unknown 은 키를 남겨 주문 행에 묶는다. origin 은 주문 행의 실행 종류(2-O3·2-O8)."""
     shown = _label(ctx, request.market, request.ticker)
     if exec_key is not None:
         repo.mark_exec_key_sent(ctx.conn, exec_key, sent_at=ctx.now().isoformat())
@@ -1092,6 +1134,7 @@ def _place(
             created_at=ctx.now().isoformat(),
             amount=Decimal(request.qty) * sizing_price if sizing_price is not None else None,
             org_no=result.org_no,
+            origin=origin,
         )
     except Exception as e:
         if status not in ("accepted", "unknown"):
@@ -1252,6 +1295,7 @@ def approve(ctx: ExecContext, approval_id: int) -> dict:
     quote_price = Decimal(str(raw_quote)) if raw_quote is not None else None
     order_stage = str(order.pop(STAGE_KEY, None) or "50_order")
     exec_key = order.pop(EXEC_KEY_KEY, None)
+    origin = str(order.pop(ORIGIN_KEY, None) or "llm")
     request = OrderRequest.model_validate(order)
     dec = repo.get_decision(ctx.conn, a["decision_id"], hydrate=True) if a["decision_id"] else None
     # 요청 뒤 재평가가 같은 결정을 HOLD·반대 방향으로 바꿨으면 옛 요청을 실행하지 않는다(검토 O11)
@@ -1301,6 +1345,7 @@ def approve(ctx: ExecContext, approval_id: int) -> dict:
             order_stage=order_stage,
             opinion=messages.DecisionBrief.of((dec or {}).get("data")),
             exec_key=exec_key,
+            origin=origin,
         )
     except OrderBookkeepingError as e:  # 접수 뒤 기록 실패: approved 로 굳지 않게 failed 로 남긴다
         repo.decide_approval(ctx.conn, approval_id, "failed", expect="approved")

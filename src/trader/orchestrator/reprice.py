@@ -36,7 +36,9 @@ def candidates(conn, account_id: str, market: str, today: date) -> list[dict]:
 
     손절 SELL(결정은 며칠 전 BUY)·헤지(결정 source='hedge')는 재호가가 "최신 결정 + 일반 게이트"
     로 재제출하면 손절이 사라지거나(BUY 로 재실행) bear 에서 헤지가 거부되므로 뺀다 — 주문 방향이
-    결정 행동(BUY/ADD→BUY, SELL/TRIM→SELL)과 같고 일반(LLM) 결정일 때만(전체 검토 O2)."""
+    결정 행동(BUY/ADD→BUY, SELL/TRIM→SELL)과 같고 일반(LLM) 결정일 때만(전체 검토 O2). 주문 행의
+    origin 이 llm(또는 옛 행 NULL)인 것만 — 최신 결정이 SELL/TRIM 인 날의 US 손절 지정가 SELL 은
+    방향이 같아도 손절(origin='stop')이라 뺀다(2-O3)."""
     lo, hi = repo.day_bounds(today, market)
     rows = conn.execute(
         "SELECT o.id, o.decision_id, o.ticker, o.side, o.qty, o.price, o.order_no, o.org_no, "
@@ -44,7 +46,8 @@ def candidates(conn, account_id: str, market: str, today: date) -> list[dict]:
         "FROM orders o JOIN decisions d ON d.id = o.decision_id "
         "WHERE o.account_id=? AND o.market=? AND o.status='accepted' "
         "AND o.order_type='LIMIT' AND o.order_no IS NOT NULL "
-        "AND o.mode != 'external' AND o.created_at >= ? AND o.created_at < ? "
+        "AND o.mode != 'external' AND COALESCE(o.origin, 'llm') = 'llm' "
+        "AND o.created_at >= ? AND o.created_at < ? "
         "AND d.source != 'hedge' "
         "AND ((o.side='BUY' AND d.action IN ('BUY','ADD')) "
         "OR (o.side='SELL' AND d.action IN ('SELL','TRIM'))) ORDER BY o.id",

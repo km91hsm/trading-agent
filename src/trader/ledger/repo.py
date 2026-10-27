@@ -20,6 +20,10 @@ _ANALYST_RE = re.compile(r"^10_analyst_([a-z_]+)$")
 _DECISION_RE = re.compile(r"^(30_decision|31_decision_r\d+)$")
 # 손절선 바닥(decisions.stop_floor)에 들어가는 결정 action — SELL/TRIM 은 제외(2-O2)
 STOP_FLOOR_ACTIONS = ("BUY", "ADD", "HOLD")
+# 주문 행의 실행 종류 `orders.origin`(2-O3·2-O8). NULL(옛 행)은 llm. LLM 결정의 주 2회 한도·5일
+# 실현손익 성향은 llm·stop 만 센다 — 단타·리밸런스·재호가·헤지가 LLM 결정의 한도를 먹지 않게
+ORIGINS = ("llm", "stop", "hedge", "scalp", "rebalance", "reprice", "park", "external")
+LLM_ORIGIN_SQL = "COALESCE(origin, 'llm') IN ('llm', 'stop')"
 
 # 살아 있지 않은 주문 상태 (중복 방지·당일 매수·주문금액·보유 폴백·차트 마커가 모두 이 목록을 쓴다).
 # expired 는 체결 동기화가 마감 뒤 체결 없는 accepted·unknown 주문에 붙인다 (`fills.sync_fills`).
@@ -255,14 +259,18 @@ def insert_order(
     created_at: str | None = None,
     amount: Decimal | None = None,
     org_no: str | None = None,
+    origin: str | None = None,
 ) -> int:
-    """amount 는 가능금액 차감용 주문금액(시장가는 판정 때 현재가 × 수량). 없으면 qty × price."""
+    """amount 는 가능금액 차감용 주문금액(시장가는 판정 때 현재가 × 수량). 없으면 qty × price.
+    origin 은 실행 종류(`ORIGINS`, 2-O3·2-O8) — None 은 옛 행이라 llm 으로 읽힌다."""
+    if origin is not None and origin not in ORIGINS:
+        raise ValueError(f"알 수 없는 주문 origin: {origin}")
     if amount is None and price is not None:
         amount = Decimal(qty) * price
     cur = conn.execute(
         "INSERT INTO orders(decision_id, account_id, ticker, market, side, qty, order_type, price, "
-        "status, order_no, message, mode, created_at, amount, org_no) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "status, order_no, message, mode, created_at, amount, org_no, origin) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             decision_id,
             account_id,
@@ -279,6 +287,7 @@ def insert_order(
             created_at or now_iso(),
             str(amount) if amount is not None else None,
             org_no,
+            origin,
         ),
     )
     conn.commit()
@@ -644,6 +653,19 @@ def release_exec_key(conn: sqlite3.Connection, key: str) -> None:
     conn.commit()
 
 
+def list_exec_keys(conn: sqlite3.Connection) -> list[dict]:
+    """남아 있는 실행 키 전부(오래된 순). `sent_at` 이 있고 `order_id` 가 없는 키는 보낸 뒤
+    기록 전에
+    끊긴 것 — 사람이 KIS 주문 유무를 확인하고 `trader control exec-key release` 로 푼다(2-O13)."""
+    return [
+        dict(r)
+        for r in conn.execute(
+            "SELECT key, created_at, order_id, approval_id, sent_at FROM exec_keys "
+            "ORDER BY created_at, key"
+        ).fetchall()
+    ]
+
+
 def _buy_amounts_today(
     conn: sqlite3.Connection,
     account_id: str,
@@ -733,13 +755,14 @@ def today_order_amount(
 def trades_this_week(
     conn: sqlite3.Connection, account_id: str, d: date, market: str | None = None
 ) -> dict[str, int]:
-    """운영일 d 가 속한 주(월요일 ~ d, 시장 현지 하루 경계)의 종목별 살아 있는 주문 수."""
+    """운영일 d 가 속한 주(월요일 ~ d, 시장 현지 하루 경계)의 종목별 살아 있는 주문 수.
+    LLM 결정 주문(llm·stop)만 — 단타·리밸런스·재호가·헤지는 세지 않는다(2-O8)."""
     monday = d - timedelta(days=d.weekday())
     lo, _ = day_bounds(monday, market)
     _, hi = day_bounds(d, market)
     sql = (
         "SELECT ticker, COUNT(*) AS n FROM orders WHERE account_id=? "
-        f"AND status NOT IN ({dead_status_sql()}) "
+        f"AND status NOT IN ({dead_status_sql()}) AND {LLM_ORIGIN_SQL} "
         "AND created_at >= ? AND created_at < ?"
     )
     args: list = [account_id, lo, hi]
@@ -757,13 +780,16 @@ def realized_pnl_5d(
 
     창 안에 SELL 체결이 있는 종목만 전체 체결을 시간순으로 걸어 평균가를 갱신한다(보유 0 이면 리셋).
     전 이력 BUY 평균을 쓰면 전량 매도 뒤 재매수한 종목의 손익 부호가 뒤집혀 성향 판정이 틀린다.
-    금액은 Decimal 로만 계산한다. 통화가 섞이지 않게 market 으로 거른다.
+    금액은 Decimal 로만 계산한다. 통화가 섞이지 않게 market 으로 거른다. LLM 결정 주문(llm·stop)의
+    체결만 본다 — 단타 왕복 손실이 다음 날 LLM 한도를 줄이지 않게(2-O8).
     """
     lo, _ = day_bounds(d - timedelta(days=7), market)  # 시장 현지 창(US 는 KST 자정을 넘긴다)
     _, hi = day_bounds(d, market)
+    origin_sql = LLM_ORIGIN_SQL.replace("origin", "o.origin", 1)
     sql = (
         "SELECT DISTINCT o.ticker FROM fills f JOIN orders o ON o.id=f.order_id "
-        "WHERE f.account_id=? AND o.side='SELL' AND f.filled_at >= ? AND f.filled_at < ?"
+        f"WHERE f.account_id=? AND o.side='SELL' AND {origin_sql} "
+        "AND f.filled_at >= ? AND f.filled_at < ?"
     )
     args: list = [account_id, lo, hi]
     if market:
@@ -776,7 +802,7 @@ def realized_pnl_5d(
     sql = (
         "SELECT o.ticker, o.side, f.qty, f.price, f.filled_at FROM fills f "
         "JOIN orders o ON o.id=f.order_id "
-        f"WHERE f.account_id=? AND o.ticker IN ({marks})"
+        f"WHERE f.account_id=? AND o.ticker IN ({marks}) AND {origin_sql}"
     )
     args = [account_id, *tickers]
     if market:
