@@ -372,6 +372,15 @@
 - [x] 보완 4차 묶음 B(웹·문구): W5 SSE 테이블 지문, W8 `livePlan`, W9 `DetailRow`, W10 `RowButton`, W12 통과·관망·주문 없이 판정·`sideLabel`, T3 해요체·영문 코드 한글화(`regime_change`·`market_view`·`mode_changed`·`ml_trained`, `regime.line`)·단타 `scalp_digest`(`scalp.digest_every_min` 30분, 첫 묶음·중단·마감 즉시, 전송 실패면 재시도) (2026-10-26)
 - [ ] 실기(사용자 확인 대기): 데몬 재부팅·강제 종료 뒤 `state/daemon.lock.os` OS 잠금이 풀려 다음 기동이 되는지(macOS·Windows), Windows 에서 웹이 날짜 파일을 읽는 중 데몬 스냅샷 쓰기가 재시도로 성공하는지
 - [x] 보완 5차 E(L2·L3, 사용자 결정 '재설계', `feat/review-memory-scoring`): 원장 v23 `memory_entries.round`(재평가 별도 엔트리, `UNIQUE(decision_id, round)`)·`held_at_decision`·`direction_score`·`avoided_loss`·`realized_pnl_pct`, 검색·보정 round 0 우선, 트레이더·복기 입력 방향 점수 기준 (2026-10-26)
+- [ ] L6(P1, 미반영): 백필에 없는 수급·뉴스·커뮤니티 건수 열(`COUNT_COLUMNS`·`FLOW_COLUMNS`)을 학습 열에서 제외 — 현재 `dataset.feature_columns` 는 전부 NaN 인 열만 뺀다 (2026-10-26 교차검증 잔여, 2026-10-27 등록 → 2차 2-L13)
+- [ ] L7(P1, 부분 반영): 유니버스 밖 발굴·사건 후보의 분석 전 스냅샷은 있음(`daemon._snapshot_listed`, #47·#53). 남은 것 — 보유 종목 + 미만기 memory/shadow 창 종목을 일일 reflect 스냅샷 대상에 포함, 장중은 D−1 완성 봉까지만(현재는 거래량 0 봉만 제외), `shadow.mature` 가 종가 없는 종목을 빼고 재정규화하지 않게 (2026-10-26 잔여 → 2차 2-L1·2-P4, **P1**)
+- [ ] L10(P2, 미반영): 트레이더 묶음이 `drop_evidence=True` 인데 프롬프트는 근거 수를 세라 함 — 역할별 근거 수·`data_gaps`·신호 일치도를 파이썬이 숫자로 (2026-10-26 잔여 → 2차 2-L19)
+- [ ] L12(P2, 미반영): 보정을 벤치마크 대비 부호·이항(Wilson) 신뢰구간 하한·수축으로, 근거 할인은 역할·이웃 n ≥ 30 일 때만 (2026-10-26 잔여 → 2차 2-L14)
+- [ ] L13(P2, 미반영): 메모리 검색 relevance 가중↑(현재 0.4/0.4/0.2), lesson 승격은 같은 상황 n ≥ 3 일 때만 (2026-10-26 잔여 → 2차 2-L15)
+- [ ] L14(P2, 부분 반영): PIT 유니버스(원장 v24, #47 — 기록 시작 이후만, 과거 구간은 `pit.strict` 정책)·생존 편향 경고(#44·#45) 반영. 남은 것 — `performance.report` 가 `ranker.current()` 를 과거 창에 적용(평가 시점에 있던 모델 또는 섀도 `quant_topn` 으로), 고정 홀드아웃·비용 차감, 승격 평가와 실제 랭킹 경로 일치 (2026-10-26 잔여 → 2차 2-L16)
+- [ ] L15(P2, 부분 반영): 10일 모멘텀 스크린의 과거 검증·대조군이 저장소에 없음(리뷰어 2인 grep 확인) — 섀도 `quant_topn − candidates_1n` 전방 비교만. 피처 스토어로 `roc_10` 상위 N vs 유니버스 1/N 백테스트 CLI(`trader scan backtest`) (2026-10-26 잔여 → 2차 2-L17)
+- [ ] L16(P2, 미반영): 무효화 조건을 구조화 필드 `{metric, op, value, days}` 로 — `parse_price_conditions` 가 US $100 미만 무시·'이하'→`<`·'3일 연속' 을 즉시 조건으로 (2026-10-26 잔여 → 2차 2-L18)
+- [ ] L18(P3, 부분 반영): trader.md 에 테마 안전장치 설명은 있음. 남은 것 — `context.theme`(종목별 테마·사건 소속), 퀀트 5일 확률 vs 결정 기간 정합, 익절 도달 정책과 최소 보유 3일 일치 (2026-10-26 잔여 → 2차 2-L20)
 
 ## 웹 실시간·시계·업종 비중·사용량 (2026-10-26)
 - [x] 상단 1초 시계(KST·뉴욕·장 상태), 도움말 클릭 팝오버, 업종 비중 자동 분류(KIS 업종·ETF 상표, 표시용), 화면 전체 실시간(SSE 지문 확장·키별 재조회), 데몬 잔고 주기 갱신·접속 즉시 갱신(조회만), Claude 사용량 확인 잡(30분)·초기화 시각 표기 (2026-10-26)
@@ -461,6 +470,14 @@
 - [x] `latest_rows` 필요한 열만·메모, theme 은 스토어에 있는 종목만 (2026-10-27)
 - [x] 작업 대기열 진행 폴링은 SSE 리더 탭만 + BroadcastChannel 중계 (2026-10-27)
 - [x] 단타 판정자 제출 기록 30분 만료 (2026-10-27)
+
+## 전체 검토 2차 (2026-10-27, `docs/reviews/2026-10-27-full-review-2.md` — Claude 4 + Codex 2 교차검증, `a5ca4ec..d112633` 31 커밋·339 파일)
+- [x] 교차검증 2차: 변경 파일 339개 전부 담당 매핑(미배정 0), 읽기 전용·금지 경로·pathspec 한정 diff, 리뷰 6건 완료 뒤 문서화. P0 0·P1 2(2-O1 같은 날 재평가 손절선, 2-L1 유니버스 밖 매수 종목 만기 봉)·P2 32·P3 32, 10-26 반영 항목은 전부 해결 확인 (2026-10-27)
+- [ ] 묶음 1 즉시(비주문): 2-T1 알림 보관함+호출부 재시도 중복 전송, 2-W1 시세 요청 실패 뒤 이전 시세 '실시간', 2-W2 SSE decisions 지문이 재평가 UPDATE 를 못 봄, 2-W7 `/api/system/settings` 의 tailscale_users 이메일·usage_file 경로, 2-W8 IPv6 Host 파싱, 2-P3 reflect·ledger_backup·universe_members 따라잡기, 2-P5 `process_start` TimeoutExpired, 2-P9 스냅샷 수정주가 감지 close 열만, 2-P14 architecture.md `job_queue` SLOW_KINDS, 2-L2 부트스트랩 n<block·웹 쌍 수 하한, 2-L6 일부 실패 날 섀도 생략, 2-L10 사건 감지 중복 기사·부분 문자열, 2-L11 공시 '해제·해소' critical·300건 상한, 2-L12 모의 체결 점검 재호가·슬리피지 기준, 2-L22 `watch_index` 대소문자, 2-L23 토론 생략 여부 원장 기록
+- [ ] 묶음 2 주문 경로(PR 본문 diff 요약 → 확인 뒤 머지): **2-O1(P1)** `31_decision_r<n>` upsert 가 `max_stop_since` 의 손절선을 지움(라운드 보존 또는 max 유지), 2-O2 단조 유지가 SELL/TRIM 결정 손절도 바닥으로, 2-O3 US 손절 지정가가 최신 SELL/TRIM 결정 id 로 재호가 후보, 2-O4 종목당 비중 상한에 pending_buys 미포함, 2-O5 재호가 재제출에 등락률·매매 제한 미전달, 2-O6 재평가 ADD `change_pct=None`, 2-O7 FAKE 세션 고정 NAV 가 킬스위치 기준, 2-O8 단타·리밸런스·재호가 주문이 주 2회·5일 실현손익 집계에(`orders.origin`), 2-O9 권리 일정 조회 실패가 이전 일정 삭제, 2-O11 미정리 주문 재조회 7일 창, 2-O13 실행 키 해제 CLI, 2-O15 paused 중 리밸런스 done, 2-P2 재평가가 빠른 레인에서 체결 동기화 점유, 2-P4 장중 미완성 봉 저장(거래량 0 만 제외), **2-L1(P1)** 일일 스냅샷에 보유·미만기 종목 + `shadow.mature` 보류·partial
+- [ ] 결정 대기(사용자): 2-O10 동시 판정의 계좌 단위 예약, 2-O16 입출금 때 킬스위치 기준 NAV, 2-O17 현금 ETF 당일 국면 전환, 2-L3·2-L4·2-L5 섀도 대조군 재설계(현금 노출·모집단·다시장 부트스트랩), 2-L8 `realized_pnl_pct` 가 SELL 에서 실현손익이 아님(재정의), 2-L21 수렴 판정 근거 미검증·약세 BULLISH 금지, 2-T2 그룹 채팅 허용 목록 없이 `/kill`·`/pause`, 2-W9 Sec-Fetch-Site 없는 요청 통과 정책, 2-W13 `config/sources.yaml` `edgar.user_agent` 개인 이메일을 secrets 로, 2-P13 실전 전용 앱키 안내(체결통보 키가 시세 허브를 막음), 2-P8 레이트 스토어 스레드 연결 정리·`_disabled` 알림, 10-26 잔여 L6·L10~L18(위 절)
+- [ ] 실기·격리 확인(사용자 확인 대기): 2-O14 US 부분 체결 취소에 원 수량 전체(KIS 거부 여부), 2-O12 단타 보유를 monitor 가 먼저 팔면 `closing` 반복, 2-P1 수집 기한 뒤 `trader tool collect` 프로세스 종료 지연, 2-L24 `rate_limit_event.utilization` 단위(0~1 vs 0~100), 2-P6·2-P11 Windows 파일 락·빌드, 2-W4 SSE 리더 탭 중복, 2-W12 세이브티커 로그인 입력 범위
+- [ ] 결정 대기(사용자): `AGENTS.md`(untracked, Phase 12 시점 CLAUDE.md 사본)를 현재판으로 갱신해 커밋할지 — Codex 가 구판 계약으로 오판할 수 있다
 
 ## 사건 수혜 (2026-10-27, 사용자 요청 — 전쟁·AI 메모리 부족 등 사건 → 수혜주 발굴)
 - [x] `config/events.yaml` 사건 31종·수혜 종목(DART·KIS 시세 확인), `trader events show|check` (2026-10-27)
