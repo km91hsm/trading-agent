@@ -491,6 +491,10 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
                 cost TEXT, created_at TEXT NOT NULL,
                 UNIQUE(date, account_id, position_id, round)
             )""",
+            # 아침 결정은 account_id·position_id 가 NULL 이라(UNIQUE 는 NULL 을 서로 다르게 본다)
+            # 식 인덱스로 날짜·라운드당 하나를 강제한다
+            "CREATE UNIQUE INDEX IF NOT EXISTS ux_fo_decisions_key ON fo_decisions("
+            "date, COALESCE(account_id, ''), COALESCE(position_id, 0), round)",
             """CREATE TABLE IF NOT EXISTS fo_nav_snapshot (
                 account_id TEXT NOT NULL, date TEXT NOT NULL,
                 nav TEXT, cash TEXT, margin_total TEXT, add_margin TEXT,
