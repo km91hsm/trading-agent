@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { pipelineStages, scalpChip, scalpRows, stageSummary } from "./pipeline";
+import { pipelineStages, scalpChip, scalpRows, stageFetchPlan, stageSummary } from "./pipeline";
 
 describe("pipelineStages", () => {
   it("기본 판 9개를 순서대로, 파일을 묶고 done 을 표시한다", () => {
@@ -150,5 +150,14 @@ describe("scalp 판정자 표시 (Phase 25)", () => {
     };
     expect(scalpChip(r, "KR").text).toBe("켬 · 보유 1 · 청산 0 · 판정 GO 1·NO 2 · 판정 대기 1");
     expect(scalpRows(r, "KR")[0].state).toBe("보유 중 · 판정 GO");
+  });
+});
+
+describe("stageFetchPlan", () => {
+  it("읽은 불변 파일(00_inputs·30_decision)은 다시 받지 않고 새 파일·다시 쓰일 수 있는 파일만", () => {
+    const files = ["00_inputs", "10_analyst_technical", "25_research_summary", "30_decision", "40_risk_check_paper-main"];
+    expect(stageFetchPlan(files, new Set())).toEqual(files);
+    const loaded = new Set(["00_inputs", "10_analyst_technical", "25_research_summary", "30_decision"]);
+    expect(stageFetchPlan(files, loaded)).toEqual(["10_analyst_technical", "25_research_summary", "40_risk_check_paper-main"]);
   });
 });

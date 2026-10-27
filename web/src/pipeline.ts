@@ -52,6 +52,15 @@ export function pipelineStages(files: string[]): Stage[] {
   return out;
 }
 
+/** 다시 쓰일 수 있는 단계 파일: LLM 쓰기 단계(애널리스트·토론)와 토론 뒤 다시 만드는 요약. 나머지
+ * (00_inputs·30_decision·게이트·주문 등)는 한 번 쓰면 그대로라 한 번 읽은 것은 다시 받지 않는다. */
+export const MUTABLE_STAGE = /^(10_analyst_|20_debate_|25_research_summary)/;
+
+/** 종목 단계 목록이 바뀌었을 때 받을 파일: 아직 안 읽은 것 + 다시 쓰일 수 있는 것(전체 검토 3차). */
+export function stageFetchPlan(files: string[], loaded: ReadonlySet<string>): string[] {
+  return files.filter((f) => !loaded.has(f) || MUTABLE_STAGE.test(f));
+}
+
 type Rec = Record<string, unknown>;
 const rec = (v: unknown): Rec => (v && typeof v === "object" ? (v as Rec) : {});
 const num = (v: unknown): number | null => (typeof v === "number" ? v : typeof v === "string" && v !== "" && Number.isFinite(Number(v)) ? Number(v) : null);
