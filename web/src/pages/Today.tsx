@@ -272,7 +272,8 @@ export function TodayPage({ title = "오늘의 실행", inputsOnly = false }: { 
         plan.map((f) =>
           getJson<Checkpoint>("/api/checkpoint", { ticker, market, date: runDate, stage: f })
             .then((c) => box.files.set(f, c))
-            .catch(() => box.files.set(f, null)),
+            // 실패는 캐시에 남기지 않는다 — 다음 갱신에 다시 시도(Codex 리뷰)
+            .catch(() => box.files.delete(f)),
         ),
       ).then(() => {
         const items = files.map((f) => ({ file: f, data: box.files.get(f)?.data ?? null }));

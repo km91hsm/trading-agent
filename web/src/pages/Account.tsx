@@ -26,8 +26,9 @@ export function AccountPage() {
   const tLive = connected ? 0 : tick;
   // decisions: 보유 표의 손절·익절·목표 비중은 최근 결정에서 붙는다(views.attach_plans, Codex 리뷰)
   const tPortfolio = tickOf("positions", "orders", "approvals", "approvals_pending", "decisions") + tLive;
-  const tPerf = tickOf("positions", "orders") + tLive;
-  const tRisk = tickOf("positions") + tLive;
+  // jobs_done: 피처 백필·스냅샷이 끝나면 종가표가 바뀐다(위험 카드·벤치마크, Codex 리뷰)
+  const tPerf = tickOf("positions", "orders", "jobs_done") + tLive;
+  const tRisk = tickOf("positions", "jobs_done") + tLive;
   const toast = useToast();
   const acct = accounts.find((a) => a.id === accountId);
   const [marketSel, setMarketSel] = useState<Market | null>(null);
