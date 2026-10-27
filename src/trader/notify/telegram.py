@@ -196,6 +196,10 @@ class Update:
     update_id: int
     text: str
     chat_id: str
+    sender_id: str = ""
+    # 보낸 사람을 믿을 수 있는가: 1:1 채팅이거나 허용 목록(TELEGRAM_ALLOWED_USERS)에 있는 사람.
+    # 그룹 채팅에서 허용 목록 없이 온 명령은 읽기·안전 명령만 처리한다(전체 검토 2026-10-27)
+    trusted: bool = True
 
 
 def parse_command(text: str) -> tuple[str, str | None] | None:
@@ -210,10 +214,18 @@ def parse_command(text: str) -> tuple[str, str | None] | None:
 class TelegramReceiver:
     """getUpdates 1회 폴링. 설정된 chat_id 의 메시지 텍스트만 돌려준다."""
 
-    def __init__(self, token: str, chat_id: str, *, http: httpx.Client | None = None) -> None:
+    def __init__(
+        self,
+        token: str,
+        chat_id: str,
+        *,
+        http: httpx.Client | None = None,
+        allowed_users: set[str] | None = None,
+    ) -> None:
         quiet_httpx()
         self._url = f"https://api.telegram.org/bot{token}/getUpdates"
         self._chat_id = str(chat_id)
+        self._allowed = {str(u) for u in (allowed_users or set())}
         self._http = http or httpx.Client(timeout=15)
         # 마지막 poll 원본 결과(걸러진 것 포함)의 최대 update_id. 호출자가 오프셋에 반영한다.
         # 다른 채팅 업데이트만 100건 쌓이면 getUpdates 가 같은 묶음만 돌려줘 명령이 영원히 안 온다.
@@ -244,15 +256,28 @@ class TelegramReceiver:
                 continue
             self.last_update_id = max(self.last_update_id or uid, uid)
             msg = item.get("message") or {}
-            chat = str((msg.get("chat") or {}).get("id", ""))
+            chat_obj = msg.get("chat") or {}
+            chat = str(chat_obj.get("id", ""))
             text = msg.get("text")
             if chat != self._chat_id or not isinstance(text, str):
                 continue
-            out.append(Update(update_id=uid, text=text, chat_id=chat))
+            sender = str((msg.get("from") or {}).get("id", ""))
+            if self._allowed:
+                trusted = sender in self._allowed
+            else:
+                trusted = chat_obj.get("type", "private") == "private"
+            out.append(
+                Update(update_id=uid, text=text, chat_id=chat, sender_id=sender, trusted=trusted)
+            )
         return out
 
 
 def make_receiver(secrets: Secrets, *, http: httpx.Client | None = None) -> TelegramReceiver | None:
     if secrets.TELEGRAM_BOT_TOKEN and secrets.TELEGRAM_CHAT_ID:
-        return TelegramReceiver(secrets.TELEGRAM_BOT_TOKEN, secrets.TELEGRAM_CHAT_ID, http=http)
+        allowed = {
+            x.strip() for x in (secrets.TELEGRAM_ALLOWED_USERS or "").split(",") if x.strip()
+        }
+        return TelegramReceiver(
+            secrets.TELEGRAM_BOT_TOKEN, secrets.TELEGRAM_CHAT_ID, http=http, allowed_users=allowed
+        )
     return None

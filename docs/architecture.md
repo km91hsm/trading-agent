@@ -178,6 +178,13 @@ CLAUDE.md 의 "아키텍처 핵심 규칙" 에서 옮겨 온 모듈 단위 상�
 - **대조 미실행 점검**은 설정 시각(`<시장>_reconcile` cron)·US 휴장·그날 대조 잡이 건너뛴 경우를 반영. `jobs.errors` 의 '최근' 은 실제 최근 오류 잡.
 - **재시작으로 끊긴 요청**: 실행 중이던 요청을 알리고, 다시 해도 안전한 것(`RESTART_REQUEUE_KINDS`: 재평가·체결 동기화·대조)은 다시 넣는다. 느린 대기열은 cron 이 heavy 락을 기다리는 동안(`heavy_wanted`) 새 요청을 꺼내지 않는다. 스케줄러 풀 40.
 
+## 전체 검토 4차 — 나머지(2026-10-27)
+
+- **데몬 생존 판정의 로캘**: macOS `procs.process_start` 는 `/bin/ps` 를 `LC_ALL=C`·`TZ=UTC` 로 부른다 — `lstart` 가 로캘마다 달라 Trader.app(로캘 없음)이 쓴 잠금을 한국어 터미널이 '다른 프로세스' 로 보고 데몬을 꺼짐으로 판정했다. 예전 로캘 문자열(비 ASCII) 잠금은 pid 생존만 본다.
+- **launchd 재기동**: `KeepAlive` 를 `{SuccessfulExit: false}` + `ThrottleInterval 60` 으로 — `trader daemon` 은 무거운 조립 전에 잠금을 보고 이미 다른 데몬이 돌면 정상 종료(0)한다(잠금 실패·설정 오류로 10초마다 무한 재기동하던 문제).
+- **텔레그램 보낸 사람**: `Update.trusted` — 1:1 채팅이거나 `TELEGRAM_ALLOWED_USERS`(쉼표 id, 설정 화면 '연결 키') 에 있는 사람. 그룹 채팅에서 믿을 수 없는 보낸 사람은 `commands.UNTRUSTED_OK`(status·pause·kill·daily)만, 나머지(승인·재개·모드·실행·관심)는 `[명령 거부]`.
+- **킬스위치 범위**: 자동 발동(누적 손실)은 `control.killswitch.accounts` 에 그 계좌만 더하고 `killswitch.reason(conn, account_id)` 가 계좌별로 판정(모의 계좌 손실이 실전 매수를 막던 문제). 수동 `/kill`·CLI 는 전 계좌(`accounts: null`). 해제는 그대로 사람만, 전체를 한 번에. 입출금 보정은 하지 않는다(해제 때 기준 NAV 를 다시 잡는다).
+
 ## 미확인
 
 미확인(2026-10-27): 체결통보(H0STCNI0/H0GSCNI0)를 HTS ID 로 구독하면 그 명의의 모든 계좌 체결이 어느 계좌 앱키의 세션으로든 오는지 — 같은 명의 실전 계좌 둘에서 한쪽 키로 붙은 리스너가 다른 계좌 체결 통보도 받는지 실기 확인.

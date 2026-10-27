@@ -18,6 +18,8 @@ def test_render_plist_contains_python_and_cwd(tmp_path):
     assert "<string>/venv/bin/python</string>" in text and "<string>-m</string>" in text
     assert "<string>trader</string>" in text and "<string>daemon</string>" in text
     assert f"<string>{tmp_path}</string>" in text and "RunAtLoad" in text and "KeepAlive" in text
+    # 정상 종료(잠금이 이미 잡혀 있음 등)면 다시 띄우지 않는다 — 10초마다 무한 재기동 방지
+    assert "<key>SuccessfulExit</key><false/>" in text and "ThrottleInterval" in text
     assert str(tmp_path / "state" / "logs" / "daemon.out") in text
     assert "com.trader.daemon" in text
 

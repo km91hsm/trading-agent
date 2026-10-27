@@ -34,13 +34,17 @@ def process_start(pid: int) -> str | None:
         if sys.platform == "darwin":
             import subprocess
 
+            # 로캘·시간대를 고정한다 — `lstart` 는 LANG 에 따라 '화 10/27 …' 과 'Tue Oct 27 …'
+            # 처럼 달라, Trader.app(로캘 없음)이 쓴 잠금을 한국어 터미널이 '다른 프로세스' 로 보고
+            # 데몬을 꺼짐으로 판정했다(전체 검토 2026-10-27). 절대경로는 최소 PATH 대비
             out = subprocess.run(
-                ["ps", "-o", "lstart=", "-p", str(pid)],
+                ["/bin/ps", "-o", "lstart=", "-p", str(pid)],
                 capture_output=True,
                 encoding="utf-8",
                 errors="replace",
                 shell=False,
                 timeout=5,
+                env={"LC_ALL": "C", "LANG": "C", "TZ": "UTC", "PATH": "/usr/bin:/bin"},
             )
             text = out.stdout.strip()
             return text or None
@@ -85,7 +89,11 @@ def same_process(
     if not start:
         return True
     current = process_start(pid)
-    return current is None or current == start
+    if current is None or current == start:
+        return True
+    # 예전 잠금은 로캘이 섞인 lstart('화 10/27 …')로 적혔다 — 형식이 달라 비교할 수 없으면 pid
+    # 생존만 본다(새 잠금은 C 로캘로 적힌다)
+    return not start.isascii()
 
 
 def pid_alive(pid: int) -> bool:

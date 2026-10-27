@@ -63,3 +63,29 @@ def test_poll_tracks_last_update_id_even_when_all_filtered():
     assert r.poll(offset=7) == [] and r.last_update_id == 11
     respx.get(API).mock(return_value=httpx.Response(200, json={"ok": True, "result": []}))
     assert r.poll(offset=12) == [] and r.last_update_id is None
+
+
+def test_group_chat_sender_trust(monkeypatch):
+    """그룹 채팅: 허용 목록이 없으면 믿지 않고, 있으면 보낸 사람으로 판단."""
+    import httpx
+
+    from trader.notify.telegram import TelegramReceiver
+
+    body = {
+        "ok": True,
+        "result": [
+            {
+                "update_id": 1,
+                "message": {
+                    "text": "/approve 3 실전",
+                    "chat": {"id": -100, "type": "group"},
+                    "from": {"id": 7},
+                },
+            }
+        ],
+    }
+    http = httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(200, json=body)))
+    assert TelegramReceiver("T", "-100", http=http).poll()[0].trusted is False
+    ok = TelegramReceiver("T", "-100", http=http, allowed_users={"7"}).poll()[0]
+    assert ok.trusted and ok.sender_id == "7"
+    assert TelegramReceiver("T", "-100", http=http, allowed_users={"8"}).poll()[0].trusted is False

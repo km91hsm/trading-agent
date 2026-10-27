@@ -1024,6 +1024,12 @@ def daemon_cmd(
     """스케줄 데몬: schedule.yaml 대로 scan/analyze/monitor·텔레그램·체결 동기화 + web (§10.1)."""
     from trader import daemon as daemon_mod
 
+    # 무거운 조립(_daemon_deps) 전에 잠금부터 본다. 이미 다른 데몬(Trader.app 등)이 돌고 있으면
+    # 정상 종료(0) — launchd 가 비정상 종료로 보고 10초마다 다시 띄우지 않게(전체 검토 2026-10-27)
+    holder = daemon_mod.Lock(paths.state_dir() / "daemon.lock")
+    if holder.held():
+        typer.echo("데몬이 이미 실행 중이라 이 실행은 끝냅니다")
+        return
     deps = _daemon_deps(dry_run=dry_run)
     r = daemon_mod.run(deps, web=not no_web)
     if not r.get("ok"):

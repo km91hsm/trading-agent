@@ -38,7 +38,10 @@ _PLIST = """<?xml version="1.0" encoding="UTF-8"?>
     <key>PATH</key><string>{path_env}</string>
   </dict>
   <key>RunAtLoad</key><true/>
-  <key>KeepAlive</key><true/>
+  <!-- 비정상 종료일 때만 다시 띄운다: 잠금이 이미 잡혀 있거나(앱이 데몬을 돌리는 중) 설정 오류로
+       곧바로 끝나면 10초마다 무한 재기동하던 문제(전체 검토 2026-10-27) -->
+  <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
+  <key>ThrottleInterval</key><integer>60</integer>
   <key>ExitTimeOut</key><integer>{exit_timeout}</integer>
   <key>StandardOutPath</key><string>{out}</string>
   <key>StandardErrorPath</key><string>{err}</string>

@@ -170,6 +170,7 @@ CATALOG: tuple[tuple[str, str, str], ...] = (
     ("KIS_HTS_ID", "한국투자증권 · 실전 공용", "HTS ID — 체결통보 구독(같은 명의 계좌 전부)"),
     ("TELEGRAM_BOT_TOKEN", "알림", "텔레그램 봇 토큰"),
     ("TELEGRAM_CHAT_ID", "알림", "텔레그램 채팅 ID"),
+    ("TELEGRAM_ALLOWED_USERS", "알림", "명령 허용 사용자 ID(그룹 채팅일 때, 쉼표로)"),
     ("DART_API_KEY", "데이터", "DART 공시 API 키"),
     ("NAVER_CLIENT_ID", "데이터", "네이버 API Client ID"),
     ("NAVER_CLIENT_SECRET", "데이터", "네이버 API Client Secret"),

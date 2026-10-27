@@ -700,6 +700,9 @@ class Secrets(BaseModel):
     DART_API_KEY: str | None = None
     TELEGRAM_BOT_TOKEN: str | None = None
     TELEGRAM_CHAT_ID: str | None = None
+    # 그룹 채팅에서 승인·재개·모드 등 쓰기 명령을 보낼 수 있는 사용자 id(쉼표).
+    # 비우면 1:1 채팅에서만 쓰기 명령
+    TELEGRAM_ALLOWED_USERS: str | None = None
     NAVER_CLIENT_ID: str | None = None
     NAVER_CLIENT_SECRET: str | None = None
     FRED_API_KEY: str | None = None
