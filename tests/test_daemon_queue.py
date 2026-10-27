@@ -456,7 +456,24 @@ def test_main_queue_does_not_take_fast_kinds(project, conn):
     jobq.enqueue(conn, "fills_sync", {}, source="web", now=NOW)
     assert daemon._queue_tick(deps, None) == {"skipped": "대기 없음"}
     assert jobq.SLOW_KINDS.isdisjoint(jobq.FAST_KINDS)
-    assert jobq.SLOW_KINDS | jobq.FAST_KINDS == frozenset(jobq.KINDS)
+    assert jobq.INFO_KINDS.isdisjoint(jobq.SLOW_KINDS | jobq.FAST_KINDS)
+    assert jobq.SLOW_KINDS | jobq.FAST_KINDS | jobq.INFO_KINDS == frozenset(jobq.KINDS)
+
+
+def test_usage_probe_runs_on_info_lane_not_fast_lane(project, conn, monkeypatch):
+    """사용량 확인(claude 하위 프로세스)은 정보 레인만 꺼낸다 — 빠른 레인에 두면 페이지 접속
+    확인이 체결통보 동기화·손절 재평가를 막는다(GitHub Codex #55). heavy 락도 잡지 않는다."""
+    deps = _deps(conn, FakeMarket(), now=lambda: NOW)
+    monkeypatch.setattr(daemon, "_usage_probe_body", lambda d, force=False: {"ok": True})
+    jobq.enqueue(conn, "usage_probe", {}, source="web", now=NOW)
+    assert daemon._fast_queue_tick(deps, None) == {"skipped": "대기 없음"}
+    assert daemon._queue_tick(deps, None) == {"skipped": "대기 없음"}
+    assert not jobq.is_heavy("usage_probe")
+    daemon._info_queue_tick(deps, None)
+    row = conn.execute("SELECT status FROM job_requests WHERE kind='usage_probe'").fetchone()
+    assert row["status"] == "ok"
+    ids = {j.id for j in daemon.build_jobs(SCHED, Settings(), markets=["KR"])}
+    assert daemon.INFO_QUEUE_JOB_ID in ids
 
 
 def test_reevaluate_runs_under_same_ticker_lock_as_analyze(conn, monkeypatch):

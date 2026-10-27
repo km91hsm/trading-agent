@@ -129,14 +129,19 @@ KINDS: tuple[str, ...] = tuple(PARAMS)
 # kind 기본 우선순위. 손절 뒤 재평가는 시간이 생명이라 앞으로, 나머지는 요청 순서.
 PRIORITY: dict[str, int] = {"reevaluate": 10}
 # 가벼운 kind(체결 동기화·뉴스 수집)만 heavy 락 밖. 나머지는 세션·KIS·CPU 를 오래 쓴다.
-LIGHT_KINDS: frozenset[str] = frozenset({"fills_sync", "news_collect", "reconcile", "usage_probe"})
-HEAVY_KINDS: frozenset[str] = frozenset(k for k in KINDS if k not in LIGHT_KINDS)
+LIGHT_KINDS: frozenset[str] = frozenset({"fills_sync", "news_collect", "reconcile"})
+# 정보 레인: 사용량 확인(claude 하위 프로세스, 최대 90초)은 데몬 `job_queue_info` 틱만 꺼낸다 —
+# 빠른 레인에 두면 페이지 접속 확인이 체결통보 동기화·손절 재평가를 막는다(GitHub Codex #55)
+INFO_KINDS: frozenset[str] = frozenset({"usage_probe"})
+HEAVY_KINDS: frozenset[str] = frozenset(
+    k for k in KINDS if k not in LIGHT_KINDS and k not in INFO_KINDS
+)
 # 빠른 레인(전체 검토 P2): heavy 락과 무관하게 데몬 `job_queue_fast` 틱이 꺼낸다 — 백필·scan_analyze
 # 가 몇십 분 도는 동안 손절 재평가·체결 동기화가 뒤로 밀리지 않게
 FAST_KINDS: frozenset[str] = LIGHT_KINDS | {"reevaluate"}
 # 기존 `job_queue` 가 꺼내는 종류 — 빠른 레인 종류는 빼서 소비자를 하나로 둔다(두 레인이 같은 종목
 # 재평가를 동시에 꺼내 `31_decision_r<n>` 를 함께 쓰는 경합 방지, Codex 리뷰)
-SLOW_KINDS: frozenset[str] = frozenset(KINDS) - FAST_KINDS
+SLOW_KINDS: frozenset[str] = frozenset(KINDS) - FAST_KINDS - INFO_KINDS
 _KIND_LABEL = {
     "features_backfill": "피처 백필",
     "features_snapshot": "피처 스냅샷",

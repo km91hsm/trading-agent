@@ -556,11 +556,11 @@ def test_init_schema_on_current_db_takes_no_write_lock(conn):
 
 
 def test_nav_history_window_and_latest_per_day(conn):
-    for i, nav in enumerate(["100", "110", "120", "130"]):
+    for i, nav in enumerate(["100", "110", "120", "130"]):  # 2026-10-05(월)~08(목)
         repo.snapshot_positions(
             conn,
             account_id="paper-main",
-            d=date(2026, 10, 1 + i),
+            d=date(2026, 10, 5 + i),
             market="KR",
             nav=Decimal(nav),
             cash=Decimal(nav),
@@ -569,27 +569,50 @@ def test_nav_history_window_and_latest_per_day(conn):
     repo.snapshot_positions(  # 같은 날 두 번째 스냅샷이 최신
         conn,
         account_id="paper-main",
-        d=date(2026, 10, 4),
+        d=date(2026, 10, 8),
         market="KR",
         nav=Decimal("135"),
         cash=Decimal("135"),
         positions=[],
     )
     assert repo.nav_history(conn, "paper-main", "KR", days=2) == [
-        ("2026-10-02", Decimal("110")),
-        ("2026-10-03", Decimal("120")),
-        ("2026-10-04", Decimal("135")),
+        ("2026-10-06", Decimal("110")),
+        ("2026-10-07", Decimal("120")),
+        ("2026-10-08", Decimal("135")),
     ]
-    assert (
-        repo.nav_history(conn, "paper-main", "KR", days=1, today=date(2026, 10, 3))
-        == [
-            ("2026-10-02", Decimal("110")),
-            ("2026-10-03", Decimal("120")),
-            ("2026-10-04", Decimal("135")),
-        ]
-        or True
-    )  # today 가 있으면 today−days 이후 전부 (미래 날짜 스냅샷 포함 여부는 기존 동작 유지)
     assert repo.nav_history(conn, "paper-main", "US") == []
+
+
+def test_nav_history_drops_weekend_and_us_holiday_samples(conn):
+    """장 밖 잔고 갱신이 남긴 주말·US 휴장일 스냅샷은 거래일 NAV 계열에서 빠진다 — 데몬을 켜 둔
+    것만으로 소르티노 등 거래일 지표가 바뀌지 않게(GitHub Codex #55)."""
+    from trader.ledger import performance
+
+    def snap(d, nav, market="KR"):
+        repo.snapshot_positions(
+            conn,
+            account_id="paper-main",
+            d=d,
+            market=market,
+            nav=Decimal(nav),
+            cash=Decimal(nav),
+            positions=[],
+        )
+
+    snap(date(2026, 10, 9), "100")  # 금
+    snap(date(2026, 10, 10), "100")  # 토(장 밖 갱신)
+    snap(date(2026, 10, 11), "100")  # 일
+    snap(date(2026, 10, 12), "110")  # 월
+    snap(date(2026, 10, 13), "105")  # 화
+    series = repo.nav_history(conn, "paper-main", "KR", days=30)
+    assert [d for d, _ in series] == ["2026-10-09", "2026-10-12", "2026-10-13"]
+    clean = [("a", Decimal(100)), ("b", Decimal(110)), ("c", Decimal(105))]
+    assert performance.metrics_of(series)["sortino"] == performance.metrics_of(clean)["sortino"]
+    snap(date(2026, 11, 25), "100", "US")  # 수
+    snap(date(2026, 11, 26), "100", "US")  # 추수감사절(NYSE 휴장)
+    snap(date(2026, 11, 27), "101", "US")  # 금
+    us = repo.nav_history(conn, "paper-main", "US", days=30)
+    assert [d for d, _ in us] == ["2026-11-25", "2026-11-27"]
 
 
 def test_held_since_uses_market_local_date_for_us(conn):

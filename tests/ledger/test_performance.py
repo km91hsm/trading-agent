@@ -127,7 +127,7 @@ def test_one_over_n_is_universe_and_bh_is_held(project):
 
 
 def test_nav_history_is_date_window_not_count(conn):
-    for d, v in [("2026-09-01", 100), ("2026-10-10", 101), ("2026-10-15", 102)]:
+    for d, v in [("2026-09-01", 100), ("2026-10-12", 101), ("2026-10-15", 102)]:
         repo.snapshot_positions(
             conn,
             account_id="paper-main",
@@ -138,7 +138,7 @@ def test_nav_history_is_date_window_not_count(conn):
             positions=[],
         )
     got = repo.nav_history(conn, "paper-main", "KR", days=10, today=date(2026, 10, 17))
-    assert [d for d, _ in got] == ["2026-10-10", "2026-10-15"]
+    assert [d for d, _ in got] == ["2026-10-12", "2026-10-15"]
 
 
 def _insert_order(conn, *, created_at: str, amount: str):

@@ -42,6 +42,7 @@ BALANCE_REFRESH_S = 300  # 정규장 잔고 주기 갱신(웹 실시간 — 조�
 TELEGRAM_POLL_S = 30
 QUEUE_JOB_ID = "job_queue"  # 작업 대기열 소비 잡 (jobs.py)
 FAST_QUEUE_JOB_ID = "job_queue_fast"  # 빠른 레인: 재평가·가벼운 잡(heavy 락 밖, 전체 검토 P2)
+INFO_QUEUE_JOB_ID = "job_queue_info"  # 정보 레인: 사용량 확인(빠른 레인을 막지 않게)
 QUEUE_INTERVAL_S = 10
 QUEUED_MAX_AGE = timedelta(hours=6)  # 데몬이 꺼진 동안 쌓인 요청은 만료
 BOOTSTRAP_RETRY_AGE = timedelta(hours=24)  # 피처 스토어 부트스트랩 백필 실패 뒤 재시도 간격
@@ -369,6 +370,7 @@ def build_jobs(schedule: ScheduleConfig, settings: Settings, *, markets: list[st
     jobs.append(Job("telegram_poll", "telegram_poll", interval_s=TELEGRAM_POLL_S))
     jobs.append(Job(QUEUE_JOB_ID, "job_queue", interval_s=QUEUE_INTERVAL_S))
     jobs.append(Job(FAST_QUEUE_JOB_ID, "job_queue_fast", interval_s=QUEUE_INTERVAL_S))
+    jobs.append(Job(INFO_QUEUE_JOB_ID, "job_queue_info", interval_s=QUEUE_INTERVAL_S))
     jobs.append(Job("news_collect", "news_collect", interval_s=schedule.news_collect.interval_s))
     jobs.append(Job("ops_check", "ops_check", interval_s=OPS_CHECK_S))  # 운영 점검(Phase 23 A)
     jobs.append(Job("balance_refresh", "balance_refresh", interval_s=BALANCE_REFRESH_S))
@@ -2752,6 +2754,8 @@ def job_body(
         return lambda: _queue_tick(deps, heartbeat)
     if job.kind == "job_queue_fast":
         return lambda: _fast_queue_tick(deps, heartbeat)
+    if job.kind == "job_queue_info":
+        return lambda: _info_queue_tick(deps, heartbeat)
     raise ValueError(f"알 수 없는 잡: {job.kind}")
 
 
@@ -2905,6 +2909,13 @@ def _fast_queue_tick(deps: DaemonDeps, heartbeat: Heartbeat | None) -> dict:
     if deps.stop_event.is_set():
         return {"skipped": "종료 중"}
     return _queue_tick_locked(deps, heartbeat, kinds=jobq.FAST_KINDS)
+
+
+def _info_queue_tick(deps: DaemonDeps, heartbeat: Heartbeat | None) -> dict:
+    """정보 레인: 사용량 확인처럼 주문과 무관하고 오래 걸릴 수 있는 요청만(`jobs.INFO_KINDS`)."""
+    if deps.stop_event.is_set():
+        return {"skipped": "종료 중"}
+    return _queue_tick_locked(deps, heartbeat, kinds=jobq.INFO_KINDS)
 
 
 def _queue_tick_locked(
@@ -3374,7 +3385,7 @@ def _install_heartbeat_listener(
             # 대기열 틱은 긴 요청을 도는 동안 10초마다 MAX_INSTANCES 가 나므로 놓침이 아니다
             if not (
                 event.code == ev.EVENT_JOB_MAX_INSTANCES
-                and event.job_id in (QUEUE_JOB_ID, FAST_QUEUE_JOB_ID)
+                and event.job_id in (QUEUE_JOB_ID, FAST_QUEUE_JOB_ID, INFO_QUEUE_JOB_ID)
             ):
                 hb.job_missed(event.job_id, datetime.now(UTC))
             job = by_id.get(event.job_id)
