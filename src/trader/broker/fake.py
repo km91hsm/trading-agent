@@ -229,8 +229,9 @@ class FakeBroker:
 
 class FakeFoBroker:
     """파생 계좌 가짜 브로커(Phase 26). `fail` 에 메서드 이름이 있으면 KisApiError,
-    `place_order:unknown` 이면 요청을 기록한 뒤 응답 없음(UNKNOWN_RESPONSE_CODE). `scenario(name, *args)` 훅으로 부분체결·
-    취소 중 체결 같은 시나리오를 주입할 수 있다(반환값이 None 이 아니면 그것을 돌려준다)."""
+    `place_order:unknown` 이면 요청을 기록한 뒤 응답 없음(UNKNOWN_RESPONSE_CODE).
+    `scenario(name, *args)` 훅으로 부분체결·취소 중 체결 같은 시나리오를 주입할 수 있다
+    (반환값이 None 이 아니면 그것을 돌려준다)."""
 
     def __init__(
         self,
