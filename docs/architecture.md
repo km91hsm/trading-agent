@@ -166,6 +166,18 @@ CLAUDE.md 의 "아키텍처 핵심 규칙" 에서 옮겨 온 모듈 단위 상�
 - **빌드**: `packaging/build.py` 가 `dist/trader` 의 `config·secrets·state·docs` 를 빌드 전에 옆(`dist/trader-userdata-<시각>`)으로 옮겼다가 스모크·zip 까지 끝난 뒤(실패해도) 되돌린다 — zip 에 키·원장이 들어가지 않게 — 번들 폴더가 운용 TRADER_HOME 이라 원장이 지워지던 문제.
 - **창 없는 앱·Windows**: 데몬 uvicorn `log_config=None`(stdout None 에서 `isatty()` 로 Config 가 죽어 Windows TraderApp 이 안 떴다), 진입점 `_ensure_streams`(None → devnull), 시작 실패는 `state/logs/startup-error.log` + OS 알림(`platform/notify_os`), macOS App Translocation 경로면 안내 후 종료. 세션 정리는 Windows 에서 부모가 살아 있을 때 곧바로 `procs.kill_group`(taskkill /T /F, claude.cmd → node → `trader tool` 트리 — 부모를 먼저 끝내면 트리를 못 찾는다) + Popen `CREATE_NEW_PROCESS_GROUP|CREATE_NO_WINDOW`.
 
+## 전체 검토 2차 — 프로세스(2026-10-27)
+
+- **재시작 따라잡기**(`daemon.catch_up_missed`): 기동 때 cron 잡마다 지난 20시간 안의 마지막 예정 시각을 구해 그 뒤 `runs` 기록이 없으면 놓친 것으로 보고 `on_cron_missed(notify=False)` → 알림은 한 건으로 묶는다. APScheduler 는 새로 등록한 잡의 지난 시각에 MISSED 를 내지 않아 재시작한 날 scan 이 조용히 사라졌다. 하트비트도 직전 파일의 잡 상태(마지막 실행·오류, 실행 중은 제외)를 이어받는다.
+- **`on_cron_missed`**: 시장 잡은 먼저 `should_skip`(일시정지·주말·휴장)이면 알림·등록 없이 끝, scan 은 그 시장 정규장이 끝났으면 알림만. 따라잡기 대상은 `CATCH_UP_KINDS`(scan_analyze·fills_sync·reconcile).
+- **자동 요청 게이트**(`daemon._auto_gate`): 데몬·뉴스가 넣은(`AUTO_SOURCES`) 결정·주문 kind(`TRADING_KINDS`)는 꺼낼 때 일시정지·휴장·`market_hours.session_over`(조기 마감 포함)를 다시 보고 `skipped`. 사람이 누른 요청(web·telegram·cli)은 그대로.
+- **조기 마감**: `market_hours.close_hm`(US 조기 마감일 13:00)·`session_over`, `is_open` 과 장중 창(`_in_market_window` — monitor·단타·뉴스 재분석)이 마감 시각을 당긴다.
+- **체결 동기화**: 조회 실패 계좌·시장이 있으면 `_fills_body` 가 최상위 `error`(runs·하트비트·점검에 오류). `fills.stale_open_days` 로 지난 7일 안 살아 있는(접수·부분·응답없음) 주문이 있는 현지 날짜를 다시 조회. 야간 대조는 시작 전에 체결 동기화를 먼저 돈다(US 대조가 07:10 KST 정기 동기화보다 앞서던 순서 의존).
+- **알림 보관함**(`TelegramNotifier(outbox=state/notify_outbox.jsonl)`): 보내지 못한 청크를 파일 잠금 아래 적어 두고 `telegram_poll` 틱이 `flush_outbox`(최대 10건, 첫 실패에서 멈춤, 24시간 지난 것은 버림).
+- **경보 피로**: 점검 격상은 단계가 나빠졌을 때 + 같은 단계라도 경고 이상 **새 항목 키**(`control.ops_level.keys`)일 때. watchdog 은 데몬 사망·멈춤(`jobs.daemon`·`jobs.stale`)만 1시간 재알림, 데몬이 살아 있으면 새 경고 키에만.
+- **대조 미실행 점검**은 설정 시각(`<시장>_reconcile` cron)·US 휴장·그날 대조 잡이 건너뛴 경우를 반영. `jobs.errors` 의 '최근' 은 실제 최근 오류 잡.
+- **재시작으로 끊긴 요청**: 실행 중이던 요청을 알리고, 다시 해도 안전한 것(`RESTART_REQUEUE_KINDS`: 재평가·체결 동기화·대조)은 다시 넣는다. 느린 대기열은 cron 이 heavy 락을 기다리는 동안(`heavy_wanted`) 새 요청을 꺼내지 않는다. 스케줄러 풀 40.
+
 ## 미확인
 
 미확인(2026-10-27): 체결통보(H0STCNI0/H0GSCNI0)를 HTS ID 로 구독하면 그 명의의 모든 계좌 체결이 어느 계좌 앱키의 세션으로든 오는지 — 같은 명의 실전 계좌 둘에서 한쪽 키로 붙은 리스너가 다른 계좌 체결 통보도 받는지 실기 확인.

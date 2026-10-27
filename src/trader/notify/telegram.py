@@ -6,9 +6,12 @@
 from __future__ import annotations
 
 import html
+import json
 import logging
 import re
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Protocol
 
 import httpx
@@ -58,35 +61,122 @@ def _chunks(text: str, size: int, *, escape: bool) -> list[str]:
     return out
 
 
+OUTBOX_TTL = timedelta(hours=24)  # 이보다 오래 못 보낸 알림은 버린다(낡은 경보가 몰려오지 않게)
+OUTBOX_FLUSH_MAX = 10  # 한 번에 다시 보내는 건수(429 를 부르지 않게)
+
+
 class TelegramNotifier:
-    def __init__(self, token: str, chat_id: str, *, http: httpx.Client | None = None) -> None:
+    """outbox 가 있으면 보내지 못한 청크를 거기 적어 두고 `flush_outbox` 가 다시 보낸다(전체 검토
+    2026-10-27: 429·네트워크 오류면 [주문 상태 미확인]·[중요 공시] 같은 알림이 그대로 사라졌다)."""
+
+    def __init__(
+        self,
+        token: str,
+        chat_id: str,
+        *,
+        http: httpx.Client | None = None,
+        outbox: Path | None = None,
+    ) -> None:
         quiet_httpx()
         self._url = f"https://api.telegram.org/bot{token}/sendMessage"
         self._chat_id = chat_id
         self._http = http or httpx.Client(timeout=10)
+        self._outbox = outbox
+
+    def _post(self, chunk: str) -> bool:
+        try:
+            resp = self._http.post(
+                self._url,
+                data={"chat_id": self._chat_id, "text": chunk, "parse_mode": "HTML"},
+            )
+        except httpx.HTTPError as e:
+            logger.warning("텔레그램 전송 실패: %s", type(e).__name__)
+            return False
+        if resp.status_code != 200:
+            logger.warning("텔레그램 전송 거부: HTTP %s", resp.status_code)
+            return False
+        return True
 
     def send(self, text: str, *, escape: bool = True) -> bool:
-        """4,000자 단위로 나눠 보낸다. 기본은 HTML 이스케이프. 실패는 False + 경고 로그."""
+        """4,000자 단위로 나눠 보낸다(기본 HTML 이스케이프). 실패는 False + 경고 + outbox."""
         if not text or not text.strip():
             return True
-        for chunk in _chunks(text, MAX_LEN, escape=escape):
-            try:
-                resp = self._http.post(
-                    self._url,
-                    data={"chat_id": self._chat_id, "text": chunk, "parse_mode": "HTML"},
-                )
-            except httpx.HTTPError as e:
-                logger.warning("텔레그램 전송 실패: %s", type(e).__name__)
-                return False
-            if resp.status_code != 200:
-                logger.warning("텔레그램 전송 거부: HTTP %s", resp.status_code)
+        chunks = _chunks(text, MAX_LEN, escape=escape)
+        for i, chunk in enumerate(chunks):
+            if not self._post(chunk):
+                self._queue(chunks[i:])
                 return False
         return True
+
+    def _queue(self, chunks: list[str]) -> None:
+        if self._outbox is None:
+            return
+        from trader.platform.filelock import locked
+
+        try:
+            self._outbox.parent.mkdir(parents=True, exist_ok=True)
+            with locked(self._outbox.with_name(self._outbox.name + ".lock"), timeout=5.0):
+                with self._outbox.open("a", encoding="utf-8") as f:
+                    at = datetime.now(UTC).isoformat()
+                    for c in chunks:
+                        f.write(json.dumps({"at": at, "chunk": c}, ensure_ascii=False) + "\n")
+        except (OSError, TimeoutError) as e:
+            logger.warning("알림 보관 실패: %s", type(e).__name__)
+
+    def flush_outbox(self, *, now: datetime | None = None) -> dict:
+        """보관된 청크를 오래된 순으로 다시 보낸다(최대 OUTBOX_FLUSH_MAX). 첫 실패에서 멈추고
+        나머지는 둔다. 24시간 넘은 것은 버린다. 데몬 telegram_poll 틱이 부른다."""
+        if self._outbox is None or not self._outbox.exists():
+            return {"sent": 0, "left": 0}
+        from trader.platform.filelock import locked
+
+        now = now or datetime.now(UTC)
+        sent = dropped = 0
+        with locked(self._outbox.with_name(self._outbox.name + ".lock"), timeout=5.0):
+            items = []
+            for line in self._outbox.read_text(encoding="utf-8").splitlines():
+                try:
+                    items.append(json.loads(line))
+                except ValueError:
+                    continue
+            keep: list[dict] = []
+            stop = False
+            for it in items:
+                try:
+                    old = now - datetime.fromisoformat(str(it.get("at"))) > OUTBOX_TTL
+                except ValueError:
+                    old = True
+                if old:
+                    dropped += 1
+                    continue
+                if stop or sent >= OUTBOX_FLUSH_MAX:
+                    keep.append(it)
+                    continue
+                if self._post(str(it.get("chunk") or "")):
+                    sent += 1
+                else:
+                    stop = True
+                    keep.append(it)
+            if keep:
+                self._outbox.write_text(
+                    "".join(json.dumps(k, ensure_ascii=False) + "\n" for k in keep),
+                    encoding="utf-8",
+                )
+            else:
+                self._outbox.unlink(missing_ok=True)
+        return {"sent": sent, "left": len(keep), "dropped": dropped}
 
 
 def make_notifier(secrets: Secrets, *, http: httpx.Client | None = None) -> Notifier:
     if secrets.TELEGRAM_BOT_TOKEN and secrets.TELEGRAM_CHAT_ID:
-        return TelegramNotifier(secrets.TELEGRAM_BOT_TOKEN, secrets.TELEGRAM_CHAT_ID, http=http)
+        from trader.platform import paths
+
+        return TelegramNotifier(
+            secrets.TELEGRAM_BOT_TOKEN,
+            secrets.TELEGRAM_CHAT_ID,
+            http=http,
+            outbox=paths.state_dir() / "notify_outbox.jsonl",
+        )
     return NullNotifier()
 
 

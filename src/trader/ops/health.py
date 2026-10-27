@@ -63,7 +63,7 @@ def check(
     items: list[Item] = []
     items += _loss(conn, settings, accounts, now)
     items += _orders(conn, settings, accounts, now)
-    items += _reconcile(conn, settings, accounts, now)
+    items += _reconcile(conn, settings, accounts, now, schedule_jobs or [], state)
     items += _jobs(conn, now, state, schedule_jobs or [])
     items += _llm(conn, settings, now)
     items += _disclosure(conn, settings, accounts, now)
@@ -246,7 +246,38 @@ def _orders(conn, settings, accounts, now) -> list[Item]:
     return out
 
 
-def _reconcile(conn, settings, accounts, now) -> list[Item]:
+def _reconcile_due_hm(m: str, schedule_jobs) -> time:
+    """설정의 대조 시각(`<시장>_reconcile` 잡 cron), 없으면 16:40 — 설정을 바꿔도 점검이 고정
+    16:40 을 보던 문제(전체 검토 2026-10-27)."""
+    for j in schedule_jobs:
+        if getattr(j, "id", None) == f"{m.lower()}_reconcile" and getattr(j, "cron", None):
+            c = j.cron
+            return time(int(c.get("hour", 16)), int(c.get("minute", 40)))
+    return time(16, 40)
+
+
+def _reconcile_skipped_today(m: str, local_day, state, schedule_jobs, now) -> bool:
+    """오늘 대조 잡이 휴장·주말·일시정지로 건너뛰었는가(하트비트) — KR 휴장일은 KIS 조회 없이는
+    몰라 잡의 판단을 따른다. US 는 NYSE 규칙으로 바로 안다."""
+    if m == "US":
+        from trader.daemon import us_holidays
+
+        if local_day in us_holidays(local_day.year):
+            return True
+    try:
+        base = state if state is not None else paths.state_dir()
+        st = heartbeat.read_status(base, now, schedule_jobs)
+    except Exception:  # noqa: BLE001 - 점검 보조 정보
+        return False
+    for j in st["jobs"]:
+        if j.get("id") == f"{m.lower()}_reconcile" and j.get("last_status") == "skipped":
+            end = j.get("last_end")
+            if end and datetime.fromisoformat(end).astimezone(MARKET_TZ[m]).date() == local_day:
+                return True
+    return False
+
+
+def _reconcile(conn, settings, accounts, now, schedule_jobs=(), state=None) -> list[Item]:
     out: list[Item] = []
     for a in accounts:
         for m in a.markets:
@@ -254,7 +285,10 @@ def _reconcile(conn, settings, accounts, now) -> list[Item]:
             flag = control.get_flag(conn, f"reconcile:{a.id}:{m}:{d.isoformat()}")
             local = now.astimezone(MARKET_TZ[m])
             due = (
-                datetime.combine(local.date(), time(16, 40), tzinfo=MARKET_TZ[m]) + RECONCILE_GRACE
+                datetime.combine(
+                    local.date(), _reconcile_due_hm(m, schedule_jobs), tzinfo=MARKET_TZ[m]
+                )
+                + RECONCILE_GRACE
             )
             if flag:
                 if not flag.get("ok", True):
@@ -268,7 +302,11 @@ def _reconcile(conn, settings, accounts, now) -> list[Item]:
                             count=n,
                         )
                     )
-            elif local.weekday() < 5 and local >= due:
+            elif (
+                local.weekday() < 5
+                and local >= due
+                and not _reconcile_skipped_today(m, local.date(), state, schedule_jobs, now)
+            ):
                 out.append(
                     Item(
                         f"reconcile.{a.id}.{m}",
@@ -313,9 +351,12 @@ def _jobs(conn, now, state, schedule_jobs) -> list[Item]:
                 count=len(missed),
             )
         )
+    since = (now - timedelta(hours=24)).isoformat()
     row = conn.execute(
-        "SELECT COUNT(*) AS n, MAX(kind) AS k FROM runs WHERE status='error' AND started_at >= ?",
-        ((now - timedelta(hours=24)).isoformat(),),
+        "SELECT COUNT(*) AS n, (SELECT kind FROM runs WHERE status='error' AND started_at >= ? "
+        "ORDER BY started_at DESC, id DESC LIMIT 1) AS k "
+        "FROM runs WHERE status='error' AND started_at >= ?",
+        (since, since),
     ).fetchone()
     if row and int(row["n"]):
         out.append(
@@ -395,16 +436,39 @@ LEVEL_FLAG = "ops_level"
 RESULT_FLAG = "ops_result"  # 마지막 점검 결과 전체(웹·텔레그램·STATUS 공용)
 
 
+ALERT_FROM = "warning"  # 이 단계 이상 항목은 새로 생기면 단계가 같아도 알린다
+
+
+def _alert_keys(result: dict) -> set[str]:
+    return {
+        str(i["key"])
+        for i in result["items"]
+        if i.get("key") and LEVELS.index(i.get("level", "ok")) >= LEVELS.index(ALERT_FROM)
+    }
+
+
 def escalate(conn: sqlite3.Connection, result: dict) -> str | None:
-    """직전 단계보다 나빠졌으면 알림 문구를 돌려주고 현재 단계를 `control.ops_level` 에 적는다
-    (좋아진 것도 적되 알림은 없다)."""
+    """단계가 나빠졌거나, 같은 단계라도 경고 이상 **새 항목**이 생겼으면 알림 문구를 돌려준다.
+    현재 단계와 경고 항목 키를 `control.ops_level` 에 적는다(좋아져도 적되 알림은 없다).
+    오래 가는 경고(잡 오류 등) 하나에 새 상한 도달·손실 경고가 묻히던 문제(전체 검토
+    2026-10-27). 전송 실패는 알림 보관함이 다시 보낸다."""
     prev = control.get_flag(conn, LEVEL_FLAG) or {}
     prev_level = str(prev.get("level") or "ok")
-    control.set_flag(conn, LEVEL_FLAG, {"level": result["level"], "at": result["at"]})
-    if LEVELS.index(result["level"]) <= LEVELS.index(prev_level):
+    prev_keys = set(prev.get("keys") or [])
+    keys = _alert_keys(result)
+    control.set_flag(
+        conn, LEVEL_FLAG, {"level": result["level"], "at": result["at"], "keys": sorted(keys)}
+    )
+    worse = LEVELS.index(result["level"]) > LEVELS.index(prev_level)
+    new = keys - prev_keys
+    if not worse and not new:
         return None
-    heads = "; ".join(i["text"] for i in result["items"][:4])
-    return messages.event("점검 격상", f"{LABEL[prev_level]} → {result['label']}", heads)
+    items = result["items"]
+    if not worse:
+        items = [i for i in items if i["key"] in new]
+    heads = "; ".join(i["text"] for i in items[:4])
+    title = f"{LABEL[prev_level]} → {result['label']}" if worse else f"새 경고 {len(new)}건"
+    return messages.event("점검 격상", title, heads)
 
 
 def headline(result: dict | None) -> str:

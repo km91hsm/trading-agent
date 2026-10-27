@@ -559,11 +559,7 @@ def market_job(deps: DaemonDeps, market: str, kind: str, fn: Callable[[], Any]) 
 
 
 def monitor_job(deps: DaemonDeps, market: str, fn: Callable[[], Any]) -> dict | None:
-    ms = deps.schedule.kr if market == "KR" else deps.schedule.us
-    now_local = deps.now().astimezone(ZoneInfo(ms.tz))
-    if not in_window(
-        now_local.time().replace(second=0, microsecond=0), ms.monitor.start, ms.monitor.end
-    ):
+    if not _in_market_window(deps, market):
         return {"skipped": "창 밖"}
     return market_job(deps, market, "monitor", fn)
 
@@ -1813,6 +1809,13 @@ def _telegram_body(deps: DaemonDeps) -> dict:
     from trader.notify.commands import poll_once
     from trader.orchestrator.executor import ExecContext
 
+    flush = getattr(deps.notifier, "flush_outbox", None)
+    if flush is not None:  # 보내지 못한 알림 다시 보내기(전체 검토 2026-10-27)
+        try:
+            flush()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("알림 재전송 실패: %s", e)
+
     if deps.receiver is None:
         return {"skipped": "텔레그램 미설정"}
     conn = deps.conn_factory()
@@ -1832,9 +1835,14 @@ def _telegram_body(deps: DaemonDeps) -> dict:
 
 
 def _fills_body(deps: DaemonDeps) -> dict:
-    from trader.orchestrator.fills import sync_fills
+    """계좌마다 시장별 현지 오늘 체결을 적재하고, 아직 정리되지 않은 지난 날짜 주문이 있으면 그
+    날짜도 다시 조회한다. 조회에 실패한 계좌·시장이 있으면 최상위 `error` 로 올려 runs·하트비트·
+    운영 점검에 오류로 보이게 한다(예전엔 실패가 'ok' 로 기록됐다, 전체 검토 2026-10-27)."""
+    from trader.orchestrator.fills import stale_open_days, sync_fills
+    from trader.orchestrator.run_store import run_date_for
 
-    out = {}
+    out: dict[str, Any] = {}
+    failures: list[str] = []
     conn = deps.conn_factory()
     try:
         for a in deps.accounts:
@@ -1843,12 +1851,28 @@ def _fills_body(deps: DaemonDeps) -> dict:
                 continue
             try:
                 # US 체결은 ET 날짜로 조회해야 한다 (07:10 KST 는 전날 ET) → 시장별 현지 날짜
-                out[a.id] = sync_fills(conn, b, a, deps.now(), notifier=deps.notifier)
+                r = sync_fills(conn, b, a, deps.now(), notifier=deps.notifier)
+                out[a.id] = r
+                failures += [f"{a.id} {m}" for m in r.get("failed_markets") or []]
             except Exception as e:  # noqa: BLE001 - 한 계좌의 실패가 다른 계좌 동기화를 막지 않는다
                 logger.warning("체결 동기화 실패 %s: %s", a.id, e)
                 out[a.id] = {"error": f"{type(e).__name__}: {e}"}
+                failures.append(f"{a.id} ({type(e).__name__})")
+                continue
+            for m in a.markets:
+                one = a.model_copy(update={"markets": [m]})
+                for day in stale_open_days(conn, a.id, m, run_date_for(m, deps.now())):
+                    try:
+                        past = sync_fills(conn, b, one, day, notifier=deps.notifier)
+                    except Exception as e:  # noqa: BLE001
+                        failures.append(f"{a.id} {m} {day} ({type(e).__name__})")
+                        continue
+                    out.setdefault(f"{a.id}:lookback", []).append(past)
+                    failures += [f"{a.id} {x} {day}" for x in past.get("failed_markets") or []]
     finally:
         conn.close()
+    if failures:
+        out["error"] = "체결 조회 실패: " + ", ".join(failures)
     return out
 
 
@@ -1858,6 +1882,14 @@ def _reconcile_body(deps: DaemonDeps, market: str | None) -> dict:
     from trader.orchestrator import reconcile
     from trader.orchestrator.run_store import run_date_for
 
+    # 대조 직전에 체결부터 맞춘다 — US 대조(16:40 ET)는 정기 체결 동기화(07:10 KST)보다 앞서,
+    # 체결된 주문을 '마감 뒤 미정리' 로 잘못 보던 순서 의존을 잡 안에서 끊는다(전체 검토 2026-10-27)
+    try:
+        sync = _fills_body(deps)
+        if sync.get("error"):
+            logger.warning("대조 전 체결 동기화 일부 실패: %s", sync["error"])
+    except Exception as e:  # noqa: BLE001 - 동기화 실패여도 대조는 브로커 값으로 돈다
+        logger.warning("대조 전 체결 동기화 실패: %s", e)
     conn = deps.conn_factory()
     try:
         return reconcile.reconcile_all(
@@ -1944,11 +1976,16 @@ def _news_body(deps: DaemonDeps) -> dict:
 
 
 def _in_market_window(deps: DaemonDeps, market: str) -> bool:
+    """장중 감시 창(schedule monitor). 조기 마감일(US 13:00)이면 창 끝을 마감 시각으로 당긴다."""
+    from trader import market_hours
+
     ms = deps.schedule.kr if market == "KR" else deps.schedule.us
     now_local = deps.now().astimezone(ZoneInfo(ms.tz))
-    return in_window(
-        now_local.time().replace(second=0, microsecond=0), ms.monitor.start, ms.monitor.end
-    )
+    end = ms.monitor.end
+    close = market_hours.close_hm(market, now_local.date())
+    if close < market_hours.REGULAR[market][1]:
+        end = min(end, close)
+    return in_window(now_local.time().replace(second=0, microsecond=0), ms.monitor.start, end)
 
 
 def _held_tickers(deps: DaemonDeps, market: str) -> set[str]:
@@ -2714,11 +2751,45 @@ def _analyze_ticker_request(deps: DaemonDeps, p: dict) -> dict:
     )
 
 
+# 결정·주문으로 이어지는 kind. 데몬·뉴스가 자동으로 넣은 요청은 꺼낼 때 장 상태를 다시 본다
+TRADING_KINDS = frozenset(
+    {"scan_analyze", "analyze_ticker", "reevaluate", "discover", "market_view"}
+)
+AUTO_SOURCES = frozenset({"daemon", "news", "notice"})
+
+
+def _auto_gate(deps: DaemonDeps, req: dict) -> str | None:
+    """자동 요청(데몬 따라잡기·monitor 트리거·뉴스)은 넣은 뒤 꺼내기 전에 장이 끝나거나
+    일시정지·휴장일일 수 있다 — 꺼내는 시점에 다시 보고 사유를 돌려준다(마감 뒤 세션·주문,
+    휴장일 세션 낭비, 전체 검토 2026-10-27). 사람이 누른 요청(web·telegram·cli)은 그대로."""
+    from trader import market_hours
+
+    if req["kind"] not in TRADING_KINDS or req.get("source") not in AUTO_SOURCES:
+        return None
+    market = (req.get("params") or {}).get("market")
+    if market not in ("KR", "US"):
+        return None
+    conn = deps.conn_factory()
+    try:
+        why = should_skip(market, deps.now(), deps.market_client, conn)
+    finally:
+        conn.close()
+    if why:
+        return why
+    if market_hours.session_over(market, deps.now()):
+        return "장 마감"
+    return None
+
+
 def queued_job_body(
     deps: DaemonDeps, req: dict, progress: Callable[[str], None]
 ) -> Callable[[], Any]:
-    """대기열 요청 → 기존 잡 본체. 사용자가 명시적으로 눌렀으므로 주말·휴장 게이트는 없다."""
+    """대기열 요청 → 기존 잡 본체. 사람이 누른 요청은 주말·휴장 게이트가 없고, 자동 요청의 결정·
+    주문 kind 는 `_auto_gate`(일시정지·휴장·장 마감)를 꺼낼 때 다시 본다."""
     kind, p = req["kind"], req["params"]
+    why = _auto_gate(deps, dict(req))
+    if why:
+        return lambda: {"skipped": why}
     if kind == "scan_analyze":
         return lambda: _scan_analyze_body(deps, p["market"])
     if kind == "market_view":
@@ -2752,6 +2823,10 @@ def _queue_tick(deps: DaemonDeps, heartbeat: Heartbeat | None) -> dict:
     스케줄 잡과 같은 이름(`jobs.job_id_for`)으로 남긴다."""
     if deps.stop_event.is_set():
         return {"skipped": "종료 중"}
+    # cron 이 heavy 락을 기다리는 중이면 새 요청을 꺼내지 않는다 — 락이 잠깐 풀린 틈에 다음
+    # 대기열 작업이 끼어들어 cron(scan 등)을 더 밀던 문제(전체 검토 2026-10-27)
+    if deps.heavy_wanted.is_set():
+        return {"skipped": "예정 잡이 기다리는 중"}
     # 잠겨 있으면 claim 하지 않는다(non-blocking). 가벼운 잡도 잠깐 들고 돌아 cron 과 겹치지 않음
     if not deps.heavy_lock.acquire(blocking=False):
         return {"skipped": "다른 무거운 잡 실행 중"}
@@ -2827,9 +2902,41 @@ def _bootstrap_queue(deps: DaemonDeps) -> dict:
     now = deps.now()
     conn = deps.conn_factory()
     try:
+        interrupted = [
+            dict(r)
+            for r in conn.execute(
+                "SELECT id, kind, params FROM job_requests WHERE status='running'"
+            ).fetchall()
+        ]
         stale = jobq.mark_stale_running(conn, now=now)
         expired = jobq.expire_queued(conn, older_than=now - QUEUED_MAX_AGE)
         queued: list[str] = []
+        # 재시작으로 끊긴 요청: 다시 해도 안전한 것(재평가·체결 동기화·대조)은 다시 넣고 알린다 —
+        # 손절 근처 재평가가 조용히 빠지던 문제(전체 검토 2026-10-27). 재평가는 꺼낼 때
+        # `_auto_gate` 가 장 마감·휴장을 다시 본다
+        requeued: list[str] = []
+        for r in interrupted:
+            if r["kind"] not in RESTART_REQUEUE_KINDS:
+                continue
+            try:
+                jobq.enqueue(
+                    conn, r["kind"], json.loads(r["params"] or "{}"), source="daemon", now=now
+                )
+                requeued.append(f"{r['kind']}#{r['id']}")
+            except (jobq.DuplicateRequest, ValueError):
+                pass
+        if interrupted:
+            try:
+                deps.notifier.send(
+                    messages.event(
+                        "작업 중단",
+                        f"데몬 재시작으로 실행 중이던 요청 {len(interrupted)}건이 끊겼어요",
+                        ", ".join(f"{r['kind']}#{r['id']}" for r in interrupted),
+                        f"다시 등록: {', '.join(requeued)}" if requeued else "",
+                    )
+                )
+            except Exception:  # noqa: BLE001
+                pass
         if (
             deps.market_client is not None
             and deps.features_fn is not None
@@ -2858,10 +2965,14 @@ def _bootstrap_queue(deps: DaemonDeps) -> dict:
     return {"stale": stale, "expired": expired, "queued": queued}
 
 
+RESTART_REQUEUE_KINDS = frozenset({"reevaluate", "fills_sync", "reconcile"})
+
+
 # --- 실행 ---------------------------------------------------------------------------
 
 
-SCHEDULER_POOL_SIZE = 16  # 잡 10개 + heavy 락 대기 몫. 기본 10 이면 잡 수와 같아 여유가 없다
+# 잡 31개(시장 2개, 2026-10-27) 중 동시에 도는 것 + heavy 락 대기 몫. 잡 수보다 넉넉하게
+SCHEDULER_POOL_SIZE = 40
 
 
 def make_scheduler() -> Any:
@@ -2977,6 +3088,10 @@ def run(
                 notifier=deps.notifier,
             )
         jobs = build_jobs(deps.schedule, deps.settings, markets=list(deps.settings.markets))
+        try:
+            catch_up_missed(deps, jobs)
+        except Exception as e:  # noqa: BLE001 - 따라잡기 실패가 기동을 막지 않는다
+            logger.warning("기동 따라잡기 실패: %s", e)
         hb = Heartbeat(base / heartbeat_mod.FILE_NAME)
         hb.start(pid=os.getpid(), started_at=datetime.now(UTC), jobs=jobs)
         _install_heartbeat_listener(scheduler, hb, deps=deps, jobs=jobs)
@@ -3026,30 +3141,116 @@ def misfire_grace_for(job: Job) -> int:
     return SCAN_MISFIRE_GRACE_S if job.kind == "scan_analyze" else DEFAULT_MISFIRE_GRACE_S
 
 
-def on_cron_missed(deps: DaemonDeps, job: Job) -> dict:
-    """cron 잡을 놓쳤다(grace 초과): 알림 1건 + scan_analyze 는 큐에 따라잡기 1회(중복이면 무시).
-    이전엔 하트비트에 missed 만 적혀 Mac 이 07:30 에 잠들어 있으면 그날 분석이 조용히 사라졌다."""
+# 놓쳤을 때 대기열로 따라잡는 cron 잡(kind → 대기열 kind). 나머지는 알림만
+CATCH_UP_KINDS = {
+    "scan_analyze": "scan_analyze",
+    "fills_sync": "fills_sync",
+    "reconcile": "reconcile",
+}
+CATCH_UP_LOOKBACK = timedelta(hours=20)  # 기동 때 '오늘 놓친' 것으로 보는 범위
+
+
+def on_cron_missed(deps: DaemonDeps, job: Job, *, notify: bool = True) -> dict:
+    """cron 잡을 놓쳤다(grace 초과·데몬이 꺼져 있었음): 알림 + 따라잡기 대상이면 큐에 1회
+    (중복은 무시). 시장 잡은 먼저 `should_skip`(일시정지·주말·휴장일)을 본다 — 휴장일 아침에
+    깨어나 쓸모없는 알림·LLM 세션을 내던 문제. scan 은 그 시장 정규장이 끝났으면 알림만
+    (전체 검토 2026-10-27)."""
+    from trader import market_hours
+
     out: dict[str, Any] = {"job": job.id, "queued": False}
-    try:
-        deps.notifier.send(
-            messages.event("잡 놓침", f"{job.id} — 예정 시각을 지나 실행되지 않았어요")
-        )
-    except Exception:  # noqa: BLE001
-        pass
-    if job.kind == "scan_analyze" and job.market:
+    if job.market:
         conn = deps.conn_factory()
         try:
-            jobq.enqueue(
-                conn, "scan_analyze", {"market": job.market}, source="daemon", now=deps.now()
-            )
-            out["queued"] = True
-        except jobq.DuplicateRequest:
-            pass
-        except Exception as e:  # noqa: BLE001
-            logger.warning("놓친 scan_analyze 따라잡기 등록 실패 %s: %s", job.id, e)
+            why = should_skip(job.market, deps.now(), deps.market_client, conn)
         finally:
             conn.close()
+        if why:
+            out["skipped"] = why
+            return out
+    if notify:
+        try:
+            deps.notifier.send(
+                messages.event("잡 놓침", f"{job.id} — 예정 시각을 지나 실행되지 않았어요")
+            )
+        except Exception:  # noqa: BLE001
+            pass
+    kind = CATCH_UP_KINDS.get(job.kind)
+    if kind is None:
+        return out
+    if kind == "scan_analyze" and market_hours.session_over(job.market or "KR", deps.now()):
+        out["late"] = "장 마감 — 따라잡지 않음"
+        return out
+    params = {} if kind == "fills_sync" else {"market": job.market}
+    conn = deps.conn_factory()
+    try:
+        jobq.enqueue(conn, kind, params, source="daemon", now=deps.now())
+        out["queued"] = True
+    except jobq.DuplicateRequest:
+        pass
+    except Exception as e:  # noqa: BLE001
+        logger.warning("놓친 %s 따라잡기 등록 실패: %s", job.id, e)
+    finally:
+        conn.close()
     return out
+
+
+def _last_fire(job: Job, now: datetime) -> datetime | None:
+    """now 이전 가장 최근 예정 시각(CATCH_UP_LOOKBACK 안). cron 이 아니면 None."""
+    if not job.cron:
+        return None
+    trig = _trigger(job)
+    if not hasattr(trig, "get_next_fire_time"):
+        return None
+    start = now - CATCH_UP_LOOKBACK
+    last, fire = None, trig.get_next_fire_time(None, start)
+    while fire is not None and fire <= now:
+        last = fire
+        fire = trig.get_next_fire_time(fire, fire + timedelta(seconds=1))
+    return last
+
+
+def catch_up_missed(deps: DaemonDeps, jobs: list[Job]) -> dict:
+    """기동 때: 데몬이 꺼져 있던 동안 오늘 예정 시각이 지난 cron 잡 중 runs 기록이 없는 것을
+    놓친 것으로 본다. APScheduler 는 새로 등록한 잡의 지난 시각에 MISSED 를 내지 않아 재시작한
+    날 07:30 scan 이 조용히 사라졌다(전체 검토 2026-10-27). 알림은 한 건으로 묶는다."""
+    now = deps.now()
+    missed: list[str] = []
+    queued: list[str] = []
+    conn = deps.conn_factory()
+    try:
+        for job in jobs:
+            fire = _last_fire(job, now)
+            if fire is None:
+                continue
+            ran = conn.execute(
+                "SELECT 1 FROM runs WHERE kind=? AND started_at >= ? LIMIT 1",
+                (job.id, fire.astimezone(UTC).isoformat()),
+            ).fetchone()
+            if ran is None:
+                missed.append(job.id)
+    finally:
+        conn.close()
+    by_id = {j.id: j for j in jobs}
+    real: list[str] = []
+    for jid in missed:
+        r = on_cron_missed(deps, by_id[jid], notify=False)
+        if "skipped" in r:
+            continue
+        real.append(jid)
+        if r.get("queued"):
+            queued.append(jid)
+    if real:
+        try:
+            deps.notifier.send(
+                messages.event(
+                    "잡 놓침",
+                    f"데몬이 꺼져 있던 동안 {len(real)}개 — {', '.join(real)}",
+                    f"따라잡기 등록: {', '.join(queued)}" if queued else "",
+                )
+            )
+        except Exception:  # noqa: BLE001
+            pass
+    return {"missed": real, "queued": queued}
 
 
 def _install_heartbeat_listener(

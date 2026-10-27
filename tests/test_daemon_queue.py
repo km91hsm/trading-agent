@@ -275,8 +275,11 @@ def test_reevaluate_request_runs_session_and_marks_sibling_triggers(conn):
     ]
 
 
+TUE_0900_KST = datetime(2026, 10, 27, 0, 0, tzinfo=UTC)  # 평일 장 시작 전후(마감 전)
+
+
 def test_missed_cron_notifies_and_enqueues_catch_up(conn):
-    deps = _deps(conn, FakeMarket(), now=lambda: NOW)
+    deps = _deps(conn, FakeMarket(), now=lambda: TUE_0900_KST)
 
     class Sent:
         msgs: list[str] = []
@@ -478,3 +481,105 @@ def test_reevaluate_runs_under_same_ticker_lock_as_analyze(conn, monkeypatch):
     )
     daemon._reevaluate_request(deps, {"market": "KR", "ticker": "005930", "trigger_id": tid})
     assert held == [True] and not lock.locked()
+
+
+# --- 전체 검토 2차(2026-10-27): 놓친 잡·자동 요청 게이트 ------------------------------------
+
+
+def _scan_job():
+    return next(
+        j for j in daemon.build_jobs(SCHED, Settings(), markets=["KR"]) if j.id == "kr_scan_analyze"
+    )
+
+
+class _Sent:
+    def __init__(self):
+        self.msgs = []
+
+    def send(self, text, *, escape=True):
+        self.msgs.append(text)
+        return True
+
+
+def test_missed_cron_on_weekend_or_holiday_is_silent(conn):
+    deps = _deps(conn, FakeMarket(), now=lambda: NOW)  # NOW 는 토요일
+    deps.notifier = _Sent()
+    out = daemon.on_cron_missed(deps, _scan_job())
+    assert out["skipped"] == "주말" and deps.notifier.msgs == []
+    assert jobq.list_recent(conn) == []
+    hol = _deps(conn, FakeMarket(holidays={TUE_0900_KST.date()}), now=lambda: TUE_0900_KST)
+    hol.notifier = _Sent()
+    assert daemon.on_cron_missed(hol, _scan_job())["skipped"] == "휴장일"
+
+
+def test_missed_scan_after_close_alerts_without_catch_up(conn):
+    after = datetime(2026, 10, 27, 7, 0, tzinfo=UTC)  # 16:00 KST, 마감 뒤
+    deps = _deps(conn, FakeMarket(), now=lambda: after)
+    deps.notifier = _Sent()
+    out = daemon.on_cron_missed(deps, _scan_job())
+    assert out["queued"] is False and "late" in out and deps.notifier.msgs
+    assert jobq.list_recent(conn) == []
+
+
+def test_catch_up_missed_on_restart_groups_alert_and_queues(conn):
+    """데몬이 07:30 에 꺼져 있다가 09:00 에 켜지면: scan 따라잡기 등록 + 놓친 잡 알림 1건."""
+    now = TUE_0900_KST
+    deps = _deps(conn, FakeMarket(), now=lambda: now)
+    deps.notifier = _Sent()
+    jobs = daemon.build_jobs(SCHED, Settings(), markets=["KR"])
+    out = daemon.catch_up_missed(deps, jobs)
+    assert "kr_scan_analyze" in out["missed"] and "kr_scan_analyze" in out["queued"]
+    assert len([m for m in deps.notifier.msgs if "잡 놓침" in m]) == 1
+    # 이미 돈 잡은 놓친 것이 아니다
+    conn.execute(
+        "INSERT INTO runs(kind, market, started_at, status) VALUES (?,?,?,?)",
+        ("kr_scan_analyze", None, now.isoformat(), "ok"),
+    )
+    conn.commit()
+    assert "kr_scan_analyze" not in daemon.catch_up_missed(deps, jobs)["missed"]
+
+
+def test_auto_request_after_close_is_skipped_but_manual_runs(conn):
+    after = datetime(2026, 10, 27, 7, 0, tzinfo=UTC)  # 16:00 KST
+    deps = _deps(conn, FakeMarket(), now=lambda: after)
+    req = {"kind": "reevaluate", "params": {"market": "KR", "ticker": "005930"}, "source": "daemon"}
+    assert daemon._auto_gate(deps, req) == "장 마감"
+    assert daemon._auto_gate(deps, {**req, "source": "web"}) is None
+    assert daemon._auto_gate(deps, {**req, "kind": "fills_sync", "params": {}}) is None
+    pre = _deps(conn, FakeMarket(), now=lambda: TUE_0900_KST)
+    assert daemon._auto_gate(pre, {**req, "kind": "scan_analyze"}) is None
+
+
+def test_fills_failure_is_top_level_error(conn):
+    """체결 조회가 실패하면 잡이 'ok' 가 아니라 오류로 남는다(runs·하트비트·운영 점검에 보이게)."""
+    deps = _deps(conn, FakeMarket(), now=lambda: TUE_0900_KST)
+    deps.brokers["paper-main"].fail = {"get_fills"}
+    out = daemon._fills_body(deps)
+    assert "체결 조회 실패" in out["error"] and "paper-main KR" in out["error"]
+
+
+def test_bootstrap_requeues_interrupted_reevaluate_and_alerts(conn):
+    deps = _deps(conn, FakeMarket(), now=lambda: TUE_0900_KST)
+    deps.notifier = _Sent()
+    rid = jobq.enqueue(
+        conn,
+        "reevaluate",
+        {"market": "KR", "ticker": "005930", "trigger_id": 1},
+        source="daemon",
+        now=TUE_0900_KST,
+    )
+    jobq.claim_next(conn, now=TUE_0900_KST)  # 실행 중에 데몬이 죽었다
+    out = daemon._bootstrap_queue(deps)
+    assert out["stale"] == 1
+    kinds = [r["kind"] for r in jobq.list_recent(conn) if r["status"] == "queued"]
+    assert kinds == ["reevaluate"]
+    assert any("작업 중단" in m and f"#{rid}" in m for m in deps.notifier.msgs)
+
+
+def test_queue_tick_yields_while_cron_waits(conn):
+    deps = _deps(conn, FakeMarket(), now=lambda: TUE_0900_KST)
+    deps.heavy_wanted.enter()
+    try:
+        assert daemon._queue_tick(deps, None) == {"skipped": "예정 잡이 기다리는 중"}
+    finally:
+        deps.heavy_wanted.leave()

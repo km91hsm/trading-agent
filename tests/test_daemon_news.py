@@ -229,6 +229,8 @@ def test_news_trigger_respects_discover_cap(conn, project):
 
 def test_discover_body_runs_fake_scout_and_queues_candidates(conn, project, monkeypatch):
     monkeypatch.setenv("FAKE_CLAUDE", "1")
+    # NOW 는 토요일 — 자동 요청의 장 게이트(_auto_gate)는 다른 테스트가 보고, 여기는 발굴 본체만
+    monkeypatch.setattr(daemon, "_auto_gate", lambda deps, req: None)
     (project / "config" / "universe.yaml").write_text(
         "kr: ['005930', '000660']\n", encoding="utf-8"
     )

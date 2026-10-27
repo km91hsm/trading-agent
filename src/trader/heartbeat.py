@@ -40,7 +40,19 @@ class Heartbeat:
             "jobs": {},
         }
 
+    def _previous_jobs(self) -> dict[str, Any]:
+        """직전 프로세스가 남긴 잡별 상태 — 재시작해도 마지막 실행·오류·놓침 기록을 잃지 않게
+        (전체 검토 2026-10-27: 기동이 전부 None 으로 덮어 이전 missed/error 가 사라졌다)."""
+        try:
+            data = json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        jobs = data.get("jobs") if isinstance(data, dict) else None
+        return jobs if isinstance(jobs, dict) else {}
+
     def start(self, *, pid: int, started_at: datetime, jobs: list[Any]) -> None:
+        prev = self._previous_jobs()
+        keep = ("last_start", "last_end", "last_status", "last_error")
         with self._lock:
             self._data = {
                 "pid": pid,
@@ -55,6 +67,13 @@ class Heartbeat:
                         "last_status": None,
                         "last_error": None,
                         "next_run": None,
+                        **{
+                            k: (prev.get(j.id) or {}).get(k)
+                            for k in keep
+                            if isinstance(prev.get(j.id), dict)
+                            # 죽기 직전 '실행 중' 은 끝나지 않은 실행이라 이어받지 않는다
+                            and not (k == "last_status" and prev[j.id].get(k) == "running")
+                        },
                     }
                     for j in jobs
                 },

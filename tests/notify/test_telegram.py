@@ -71,3 +71,26 @@ def test_network_failure_returns_false(caplog):
 @pytest.mark.parametrize("text", ["", "   "])
 def test_empty_text_is_noop(text):
     assert TelegramNotifier("TOKEN-SECRET", "123").send(text) is True
+
+
+def test_failed_send_goes_to_outbox_and_flush_retries(tmp_path):
+    """전체 검토 2026-10-27: 전송 실패 알림을 보관했다가 다음 틱에 다시 보낸다."""
+    import httpx
+
+    from trader.notify.telegram import TelegramNotifier
+
+    calls = {"n": 0, "ok": False}
+
+    def handler(request):
+        calls["n"] += 1
+        return httpx.Response(200 if calls["ok"] else 429, json={})
+
+    http = httpx.Client(transport=httpx.MockTransport(handler))
+    box = tmp_path / "outbox.jsonl"
+    n = TelegramNotifier("T", "C", http=http, outbox=box)
+    assert n.send("[주문 상태 미확인] 테스트") is False
+    assert box.exists()
+    assert n.flush_outbox()["sent"] == 0 and box.exists()  # 여전히 429
+    calls["ok"] = True
+    r = n.flush_outbox()
+    assert r == {"sent": 1, "left": 0, "dropped": 0} and not box.exists()

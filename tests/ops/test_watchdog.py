@@ -57,3 +57,10 @@ def test_cli_watchdog_quiet_prints_json(project):
     assert r.exit_code == 0, r.output
     out = json.loads(r.output.strip().splitlines()[-1])
     assert out["level"] in ("ok", "watch", "warning", "critical") and out["notified"] is False
+
+
+def test_alive_daemon_only_new_keys_notify():
+    """데몬이 살아 있으면 오래 가는 경고로 1시간마다 울리지 않고 새 경고 키에만."""
+    assert not watchdog.should_notify({}, "warning", NOW, daemon_down=False, new_keys=False)
+    assert watchdog.should_notify({}, "warning", NOW, daemon_down=False, new_keys=True)
+    assert watchdog.should_notify({}, "critical", NOW, daemon_down=True)

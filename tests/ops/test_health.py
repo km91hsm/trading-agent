@@ -75,6 +75,17 @@ def test_escalate_only_when_worse_and_headline(conn, project):
     assert health.headline(None) == "점검 기록 없음"
 
 
+def test_escalate_alerts_new_warning_key_at_same_level(conn, project):
+    """오래 가는 경고가 있어 단계가 그대로여도, 새 경고 항목은 알린다(전체 검토 2026-10-27)."""
+    base = {"level": "warning", "label": "주의", "at": NOW.isoformat()}
+    old = {"key": "jobs.errors", "level": "warning", "text": "잡 오류 3건"}
+    new = {"key": "llm.cap", "level": "warning", "text": "세션 상한 도달"}
+    assert health.escalate(conn, {**base, "items": [old]})
+    assert health.escalate(conn, {**base, "items": [old]}) is None
+    msg = health.escalate(conn, {**base, "items": [old, new]})
+    assert msg and "새 경고 1건" in msg and "세션 상한" in msg and "잡 오류" not in msg
+
+
 def test_daemon_ops_job_registered_and_body_records_result(conn, project):
     from test_daemon import SCHED, _deps
 
