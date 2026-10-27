@@ -216,6 +216,45 @@ def test_minute_chart_epoch_and_markers_same_day_only(client, conn):
     assert all(m["kind"] != "decision" for m in r["markers"])
 
 
+def test_minute_chart_markers_local_day_bounds_in_sql(client, conn):
+    """전체 검토 3차: 그날(KST) 경계를 SQL 로 — 23:59:59 KST 는 포함, 다음 날 00:00 KST 는 제외."""
+    dec_id = repo.ingest_checkpoint(conn, D, "KR", "005930", "30_decision", {"data": ok_decision()})
+    _order(conn, dec_id, "2026-10-09T14:59:59+00:00")  # 23:59 KST 오늘
+    _order(conn, dec_id, "2026-10-09T15:00:00+00:00")  # 10-10 00:00 KST
+    _order(conn, dec_id, "2026-10-08T14:59:59+00:00")  # 10-08 23:59 KST
+    r = client.get("/api/charts/minute?ticker=005930&market=KR&count=6").json()
+    assert [m["text"][:5] for m in r["markers"]] == ["23:59"]
+
+
+def test_minute_chart_concurrent_misses_call_kis_once(client, deps):
+    import threading
+    import time as _t
+
+    orig = deps.market.get_minute_kr
+
+    def slow(*a, **k):
+        _t.sleep(0.2)
+        return orig(*a, **k)
+
+    deps.market.get_minute_kr = slow
+    before = deps.market.calls.count("get_minute_kr")
+    codes: list[int] = []
+    ts = [
+        threading.Thread(
+            target=lambda: codes.append(
+                client.get("/api/charts/minute?ticker=005930&market=KR&count=4").status_code
+            )
+        )
+        for _ in range(3)
+    ]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join()
+    assert codes == [200, 200, 200]
+    assert deps.market.calls.count("get_minute_kr") - before == 1
+
+
 def test_minute_chart_account_filter_orders_only(client, conn):
     dec_id = repo.ingest_checkpoint(conn, D, "KR", "005930", "30_decision", {"data": ok_decision()})
     _order(conn, dec_id, "2026-10-09T00:02:30+00:00")

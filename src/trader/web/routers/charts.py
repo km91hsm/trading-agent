@@ -29,6 +29,7 @@ _candle_cache: dict[
 ] = {}  # (market, ticker, exchange, days, kst일) → (저장 시각, 봉)
 _minute_cache: dict[tuple, tuple[float, list[dict]]] = {}  # (market, ticker, exchange, count)
 _cache_lock = threading.Lock()  # 요청 스레드가 여럿이라 dict 순회·삭제가 겹친다
+_minute_locks: dict[tuple, threading.Lock] = {}  # 분봉 키별 조회 락(동시 미스를 KIS 1회로)
 
 
 def _remember(
@@ -166,6 +167,30 @@ def minute_chart(
     if hit and time.monotonic() - hit[0] < MINUTE_CACHE_TTL_S:
         out_candles = hit[1]
     else:
+        out_candles = _minute_fetch(deps, m, ticker, exchange, count, tz, key)
+    session_date = out_candles[-1]["date"] if out_candles else None
+    markers: list[dict] = []
+    if session_date:
+        markers = _intraday_markers(deps, m, ticker, account_id, session_date, tz)
+    return {
+        "ticker": ticker,
+        "market": m,
+        "interval": "1m",
+        "tz": str(tz.key),
+        "session_date": session_date,
+        "candles": [{k: v for k, v in c.items() if k != "date"} for c in out_candles],
+        "markers": markers,
+    }
+
+
+def _minute_fetch(deps, m, ticker, exchange, count, tz, key) -> list[dict]:
+    """분봉 캐시 미스: 키별 락 안에서 캐시를 다시 보고, 그래도 없을 때만 KIS 를 부른다 — 같은 차트를
+    여러 탭·요청이 동시에 열어도 KIS 호출은 한 번(전체 검토 3차, quotes 와 같은 방식)."""
+    with _minute_key_lock(key):
+        with _cache_lock:
+            hit = _minute_cache.get(key)
+        if hit and time.monotonic() - hit[0] < MINUTE_CACHE_TTL_S:
+            return hit[1]
         try:
             with kis_wait(deps.market):
                 candles = (
@@ -188,19 +213,16 @@ def minute_chart(
             for c in candles
         ]
         _remember(_minute_cache, key, out_candles, ttl=MINUTE_CACHE_TTL_S)
-    session_date = out_candles[-1]["date"] if out_candles else None
-    markers: list[dict] = []
-    if session_date:
-        markers = _intraday_markers(deps, m, ticker, account_id, session_date, tz)
-    return {
-        "ticker": ticker,
-        "market": m,
-        "interval": "1m",
-        "tz": str(tz.key),
-        "session_date": session_date,
-        "candles": [{k: v for k, v in c.items() if k != "date"} for c in out_candles],
-        "markers": markers,
-    }
+    return out_candles
+
+
+def _minute_key_lock(key: tuple) -> threading.Lock:
+    with _cache_lock:
+        idle = [k for k, lk in _minute_locks.items() if k not in _minute_cache and not lk.locked()]
+        for k in idle:
+            if k != key:  # 쓰지 않는 키의 락은 지운다(캐시처럼 키가 날마다 늘지 않게)
+                del _minute_locks[k]
+        return _minute_locks.setdefault(key, threading.Lock())
 
 
 def _intraday_markers(deps, m, ticker, account_id, session_date, tz) -> list[dict]:
@@ -215,12 +237,16 @@ def _intraday_markers(deps, m, ticker, account_id, session_date, tz) -> list[dic
         return int(dt.timestamp()) // 60 * 60, dt.strftime("%H:%M")
 
     out: list[dict] = []
+    # 그날(시장 현지) UTC 경계를 SQL 에 넣는다 — 종목의 모든 주문·트리거를 읽어 파이썬에서 거르지
+    # 않게(전체 검토 3차). minute_of 가 현지 날짜를 한 번 더 확인한다
+    lo, hi = repo.day_bounds(date.fromisoformat(session_date), m)
     with closing(deps.conn_factory()) as conn:
         sql = (
             "SELECT account_id, side, qty, price, created_at FROM orders "
-            f"WHERE market=? AND ticker=? AND status NOT IN ({repo.dead_status_sql()})"
+            f"WHERE market=? AND ticker=? AND status NOT IN ({repo.dead_status_sql()}) "
+            "AND created_at >= ? AND created_at < ?"
         )
-        args: list = [m, ticker]
+        args: list = [m, ticker, lo, hi]
         if account_id:
             sql += " AND account_id=?"
             args.append(account_id)
@@ -232,8 +258,9 @@ def _intraday_markers(deps, m, ticker, account_id, session_date, tz) -> list[dic
                 text = f"{hhmm} {r['account_id']} {r['side']} {r['qty']}주 @{px}"
                 out.append({"time": t, "kind": "order", "side": r["side"], "text": text})
         for r in conn.execute(
-            "SELECT kind, detail, created_at FROM triggers WHERE market=? AND ticker=? ORDER BY id",
-            (m, ticker),
+            "SELECT kind, detail, created_at FROM triggers WHERE market=? AND ticker=? "
+            "AND created_at >= ? AND created_at < ? ORDER BY id",
+            (m, ticker, lo, hi),
         ).fetchall():
             at = minute_of(r["created_at"])
             if at is not None:
