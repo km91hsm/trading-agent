@@ -6,6 +6,25 @@ import hmac
 
 from fastapi import HTTPException, Request
 
+PROXY_HEADERS = ("tailscale-user-login", "x-forwarded-for", "forwarded", "x-real-ip")
+
+
+def is_direct_local(request: Request) -> bool:
+    """이 PC 의 브라우저가 직접 연 요청인가: 루프백 클라이언트 ∧ 프록시 흔적 없음 ∧ Host 가
+    루프백(tailscale serve 로 들어온 폰 요청은 아니다). 키 입력·토큰 받기는 이때만."""
+    client = request.client.host if request.client else ""
+    host = (request.headers.get("host") or "").rsplit(":", 1)[0].strip("[]").lower()
+    return (
+        client in ("127.0.0.1", "::1")
+        and host in ("127.0.0.1", "localhost", "::1", "testserver")
+        and not any(request.headers.get(h) for h in PROXY_HEADERS)
+    )
+
+
+def require_direct_local(request: Request) -> None:
+    if not is_direct_local(request):
+        raise HTTPException(status_code=403, detail="이 PC 에서 직접 연 화면에서만 할 수 있습니다")
+
 
 def require_token(request: Request) -> None:
     token = request.app.state.deps.token

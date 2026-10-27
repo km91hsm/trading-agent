@@ -69,6 +69,8 @@ class NoticeListener:
         self.rejected: str | None = None
         self.notices = 0
         self._enabled_fn = enabled
+        # 시세 허브와 같은 앱키(같은 웹소켓 세션)를 쓰는가 — 참이면 붙어 있는 동안 허브가 비켜선다
+        self.shares_market_session = env == "real"
         self._enabled = False
         self._enabled_at = -1e9
         self._stop = threading.Event()

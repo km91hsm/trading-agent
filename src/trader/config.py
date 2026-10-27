@@ -493,6 +493,16 @@ class AccountConfig(BaseModel):
     # 실전 자본 상한(Stock D-074): 시장(통화)별로 사이징에 쓰는 NAV·가능금액을 이 금액까지로 자른다.
     # 사람이 단계적으로 올린다(자동 증액 없음). 없으면 상한 없음
     capital_cap: dict[Market, Decimal] | None = None
+    # 계좌 전용 키 접두사(KIS 는 앱키를 계좌마다 발급한다). 없으면 계좌 id 로 정한
+    # `KIS_<ID>_`(real-2 → KIS_REAL_2_) 에 APP_KEY 가 있을 때 그것을, 그것도 없으면 env 공용 키
+    credentials: str | None = None
+
+    @field_validator("credentials")
+    @classmethod
+    def _check_prefix(cls, v: str | None) -> str | None:
+        if v is not None and not CRED_PREFIX_RE.match(v):
+            raise ValueError(f"credentials 는 KIS_ 로 시작해 _ 로 끝나는 대문자 접두사: {v!r}")
+        return v
 
 
 class _AccountsFile(BaseModel):
@@ -674,9 +684,10 @@ class SectorMap(BaseModel):
 
 
 class Secrets(BaseModel):
-    """필드명 = 환경변수명. 비어 있지 않은 환경변수가 .env 값을 덮어쓴다."""
+    """필드명 = 환경변수명. 비어 있지 않은 환경변수가 .env 값을 덮어쓴다. 계좌 전용 키
+    (`KIS_<접두사>_APP_KEY` 등, `CRED_SUFFIXES`)는 필드가 아니라 추가 값으로 들고 있다."""
 
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="allow")
 
     KIS_PAPER_APP_KEY: str | None = None
     KIS_PAPER_APP_SECRET: str | None = None
@@ -699,6 +710,68 @@ class Secrets(BaseModel):
     REDDIT_USER: str | None = None
     # 체결통보 웹소켓 구독 키(HTS ID, Stock D-060). 없으면 정기 체결 동기화만
     KIS_HTS_ID: str | None = None
+
+    def get(self, name: str) -> str | None:
+        """필드 또는 계좌 전용 추가 값(없거나 빈 값이면 None)."""
+        v = getattr(self, name, None) if name in Secrets.model_fields else None
+        if v is None:
+            v = (self.model_extra or {}).get(name)
+        v = (str(v).strip() if v is not None else "") or None
+        return v
+
+    def kis_creds(
+        self, account: AccountConfig | None = None, *, env: Env | None = None
+    ) -> KisCreds:
+        """계좌(없으면 env 공용)의 KIS 자격증명. 계좌 전용 접두사에 APP_KEY 가 있으면 그 묶음,
+        아니면 env 공용(`KIS_PAPER_*`·`KIS_REAL_*`). HTS ID 는 접두사 값 → `KIS_HTS_ID`."""
+        e: Env = account.env if account is not None else (env or "real")
+        default = f"KIS_{e.upper()}_"
+        prefix = account_prefix(account) if account is not None else default
+        if prefix != default and not self.get(prefix + "APP_KEY"):
+            prefix = default
+        return KisCreds(
+            env=e,
+            prefix=prefix,
+            app_key=self.get(prefix + "APP_KEY"),
+            app_secret=self.get(prefix + "APP_SECRET"),
+            cano=self.get(prefix + "CANO"),
+            hts_id=self.get(prefix + "HTS_ID") or self.get("KIS_HTS_ID"),
+        )
+
+
+CRED_PREFIX_RE = re.compile(r"^KIS_[A-Z0-9]+(?:_[A-Z0-9]+)*_$")
+CRED_SUFFIXES = ("APP_KEY", "APP_SECRET", "CANO", "HTS_ID")
+
+
+def account_prefix(account: AccountConfig) -> str:
+    """계좌 전용 키 접두사: yaml `credentials` 가 우선, 없으면 id → `KIS_<ID>_`(영숫자 외는 _)."""
+    if account.credentials:
+        return account.credentials
+    return "KIS_" + re.sub(r"[^A-Z0-9]+", "_", account.id.upper()).strip("_") + "_"
+
+
+class KisCreds(BaseModel):
+    """한 앱키 묶음. prefix 는 실제로 고른 접두사(공용이면 `KIS_<ENV>_`)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    env: Env
+    prefix: str
+    app_key: str | None = None
+    app_secret: str | None = None
+    cano: str | None = None
+    hts_id: str | None = None
+
+    @property
+    def shared(self) -> bool:
+        return self.prefix == f"KIS_{self.env.upper()}_"
+
+    @property
+    def bucket(self) -> str:
+        """토큰 캐시·레이트리미터 이름(파일명 안전): 공용은 env, 전용은 env-접두사."""
+        if self.shared:
+            return self.env
+        return f"{self.env}-" + self.prefix.removeprefix("KIS_").rstrip("_").lower()
 
 
 # --- 로더 -------------------------------------------------------------------
@@ -1035,8 +1108,12 @@ def _cano_from_secrets(a: AccountConfig, secrets: Secrets | None) -> AccountConf
     """cano 가 자리표시자면 `KIS_<PAPER|REAL>_CANO` 로 채운다(없으면 그대로 두고 경고)."""
     if a.cano and a.cano != CANO_PLACEHOLDER and not a.cano.startswith("${"):
         return a
-    key = "KIS_PAPER_CANO" if a.env == "paper" else "KIS_REAL_CANO"
-    value = (getattr(secrets, key, None) or "").strip() if secrets is not None else ""
+    creds = secrets.kis_creds(a) if secrets is not None else None
+    key = (creds.prefix if creds is not None else f"KIS_{a.env.upper()}_") + "CANO"
+    # 전용 키 묶음이면 그 접두사의 계좌번호, 없으면 env 공용
+    value = (creds.cano if creds is not None else None) or ""
+    if creds is not None and not value and not creds.shared:
+        value = secrets.get(f"KIS_{a.env.upper()}_CANO") or ""
     if not value:
         logger.warning("계좌 %s 의 계좌번호가 자리표시자이고 secrets %s 도 비어 있음", a.id, key)
         return a
@@ -1095,5 +1172,8 @@ def load_secrets(path: Path | None = None) -> Secrets:
         env = (os.environ.get(key) or "").strip()
         if env:
             values[key] = env
+    for key, raw in os.environ.items():  # 계좌 전용 키도 환경변수가 덮어쓴다
+        if key.startswith("KIS_") and key.endswith(CRED_SUFFIXES) and raw.strip():
+            values[key] = raw.strip()
     cleaned = {k: v.strip() for k, v in values.items() if v and v.strip()}
     return _validate(Secrets, cleaned, p.name)

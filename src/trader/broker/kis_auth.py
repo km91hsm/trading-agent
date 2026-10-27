@@ -1,6 +1,7 @@
 """KIS 접근 토큰 발급·캐시.
 
-- env 별 파일 `state/kis_token_<env>.json` = {access_token, expires_at, failed_at}
+- 앱키 묶음별 파일 `state/kis_token_<name>.json` = {access_token, expires_at, failed_at}
+  (name 은 공용 키면 env, 계좌 전용 키면 `<env>-<접두사>` — 키마다 토큰이 따로라 섞으면 덮어쓴다)
 - 만료 1시간 전부터 갱신을 시도하되, 갱신이 실패해도 아직 유효한 토큰이 있으면 그것을 쓴다.
 - 발급 실패 시각(failed_at)을 파일에 기록해 다른 인스턴스·프로세스도 60초 백오프를 지킨다.
 """
@@ -45,9 +46,11 @@ class KisAuth:
         http: httpx.Client | None = None,
         state: Path | None = None,
         clock: Callable[[], datetime] = _utc_now,
+        name: str | None = None,
     ) -> None:
         quiet_httpx()
         self.env = env
+        self.name = name or env
         self._app_key = app_key
         self._app_secret = app_secret
         self._http = http or httpx.Client(timeout=10)
@@ -60,7 +63,7 @@ class KisAuth:
     @property
     def cache_path(self) -> Path:
         base = self._state if self._state is not None else paths.state_dir()
-        return base / f"kis_token_{self.env}.json"
+        return base / f"kis_token_{self.name}.json"
 
     # --- 캐시 ---------------------------------------------------------------
 
