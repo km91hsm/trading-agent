@@ -113,15 +113,24 @@ def test_refresh_snapshots_under_market_run_date(project, conn):
 
 
 def test_ensure_fresh_refreshes_stale_snapshot_once_and_throttles(client, deps, conn):
-    """페이지 접속 갱신(토큰 없음): 정규장일 때만, 오래된 스냅샷만, 시장별 30초에 한 번(조회만)."""
-    from datetime import UTC, datetime
+    """페이지 접속 갱신(토큰 없음): 오래된 스냅샷만(정규장 2분·장 밖 10분 — 이체·입출금은 장 밖에도
+    일어난다), 시장별 30초에 한 번(조회만)."""
+    from datetime import UTC, datetime, timedelta
 
     from trader.web.routers import portfolio as pf
 
     pf._ENSURE_LAST.clear()
-    deps.now = lambda: datetime(2026, 10, 24, 3, 0, tzinfo=UTC)  # 토요일
-    assert client.post("/api/portfolio/ensure-fresh?market=KR").json()["skipped"] == "정규장 아님"
+    sat = datetime(2026, 10, 24, 3, 0, tzinfo=UTC)  # 토요일
+    deps.now = lambda: sat
+    assert "paper-main" in client.post("/api/portfolio/ensure-fresh?market=KR").json()["refreshed"]
+    # 스냅샷 기록 시각은 벽시계라 테스트 시각에 맞춘다
+    conn.execute("UPDATE positions_snapshot SET created_at=?", (sat.isoformat(),))
+    conn.commit()
+    pf._ENSURE_LAST.clear()
+    deps.now = lambda: sat + timedelta(minutes=5)  # 장 밖 10분 안 → 신선
+    assert "paper-main" in client.post("/api/portfolio/ensure-fresh?market=KR").json()["skipped"]
     deps.now = lambda: datetime(2026, 10, 26, 1, 0, tzinfo=UTC)  # 월 10:00 KST
+    pf._ENSURE_LAST.clear()
     r = client.post("/api/portfolio/ensure-fresh?market=KR").json()
     assert "paper-main" in r["refreshed"]
     assert all(not b.orders for b in deps.brokers.values())  # 주문 없음

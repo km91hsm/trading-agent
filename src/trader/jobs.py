@@ -49,6 +49,10 @@ class EmptyParams(_P):
     pass
 
 
+class UsageProbeParams(_P):
+    force: bool = False  # True = 시스템 현황 '지금 확인'(최근 관측 무시), 페이지 접속 요청은 False
+
+
 class MlTrainParams(_P):
     market: Market | None = None
 
@@ -117,6 +121,7 @@ PARAMS: dict[str, type[BaseModel]] = {
     "reflect": ReflectParams,
     "fills_sync": EmptyParams,
     "news_collect": EmptyParams,
+    "usage_probe": UsageProbeParams,
     "reconcile": ReconcileParams,
     "discover": DiscoverParams,
 }
@@ -124,7 +129,7 @@ KINDS: tuple[str, ...] = tuple(PARAMS)
 # kind 기본 우선순위. 손절 뒤 재평가는 시간이 생명이라 앞으로, 나머지는 요청 순서.
 PRIORITY: dict[str, int] = {"reevaluate": 10}
 # 가벼운 kind(체결 동기화·뉴스 수집)만 heavy 락 밖. 나머지는 세션·KIS·CPU 를 오래 쓴다.
-LIGHT_KINDS: frozenset[str] = frozenset({"fills_sync", "news_collect", "reconcile"})
+LIGHT_KINDS: frozenset[str] = frozenset({"fills_sync", "news_collect", "reconcile", "usage_probe"})
 HEAVY_KINDS: frozenset[str] = frozenset(k for k in KINDS if k not in LIGHT_KINDS)
 # 빠른 레인(전체 검토 P2): heavy 락과 무관하게 데몬 `job_queue_fast` 틱이 꺼낸다 — 백필·scan_analyze
 # 가 몇십 분 도는 동안 손절 재평가·체결 동기화가 뒤로 밀리지 않게
@@ -145,6 +150,7 @@ _KIND_LABEL = {
     "reflect": "복기",
     "fills_sync": "체결 동기화",
     "news_collect": "뉴스 수집",
+    "usage_probe": "Claude 사용량 확인",
     "reconcile": "KIS 대조",
     "discover": "장중 발굴",
 }

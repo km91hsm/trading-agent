@@ -7,6 +7,7 @@ import { Section } from "../components/Section";
 import { Table, Td } from "../components/Table";
 import { Term } from "../components/Term";
 import { UsageBlock } from "../components/Usage";
+import { RunJobButton, useCanRun } from "../components/RunJob";
 import { useApp, useLoad, useNow } from "../hooks";
 import { daemonText, type DaemonStatus } from "../jobs";
 import type { UsageResp } from "../usage";
@@ -30,6 +31,7 @@ export function SystemPage() {
   const settings = useLoad(() => getJson<SystemSettings>("/api/system/settings"), [tControl]);
   const models = useLoad(() => getJson<ModelsResp>("/api/ml/models"), [tJobs]);
   const rl = useLoad(() => getJson<RlResp>("/api/rl/experiments"), [tJobs]);
+  const run = useCanRun();
   const signal = daemonText(daemon.data);
   const cap = settings.data?.llm?.daily_session_cap;
 
@@ -50,7 +52,10 @@ export function SystemPage() {
       </div>
       <div className="cols-2">
         <div>
-          <Section title="Claude 사용량" aside="구독 창 · 세션">
+          <Section
+            title="Claude 사용량"
+            aside={<RunJobButton spec={{ kind: "usage_probe", params: { force: true } }} label="지금 확인" disabledReason={run.reason} />}
+          >
             <UsageBlock data={usage.data} />
           </Section>
           <Section title="모델" aside="승격 상태">

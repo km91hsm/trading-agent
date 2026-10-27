@@ -1,6 +1,6 @@
 // Claude 사용량 블록: 구독 창(5시간·7일)의 마지막 관측값 막대 + 이 저장소 세션 집계.
 // 관측 경과·초기화까지 남은 시간은 서버 재조회 없이 클라이언트 시계로 계속 흐른다(useNow).
-import { useNow } from "../hooks";
+import { useEnsureUsageFresh, useNow } from "../hooks";
 import { Table, Td, Th } from "./Table";
 import { ageSince, agoText, barPct, observationStale, resetParts, sourceText, throttleText, usageLevel, type LimitWindow, type UsageResp } from "../usage";
 
@@ -29,6 +29,7 @@ function Meter({ label, w, now }: { label: string; w: LimitWindow; now: Date }) 
 
 export function UsageBlock({ data }: { data: UsageResp | null; now?: Date }) {
   const now = useNow(15_000);
+  useEnsureUsageFresh(); // 접속·새로고침·탭 복귀 때 5분 넘은 관측이면 데몬이 바로 확인
   const rl = data?.rate_limits ?? null;
   const w = data?.windows;
   const age = ageSince(rl?.observed_at, now) ?? rl?.age_s ?? null;
@@ -43,7 +44,7 @@ export function UsageBlock({ data }: { data: UsageResp | null; now?: Date }) {
           </div>
           <p className={stale ? "note err" : "note"}>
             {sourceText(rl.source)} · {agoText(age)}
-            {stale ? " — 오래된 값이에요. 데몬이 30분마다 확인하니 데몬이 켜져 있는지 보세요." : ""}
+            {stale ? " — 오래된 값이에요. 데몬이 켜져 있으면 곧 다시 확인해요(꺼져 있으면 갱신되지 않아요)." : ""}
           </p>
           {throttleText(data?.throttle) && (
             <p className="note pend" title={data?.throttle?.reason ?? undefined}>
@@ -52,7 +53,7 @@ export function UsageBlock({ data }: { data: UsageResp | null; now?: Date }) {
           )}
         </>
       ) : (
-        <p className="note">구독 사용률 관측값이 아직 없어요. 데몬이 켜져 있으면 30분 안에 첫 확인 값이 들어와요.</p>
+        <p className="note">구독 사용률 관측값이 아직 없어요. 데몬이 켜져 있으면 1분 안에 첫 확인 값이 들어와요.</p>
       )}
       {w && (
         <Table dense caption="이 저장소의 세션">

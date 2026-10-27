@@ -18,6 +18,7 @@ from trader.web.routers._common import (
     kis_wait,
     require_account,
     require_market,
+    require_same_origin,
 )
 
 router = APIRouter(prefix="/portfolio", tags=["portfolio"])
@@ -164,23 +165,19 @@ _ENSURE_LOCK = threading.Lock()
 
 @router.post("/ensure-fresh")
 def ensure_fresh(request: Request, market: str | None = None) -> dict:
-    """페이지 접속 때(토큰 없음): 정규장이고 스냅샷이 2분보다 오래된 계좌만 브로커 잔고를 다시
-    읽는다 — 조회만, 주문 없음. 시장별 30초에 한 번만 실제로 돈다(그 사이 요청은 `throttled`).
+    """페이지 접속 때(토큰 없음): 스냅샷이 오래된 계좌만(정규장 2분, 장 밖 10분 — 입출금·이체는
+    장 밖에도 일어난다) 브로커 잔고를 다시 읽는다 — 조회만, 주문 없음. 시장별 30초에 한 번만
+    실제로 돈다(그 사이 요청은 `throttled`).
     결과는 SSE `positions` 로 화면에 반영된다. 섹터 미분류 보유 종목은 같은 자리에서 자동 분류."""
     from trader.orchestrator import balance
 
     deps = deps_of(request)
-    # 토큰 없는 쓰기성 호출이라 다른 사이트(no-cors 단순 요청)가 부르지 못하게 같은 출처만 —
-    # 헤더가 없는 비브라우저 호출(테스트·CLI)은 통과(전체 검토 2026-10-27)
-    site = request.headers.get("sec-fetch-site")
-    if site is not None and site not in ("same-origin", "none"):
-        raise HTTPException(status_code=403, detail="같은 출처 화면에서만 부를 수 있습니다")
+    require_same_origin(request)
     m = (market or "").upper()
     if m not in ("KR", "US"):
         raise HTTPException(status_code=400, detail="market 은 KR|US")
     now = deps.now()
-    if not balance.open_markets([m], now):
-        return {"market": m, "skipped": "정규장 아님"}
+    stale_after = balance.STALE_AFTER if balance.open_markets([m], now) else balance.OFF_HOURS_STALE
     with _ENSURE_LOCK:
         last = _ENSURE_LAST.get(m, 0.0)
         if time.monotonic() - last < ENSURE_MIN_INTERVAL_S:
@@ -199,6 +196,7 @@ def ensure_fresh(request: Request, market: str | None = None) -> dict:
                 market_client=None,
                 state=deps.state,
                 only_stale=True,
+                stale_after=stale_after,
                 broker_ctx=kis_wait,
             )
     except HTTPException as e:  # kis_wait 의 503(리미터 점유) — 다음 접속 때 다시

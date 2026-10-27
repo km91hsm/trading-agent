@@ -16,6 +16,14 @@ def deps_of(request: Request):
     return request.app.state.deps
 
 
+def require_same_origin(request: Request) -> None:
+    """토큰 없는 쓰기성 호출(페이지 접속 갱신)을 다른 사이트(no-cors 단순 요청)가 부르지 못하게
+    같은 출처만 — 헤더가 없는 비브라우저 호출(테스트·CLI)은 통과(전체 검토 2026-10-27)."""
+    site = request.headers.get("sec-fetch-site")
+    if site is not None and site not in ("same-origin", "none"):
+        raise HTTPException(status_code=403, detail="같은 출처 화면에서만 부를 수 있습니다")
+
+
 def require_account(request: Request, account_id: str | None) -> AccountConfig:
     if not account_id:
         raise HTTPException(status_code=400, detail="account_id 가 필요합니다")
