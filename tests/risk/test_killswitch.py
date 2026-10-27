@@ -12,3 +12,12 @@ def test_auto_trip_scopes_to_account_manual_to_all(conn):
     assert killswitch.reason(conn)  # 표시용은 켜져 있음
     killswitch.engage(conn, reason="/kill", source="telegram")
     assert killswitch.reason(conn, "real-main")
+
+
+def test_auto_engage_does_not_shrink_manual_kill(conn):
+    from trader.risk import killswitch
+
+    killswitch.engage(conn, reason="/kill", source="telegram")
+    killswitch.engage(conn, reason="자동", source="auto", account_id="paper-main")
+    assert killswitch.state(conn)["accounts"] is None  # 전 계좌 그대로
+    assert not conn.in_transaction

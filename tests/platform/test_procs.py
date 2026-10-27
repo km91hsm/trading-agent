@@ -4,7 +4,8 @@ from trader.platform import procs
 
 
 def test_legacy_localized_lock_falls_back_to_pid_alive(monkeypatch):
-    monkeypatch.setattr(procs, "process_start", lambda pid: "Tue Oct 27 11:36:26 2026")
+    monkeypatch.setattr(procs, "process_start", lambda pid: "utc:Tue Oct 27 02:36:26 2026")
     alive = lambda pid: True  # noqa: E731
     assert procs.same_process(1, "화 10/27 11:36:26 2026", alive=alive)  # 옛 한국어 잠금
-    assert not procs.same_process(1, "Mon Oct 26 09:00:00 2026", alive=alive)  # 진짜 다른 프로세스
+    assert procs.same_process(1, "Tue Oct 27 11:36:26 2026", alive=alive)  # 옛 영어·KST 잠금
+    assert not procs.same_process(1, "utc:Mon Oct 26 09:00:00 2026", alive=alive)  # 다른 프로세스

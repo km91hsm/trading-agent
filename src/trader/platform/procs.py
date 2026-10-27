@@ -21,6 +21,9 @@ def open_folder(path: os.PathLike[str] | str) -> None:
     subprocess.Popen([opener, str(path)], shell=False)
 
 
+START_FORMAT = "utc:"  # macOS process_start 값의 형식 버전(C 로캘·UTC 고정, 2026-10-27)
+
+
 def process_start(pid: int) -> str | None:
     """프로세스 시작 시각 식별자(OS 별 문자열). pid 는 재부팅·종료 뒤 재사용되므로 잠금 파일의
     pid 가 살아 있어도 '그 데몬' 인지 확인하는 데 쓴다. 못 구하면 None(비교 생략)."""
@@ -47,7 +50,8 @@ def process_start(pid: int) -> str | None:
                 env={"LC_ALL": "C", "LANG": "C", "TZ": "UTC", "PATH": "/usr/bin:/bin"},
             )
             text = out.stdout.strip()
-            return text or None
+            # 형식 버전 접두사: 예전 잠금(로캘·시간대가 섞인 값)과 구별해 호환 비교를 한다
+            return f"{START_FORMAT}{text}" if text else None
         if sys.platform == "win32":
             import ctypes
             from ctypes import wintypes
@@ -91,9 +95,9 @@ def same_process(
     current = process_start(pid)
     if current is None or current == start:
         return True
-    # 예전 잠금은 로캘이 섞인 lstart('화 10/27 …')로 적혔다 — 형식이 달라 비교할 수 없으면 pid
-    # 생존만 본다(새 잠금은 C 로캘로 적힌다)
-    return not start.isascii()
+    # 예전 macOS 잠금은 로캘·시간대가 섞인 lstart('화 10/27 …'·KST 'Tue Oct 27 11:36 …')라 새 값
+    # (`utc:` 접두사, C 로캘·UTC)과 비교할 수 없다 — 그런 잠금은 pid 생존만 본다(Codex 리뷰)
+    return current.startswith(START_FORMAT) and not start.startswith(START_FORMAT)
 
 
 def pid_alive(pid: int) -> bool:

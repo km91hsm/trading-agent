@@ -77,12 +77,17 @@ def _baseline(
 def engage(
     conn: sqlite3.Connection, *, reason: str, source: str, account_id: str | None = None
 ) -> None:
-    """켠다. account_id 가 있으면(자동 발동) 그 계좌만 범위에 더하고, 없으면(수동) 전 계좌."""
+    """켠다. account_id 가 있으면(자동 발동) 그 계좌만 범위에 더하고, 없으면(수동) 전 계좌.
+    읽기~쓰기를 한 쓰기 트랜잭션으로 묶는다 — 자동 발동이 읽은 직후 `/kill` 이 저장되면 계좌 한정
+    상태가 전체 차단을 덮어쓸 수 있었다(Codex 리뷰). set_flag 의 commit 이 트랜잭션을 끝낸다."""
+    if not conn.in_transaction:
+        conn.execute("BEGIN IMMEDIATE")
     prev = state(conn)
     scope: list[str] | None = None
     if account_id is not None:
         if prev.get("on") and prev.get("accounts") is None:
-            return  # 이미 전 계좌로 켜져 있다
+            conn.commit()  # 이미 전 계좌로 켜져 있다 — 트랜잭션만 닫는다
+            return
         scope = sorted({*(prev.get("accounts") or [] if prev.get("on") else []), account_id})
         if prev.get("on"):
             reason = f"{prev.get('reason')}; {reason}"
