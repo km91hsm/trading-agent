@@ -21,6 +21,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 DIST = ROOT / "dist" / "trader"
+# PyInstaller 출력은 여기에 두고 번들 항목만 DIST 로 옮긴다(--noconfirm 이 출력 폴더를 비우므로
+# 운용 중인 dist/trader 를 PyInstaller 가 직접 건드리지 않게)
+STAGE = ROOT / "build" / "dist-stage"
 
 
 def _force_utf8() -> None:
@@ -55,58 +58,49 @@ def build_web() -> None:
     _run([npm, "run", "build"], cwd=str(web))
 
 
-def assemble_dist(dist: Path, *, sys_platform: str = sys.platform) -> Path:
-    """배포 폴더 `dist/trader/` 를 만든다.
+def assemble_dist(
+    stage: Path, *, target: Path | None = None, sys_platform: str = sys.platform
+) -> Path:
+    """PyInstaller 산출물(stage)로 배포 폴더(target, 기본 `stage/trader`)를 만든다.
 
-    macOS: PyInstaller 가 만든 `dist/Trader.app` 을 `dist/trader/` 안으로 옮기고 터미널용 심링크
-    `trader → Trader.app/Contents/MacOS/trader` 를 둔다 (COLLECT 가 남긴 평면 폴더는 지운다).
-    Windows: `dist/trader/{trader.exe, TraderApp.exe, _internal/}` 그대로."""
-    target = dist / "trader"
+    macOS: `stage/Trader.app` 을 target 안으로 옮기고 터미널용 심링크 `trader →
+    Trader.app/Contents/MacOS/trader` 를 둔다. Windows: COLLECT 폴더(`stage/trader`)의 항목을 target
+    으로 옮긴다. 어느 쪽이든 target 을 통째로 지우지 않고 **번들 항목만** 바꾼다 — target 은 실행
+    중인 앱의 TRADER_HOME 일 수 있다(데몬이 로그를 쓰는 중이면 rmtree 가 실패해 앱 파일만 지워진 채
+    남았다, 2026-10-27). 사용자 데이터(USER_DATA)는 건드리지 않는다."""
+    target = target or stage / "trader"
+    target.mkdir(parents=True, exist_ok=True)
     if sys_platform != "darwin":
+        collect = stage / "trader"
+        if collect.resolve() != target.resolve():
+            for item in sorted(collect.iterdir()):
+                _remove(target / item.name)
+                shutil.move(str(item), str(target / item.name))
         return target
-    app = dist / "Trader.app"
+    app = stage / "Trader.app"
     if not app.is_dir():
         raise SystemExit(f"Trader.app 이 없습니다: {app}")
-    if target.exists():
-        shutil.rmtree(target)
-    target.mkdir(parents=True)
+    for name in BUNDLE_ENTRIES:
+        _remove(target / name)
     shutil.move(str(app), str(target / "Trader.app"))
     os.symlink(Path("Trader.app") / "Contents" / "MacOS" / "trader", target / "trader")
     return target
 
 
-# 번들 폴더 = 운용 중인 TRADER_HOME 일 수 있다(Trader.app 의 부모). 빌드가 폴더를 비우기 전에
-# 사용자 데이터를 옆으로 옮겼다가 되돌린다 — 원장·키·설정이 지워지던 문제(전체 검토 2026-10-27)
-USER_DATA = ("config", "secrets", "state", "docs")
-
-
-def stash_user_data(target: Path, stash_root: Path) -> Path | None:
-    """target 안의 사용자 데이터 폴더를 stash_root/<시각> 으로 옮긴다. 없으면 None."""
-    present = [n for n in USER_DATA if (target / n).exists()]
-    if not present:
-        return None
-    from datetime import datetime
-
-    stash = stash_root / f"trader-userdata-{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-    stash.mkdir(parents=True)
-    for n in present:
-        shutil.move(str(target / n), str(stash / n))
-    print(f"사용자 데이터 보존: {', '.join(present)} → {stash}", flush=True)
-    return stash
-
-
-def restore_user_data(stash: Path | None, target: Path) -> None:
-    """stash 의 폴더를 target 으로 되돌린다(새 번들에 같은 이름이 있으면 사용자 것이 이긴다)."""
-    if stash is None:
+def _remove(p: Path) -> None:
+    if p.name in USER_DATA:
         return
-    target.mkdir(parents=True, exist_ok=True)
-    for item in sorted(stash.iterdir()):
-        dst = target / item.name
-        if dst.exists():
-            shutil.rmtree(dst) if dst.is_dir() else dst.unlink()
-        shutil.move(str(item), str(dst))
-    stash.rmdir()
-    print(f"사용자 데이터 복원 → {target}", flush=True)
+    if p.is_symlink() or p.is_file():
+        p.unlink()
+    elif p.is_dir():
+        shutil.rmtree(p)
+
+
+# 번들 폴더 = 운용 중인 TRADER_HOME 일 수 있다(Trader.app 의 부모). 빌드는 이 이름들을 건드리지
+# 않고 zip 에도 넣지 않는다 — 원장·키·설정이 지워지던 문제(전체 검토 2026-10-27)
+USER_DATA = ("config", "secrets", "state", "docs")
+# macOS 번들 폴더에서 빌드가 바꾸는 것(COLLECT 가 남긴 평면 산출물 포함)
+BUNDLE_ENTRIES = ("Trader.app", "trader", "TraderApp", "_internal", "README.md")
 
 
 def cli_exe(dist_dir: Path) -> Path:
@@ -131,13 +125,13 @@ def build_bundle() -> Path:
             str(ROOT / "packaging" / "trader.spec"),
             "--noconfirm",
             "--distpath",
-            str(ROOT / "dist"),
+            str(STAGE),
             "--workpath",
             str(ROOT / "build" / "pyinstaller"),
         ],
         cwd=str(ROOT),
     )
-    assemble_dist(ROOT / "dist")
+    assemble_dist(STAGE, target=DIST)
     exe = cli_exe(DIST)
     if not exe.exists():
         raise SystemExit(f"실행파일이 없습니다: {exe}")
@@ -174,8 +168,10 @@ def smoke(exe: Path) -> dict:
     ):
         if not (internal / rel).exists():
             raise SystemExit(f"번들 리소스 누락: {internal.name}/{rel}")
+    # 번들 **안**(리소스 폴더)에 운용 데이터가 섞였는지만 본다 — dist/trader 바로 아래의
+    # secrets·state 는 운용 중인 TRADER_HOME 의 사용자 데이터라 정상이다(zip 은 USER_DATA 를 뺀다)
     for bad in ("secrets", "state"):
-        if (DIST / bad).exists() or (internal / bad).exists():
+        if (internal / bad).exists():
             raise SystemExit(f"번들에 {bad}/ 가 들어갔습니다")
     windowed = DIST / ("TraderApp.exe" if sys.platform == "win32" else "Trader.app/Contents/MacOS/TraderApp")
     if not windowed.exists():
@@ -216,7 +212,10 @@ def make_zip(dist_dir: Path, name: str, *, readme: Path | None = None) -> Path:
         target.unlink()
     with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as zf:
         for p in sorted(dist_dir.rglob("*")):
-            arc = (Path("trader") / p.relative_to(dist_dir)).as_posix()
+            rel = p.relative_to(dist_dir)
+            if rel.parts and rel.parts[0] in USER_DATA:
+                continue  # 운용 데이터(원장·키·설정)는 배포 zip 에 절대 넣지 않는다
+            arc = (Path("trader") / rel).as_posix()
             if p.is_symlink():
                 zi = zipfile.ZipInfo(arc)
                 zi.create_system = 3  # unix: external_attr 의 상위 16비트가 st_mode
@@ -244,19 +243,16 @@ def main() -> None:
         return
     if not args.skip_web:
         build_web()
-    # 빌드·스모크·압축이 모두 끝날 때까지 사용자 데이터를 밖에 둔다 — 스모크가 기존 secrets 로
-    # 실패하거나 zip 에 원장·키가 들어가지 않게(Codex 리뷰). 실패해도 finally 에서 되돌린다
-    stash = stash_user_data(DIST, ROOT / "dist")
-    try:
-        exe = build_bundle()
-        result = {"exe": str(exe)}
-        if not args.skip_smoke:
-            result["smoke"] = smoke(exe)
-        name = dist_name(project_version(), sys.platform, platform.machine())
-        result["zip"] = str(make_zip(DIST, name, readme=ROOT / "docs" / "bundle-usage.md"))
-        result["zip_name"] = f"{name}.zip"
-    finally:
-        restore_user_data(stash, DIST)
+    # 빌드는 dist/trader 의 번들 항목만 바꾸고(PyInstaller 출력은 STAGE) 사용자 데이터는 옮기지도
+    # 지우지도 않는다 — 실행 중인 앱의 데몬이 같은 폴더를 쓰고 있어도 안전. 스모크는 임시
+    # TRADER_HOME, zip 은 USER_DATA 를 빼고 묶는다
+    exe = build_bundle()
+    result = {"exe": str(exe)}
+    if not args.skip_smoke:
+        result["smoke"] = smoke(exe)
+    name = dist_name(project_version(), sys.platform, platform.machine())
+    result["zip"] = str(make_zip(DIST, name, readme=ROOT / "docs" / "bundle-usage.md"))
+    result["zip_name"] = f"{name}.zip"
     print(json.dumps(result, ensure_ascii=False, indent=1))
 
 
