@@ -243,11 +243,14 @@ def test_sending_leg_without_order_no_matches_exactly_one_fill(conn):
 
 
 def test_unknown_leg_query_failure_keeps_unknown(conn):
+    """조회 실패는 다리를 unknown 으로 두고 보류(`deferred`)한다 — 포지션 unknown 격상은 아니다
+    (단계 2 리뷰 C2-5). 신규는 미확정 다리로 막힌다."""
     pos, leg = _open(conn)
     store.set_leg(conn, leg.id, status="unknown", order_no="A1")
     rep = _recover(conn, _bal(), raise_state=True)
-    assert store.get_leg(conn, leg.id).status == "unknown" and pos.id in rep.unknown
-    assert positions.has_blocking_state(conn, ACCT) == "unknown 포지션 1건"
+    assert store.get_leg(conn, leg.id).status == "unknown" and pos.id not in rep.unknown
+    assert rep.deferred == [leg.id]
+    assert positions.has_blocking_state(conn, ACCT) == "미확정 다리 1건"
 
 
 def test_fo_messages_shape():

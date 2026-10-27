@@ -189,3 +189,84 @@ def test_stock_insert_order_asset_default_unchanged(conn):
     assert (
         conn.execute("SELECT asset FROM orders WHERE id=?", (oid,)).fetchone()["asset"] == "stock"
     )
+
+
+# --- 단계 2 리뷰 반영(S2-1·R-1·C2-2·C2-6) ----------------------------------------------------
+
+
+def test_fo_fills_partial_then_more_keeps_transaction(conn):
+    """partial 뒤 같은 상태로 증가(2→3)해도 트랜잭션이 깨지지 않는다(commit 하는 헬퍼 금지,
+    S2-1)."""
+    pid = position(conn)
+    leg(conn, pid)
+    broker = FakeFoBroker(account(), balance=balance(), now=lambda: T_MID)
+    broker.fills = {DAY: [fill("A", filled=2, amount="701.0", remaining=2)]}
+    fo_fills.sync(conn, broker, account(), DAY, cfg=CFG, now=lambda: T_MID)
+    broker.fills = {DAY: [fill("A", filled=3, amount="1052.0", remaining=1)]}
+    r = fo_fills.sync(conn, broker, account(), DAY, cfg=CFG, now=lambda: T_MID)
+    assert r["inserted"] == 1 and store.get_position(conn, pid).qty_held == 3
+    assert conn.execute("SELECT status FROM orders").fetchone()[0] == "partial"
+    assert not conn.in_transaction
+
+
+def test_fo_fills_order_no_reused_next_day_not_attached(conn):
+    """KIS 주문번호는 날마다 재시작: 어제 다리·주문의 번호와 같은 오늘 체결은 그 행에 붙지 않고
+    외부 주문으로 적는다(R-1)."""
+    from datetime import timedelta
+
+    pid = position(conn, status="held", qty_held=4)
+    lid = leg(conn, pid, order_no="A", status="filled")
+    yday = (T_MID - timedelta(days=1)).isoformat()
+    conn.execute(
+        "UPDATE fo_order_legs SET sent_at=?, accepted_at=?, created_at=? WHERE id=?",
+        (yday, yday, yday, lid),
+    )
+    conn.execute(
+        "UPDATE orders SET created_at=? WHERE id=?", (yday, store.get_leg(conn, lid).order_id)
+    )
+    conn.commit()
+    broker = FakeFoBroker(account(), balance=balance(), now=lambda: T_MID)
+    broker.fills = {DAY: [fill("A", filled=1, amount="350.0", remaining=0)]}
+    r = fo_fills.sync(conn, broker, account(), DAY, cfg=CFG, now=lambda: T_MID)
+    assert r["external"] == 1 and store.get_leg(conn, lid).filled_qty == 0
+    assert store.get_position(conn, pid).qty_held == 4
+    assert conn.execute("SELECT COUNT(*) FROM orders WHERE mode='external'").fetchone()[0] == 1
+
+
+def test_fo_fills_anomalous_lineage_isolated(conn):
+    """체결 누적 > 다리 수량인 계보는 그 포지션만 unknown + 집계하고 다른 계보는 계속 처리한다
+    (C2-6)."""
+    pid = position(conn)
+    leg(conn, pid, order_no="A", qty=4)
+    with store.tx(conn):
+        pid2 = store.insert_position(
+            conn, account_id=ACCT, code="205W11350", kind="CALL", contract_side="LONG",
+            direction="LONG", vehicle="OPTION_BUY", status="entering", qty_target=1, qty_held=0,
+            nav_at_open=Decimal("100000000"),
+        )  # fmt: skip
+        lid2 = store.insert_leg(
+            conn, position_id=pid2, account_id=ACCT, intent="OPEN", round=0, attempt=1, qty=1,
+            price=Decimal("5.00"), order_type="LIMIT",
+        )  # fmt: skip
+        store.set_leg(conn, lid2, status="accepted", order_no="B", sent_at=T_MID.isoformat(),
+                      accepted_at=T_MID.isoformat())  # fmt: skip
+    broker = FakeFoBroker(account(), balance=balance(), now=lambda: T_MID)
+    broker.fills = {
+        DAY: [
+            fill("A", filled=5, amount="1752.5", remaining=0),
+            fill("B", filled=1, amount="5.0", remaining=0, code="205W11350"),
+        ]
+    }
+    r = fo_fills.sync(conn, broker, account(), DAY, cfg=CFG, now=lambda: T_MID)
+    assert r["anomalies"] == 1
+    assert store.get_position(conn, pid).status == "unknown"
+    assert store.get_position(conn, pid2).qty_held == 1
+    assert store.get_leg(conn, lid2).status == "filled"
+
+
+def test_fo_expire_closes_empty_entering(conn):
+    """만료로 끝난 진입 다리는 빈 entering 포지션을 닫는다(C2-2)."""
+    pid = position(conn)
+    leg(conn, pid)
+    assert fo_fills.expire_legs(conn, ACCT, DAY) == 1
+    assert store.get_position(conn, pid).status == "closed"

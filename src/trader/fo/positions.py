@@ -12,29 +12,25 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from decimal import Decimal
+from typing import Literal
 
 from trader.broker.models import FoBalance, FoFill, FoOrderState
 from trader.fo import store
-from trader.fo.types import FoLegRow, FoPositionRow, is_entry, is_reduce
+from trader.fo.types import (
+    TRANSITIONS,
+    FoLegRow,
+    FoPositionRow,
+    can_transition,
+    is_entry,
+    is_reduce,
+)
 from trader.notify import messages
 
 log = logging.getLogger("trader.fo")
 
-TRANSITIONS: dict[str, set[str]] = {
-    "entering": {"held", "closed", "unknown", "resizing", "closing"},
-    "held": {"resizing", "closing", "unknown", "awaiting_settlement"},
-    "resizing": {"held", "closing", "unknown"},
-    "closing": {"closed", "exit_failed", "unknown", "awaiting_settlement", "held"},
-    "exit_failed": {"closing", "closed", "unknown"},
-    "awaiting_settlement": {"settled", "unknown"},
-    "unknown": {"held", "closed"},  # 사람(adopt·close)만
-    "settled": set(),
-    "closed": set(),
-}
+__all__ = ["TRANSITIONS", "can_transition", "RecoveryReport", "recover", "adopt"]
 
-
-def can_transition(a: str, b: str) -> bool:
-    return b in TRANSITIONS.get(a, set())
+ConfirmResult = Literal["confirmed", "unconfirmed", "error"]
 
 
 @dataclass
@@ -43,6 +39,7 @@ class RecoveryReport:
     unknown: list[int] = field(default_factory=list)  # unknown 으로 바뀐·만든 포지션 id
     unverified: list[str] = field(default_factory=list)  # 미확정 잔고 행 사유
     settling: list[int] = field(default_factory=list)  # awaiting_settlement 로 간 포지션
+    deferred: list[int] = field(default_factory=list)  # 조회 실패로 이번엔 못 확정한 다리 id
     legs_fixed: int = 0
     alerts: list[str] = field(default_factory=list)
 
@@ -52,7 +49,8 @@ def _mark_unknown(
 ) -> None:
     if pos.status == "unknown":
         return
-    store.transition(conn, pos.id, expected_version=pos.version, status="unknown", note=note)
+    with store.tx(conn):
+        store.transition(conn, pos.id, expected_version=pos.version, status="unknown", note=note)
     rep.unknown.append(pos.id)
     log.warning("파생 포지션 %s unknown: %s", pos.id, note)
 
@@ -61,16 +59,21 @@ def _confirm_leg(
     conn: sqlite3.Connection,
     leg: FoLegRow,
     order_state_of: Callable[[str, date], FoOrderState],
-    fills: list[FoFill],
+    fills: list[FoFill] | None,
     today: date,
-) -> bool:
-    """`sending|unknown` 다리를 체결 조회로 확정한다. 확정하면 True. 주문번호가 없는 다리는 같은
-    코드·방향·수량의 체결 후보가 **정확히 1건**일 때만 묶는다."""
+) -> ConfirmResult:
+    """`sending|unknown` 다리를 체결 조회로 확정한다. `confirmed` 면 다리 상태·체결 진행을 썼다.
+    `unconfirmed` 는 조회는 됐지만 묶을 수 없음(원주문 행 없음·후보 0 또는 2건 이상 — 호출자가
+    포지션을 unknown 으로), `error` 는 브로커 조회 실패(이번 틱은 보류, 격상 없음 — 단계 2 리뷰
+    C2-5). 브로커 호출은 쓰기 잠금 밖에서 하고 반영만 짧은 트랜잭션으로 한다(S2-12). 주문번호가
+    없는 다리는 같은 코드·방향·수량의 체결 후보가 **정확히 1건**일 때만 묶는다."""
     pos = store.get_position(conn, leg.position_id)
     if pos is None:
-        return False
+        return "unconfirmed"
     order_no = leg.order_no
     if order_no is None:
+        if fills is None:
+            return "error"  # 체결 조회 실패 — 후보를 셀 수 없다
         side = "BUY" if (is_entry(leg.intent) == (pos.contract_side == "LONG")) else "SELL"
         bound = {
             r["order_no"]
@@ -88,23 +91,29 @@ def _confirm_leg(
             and f.order_no not in bound
         ]
         if len(cands) != 1:
-            return False
+            return "unconfirmed"
         order_no = cands[0].order_no
     try:
         st = order_state_of(order_no, today)
-    except Exception as e:  # noqa: BLE001 — 조회 실패는 미확정 유지
-        log.warning("파생 다리 %s 주문 상태 조회 실패: %s", leg.id, e)
-        return False
+    except Exception as e:  # noqa: BLE001 — 조회 실패는 보류(미확정 유지, 격상 없음)
+        log.warning("파생 다리 %s 주문 상태 조회 실패(보류): %s", leg.id, e)
+        return "error"
     if st.order_qty == 0 and not st.terminal:
-        return False  # 원주문 행 없음 — unknown 유지
-    if st.filled_qty > leg.filled_qty:
-        store.record_fill_progress(conn, leg.id, st.filled_qty)
+        return "unconfirmed"  # 원주문 행 없음 — unknown 유지
     if st.terminal:
         status = "filled" if st.state == "filled" else st.state
     else:
         status = "accepted"
-    store.set_leg(conn, leg.id, status=status, order_no=order_no)
-    return True
+    with store.tx(conn):
+        if st.filled_qty > leg.filled_qty:
+            store.record_fill_progress(conn, leg.id, st.filled_qty)
+        store.set_leg(
+            conn, leg.id, status=status, order_no=order_no,
+            accepted_at=leg.accepted_at or (None if st.terminal else store.now_iso()),
+        )  # fmt: skip
+        if st.terminal and is_entry(leg.intent):
+            store.release_if_empty(conn, leg.position_id, f"진입 다리 {leg.id} {status}(체결 0)")
+    return "confirmed"
 
 
 def recover(
@@ -117,19 +126,24 @@ def recover(
     today: date,
     now: datetime,
 ) -> RecoveryReport:
-    """재시작·첫 틱 복구. 호출자가 commit 한다(헬퍼는 commit 하지 않음)."""
+    """재시작·첫 틱 복구. 다리 확정·unknown 표시는 짧은 트랜잭션으로 그때그때 commit 하고(브로커
+    조회 중 쓰기 잠금을 쥐지 않게), 나머지 쓰기는 호출자가 commit 한다."""
     rep = RecoveryReport()
+    fills: list[FoFill] | None
     try:
         fills = fills_of(today)
     except Exception as e:  # noqa: BLE001
-        log.warning("파생 체결 조회 실패(복구는 주문 상태만으로): %s", e)
-        fills = []
+        log.warning("파생 체결 조회 실패(주문번호 없는 다리는 보류): %s", e)
+        fills = None
     # ① 미확정 다리
     for leg in store.live_legs(conn, account_id=account_id):
         if leg.status not in ("sending", "unknown"):
             continue
-        if _confirm_leg(conn, leg, order_state_of, fills, today):
+        res = _confirm_leg(conn, leg, order_state_of, fills, today)
+        if res == "confirmed":
             rep.legs_fixed += 1
+        elif res == "error":
+            rep.deferred.append(leg.id)
         else:
             pos = store.get_position(conn, leg.position_id)
             if pos is not None:
@@ -170,7 +184,10 @@ def recover(
         if pos.status == "unknown":
             continue
         if pos.qty_held == 0 and not any(is_entry(x.intent) and x.filled_qty > 0 for x in legs):
-            rep.adopted.append(pos.id)  # 아직 아무것도 체결되지 않은 진입 — 그대로
+            # 아직 아무것도 체결되지 않은 진입 — 살아 있는 다리가 있으면 그대로, 없으면 닫는다
+            if not legs and store.release_if_empty(conn, pos.id, "복구: 체결 없는 빈 진입"):
+                continue
+            rep.adopted.append(pos.id)
             continue
         expired = bool(pos.last_trade_date) and date.fromisoformat(pos.last_trade_date) < today
         if expired and can_transition(pos.status, "awaiting_settlement"):

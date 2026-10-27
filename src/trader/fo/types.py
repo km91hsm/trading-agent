@@ -50,6 +50,24 @@ LIVE_LEG = ("prepared", "sending", "accepted", "unknown")
 ENTRY_INTENTS = ("OPEN", "RESIZE_UP")
 REDUCE_INTENTS = ("RESIZE_DOWN", "CLOSE", "STOP", "EXPIRY", "SESSION_CLOSE", "RISK_REDUCE")
 
+# 포지션 상태 전이표(스펙 §5). 저장 계층 `store.transition`·`store.reserve` 가 이 표 밖의 전이를
+# 거부한다(단계 2 리뷰 C2-10) — 여기 하나가 정본이고 `fo/positions` 는 다시 내보낸다.
+TRANSITIONS: dict[str, set[str]] = {
+    "entering": {"held", "closed", "unknown", "resizing", "closing"},
+    "held": {"resizing", "closing", "unknown", "awaiting_settlement"},
+    "resizing": {"held", "closing", "closed", "unknown"},
+    "closing": {"closed", "exit_failed", "unknown", "awaiting_settlement", "held"},
+    "exit_failed": {"closing", "closed", "unknown"},
+    "awaiting_settlement": {"settled", "unknown"},
+    "unknown": {"held", "closed"},  # 사람(adopt·close)만
+    "settled": set(),
+    "closed": set(),
+}
+
+
+def can_transition(a: str, b: str) -> bool:
+    return b in TRANSITIONS.get(a, set())
+
 _DEC_FIELDS = frozenset(
     {
         "stop_pt",
@@ -229,6 +247,8 @@ class SizeResult:
     ref_price: Decimal | None
     reasons: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    # 보유(평균가 기준) + 살아 있는 진입 다리(다리 가격 기준)의 계획 손실 — 예약 재검사가 받는다
+    planned_loss_existing: Decimal = Decimal(0)
 
 
 @dataclass
@@ -249,6 +269,7 @@ class FoVerdict:
     contract_side: str | None = None
     kind: str | None = None
     code: str | None = None
+    planned_loss_existing: Decimal = Decimal(0)
 
     def as_dict(self) -> dict[str, Any]:
         from dataclasses import asdict

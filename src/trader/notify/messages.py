@@ -686,6 +686,21 @@ def fo_settlement(*, account: str, code: str, name: str | None, pnl: Any) -> str
     )
 
 
+def fo_fill_anomaly(
+    *, account: str, code: str, name: str | None, leg_qty: int, filled: int, order_no: str
+) -> str:
+    """체결 조회의 누적 체결이 다리 주문 수량보다 크다(계보 모순) — 포지션을 unknown 으로 두고 다른
+    계보는 계속 동기화한다(단계 2 리뷰 C2-6)."""
+    return render(
+        "파생 체결 모순",
+        f"{account} · {fo_label(code, name)}",
+        [
+            f"주문 {order_no}: 누적 체결 {filled}계약 > 다리 수량 {leg_qty}계약",
+            "이 포지션은 unknown 으로 두고 사람이 adopt·close 로 정리해요.",
+        ],
+    )
+
+
 def fo_position_mismatch(
     *, account: str, code: str, name: str | None, ledger_qty: int, broker_qty: int | None
 ) -> str:

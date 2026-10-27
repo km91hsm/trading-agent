@@ -4,10 +4,17 @@
 - 체결은 **원주문 계보**(`orgn_odno` 또는 `odno`) 단위로 누적값(`filled_qty`·`filled_amount`)을
   읽고 `fills` 행 1개를 **교체**한다(현물과 같은 방식, 차분 삽입 아님). 증분 평균가는
   `Δ금액 ÷ Δ수량` 으로만 계산해 포지션 평균가·실현손실·비용에 쓴다.
-- 다리 매칭은 `order_no`(계보 원주문) → 같은 계좌의 `fo_order_legs.order_no`. 주문번호 없는
-  `sending|unknown` 다리는 같은 코드·방향·수량 후보가 **정확히 1건**일 때만 묶는다. 어느 다리에도
-  붙지 않는 체결은 외부 주문(`orders(asset='fo', mode='external')`)으로 적재한다.
+- 다리 매칭은 `order_no`(계보 원주문) → 같은 계좌·**같은 현지 날짜**(KIS 주문번호는 날마다
+  재시작)의 `fo_order_legs.order_no`. 주문번호 없는 `sending|unknown` 다리는 같은 코드·방향·수량
+  후보가 **정확히 1건**일 때만 묶는다. 어느 다리에도 붙지 않는 체결은 외부 주문(`orders(asset='fo',
+  mode='external')`, 같은 날짜 범위)으로 적재한다.
+- 경제값(평균가·비용·실현손실)은 **`fills` 행의 누적값 대비 증분**으로 1회 적는다 — 회수·복구가
+  `record_fill_progress` 로 수량을 먼저 반영했어도 빠지지 않는다(수량 진행과 경제값 진행 분리).
+- 계보 하나가 모순(누적 체결 > 다리 수량 등)이면 그 포지션만 unknown + 알림 1건 + `anomalies`
+  집계하고 다른 계보는 계속 처리한다. 한 계보 = 한 트랜잭션(`store.tx`, 안에서 commit 하는 헬퍼
+  없음).
 - 만료는 **조회 성공 ∧ 파생 세션 종료 뒤**에만: 그날 체결 없는 `accepted` 다리·주문을 `expired`.
+  만료로 빈 `entering` 포지션은 닫는다.
 """
 
 from __future__ import annotations
@@ -26,6 +33,7 @@ from trader.fo.schemas import order_side
 from trader.fo.types import FoLegRow, is_entry
 from trader.ledger import repo
 from trader.market_hours import fo_close_hm
+from trader.notify import messages
 
 logger = logging.getLogger("trader.fo.fills")
 
@@ -51,22 +59,27 @@ def _lineages(fills: list[FoFill]) -> dict[str, dict[str, Any]]:
     return out
 
 
+_LEG_AT = "COALESCE(accepted_at, sent_at, created_at)"
+
+
 def _leg_for(
-    conn: sqlite3.Connection, account_id: str, order_no: str, lin: dict[str, Any]
+    conn: sqlite3.Connection, account_id: str, order_no: str, lin: dict[str, Any], day: date
 ) -> tuple[FoLegRow | None, bool]:
-    """(다리, 이번에 새로 묶었는가)."""
+    """(다리, 이번에 새로 묶었는가). 같은 현지 날짜(접수·전송·생성 시각)의 다리만 본다."""
+    lo, hi = repo.day_bounds(day, "KR")
     row = conn.execute(
-        "SELECT id FROM fo_order_legs WHERE account_id = ? AND order_no = ? "
-        "ORDER BY id DESC LIMIT 1",
-        (account_id, order_no),
+        f"SELECT id FROM fo_order_legs WHERE account_id = ? AND order_no = ? "
+        f"AND {_LEG_AT} >= ? AND {_LEG_AT} < ? ORDER BY id DESC LIMIT 1",
+        (account_id, order_no, lo, hi),
     ).fetchone()
     if row:
         return store.get_leg(conn, int(row["id"])), False
     bound = {
         r["order_no"]
         for r in conn.execute(
-            "SELECT order_no FROM fo_order_legs WHERE order_no IS NOT NULL AND account_id = ?",
-            (account_id,),
+            f"SELECT order_no FROM fo_order_legs WHERE order_no IS NOT NULL AND account_id = ? "
+            f"AND {_LEG_AT} >= ? AND {_LEG_AT} < ?",
+            (account_id, lo, hi),
         )
     }
     if order_no in bound:
@@ -74,6 +87,9 @@ def _leg_for(
     cands = []
     for leg in store.live_legs(conn, account_id=account_id):
         if leg.status not in ("sending", "unknown") or leg.order_no is not None:
+            continue
+        at = leg.accepted_at or leg.sent_at or leg.created_at
+        if at < lo or at >= hi:
             continue
         pos = store.get_position(conn, leg.position_id)
         if pos is None or pos.code != lin["code"] or leg.qty != lin["total"]:
@@ -103,7 +119,7 @@ def _replace_fill(
     conn.execute("DELETE FROM fills WHERE order_id = ?", (order_id,))
     repo.insert_fill(
         conn, order_id=order_id, account_id=account_id, qty=filled, price=price,
-        filled_at=filled_at.isoformat(),
+        filled_at=filled_at.isoformat(), commit=False,
     )  # fmt: skip
     return True
 
@@ -130,7 +146,7 @@ def sync(
     day = _day(d)
     out: dict[str, Any] = {
         "account_id": account.id, "date": day.isoformat(), "inserted": 0, "updated": 0,
-        "external": 0, "bound": 0, "expired": 0, "failed_markets": [],
+        "external": 0, "bound": 0, "expired": 0, "anomalies": 0, "failed_markets": [],
     }  # fmt: skip
     try:
         fills = broker.get_fills(day)
@@ -138,65 +154,108 @@ def sync(
         logger.warning("파생 체결 조회 실패 %s: %s", account.id, e)
         out["failed_markets"] = ["KR"]
         return out
-    multiplier = cfg.product_cfg().multiplier
     for order_no, lin in _lineages(fills).items():
         if lin["filled"] <= 0:
             continue
-        with store.tx(conn):
-            leg, newly_bound = _leg_for(conn, account.id, order_no, lin)
-            if leg is None:
-                oid, created = _external_order(conn, account.id, order_no, lin)
-                if oid is None:
-                    continue
-                if created:
-                    out["external"] += 1
-                if _replace_fill(
-                    conn, order_id=oid, account_id=account.id, filled=lin["filled"],
-                    amount=lin["amount"], filled_at=lin["filled_at"],
-                ):  # fmt: skip
-                    out["inserted"] += 1
-                _order_status(conn, oid, lin["filled"])
-                continue
-            if newly_bound:
-                out["bound"] += 1
-            oid = leg.order_id
-            if oid is None:
-                oid = repo.insert_order(
-                    conn, decision_id=None, account_id=account.id, ticker=lin["code"], market="KR",
-                    side=lin["side"], qty=leg.qty, order_type=leg.order_type, price=leg.price,
-                    status="accepted", order_no=order_no, message="체결 동기화로 확정한 다리",
-                    mode="recovered", asset="fo",
-                    amount=Decimal(leg.qty) * (leg.price or Decimal(0)) * multiplier,
-                )  # fmt: skip
-                store.set_leg(conn, leg.id, order_id=oid)
-            delta = 0
-            if lin["filled"] > leg.filled_qty:
-                # 증분 평균가 = Δ금액 ÷ Δ수량(누적 평균이 아니라 이번 증분만)
-                prev_amt = _fill_amount(conn, oid)
-                d_qty = lin["filled"] - leg.filled_qty
-                d_amt = lin["amount"] - prev_amt
-                inc_price = (d_amt / d_qty) if d_qty and d_amt > 0 else None
-                delta = store.record_fill_progress(conn, leg.id, lin["filled"], lin["amount"])
-                if inc_price is not None:
-                    store.apply_fill_economics(
-                        conn, leg.position_id, entry=is_entry(leg.intent), inc_price=inc_price,
-                        delta=delta, multiplier=multiplier, cost_bp=_cost_bp(cfg, lin["code"]),
-                    )  # fmt: skip
-            if _replace_fill(
-                conn, order_id=oid, account_id=account.id, filled=lin["filled"],
-                amount=lin["amount"], filled_at=lin["filled_at"],
-            ):  # fmt: skip
-                out["updated" if delta == 0 else "inserted"] += 1
-            _order_status(conn, oid, lin["filled"])
+        try:
+            with store.tx(conn):
+                _sync_lineage(conn, account, order_no, lin, day, cfg, out)
+        except ValueError as e:
+            # 계보 모순(누적 체결 > 다리 수량 등): 이 포지션만 unknown, 나머지 계보는 계속
+            out["anomalies"] += 1
+            logger.error("파생 체결 계보 모순 %s %s: %s", account.id, order_no, e)
+            _flag_anomaly(conn, account.id, order_no, lin, day, notifier)
     if _session_over(day, now()):
         out["expired"] = expire_legs(conn, account.id, day)
     return out
 
 
-def _fill_amount(conn: sqlite3.Connection, order_id: int) -> Decimal:
-    """주문의 누적 체결 금액(Decimal 합, REAL 캐스트 없음)."""
+def _sync_lineage(
+    conn: sqlite3.Connection, account: AccountConfig, order_no: str, lin: dict[str, Any],
+    day: date, cfg: FoCfg, out: dict[str, Any],
+) -> None:  # fmt: skip
+    """계보 하나를 반영한다(호출자 트랜잭션 안). 수량 진행은 `record_fill_progress`(이미 반영돼
+    있으면 0), 경제값은 `fills` 행 누적 대비 증분으로 — 둘은 독립이라 어느 쪽이 먼저여도 1회."""
+    multiplier = cfg.product_cfg().multiplier
+    leg, newly_bound = _leg_for(conn, account.id, order_no, lin, day)
+    if leg is None:
+        oid, created = _external_order(conn, account.id, order_no, lin, day)
+        if oid is None:
+            return
+        if created:
+            out["external"] += 1
+        if _replace_fill(
+            conn, order_id=oid, account_id=account.id, filled=lin["filled"],
+            amount=lin["amount"], filled_at=lin["filled_at"],
+        ):  # fmt: skip
+            out["inserted"] += 1
+        _order_status(conn, oid, lin["filled"])
+        return
+    if newly_bound:
+        out["bound"] += 1
+    oid = leg.order_id
+    if oid is None:
+        oid = repo.insert_order(
+            conn, decision_id=None, account_id=account.id, ticker=lin["code"], market="KR",
+            side=lin["side"], qty=leg.qty, order_type=leg.order_type, price=leg.price,
+            status="accepted", order_no=order_no, message="체결 동기화로 확정한 다리",
+            mode="recovered", asset="fo", commit=False,
+            amount=Decimal(leg.qty) * (leg.price or Decimal(0)) * multiplier,
+        )  # fmt: skip
+        store.set_leg(conn, leg.id, order_id=oid)
+    prev_qty, prev_amt = _fill_totals(conn, oid)
+    d_qty = lin["filled"] - prev_qty
+    if lin["filled"] > leg.filled_qty:
+        store.record_fill_progress(conn, leg.id, lin["filled"], lin["amount"])
+    if d_qty > 0:
+        # 증분 평균가 = Δ금액 ÷ Δ수량(누적 평균이 아니라 이번 증분만)
+        d_amt = lin["amount"] - prev_amt
+        if d_amt > 0:
+            store.apply_fill_economics(
+                conn, leg.position_id, entry=is_entry(leg.intent), inc_price=d_amt / d_qty,
+                delta=d_qty, multiplier=multiplier, cost_bp=_cost_bp(cfg, lin["code"]),
+            )  # fmt: skip
+    if _replace_fill(
+        conn, order_id=oid, account_id=account.id, filled=lin["filled"],
+        amount=lin["amount"], filled_at=lin["filled_at"],
+    ):  # fmt: skip
+        out["inserted" if d_qty > 0 else "updated"] += 1
+    _order_status(conn, oid, lin["filled"])
+
+
+def _flag_anomaly(
+    conn: sqlite3.Connection, account_id: str, order_no: str, lin: dict[str, Any], day: date,
+    notifier: Any | None,
+) -> None:  # fmt: skip
+    leg, _ = _leg_for(conn, account_id, order_no, lin, day)
+    if leg is None:
+        return
+    pos = store.get_position(conn, leg.position_id)
+    if pos is None or pos.status in ("unknown", "closed", "settled"):
+        return
+    with store.tx(conn):
+        store.transition(
+            conn, pos.id, expected_version=pos.version, status="unknown",
+            note=f"체결 모순: 주문 {order_no} 누적 {lin['filled']} > 다리 {leg.qty}",
+        )  # fmt: skip
+    if notifier is not None:
+        try:
+            notifier.send(
+                messages.fo_fill_anomaly(
+                    account=account_id, code=pos.code, name=None, leg_qty=leg.qty,
+                    filled=lin["filled"], order_no=order_no,
+                )  # fmt: skip
+            )
+        except Exception:  # noqa: BLE001
+            logger.debug("파생 체결 모순 알림 실패", exc_info=True)
+
+
+def _fill_totals(conn: sqlite3.Connection, order_id: int) -> tuple[int, Decimal]:
+    """주문의 `fills` 행 누적(수량, 금액 = Σ price × qty, Decimal 합·REAL 캐스트 없음)."""
     rows = conn.execute("SELECT qty, price FROM fills WHERE order_id = ?", (order_id,)).fetchall()
-    return sum((Decimal(str(r["price"])) * int(r["qty"]) for r in rows), Decimal(0))
+    qty = sum(int(r["qty"]) for r in rows)
+    amt = sum((Decimal(str(r["price"])) * int(r["qty"]) for r in rows), Decimal(0))
+    return qty, amt
 
 
 def _cost_bp(cfg: FoCfg, code: str) -> float:
@@ -205,13 +264,14 @@ def _cost_bp(cfg: FoCfg, code: str) -> float:
 
 
 def _external_order(
-    conn: sqlite3.Connection, account_id: str, order_no: str, lin: dict[str, Any]
+    conn: sqlite3.Connection, account_id: str, order_no: str, lin: dict[str, Any], day: date
 ) -> tuple[int | None, bool]:
-    """(orders id, 이번에 새로 만들었는가)."""
+    """(orders id, 이번에 새로 만들었는가). 같은 현지 날짜의 주문 행만 본다."""
+    lo, hi = repo.day_bounds(day, "KR")
     row = conn.execute(
         "SELECT id FROM orders WHERE account_id = ? AND order_no = ? AND ticker = ? "
-        "AND asset = 'fo' ORDER BY id DESC LIMIT 1",
-        (account_id, order_no, lin["code"]),
+        "AND asset = 'fo' AND created_at >= ? AND created_at < ? ORDER BY id DESC LIMIT 1",
+        (account_id, order_no, lin["code"], lo, hi),
     ).fetchone()
     if row:
         return int(row["id"]), False
@@ -222,7 +282,7 @@ def _external_order(
         conn, decision_id=None, account_id=account_id, ticker=lin["code"], market="KR",
         side=lin["side"], qty=lin["total"], order_type="LIMIT", price=None, status="accepted",
         order_no=order_no, message="원장 밖에서 낸 파생 주문(체결 동기화로 생성)", mode="external",
-        created_at=lin["filled_at"].isoformat(), amount=lin["amount"], asset="fo",
+        created_at=lin["filled_at"].isoformat(), amount=lin["amount"], asset="fo", commit=False,
     )  # fmt: skip
     return oid, True
 
@@ -251,6 +311,8 @@ def expire_legs(conn: sqlite3.Connection, account_id: str, day: date) -> int:
                     "('accepted', 'partial')",
                     (leg.order_id,),
                 )
+            if is_entry(leg.intent):
+                store.release_if_empty(conn, leg.position_id, f"진입 다리 {leg.id} 만료(체결 0)")
             n += 1
     if n:
         logger.info("파생 미체결 다리 %d건 만료 처리 %s %s", n, account_id, day)

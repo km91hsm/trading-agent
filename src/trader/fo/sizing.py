@@ -120,10 +120,16 @@ def stress_loss(items: list[StressItem], *, cfg: FoStressCfg, multiplier: int) -
     return worst
 
 
+def reserved_qty(legs: list[FoLegRow]) -> int:
+    """로컬 예약 계약 수 = 살아 있는 **진입** 다리(prepared·sending·unknown + accepted 미체결)의
+    잔량. 축소 다리는 증거금을 풀지 잡지 않으므로 세지 않는다(단계 2 리뷰 C2-9)."""
+    return sum(x.remaining for x in legs if x.live and is_entry(x.intent))
+
+
 def local_reserved(legs: list[FoLegRow], *, per_contract: Decimal) -> Decimal:
-    """로컬 예약 현금 = 살아 있는 다리(prepared·sending·unknown + accepted 미체결) 잔량 × 계약당
-    증거금 추정. 체결분은 체결 뒤에 시작한 잔고 응답이 보여 줄 때 보유로 옮긴다(호출자)."""
-    return sum((Decimal(x.remaining) * per_contract for x in legs if x.live), _ZERO)
+    """로컬 예약 현금 = `reserved_qty` × 계약당 증거금 추정. 체결분은 체결 뒤에 시작한 잔고 응답이
+    보여 줄 때 보유로 옮긴다(호출자)."""
+    return Decimal(reserved_qty(legs)) * per_contract
 
 
 def margin_check(
@@ -133,6 +139,7 @@ def margin_check(
     nav: Decimal,
     local_reserved: Decimal,
     buffer_pct: float,
+    reserved_qty: int = 0,
     add_margin: Decimal,
     notional: Decimal,
     margin_rate: float | None,
@@ -140,7 +147,9 @@ def margin_check(
     max_age_days: int,
     today: date,
 ) -> tuple[int, list[str]]:
-    """허용 신규 계약 수와 거부 사유(전부 수집). 사유가 있으면 0."""
+    """허용 신규 계약 수와 거부 사유(전부 수집). 사유가 있으면 0. 허용 = floor(q × (1 − buffer)) −
+    로컬 예약 계약(`reserved_qty`): 주문가능 응답이 미접수·미반영 예약을 모른다고 보고 보수적으로
+    뺀다(단계 2 리뷰 S2-8)."""
     reasons: list[str] = []
     if orderable is None:
         return 0, ["주문가능 조회 없음"]
@@ -168,8 +177,8 @@ def margin_check(
         reasons.append(f"주문가능 응답 정합성 실패(계약당 {per:.0f} > 명목×증거금률×3)")
     if reasons:
         return 0, reasons
-    allowed = int(math.floor(q * (1 - buffer_pct)))
-    return min(n, allowed), []
+    allowed = int(math.floor(q * (1 - buffer_pct))) - max(reserved_qty, 0)
+    return min(n, max(allowed, 0)), []
 
 
 def _floor(x: Decimal) -> int:
@@ -229,29 +238,45 @@ def size(
         if n_target > cap_not:
             notes.append(f"옵션 매도 명목 한도로 {n_target}→{cap_not}")
             n_target = cap_not
-    # 계획 손실/계약
+    # 계획 손실/계약 — 이번 다리는 기준가, 보유는 평균체결가, 미체결 다리는 그 다리 가격(시장가는
+    # 기준가)으로 각각 센다(단계 2 리뷰 S2-7: 하나의 단가로 보유 전체를 재평가하면 과소계산)
     stop_fut = (
         stop_fut_of(stop_pt, q.basis, d.direction, _d(cfg.slippage_pt))
         if d.vehicle == "FUTURES"
         else None
     )
-    per_loss = planned_loss_per_contract(
-        d.vehicle, q.kind, ref_price=ref_price, stop_fut=stop_fut,
-        premium_stop=premium_stop, multiplier=mult,
-    )  # fmt: skip
+
+    def loss_at(price: Decimal) -> Decimal:
+        return planned_loss_per_contract(
+            d.vehicle, q.kind, ref_price=price, stop_fut=stop_fut,
+            premium_stop=premium_stop, multiplier=mult,
+        )  # fmt: skip
+
+    per_loss = loss_at(ref_price)
+    held_ref = pos.entry_premium if pos is not None and pos.entry_premium is not None else ref_price
+    held_loss = loss_at(held_ref) * held
+    pending_loss = sum(
+        (
+            loss_at(x.price if x.price is not None else ref_price) * x.remaining
+            for x in port.legs
+            if pos is not None and x.position_id == pos.id and is_entry(x.intent) and x.live
+        ),
+        _ZERO,
+    )
+    existing = held_loss + pending_loss
     nav_at_open = pos.nav_at_open if pos is not None and pos.nav_at_open is not None else nav
     budget = lifetime_budget(
         pos, nav_at_open=nav_at_open, r=cfg.risk_per_trade_pct,
-        held_loss=per_loss * held, pending_loss=per_loss * live,
+        held_loss=held_loss, pending_loss=pending_loss,
     )  # fmt: skip
     if per_loss > 0:
-        room = budget["limit"] - budget["used"]
-        n_budget = _floor(room / per_loss)
-        if n_budget < held + live:
+        room = budget["limit"] - budget["used"] - existing
+        if room < 0:
             reasons.append(
-                f"수명 손실 예산 초과: 사용 {budget['used']} + 계획 {budget['planned']} "
+                f"수명 손실 예산 초과: 사용 {budget['used']} + 계획 {existing} "
                 f"> 한도 {budget['limit']}"
             )
+        n_budget = held + live + _floor(room / per_loss)
         if n_target > n_budget:
             notes.append(f"수명 손실 예산으로 {n_target}→{max(n_budget, 0)}")
             n_target = max(n_budget, 0)
@@ -295,6 +320,7 @@ def size(
             orderable=gi.orderable,
             nav=nav,
             local_reserved=local_reserved(port.legs, per_contract=per_margin),
+            reserved_qty=reserved_qty(port.legs),
             buffer_pct=cfg.margin_buffer_pct,
             add_margin=port.cash.add_margin if port.cash is not None else _ZERO,
             notional=gi.underlying * Decimal(mult),
@@ -308,8 +334,15 @@ def size(
             notes.append(f"증거금 버퍼로 다리 {n_leg}→{allowed}")
             n_leg = allowed
             n_target = held + live + n_leg
-    total = held + live + max(n_leg, 0)
-    budget["planned"] = per_loss * total
+    # 주문 뒤 총량: 신규 다리가 있으면 보유 + 미체결 + 다리, 감액이면 목표(호출자가 보유 − 목표를
+    # 축소), 아니면 보유 + 미체결 그대로
+    if n_leg > 0:
+        total = held + live + n_leg
+    elif n_target < held:
+        total = n_target
+    else:
+        total = held + live
+    budget["planned"] = existing + per_loss * max(n_leg, 0)
     budget["ok"] = budget["used"] + budget["planned"] <= budget["limit"]
     return SizeResult(
         n_target=n_target,
@@ -322,4 +355,5 @@ def size(
         ref_price=ref_price,
         reasons=reasons,
         notes=notes,
+        planned_loss_existing=existing,
     )

@@ -19,6 +19,7 @@ from trader.fo.types import (
     OPEN_POSITION_STATUSES,
     FoLegRow,
     FoPositionRow,
+    can_transition,
     is_entry,
     is_reduce,
 )
@@ -113,11 +114,20 @@ def insert_position(conn: sqlite3.Connection, **fields: Any) -> int:
 def transition(
     conn: sqlite3.Connection, position_id: int, *, expected_version: int, **changes: Any
 ) -> bool:
-    """CAS 갱신: version 이 기대값일 때만 바꾸고 version+1. 아니면 False(아무것도 안 바뀜)."""
+    """CAS 갱신: version 이 기대값일 때만 바꾸고 version+1. 아니면 False(아무것도 안 바뀜).
+    `status` 를 바꾸면 전이표(`types.TRANSITIONS`) 밖이면 ValueError — 어떤 호출자도 표를 우회하지
+    못한다(단계 2 리뷰 C2-10)."""
     unknown = set(changes) - set(_POS_COLS) - {"version"}
     if unknown:
         raise ValueError(f"fo_positions 에 없는 열: {sorted(unknown)}")
     changes.pop("version", None)
+    if "status" in changes:
+        row = conn.execute(
+            "SELECT status FROM fo_positions WHERE id = ?", (position_id,)
+        ).fetchone()
+        cur_status, new_status = (row["status"] if row else None), changes["status"]
+        if cur_status not in (None, new_status) and not can_transition(cur_status, new_status):
+            raise ValueError(f"포지션 {position_id} 전이 불가 {cur_status}→{new_status}")
     sets = ", ".join(f"{k} = ?" for k in changes) + (", " if changes else "") + "version = ?"
     vals = [_s(v) for v in changes.values()] + [expected_version + 1, position_id, expected_version]
     cur = conn.execute(
@@ -212,6 +222,31 @@ def set_leg(
     conn.execute(f"UPDATE fo_order_legs SET {sets} WHERE id = ?", [*changes.values(), leg_id])
 
 
+def claim_leg(conn: sqlite3.Connection, leg_id: int, *, sent_at: str | None = None) -> bool:
+    """전송 권한 선점: `prepared` 일 때만 `sending`(sent_at, 호출자 시계) 으로 바꾼다.
+    회수(`recall_entries`)가 먼저 cancelled 로 바꿨으면 False — 그 다리는 보내지 않는다(단계 2
+    리뷰 S2-2). 전송·접수 시각은 체결 동기화의 날짜 범위 매칭 기준이라 실행 문맥의 시계를 받는다."""
+    cur = conn.execute(
+        "UPDATE fo_order_legs SET status = 'sending', sent_at = ? WHERE id = ? "
+        "AND status = 'prepared'",
+        (sent_at or now_iso(), leg_id),
+    )
+    return cur.rowcount == 1
+
+
+def release_if_empty(conn: sqlite3.Connection, position_id: int, note: str) -> bool:
+    """보유 0·살아 있는 다리 0 인 `entering` 포지션을 닫아 자리를 비운다(진입 거부·취소·만료·회수
+    뒤). 닫았으면 True. 호출자 트랜잭션 안에서 부른다."""
+    pos = get_position(conn, position_id)
+    if pos is None or pos.status != "entering" or pos.qty_held != 0:
+        return False
+    if live_legs(conn, position_id=position_id):
+        return False
+    return transition(
+        conn, pos.id, expected_version=pos.version, status="closed", closed_at=now_iso(), note=note
+    )
+
+
 def next_attempt(conn: sqlite3.Connection, position_id: int, intent: str, round: int) -> int:
     row = conn.execute(
         "SELECT COALESCE(MAX(attempt), 0) AS a FROM fo_order_legs "
@@ -242,9 +277,10 @@ def account_totals(conn: sqlite3.Connection, account_id: str) -> dict[str, Any]:
 @dataclass
 class ReservePlan:
     """예약 요청. 새 포지션이면 `new_position`(insert_position 열), 기존이면 `position_id` +
-    `expected_version`. `new_status` 는 전환할 상태(없으면 상태 유지). `planned_loss_per_contract`
-    × (보유 + 살아 있는 진입 다리 + 이번 다리) + 실현손실 + 비용 ≤ `budget_limit` 이 수명 예산
-    검사다(진입만)."""
+    `expected_version`. `new_status` 는 전환할 상태(없으면 상태 유지). 수명 예산 검사(진입만):
+    실현손실 + 비용 + `planned_loss_existing`(보유는 평균가·미체결은 다리 가격 기준, 사이징이 계산)
+    + `planned_loss_per_contract` × 이번 다리 ≤ `budget_limit`. `planned_loss_existing` 이 없으면
+    보유·미체결도 이번 단가로 센다(하위 호환)."""
 
     intent: str
     round: int
@@ -256,6 +292,7 @@ class ReservePlan:
     new_position: dict[str, Any] | None = None
     new_status: str | None = None
     planned_loss_per_contract: Decimal = Decimal(0)
+    planned_loss_existing: Decimal | None = None
     budget_limit: Decimal | None = None
     position_changes: dict[str, Any] = field(default_factory=dict)
 
@@ -296,6 +333,13 @@ def reserve(
         return ReserveResult(False, reasons=["포지션 id 또는 새 포지션 필요"])
     if plan.qty <= 0:
         return ReserveResult(False, reasons=["수량 0"])
+    if (
+        pos is not None
+        and plan.new_status
+        and plan.new_status != pos.status
+        and not can_transition(pos.status, plan.new_status)
+    ):
+        return ReserveResult(False, reasons=[f"전이 불가 {pos.status}→{plan.new_status}"])
 
     if is_reduce(plan.intent):
         if pos is None:
@@ -313,13 +357,16 @@ def reserve(
         if total_after > max_contracts:
             reasons.append(f"계약 수 {total_after} > 한도 {max_contracts}")
         if plan.budget_limit is not None:
-            held = pos.qty_held if pos else 0
-            live = sum(
-                leg.remaining
-                for leg in totals["legs"]
-                if pos is not None and leg.position_id == pos.id and is_entry(leg.intent)
-            )
-            planned = plan.planned_loss_per_contract * (held + live + plan.qty)
+            if plan.planned_loss_existing is not None:
+                planned = plan.planned_loss_existing + plan.planned_loss_per_contract * plan.qty
+            else:
+                held = pos.qty_held if pos else 0
+                live = sum(
+                    leg.remaining
+                    for leg in totals["legs"]
+                    if pos is not None and leg.position_id == pos.id and is_entry(leg.intent)
+                )
+                planned = plan.planned_loss_per_contract * (held + live + plan.qty)
             used = (pos.realized_loss + pos.fees) if pos else Decimal(0)
             if used + planned > plan.budget_limit:
                 reasons.append(
@@ -455,8 +502,9 @@ def record_fill_progress(
     conn: sqlite3.Connection, leg_id: int, filled_qty: int, filled_amount: Decimal | None = None
 ) -> int:
     """다리 누적 체결 수량을 반영하고 포지션 `qty_held` 를 증분으로 갱신한다(진입 +, 축소 −).
-    다 채워지면 다리 `filled`. 실현손익·비용은 체결 동기화(fo/fills) 가 따로 적는다.
-    반환값은 반영한 증분."""
+    다 채워지면 다리 `filled`. 실현손익·비용·평균가는 체결 동기화(fo/fills)가 `fills` 행 기준으로
+    따로 적으므로(수량 진행과 경제값 진행은 분리, 단계 2 리뷰 S2-3) 어느 경로가 먼저 수량을
+    반영해도 경제값은 빠지지 않는다. 반환값은 반영한 증분."""
     leg = get_leg(conn, leg_id)
     if leg is None:
         raise ValueError(f"다리 {leg_id} 없음")

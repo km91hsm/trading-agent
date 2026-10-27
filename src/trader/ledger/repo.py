@@ -242,9 +242,12 @@ def insert_order(
     amount: Decimal | None = None,
     org_no: str | None = None,
     asset: str = "stock",
+    commit: bool = True,
 ) -> int:
     """amount 는 가능금액 차감용 주문금액(시장가는 판정 때 현재가 × 수량). 없으면 qty × price.
-    `asset` 은 stock|fo(Phase 26, 파생 주문은 계약 × 가격 × 승수 금액에 `decision_id=None`)."""
+    `asset` 은 stock|fo(Phase 26, 파생 주문은 계약 × 가격 × 승수 금액에 `decision_id=None`).
+    `commit=False` 는 호출자가 연 트랜잭션(`fo/store.tx`) 안에서 쓴다 — 중간 commit 이 원자성을
+    깨지 않게(단계 2 리뷰 S2-1)."""
     if amount is None and price is not None:
         amount = Decimal(qty) * price
     cur = conn.execute(
@@ -270,7 +273,8 @@ def insert_order(
             asset,
         ),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
     return int(cur.lastrowid)
 
 
@@ -282,14 +286,17 @@ def insert_fill(
     qty: int,
     price: Decimal,
     filled_at: str | None = None,
+    commit: bool = True,
 ) -> int | None:
-    """체결 1건 적재. 같은 (계좌, 주문, 시각, 수량, 가격) 은 무시하고 None (재동기화 멱등)."""
+    """체결 1건 적재. 같은 (계좌, 주문, 시각, 수량, 가격) 은 무시하고 None (재동기화 멱등).
+    `commit=False` 는 호출자 트랜잭션 안(파생 체결 동기화)."""
     cur = conn.execute(
         "INSERT OR IGNORE INTO fills(order_id, account_id, qty, price, filled_at) "
         "VALUES (?, ?, ?, ?, ?)",
         (order_id, account_id, qty, str(price), filled_at or now_iso()),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
     return int(cur.lastrowid) if cur.rowcount == 1 else None
 
 
