@@ -62,6 +62,10 @@ def test_update_rejects_unknown_names_and_multiline(project, deps):
     assert nl.status_code == 400
     sp = c.post("/api/control/secrets", headers=AUTH, json={"values": {"KIS_HTS_ID": "a b"}})
     assert sp.status_code == 400
+    interp = c.post(
+        "/api/control/secrets", headers=AUTH, json={"values": {"KIS_HTS_ID": "${WEB_TOKEN}"}}
+    )
+    assert interp.status_code == 400
     assert not _env(project).exists()
 
 

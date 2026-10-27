@@ -217,6 +217,8 @@ def update(
     for k, v in values.items():
         if not v:
             raise ConfigError(f"{k}: 빈 값은 '지우기'로 보내세요")
+        if "${" in v:
+            raise ConfigError(f"{k}: ${{…}} 는 다른 키 값으로 바뀌므로 넣을 수 없습니다")
         if (
             len(v) > MAX_VALUE_LEN
             or any(ch.isspace() or ch == "\x00" for ch in v)

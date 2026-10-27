@@ -30,11 +30,14 @@ SECRETS = Secrets.model_validate(
 
 def test_creds_prefer_account_keys_then_shared():
     main = SECRETS.kis_creds(_acct("real-main"))
-    assert main.shared and main.app_key == "shared-k" and main.bucket == "real"
+    assert main.shared and main.app_key == "shared-k"
+    assert main.bucket == "real-" + config.key_fingerprint("shared-k")
     two = SECRETS.kis_creds(_acct("real-2"))
     assert not two.shared and two.app_key == "k2" and two.cano == "22222222"
     assert two.hts_id == "me"  # 전용 HTS ID 가 없으면 공용
-    assert two.bucket == "real-real_2"
+    # 같은 앱키를 다른 접두사로 넣어도 같은 버킷(앱키 지문)
+    same = Secrets.model_validate({"KIS_A_APP_KEY": "k2", "KIS_A_APP_SECRET": "s2"})
+    assert same.kis_creds(_acct("a")).bucket == two.bucket != main.bucket
     isa = SECRETS.kis_creds(_acct("isa-1", credentials="KIS_ISA_"))
     assert isa.app_key == "k3" and isa.prefix == "KIS_ISA_"
     assert SECRETS.kis_creds(env="paper").app_key is None
@@ -54,6 +57,9 @@ def test_placeholder_cano_filled_from_account_prefix(project):
     )
     accts = config.load_accounts(secrets=SECRETS)
     assert [a.cano for a in accts] == ["11111111", "22222222"]
+    # 전용 키만 있고 전용 계좌번호가 없으면 공용 번호를 빌리지 않는다(자리표시자 그대로)
+    no_cano = Secrets.model_validate({**SECRETS.model_dump(), "KIS_REAL_2_CANO": None})
+    assert config.load_accounts(secrets=no_cano)[1].cano == "00000000"
 
 
 def test_env_var_overrides_account_key(project, monkeypatch):
@@ -68,7 +74,8 @@ def test_brokers_use_per_key_clients_and_warn_on_shared_key(project, caplog):
     with caplog.at_level(logging.WARNING, logger="trader.kis"):
         brokers = {b.account.id: b for b in cli._build_brokers(SECRETS, accts)}
     assert brokers["real-2"].client is not brokers["real-main"].client
-    assert brokers["real-2"].client.auth.cache_path.name == "kis_token_real-real_2.json"
+    fp = config.key_fingerprint("k2")
+    assert brokers["real-2"].client.auth.cache_path.name == f"kis_token_real-{fp}.json"
     assert brokers["real-3"].client is brokers["real-main"].client  # 전용 키 없음 → 공용
     assert any("real-3" in r.message and "KIS_REAL_3_" in r.message for r in caplog.records)
     cli._clients.clear()
@@ -93,3 +100,18 @@ def test_one_notice_listener_per_hts_id_prefers_non_market_key(project, conn):
     only_shared = cli._notice_listeners(settings, SECRETS, [_acct("real-main")], db.connect)
     assert only_shared[0].shares_market_session is True
     cli._clients.clear()
+
+
+def test_token_cache_ignores_token_of_other_app_key(project):
+    import json
+    from datetime import UTC, datetime, timedelta
+
+    from trader.broker.kis_auth import KisAuth
+
+    old = KisAuth("real", "old-key", "s", name="real")
+    exp = (datetime.now(UTC) + timedelta(hours=10)).isoformat()
+    payload = {"access_token": "OLD", "expires_at": exp, "key": config.key_fingerprint("old-key")}
+    old.cache_path.write_text(json.dumps(payload), encoding="utf-8")
+    assert old._read_cache().get("token") == "OLD"
+    new = KisAuth("real", "new-key", "s", name="real")  # 같은 파일, 키만 바뀜
+    assert new._read_cache() == {}

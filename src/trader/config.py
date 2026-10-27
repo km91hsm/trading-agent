@@ -768,10 +768,18 @@ class KisCreds(BaseModel):
 
     @property
     def bucket(self) -> str:
-        """토큰 캐시·레이트리미터 이름(파일명 안전): 공용은 env, 전용은 env-접두사."""
-        if self.shared:
+        """토큰 캐시·레이트리미터 이름(파일명 안전): `<env>-<앱키 지문>` — 접두사가 아니라 앱키로
+        나눠야 같은 키를 두 이름으로 넣어도 한도·토큰을 하나로 쓰고, 키를 바꾸면 새 캐시가 된다."""
+        if not self.app_key:
             return self.env
-        return f"{self.env}-" + self.prefix.removeprefix("KIS_").rstrip("_").lower()
+        return f"{self.env}-{key_fingerprint(self.app_key)}"
+
+
+def key_fingerprint(app_key: str) -> str:
+    """앱키 지문(sha256 앞 12자) — 파일명·캐시 확인용. 키 자체는 남기지 않는다."""
+    import hashlib
+
+    return hashlib.sha256(app_key.encode("utf-8")).hexdigest()[:12]
 
 
 # --- 로더 -------------------------------------------------------------------
@@ -1111,9 +1119,8 @@ def _cano_from_secrets(a: AccountConfig, secrets: Secrets | None) -> AccountConf
     creds = secrets.kis_creds(a) if secrets is not None else None
     key = (creds.prefix if creds is not None else f"KIS_{a.env.upper()}_") + "CANO"
     # 전용 키 묶음이면 그 접두사의 계좌번호, 없으면 env 공용
+    # 전용 키 묶음을 골랐으면 그 접두사의 계좌번호만 — 다른 계좌의 공용 번호를 빌려 쓰지 않는다
     value = (creds.cano if creds is not None else None) or ""
-    if creds is not None and not value and not creds.shared:
-        value = secrets.get(f"KIS_{a.env.upper()}_CANO") or ""
     if not value:
         logger.warning("계좌 %s 의 계좌번호가 자리표시자이고 secrets %s 도 비어 있음", a.id, key)
         return a

@@ -51,6 +51,9 @@ class KisAuth:
         quiet_httpx()
         self.env = env
         self.name = name or env
+        from trader.config import key_fingerprint
+
+        self._fp = key_fingerprint(app_key) if app_key else ""
         self._app_key = app_key
         self._app_secret = app_secret
         self._http = http or httpx.Client(timeout=10)
@@ -76,6 +79,8 @@ class KisAuth:
         if not isinstance(data, dict):
             return {}
         out: dict = {}
+        if data.get("key") and data.get("key") != self._fp:
+            return {}  # 다른 앱키로 받은 토큰(키를 바꿨다) — 쓰지 않고 새로 받는다
         try:
             if data.get("access_token") and data.get("expires_at"):
                 out["token"] = str(data["access_token"])
@@ -97,7 +102,7 @@ class KisAuth:
             logger.warning("토큰 캐시 쓰기 실패(%s): %s", self.env, type(e).__name__)
 
     def _cache_payload(self, cache: dict, **updates: object) -> dict:
-        payload: dict = {}
+        payload: dict = {"key": self._fp}
         if cache.get("token"):
             payload["access_token"] = cache["token"]
             payload["expires_at"] = cache["expires_at"].isoformat()
@@ -144,7 +149,9 @@ class KisAuth:
             self._mark_failure(cache, now)
             raise KisApiError("INVALID_JSON", "토큰 응답을 해석할 수 없습니다") from None
         expires_at = now + timedelta(seconds=seconds)
-        self._write_cache({"access_token": token, "expires_at": expires_at.isoformat()})
+        self._write_cache(
+            {"access_token": token, "expires_at": expires_at.isoformat(), "key": self._fp}
+        )
         logger.info("KIS 토큰 발급 (%s)", self.env)
         return token
 
