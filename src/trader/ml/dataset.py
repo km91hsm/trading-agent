@@ -37,8 +37,7 @@ def load_all(
     since/until 을 주면 파일명(`<date>.parquet`)으로 그 창의 파일만 읽는다 (성과·만기 계산처럼
     일부 구간만 필요한 호출이 전체 스토어를 읽지 않도록). 학습은 전체를 읽는다.
     columns 를 주면 그 열 + 식별 열(date·ticker·market)만 읽는다(전체 검토 3차 — 종가표는 40여 열
-    중 close 하나만 필요하다). 모든 파일에 있는 기본 열(close·volume 등)에만 쓴다 — 없는 열을
-    요청하면 그 파일은 읽기 실패로 건너뛰어진다.
+    중 close 하나만 필요하다). 옛 파일에 없는 열은 그 파일 행에서 NaN 이다.
     """
     fdir = features._features_dir(state)
     files = sorted(fdir.glob("*.parquet")) if fdir.exists() else []
@@ -54,11 +53,12 @@ def load_all(
     empty_cols = features.FEATURE_COLUMNS if cols is None else cols
     if not files:
         return pd.DataFrame(columns=empty_cols)
-    kw = {} if cols is None else {"columns": cols}
-    parts = [p for p in (features.read_part(f, **kw) for f in files) if p is not None]
+    parts = [p for p in (features.read_part(f, columns=cols) for f in files) if p is not None]
     if not parts:
         return pd.DataFrame(columns=empty_cols)
     df = pd.concat(parts, ignore_index=True)
+    if cols is not None:
+        df = df.reindex(columns=cols)
     if market:
         df = df[df["market"] == market]
     if df.empty:

@@ -78,13 +78,13 @@ def test_load_all_columns_reads_only_requested_columns(project, monkeypatch):
     """전체 검토 3차(성능): columns 를 주면 그 열(+식별 열)만 parquet 에서 읽는다."""
     features.write_rows(synthetic_features(2, 3, signal=False))
     seen: list = []
-    real = pd.read_parquet
+    real = features.read_part
 
     def spy(path, *a, **k):
         seen.append(k.get("columns"))
         return real(path, *a, **k)
 
-    monkeypatch.setattr(pd, "read_parquet", spy)
+    monkeypatch.setattr(features, "read_part", spy)
     out = dataset.load_all(market="KR", columns=["close"])
     assert seen and all(set(c) == {"date", "ticker", "market", "close"} for c in seen)
     assert set(out.columns) == {"date", "ticker", "market", "close"} and len(out) == 6
