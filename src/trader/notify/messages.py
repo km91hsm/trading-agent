@@ -337,6 +337,20 @@ def approval_tampered(*, approval_id: int, account: str, label: str) -> str:
 # --- 손절·재평가·재호가 --------------------------------------------------------------------
 
 
+def open_buys_cancelled(
+    *, account: str, label: str, reason: str, cancelled: int, left: list[str]
+) -> str:
+    """결정이 매수에서 돌아서 당일 미체결 BUY 를 거둔 결과(전체 검토 2026-10-27)."""
+    return render(
+        "미체결 매수 취소",
+        f"{account} · {label}",
+        [
+            f"{reason} — 당일 미체결 매수 {cancelled}건 취소",
+            f"취소하지 못함: {', '.join(left)} — 증권사 앱에서 직접 취소하세요" if left else "",
+        ],
+    )
+
+
 def stop_loss(
     *, account: str, market: str, label: str, qty: Any, quote: Any, level: Any, order_no: Any
 ) -> str:

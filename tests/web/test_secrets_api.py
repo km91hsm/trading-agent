@@ -136,3 +136,23 @@ def test_concurrent_updates_keep_both(project):
         t.join()
     text = p.read_text(encoding="utf-8")
     assert not errors and all(f"{n}=" in text for n in names)
+
+
+def test_testserver_host_is_not_trusted_in_production(project):
+    """DNS 리바인딩: 운영 앱은 Host `testserver` 를 받지 않는다(테스트 픽스처만 허용)."""
+    from dataclasses import replace
+
+    from helpers_web import make_deps
+
+    d = replace(make_deps(project), extra_hosts=[])
+    c = TestClient(create_app(d), client=LOCAL)  # 기본 Host 가 testserver
+    assert (
+        c.get("/api/control/bootstrap-token", headers={"Sec-Fetch-Site": "same-origin"}).status_code
+        == 400
+    )
+
+
+def test_ensure_fresh_rejects_cross_site(project, deps):
+    c = _client(deps)
+    r = c.post("/api/portfolio/ensure-fresh?market=KR", headers={"Sec-Fetch-Site": "cross-site"})
+    assert r.status_code == 403

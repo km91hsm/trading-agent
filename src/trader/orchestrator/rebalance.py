@@ -213,5 +213,6 @@ def run(
                     ],
                 }
             )
-    control.set_flag(ctx.conn, done_key(market, today), {"legs": len(legs_out), "dry_run": dry_run})
+    if not dry_run:  # dry-run 은 실제 실행을 막지 않는다(같은 날 실제 리밸런스가 빠지던 버그)
+        control.set_flag(ctx.conn, done_key(market, today), {"legs": len(legs_out)})
     return {"legs": legs_out, "orders": orders}

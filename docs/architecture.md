@@ -156,6 +156,16 @@ CLAUDE.md 의 "아키텍처 핵심 규칙" 에서 옮겨 온 모듈 단위 상�
 
 **시스템 현황(`/system`).** 대시보드가 길어져 운영 블록(Claude 사용량 — 5시간·7일 사용률과 초기화 시각·남은 시간, 모델 승격, 작업 대기열, 데몬 잡 예정표)을 `pages/System.tsx` 로 옮겼다. 대시보드 상태줄의 데몬·Claude 칩이 이 화면으로 이어지고 메뉴는 `nav.ts` 시스템 묶음(`g y`). 상단 시계는 한국·뉴욕 모두 날짜·요일·초(`clock.clockText` 의 `etDate`·`et`).
 
+## 전체 검토 1차 — 돈·보안·실행 환경(2026-10-27)
+
+- **승인 실행 직전 킬스위치**: `executor._approval_recheck` 가 bear·일일 손실과 함께 `killswitch.reason` 을 본다 — `/kill` 뒤 대기 중 BUY 승인이 매수를 내던 우회 경로.
+- **미체결 BUY 거두기**(`executor.cancel_open_buys`, `repo.open_orders_today(ticker=None)` 로 전 종목): ① LLM 결정(손절·단타·헤지·현금 운용·리밸런스·재호가 제외)이 BUY/ADD 가 아니면(재평가 SELL·HOLD 등) 같은 종목의 당일 미체결 BUY 를 계좌마다 취소하고 `[미체결 매수 취소]` 알림(못 한 종목은 직접 취소 안내, dry_run 은 하지 않음, 일시정지와 무관) ② 킬스위치가 켜져 있으면(자동·`/kill`·CLI 어느 경로든) 주문을 낼 수 있는 잔고 읽기(`build_portfolio(cancel_buys=True)`: 실제 실행·데몬 `balance_refresh` — dry-run·웹 조회는 아님)마다 `executor.on_killswitch` 로 그 계좌·시장의 당일 미체결 BUY 를 취소(보호용 헤지·현금 운용 ETF 는 제외, US 거래소는 universe.us, 실패분은 다음 잔고 읽기에서 재시도) ③ 손절 때 같은 종목 pending BUY 승인은 `repo.expire_pending_buys` 로 만료. monitor 의 손절 전 취소도 같은 함수.
+- **손절·단타 청산 실행 키에 수량**(`stop|계좌|종목|일|q수량`, `57_order_scalp_exit…|q수량`): 일부만 체결된 뒤 잔량을 같은 날 다시 낼 수 있게(키가 하루 하나면 체결된 첫 주문이 잔량 손절을 막았다).
+- **리밸런스 dry-run** 은 운영일 완료 표시를 남기지 않는다.
+- **웹**: 운영 Host 허용 목록·`is_direct_local` 에서 `testserver` 제거(DNS 리바인딩으로 bootstrap-token 을 얻는 경로) — 테스트는 `helpers_web.make_deps(extra_hosts=["testserver"])`. 토큰 없는 `POST /api/portfolio/ensure-fresh` 는 `Sec-Fetch-Site` 가 있으면 same-origin/none 만.
+- **빌드**: `packaging/build.py` 가 `dist/trader` 의 `config·secrets·state·docs` 를 빌드 전에 옆(`dist/trader-userdata-<시각>`)으로 옮겼다가 스모크·zip 까지 끝난 뒤(실패해도) 되돌린다 — zip 에 키·원장이 들어가지 않게 — 번들 폴더가 운용 TRADER_HOME 이라 원장이 지워지던 문제.
+- **창 없는 앱·Windows**: 데몬 uvicorn `log_config=None`(stdout None 에서 `isatty()` 로 Config 가 죽어 Windows TraderApp 이 안 떴다), 진입점 `_ensure_streams`(None → devnull), 시작 실패는 `state/logs/startup-error.log` + OS 알림(`platform/notify_os`), macOS App Translocation 경로면 안내 후 종료. 세션 정리는 Windows 에서 부모가 살아 있을 때 곧바로 `procs.kill_group`(taskkill /T /F, claude.cmd → node → `trader tool` 트리 — 부모를 먼저 끝내면 트리를 못 찾는다) + Popen `CREATE_NEW_PROCESS_GROUP|CREATE_NO_WINDOW`.
+
 ## 미확인
 
 미확인(2026-10-27): 체결통보(H0STCNI0/H0GSCNI0)를 HTS ID 로 구독하면 그 명의의 모든 계좌 체결이 어느 계좌 앱키의 세션으로든 오는지 — 같은 명의 실전 계좌 둘에서 한쪽 키로 붙은 리스너가 다른 계좌 체결 통보도 받는지 실기 확인.

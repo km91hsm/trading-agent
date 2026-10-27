@@ -111,3 +111,23 @@ def test_assemble_dist_windows_keeps_flat(tmp_path):
     out = build.assemble_dist(dist, sys_platform="win32")
     assert out == dist / "trader"
     assert (out / "TraderApp.exe").exists() and (out / "_internal").exists()
+
+
+def test_user_data_survives_rebuild(tmp_path):
+    """번들 폴더가 운용 중인 TRADER_HOME 이어도 빌드가 config·secrets·state 를 지우지 않는다."""
+    import shutil
+
+    build = _load_build()
+    target = tmp_path / "trader"
+    (target / "state").mkdir(parents=True)
+    (target / "state" / "trader.db").write_text("원장", encoding="utf-8")
+    (target / "config").mkdir()
+    (target / "Trader.app").mkdir()
+    stash = build.stash_user_data(target, tmp_path)
+    assert stash is not None and not (target / "state").exists()
+    shutil.rmtree(target)  # PyInstaller·assemble_dist 가 폴더를 비운다
+    (target / "Trader.app").mkdir(parents=True)
+    build.restore_user_data(stash, target)
+    assert (target / "state" / "trader.db").read_text(encoding="utf-8") == "원장"
+    assert (target / "config").is_dir() and not stash.exists()
+    assert build.stash_user_data(tmp_path / "없음", tmp_path) is None

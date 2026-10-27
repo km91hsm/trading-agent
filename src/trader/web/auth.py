@@ -16,7 +16,7 @@ def is_direct_local(request: Request) -> bool:
     host = (request.headers.get("host") or "").rsplit(":", 1)[0].strip("[]").lower()
     return (
         client in ("127.0.0.1", "::1")
-        and host in ("127.0.0.1", "localhost", "::1", "testserver")
+        and host in ("127.0.0.1", "localhost", "::1")
         and not any(request.headers.get(h) for h in PROXY_HEADERS)
     )
 

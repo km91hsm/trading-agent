@@ -56,6 +56,7 @@ def refresh(
     state: Path | None = None,
     only_stale: bool = False,
     broker_ctx: Callable[[Any], Any] | None = None,
+    cancel_buys: bool = False,
 ) -> dict:
     """시장 하나의 계좌별 잔고를 다시 읽는다. {refreshed: [id], skipped: [id], errors: {id: 사유},
     sectors: {종목: 섹터}}. 계좌 하나의 실패는 그 계좌만 errors 로. 같은 시장 갱신이 이미 돌고
@@ -76,6 +77,7 @@ def refresh(
             state=state,
             only_stale=only_stale,
             broker_ctx=broker_ctx or (lambda _b: contextlib.nullcontext()),
+            cancel_buys=cancel_buys,
         )
     finally:
         lock.release()
@@ -93,6 +95,7 @@ def _refresh(
     state,
     only_stale,
     broker_ctx,
+    cancel_buys=False,
 ) -> dict:
     from trader.orchestrator.executor import build_portfolio
 
@@ -114,6 +117,9 @@ def _refresh(
                     run_store.run_date_for(market, now),
                     memory_settings=settings.memory,
                     killswitch_pct=settings.risk.killswitch_drawdown_pct,
+                    # 데몬 잔고 갱신(dry-run 아님)만 킬스위치 미체결 BUY 를 거둔다(웹 조회는 아님)
+                    cancel_buys=cancel_buys,
+                    hedge_tickers=frozenset(settings.excluded_tickers(market)),
                 )
             out["refreshed"].append(a.id)
         except (KisApiError, ValueError) as e:

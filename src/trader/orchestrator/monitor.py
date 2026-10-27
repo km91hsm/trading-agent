@@ -507,30 +507,17 @@ def _cancel_open_buys(
 ) -> int:
     """손절할 종목의 당일 미체결 BUY(아침 ADD 지정가 등)를 취소한다 — 손절 뒤 체결돼 다시 보유하게
     되는 것을 막는다(전체 검토 O13). 실패는 경고만(손절은 그대로 진행). 취소한 건수."""
-    broker = ctx.brokers.get(account.id)
-    if broker is None:
-        return 0
-    n = 0
-    for r in repo.open_orders_today(
-        ctx.conn, account.id, pos.ticker, "BUY", local_day, market=market
-    ):
-        if not r["order_no"]:
-            continue  # 응답 없는 주문은 번호가 없어 취소할 수 없다
-        try:
-            res = broker.cancel_order(
-                str(r["order_no"]),
-                market=market,
-                org_no=r["org_no"],
-                ticker=pos.ticker,
-                exchange=_exchange(ctx, pos),
-                qty=int(r["qty"]),
-            )
-        except (KisApiError, ValueError) as e:
-            logger.warning("손절 전 미체결 BUY 취소 실패 %s %s: %s", account.id, pos.ticker, e)
-            continue
-        if res.accepted:
-            repo.set_order_status(ctx.conn, int(r["id"]), "cancelled")
-            n += 1
+    from trader.orchestrator.executor import cancel_open_buys
+
+    n, _left = cancel_open_buys(
+        ctx.conn,
+        ctx.brokers.get(account.id),
+        account.id,
+        market,
+        local_day,
+        ticker=pos.ticker,
+        exchange_of=lambda _t: _exchange(ctx, pos),
+    )
     return n
 
 
@@ -575,6 +562,7 @@ def _sell_now(
             return 0
     if live:
         _cancel_open_buys(ctx, account, market, pos, local_day)
+        repo.expire_pending_buys(ctx.conn, account.id, pos.ticker)
     unrecorded = f"sl_unrecorded:{account.id}:{market}:{pos.ticker}:{local_day.isoformat()}"
     if control.get_flag(ctx.conn, unrecorded):
         return 0  # 접수됐지만 원장에 못 적은 손절이 있다 (아래) — 오늘은 다시 내지 않는다

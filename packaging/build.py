@@ -75,6 +75,40 @@ def assemble_dist(dist: Path, *, sys_platform: str = sys.platform) -> Path:
     return target
 
 
+# 번들 폴더 = 운용 중인 TRADER_HOME 일 수 있다(Trader.app 의 부모). 빌드가 폴더를 비우기 전에
+# 사용자 데이터를 옆으로 옮겼다가 되돌린다 — 원장·키·설정이 지워지던 문제(전체 검토 2026-10-27)
+USER_DATA = ("config", "secrets", "state", "docs")
+
+
+def stash_user_data(target: Path, stash_root: Path) -> Path | None:
+    """target 안의 사용자 데이터 폴더를 stash_root/<시각> 으로 옮긴다. 없으면 None."""
+    present = [n for n in USER_DATA if (target / n).exists()]
+    if not present:
+        return None
+    from datetime import datetime
+
+    stash = stash_root / f"trader-userdata-{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    stash.mkdir(parents=True)
+    for n in present:
+        shutil.move(str(target / n), str(stash / n))
+    print(f"사용자 데이터 보존: {', '.join(present)} → {stash}", flush=True)
+    return stash
+
+
+def restore_user_data(stash: Path | None, target: Path) -> None:
+    """stash 의 폴더를 target 으로 되돌린다(새 번들에 같은 이름이 있으면 사용자 것이 이긴다)."""
+    if stash is None:
+        return
+    target.mkdir(parents=True, exist_ok=True)
+    for item in sorted(stash.iterdir()):
+        dst = target / item.name
+        if dst.exists():
+            shutil.rmtree(dst) if dst.is_dir() else dst.unlink()
+        shutil.move(str(item), str(dst))
+    stash.rmdir()
+    print(f"사용자 데이터 복원 → {target}", flush=True)
+
+
 def cli_exe(dist_dir: Path) -> Path:
     return dist_dir / ("trader.exe" if sys.platform == "win32" else "trader")
 
@@ -210,13 +244,19 @@ def main() -> None:
         return
     if not args.skip_web:
         build_web()
-    exe = build_bundle()
-    result = {"exe": str(exe)}
-    if not args.skip_smoke:
-        result["smoke"] = smoke(exe)
-    name = dist_name(project_version(), sys.platform, platform.machine())
-    result["zip"] = str(make_zip(DIST, name, readme=ROOT / "docs" / "bundle-usage.md"))
-    result["zip_name"] = f"{name}.zip"
+    # 빌드·스모크·압축이 모두 끝날 때까지 사용자 데이터를 밖에 둔다 — 스모크가 기존 secrets 로
+    # 실패하거나 zip 에 원장·키가 들어가지 않게(Codex 리뷰). 실패해도 finally 에서 되돌린다
+    stash = stash_user_data(DIST, ROOT / "dist")
+    try:
+        exe = build_bundle()
+        result = {"exe": str(exe)}
+        if not args.skip_smoke:
+            result["smoke"] = smoke(exe)
+        name = dist_name(project_version(), sys.platform, platform.machine())
+        result["zip"] = str(make_zip(DIST, name, readme=ROOT / "docs" / "bundle-usage.md"))
+        result["zip_name"] = f"{name}.zip"
+    finally:
+        restore_user_data(stash, DIST)
     print(json.dumps(result, ensure_ascii=False, indent=1))
 
 

@@ -921,7 +921,7 @@ def test_stop_loss_exec_key_is_per_ticker_day(ectx):
         )
     assert len(ectx.brokers["paper-main"].orders) == 1
     key = ectx.conn.execute("SELECT key FROM exec_keys").fetchone()["key"]
-    assert key == f"stop|paper-main|005930|{D.isoformat()}"
+    assert key == f"stop|paper-main|005930|{D.isoformat()}|q10"
 
 
 # --- 검토 O12: 승인 직전 최소 재판정 ----------------------------------------------------
@@ -1054,3 +1054,95 @@ def test_stop_loss_after_cancelled_stop_is_placed_again(ectx):
     repo.set_order_status(ectx.conn, oid, "cancelled")
     executor.execute(ectx, dec, **kw)
     assert len(ectx.brokers["paper-main"].orders) == 2
+
+
+# --- 전체 검토 2026-10-27 -------------------------------------------------------------
+
+
+def test_stop_loss_remainder_after_partial_fill_can_be_sold_same_day(ectx):
+    """첫 손절이 일부만 체결(filled)되고 잔량이 남으면 같은 날 잔량 손절이 다시 나간다."""
+    from trader.broker.models import Position
+
+    def pos(q):
+        return Position(
+            ticker="005930",
+            market="KR",
+            qty=q,
+            avg_price=Decimal("80000"),
+            current_price=PRICE,
+            eval_amount=PRICE * q,
+            pnl_pct=-0.1,
+        )
+
+    dec = Decision(
+        **ok_decision(action="SELL", target_weight=0.0, order_type="MARKET", limit_price=None)
+    )
+    b = ectx.brokers["paper-main"]
+    b.positions = [pos(10)]
+    executor.execute(ectx, dec, date=D, market="KR", price=PRICE, dry_run=False, is_stop_loss=True)
+    ectx.conn.execute("UPDATE orders SET status='filled'")
+    ectx.conn.commit()
+    b.positions = [pos(4)]  # 6주만 체결됐다
+    executor.execute(ectx, dec, date=D, market="KR", price=PRICE, dry_run=False, is_stop_loss=True)
+    assert [o.qty for o in b.orders] == [10, 4]
+
+
+def test_approve_buy_expires_when_killswitch_on(ectx):
+    from trader.risk import killswitch
+
+    aid = _pending(ectx)
+    killswitch.engage(ectx.conn, reason="테스트 /kill", source="telegram")
+    r = executor.approve(ectx, aid)
+    assert r["ok"] is False and "킬스위치" in r["error"]
+    assert ectx.brokers["paper-main"].orders == []
+    assert repo.get_approval(ectx.conn, aid)["status"] == "expired"
+
+
+def test_decision_turned_away_from_buy_cancels_open_buy(ectx):
+    _run(ectx)  # 아침 BUY 지정가 접수
+    b = ectx.brokers["paper-main"]
+    assert len(b.orders) == 1
+    hold = ok_decision(action="HOLD", target_weight=0.0)
+    _run(ectx, hold)
+    assert b.cancelled == ["FAKE-1"]
+    st = ectx.conn.execute("SELECT status FROM orders WHERE account_id='paper-main'").fetchone()
+    assert st["status"] == "cancelled"
+    assert any("미체결 매수 취소" in m for m in ectx.notifier.sent)
+
+
+def test_dry_run_hold_does_not_cancel(ectx):
+    _run(ectx)
+    _run(ectx, ok_decision(action="HOLD", target_weight=0.0), dry_run=True)
+    assert ectx.brokers["paper-main"].cancelled == []
+
+
+def test_killswitch_trip_cancels_open_buys(ectx):
+    _run(ectx)
+    b = ectx.brokers["paper-main"]
+    n, left = executor.on_killswitch(ectx.conn, b, "paper-main", "KR", D)
+    assert (n, left) == (1, []) and b.cancelled == ["FAKE-1"]
+
+
+def test_killswitch_on_by_telegram_cancels_on_next_balance_read(ectx):
+    """/kill(자동 발동 아님)으로 켜져도 다음 잔고 읽기에서 당일 미체결 BUY 를 거둔다."""
+    from trader.risk import killswitch
+
+    _run(ectx)
+    killswitch.engage(ectx.conn, reason="/kill", source="telegram")
+    b = ectx.brokers["paper-main"]
+    executor.build_portfolio(ectx.conn, b, ectx.accounts[0], "KR", D, killswitch_pct=0.15)
+    assert b.cancelled == []  # 조회(cancel_buys 없음)·dry-run 은 브로커 취소를 부르지 않는다
+    executor.build_portfolio(
+        ectx.conn, b, ectx.accounts[0], "KR", D, killswitch_pct=0.15, cancel_buys=True
+    )
+    assert b.cancelled == ["FAKE-1"]
+
+
+def test_killswitch_sweep_keeps_hedge_orders(ectx):
+    """보호용 헤지 BUY 는 킬스위치 취소 대상이 아니다(킬스위치 중에도 헤지는 허용)."""
+    _run(ectx)
+    b = ectx.brokers["paper-main"]
+    n, left = executor.on_killswitch(
+        ectx.conn, b, "paper-main", "KR", D, keep=frozenset({"005930"})
+    )
+    assert (n, left) == (0, []) and b.cancelled == []

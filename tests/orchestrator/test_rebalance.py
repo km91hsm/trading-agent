@@ -190,7 +190,12 @@ def test_rebalance_dry_run_no_orders(ctx, conn):
         ctx, market="KR", today=D, dry_run=True, quote_fn=lambda t: Decimal("100000")
     )
     assert out["orders"] and ctx.brokers["paper-main"].orders == []
-    assert control.get_flag(conn, rebalance.done_key("KR", D))["dry_run"] is True
+    # dry-run 은 완료 표시를 남기지 않는다 — 같은 날 실제 실행이 막히지 않게(전체 검토 2026-10-27)
+    assert control.get_flag(conn, rebalance.done_key("KR", D)) is None
+    real = rebalance.run(
+        ctx, market="KR", today=D, dry_run=False, quote_fn=lambda t: Decimal("100000")
+    )
+    assert "skipped" not in real and ctx.brokers["paper-main"].orders
 
 
 def test_disabled_skips(ctx, conn):

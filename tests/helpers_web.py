@@ -84,4 +84,6 @@ def make_deps(project, *, token: str | None = TOKEN, dist=None, market=True) -> 
         dist=dist,
         notifier=Sent(),
         now=lambda: NOW,
+        # TestClient 기본 Host. 운영 허용 목록에는 없다(DNS 리바인딩 경로, 전체 검토 2026-10-27)
+        extra_hosts=["testserver"],
     )
