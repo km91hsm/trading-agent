@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import threading
 import time
 from contextlib import closing
@@ -10,7 +9,7 @@ from contextlib import closing
 from fastapi import APIRouter, Query, Request
 
 from trader.ledger import performance, shadow
-from trader.platform import paths
+from trader.ml import features
 from trader.web.routers._common import deps_of, require_account, require_market
 
 router = APIRouter(prefix="/performance", tags=["performance"])
@@ -35,12 +34,7 @@ def _version(conn, account_id: str, market: str, state) -> tuple:
     orders = conn.execute(
         "SELECT COUNT(*) AS n FROM orders WHERE account_id=?", (account_id,)
     ).fetchone()["n"]
-    fdir = (state or paths.state_dir()) / "features"
-    try:
-        fmtime = os.stat(fdir).st_mtime
-    except OSError:
-        fmtime = 0.0
-    return (snap["n"], snap["m"], fills, orders, fmtime)
+    return (snap["n"], snap["m"], fills, orders, features.store_mtime(state))
 
 
 def cached_report(conn, state, account_id: str, market: str, days: int) -> dict:

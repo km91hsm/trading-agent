@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 import sqlite3
+import threading
+import time
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -16,6 +18,49 @@ from trader.ledger import views
 
 WINDOW = 60
 MIN_OBS = 20
+CACHE_TTL_S = 300.0
+# (account, market, today, window) → (version, saved_at, card). 계좌 화면은 SSE 마다 다시
+# 읽는데 종가표 계산(parquet 100여 개)이 1초를 넘는다. 입력(스냅샷·피처 스토어)이 같으면 결과도 같다
+_CACHE: dict[tuple, tuple[tuple, float, dict]] = {}
+_LOCK = threading.Lock()
+
+
+def _version(conn: sqlite3.Connection, account_id: str, market: str, state: Path | None) -> tuple:
+    from trader.ml import features
+
+    snap = conn.execute(
+        "SELECT COUNT(*), MAX(id) FROM positions_snapshot WHERE account_id=? AND market=?",
+        (account_id, market),
+    ).fetchone()
+    return (snap[0], snap[1], features.store_mtime(state))
+
+
+def cached_compute(
+    conn: sqlite3.Connection,
+    *,
+    account_id: str,
+    market: str,
+    today: date,
+    state: Path | None = None,
+    window: int = WINDOW,
+) -> dict:
+    """`compute` 결과를 (계좌·시장·기준일·창) 별로 기억한다. 스냅샷 행(개수·최대 id)이나 피처
+    디렉터리 mtime 이 바뀌면, 또는 `CACHE_TTL_S` 가 지나면 다시 계산한다(웹 위험 카드용)."""
+    key = (account_id, market, today, window, str(state))
+    version = _version(conn, account_id, market, state)
+    now = time.monotonic()
+    with _LOCK:
+        hit = _CACHE.get(key)
+        if hit is not None and hit[0] == version and now - hit[1] < CACHE_TTL_S:
+            return hit[2]
+    card = compute(
+        conn, account_id=account_id, market=market, today=today, state=state, window=window
+    )
+    with _LOCK:
+        for k in [k for k, (_, saved, _) in _CACHE.items() if now - saved >= CACHE_TTL_S]:
+            del _CACHE[k]
+        _CACHE[key] = (version, now, card)
+    return card
 
 
 def compute(
@@ -40,13 +85,8 @@ def compute(
     }
     if not held:
         return {"insufficient": "보유 없음(전액 현금)"}
-    df = dataset.load_all(
-        state, market=market, since=today - timedelta(days=window * 2 + 30), until=today
-    )
-    table = (
-        df.pivot_table(index="date", columns="ticker", values="close", aggfunc="last").sort_index()
-        if not df.empty
-        else pd.DataFrame()
+    table = dataset.close_table(
+        state, market, since=today - timedelta(days=window * 2 + 30), until=today
     )
     missing = sorted(t for t in held if t not in table.columns)
     rets = table.pct_change(fill_method=None).iloc[1:].tail(window) if not table.empty else table

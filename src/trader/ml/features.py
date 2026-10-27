@@ -99,6 +99,16 @@ def _features_dir(state: Path | None) -> Path:
     return d
 
 
+def store_mtime(state: Path | None) -> float:
+    """피처 디렉터리 mtime(날짜 파일 추가·교체 때 바뀐다 — 원자 교체도 이름 바꾸기라 갱신). 캐시의
+    무효화 키로 쓴다(성과·위험 카드·최신 행). 디렉터리가 없으면 0. 디렉터리를 만들지 않는다."""
+    base = state if state is not None else paths.state_dir()
+    try:
+        return (base / "features").stat().st_mtime
+    except OSError:
+        return 0.0
+
+
 def has_files(state: Path | None) -> bool:
     """날짜 파일이 하나라도 있는가 (데몬 부트스트랩의 백필 필요 판단; 디렉터리는 만들지 않음)."""
     base = state if state is not None else paths.state_dir()

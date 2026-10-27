@@ -74,6 +74,34 @@ def test_load_all_date_window_reads_only_matching_files(project, monkeypatch):
     assert out["date"].max().date().isoformat() == until
 
 
+def test_load_all_columns_reads_only_requested_columns(project, monkeypatch):
+    """전체 검토 3차(성능): columns 를 주면 그 열(+식별 열)만 parquet 에서 읽는다."""
+    features.write_rows(synthetic_features(2, 3, signal=False))
+    seen: list = []
+    real = pd.read_parquet
+
+    def spy(path, *a, **k):
+        seen.append(k.get("columns"))
+        return real(path, *a, **k)
+
+    monkeypatch.setattr(pd, "read_parquet", spy)
+    out = dataset.load_all(market="KR", columns=["close"])
+    assert seen and all(set(c) == {"date", "ticker", "market", "close"} for c in seen)
+    assert set(out.columns) == {"date", "ticker", "market", "close"} and len(out) == 6
+
+
+def test_close_table_is_date_by_ticker_pivot(project):
+    df = synthetic_features(2, 4, signal=False)
+    features.write_rows(df)
+    days = sorted(df["date"].unique())
+    table = dataset.close_table(None, "KR", since=days[1], until=days[2])
+    assert list(table.index) == [days[1], days[2]]
+    assert sorted(table.columns) == ["T00", "T01"]
+    want = df[(df["ticker"] == "T01") & (df["date"] == days[2])]["close"].iloc[0]
+    assert table.loc[days[2], "T01"] == want
+    assert dataset.close_table(None, "US").empty
+
+
 def _panel(n_days=4, tickers=("A", "B", "C", "D", "E", "F"), market="KR", seed=0):
     """날짜마다 모든 종목이 있는 패널. 종목별 종가 경로가 달라 fwd_return 순위가 갈린다."""
     import numpy as np

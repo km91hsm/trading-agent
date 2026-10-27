@@ -63,7 +63,7 @@ def risk(request: Request, account_id: str | None = None, market: str | None = N
         return {
             "account_id": acct.id,
             "market": m,
-            **risk_card.compute(
+            **risk_card.cached_compute(
                 conn,
                 account_id=acct.id,
                 market=m,

@@ -36,14 +36,7 @@ def _close_table(
     state: Path | None, market: str, *, since: date | None = None, until: date | None = None
 ) -> pd.DataFrame:
     # 만기 계산은 미결 결정일 이후 봉만 필요하다 — 스토어 전체(1년에 250파일씩 증가)를 읽지 않는다
-    df = dataset.load_all(state, market=market, since=since, until=until)
-    if df.empty:
-        return pd.DataFrame()
-    df = df[["date", "ticker", "close"]].copy()
-    df["date"] = pd.to_datetime(df["date"]).dt.date
-    return df.pivot_table(
-        index="date", columns="ticker", values="close", aggfunc="last"
-    ).sort_index()
+    return dataset.close_table(state, market, since=since, until=until)
 
 
 def window_return(

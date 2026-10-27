@@ -21,7 +21,12 @@ import { applyQuotes, liveLabel } from "../live";
 import type { Market, PerformanceReport, Portfolio } from "../types";
 
 export function AccountPage() {
-  const { accountId, accounts, token, tick } = useApp();
+  const { accountId, accounts, token, tick, tickOf, connected } = useApp();
+  // 전역 tick 대신 이 화면이 읽는 키만 본다(전체 검토 3차). SSE 가 끊긴 동안은 생존 폴링 tick 으로
+  const tLive = connected ? 0 : tick;
+  const tPortfolio = tickOf("positions", "orders", "approvals", "approvals_pending") + tLive;
+  const tPerf = tickOf("positions", "orders") + tLive;
+  const tRisk = tickOf("positions") + tLive;
   const toast = useToast();
   const acct = accounts.find((a) => a.id === accountId);
   const [marketSel, setMarketSel] = useState<Market | null>(null);
@@ -29,7 +34,7 @@ export function AccountPage() {
   const market: Market = marketSel && acct?.markets.includes(marketSel) ? marketSel : (acct?.markets[0] ?? "KR");
   const pf = useLoad(
     () => (accountId ? getJson<Portfolio>(withAccount(`/api/portfolio?market=${market}`, accountId)) : null),
-    [accountId, market, tick],
+    [accountId, market, tPortfolio],
   );
   const refresh = async () => {
     try {
@@ -47,11 +52,11 @@ export function AccountPage() {
   const applied = applyQuotes(snap?.positions ?? [], live?.quotes, snap?.nav);
   const perf = useLoad(
     () => (accountId ? getJson<PerformanceReport>(withAccount(`/api/performance?market=${market}&days=30`, accountId)) : null),
-    [accountId, market, tick],
+    [accountId, market, tPerf],
   );
   const risk = useLoad(
     () => (accountId ? getJson<RiskResp>(withAccount(`/api/portfolio/risk?market=${market}`, accountId)) : null),
-    [accountId, market, tick],
+    [accountId, market, tRisk],
   );
   // 주말·휴장을 넘겨도 사흘이면 오래된 잔고다(데몬·갱신 멈춤을 드러낸다, Stock D-096)
   const snapAsOf = asOfInfo(snap?.date, new Date(), 3 * DAY_MS, "스냅샷");
