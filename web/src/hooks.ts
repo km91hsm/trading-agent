@@ -201,6 +201,12 @@ export function useAppState(): AppState {
     setAccountId, token, setToken, events, connected, tick, reloadAccounts, theme, setTheme, names, ensureNames };
 }
 
+/** 가려진 탭에서 이번 재조회를 미룰까: 한 번이라도 읽은 뒤면 미룬다(SSE 변경·tick 으로 deps 가 바뀌어도
+ * 보이지 않는 탭은 서버를 부르지 않고, 보이게 되면 한 번 읽는다 — 전체 검토 3차). 처음 읽기는 미루지 않는다. */
+export function deferWhileHidden(hidden: boolean, loadedOnce: boolean): boolean {
+  return hidden && loadedOnce;
+}
+
 export type Loaded<T> = { data: T | null; error: string | null; loading: boolean; reload: () => void };
 
 /** fn 이 null 을 돌려주면 호출하지 않는다 (예: 계좌 미선택). deps 가 바뀌면 다시 읽는다. */
@@ -210,6 +216,7 @@ export function useLoad<T>(fn: () => Promise<T> | null, deps: unknown[]): Loaded
   const [loading, setLoading] = useState(false);
   const [n, setN] = useState(0);
   const stale = useRef(false);
+  const loadedOnce = useRef(false);
   // 가려진 탭은 다시 읽지 않고(탭이 돌아오면 즉시), 전역 'trader:refresh' 이벤트로도 다시 읽는다 (Phase 23 G)
   useEffect(() => {
     const onVisible = () => {
@@ -227,10 +234,12 @@ export function useLoad<T>(fn: () => Promise<T> | null, deps: unknown[]): Loaded
     };
   }, []);
   useEffect(() => {
-    if (typeof document !== "undefined" && document.visibilityState === "hidden" && n > 0) {
+    const hidden = typeof document !== "undefined" && document.visibilityState === "hidden";
+    if (deferWhileHidden(hidden, loadedOnce.current)) {
       stale.current = true; // 돌아오면 한 번에 읽는다
       return;
     }
+    loadedOnce.current = true;
     const p = fn();
     if (!p) {
       // 호출 조건이 빠지면(계좌 미선택 등) 이전 결과·오류를 모두 지운다

@@ -84,6 +84,16 @@ describe("bumpsGlobalTick", () => {
   });
 });
 
+import { deferWhileHidden } from "./hooks";
+
+describe("deferWhileHidden", () => {
+  it("가려진 탭은 첫 읽기 뒤 SSE 변경에도 다시 읽지 않는다(보이면 한 번)", () => {
+    expect(deferWhileHidden(true, false)).toBe(false); // 처음 마운트는 읽는다
+    expect(deferWhileHidden(true, true)).toBe(true);
+    expect(deferWhileHidden(false, true)).toBe(false);
+  });
+});
+
 import { chunk, mergeQuotes } from "./hooks";
 
 describe("시세 나눠 받기", () => {
