@@ -139,6 +139,16 @@ export type JobRequest = {
 };
 export type JobsResp = { alive: boolean; active: number; requests: JobRequest[] };
 
+export const JOBS_POLL_MS = 3000;
+export const JOBS_CHANNEL = "trader-jobs";
+
+/** 활성 요청이 있을 때 이 탭이 /api/jobs 를 폴링할까: SSE 리더 탭 하나만(다른 탭은 리더가
+ * BroadcastChannel 로 중계한 응답을 받는다). 리더가 가려진 탭이어도 폴링한다 — 보이는 탭의 진행
+ * 문구가 그 중계로 갱신되기 때문(전체 검토 3차). */
+export function pollsJobs(active: boolean, leader: boolean): boolean {
+  return active && leader;
+}
+
 export const REQUEST_STATUS_LABEL: Record<RequestStatus, string> = {
   queued: "대기",
   running: "실행 중",
