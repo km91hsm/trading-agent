@@ -44,3 +44,34 @@ def quantize_price(market: str, price: Decimal) -> Decimal:
 
 def is_on_tick(market: str, price: Decimal) -> bool:
     return quantize_price(market, price) == price
+
+
+# --- 국내 파생(Phase 26): 상품 설정의 호가단위 표 `[(상한 미만|None, tick), ...]` ----------------
+
+
+def tick_table_for(product, kind: str) -> list[tuple[Decimal | None, Decimal]]:
+    """선물은 단일 단위, 옵션은 가격 구간표(`FoProductCfg.option_ticks`, 마지막 상한 None)."""
+    if kind == "FUTURES":
+        return [(None, Decimal(product.futures_tick))]
+    return [(None if b is None else Decimal(b), Decimal(t)) for b, t in product.option_ticks]
+
+
+def tick_for(table: list[tuple[Decimal | None, Decimal]], price: Decimal) -> Decimal:
+    for bound, tick in table:
+        if bound is None or price < bound:
+            return tick
+    return table[-1][1]
+
+
+def quantize_tick(table: list[tuple[Decimal | None, Decimal]], price: Decimal) -> Decimal:
+    """가장 가까운 단위로. 반올림 결과가 다른 구간으로 넘어가면 그 구간 단위로 다시 맞춘다."""
+    tick = tick_for(table, price)
+    q = (price / tick).quantize(Decimal("1"), rounding=ROUND_HALF_UP) * tick
+    if tick_for(table, q) != tick:
+        tick = tick_for(table, q)
+        q = (q / tick).quantize(Decimal("1"), rounding=ROUND_HALF_UP) * tick
+    return q.quantize(tick)
+
+
+def is_on_tick_table(table: list[tuple[Decimal | None, Decimal]], price: Decimal) -> bool:
+    return quantize_tick(table, price) == price

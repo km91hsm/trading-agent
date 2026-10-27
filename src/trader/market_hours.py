@@ -11,6 +11,11 @@ from trader.config import MARKET_TZ
 
 REGULAR = {"KR": ("09:00", "15:30"), "US": ("09:30", "16:00")}
 
+# 국내 파생(Phase 26): KRX 지수선물옵션 정규장 08:45~15:45, 최종거래일은 15:20 종료. 현물 지수는
+# REGULAR["KR"] 창에서만 갱신되므로 파생 보호선은 그 밖에서 선물 가격만 본다(`index_live`)
+FO_SESSION = ("08:45", "15:45")
+FO_LAST_DAY_CLOSE = "15:20"
+
 
 US_EARLY_CLOSE = "13:00"  # NYSE 조기 마감일(추수감사절 다음 날 등, daemon.us_early_closes)
 
@@ -60,3 +65,30 @@ def session_over(market: str, now: datetime) -> bool:
         return True
     hm = local.strftime("%H:%M")
     return hm >= close_hm(market, local.date())
+
+
+# --- 국내 파생(Phase 26) ------------------------------------------------------------
+
+
+def fo_close_hm(last_trade_day: bool) -> str:
+    """파생 정규장 마감(KST 'HH:MM'). 최종거래일은 15:20."""
+    return FO_LAST_DAY_CLOSE if last_trade_day else FO_SESSION[1]
+
+
+def is_fo_open(now: datetime, *, last_trade_day: bool = False) -> bool:
+    """KRX 파생 정규장 열림(평일 08:45~15:45, 최종거래일 ~15:20). KR 휴장일은 호출자가
+    `daemon.should_skip` 으로 거른다."""
+    from trader.daemon import in_window
+
+    local = now.astimezone(MARKET_TZ["KR"])
+    if local.weekday() >= 5:
+        return False
+    return in_window(
+        local.time().replace(second=0, microsecond=0), FO_SESSION[0], fo_close_hm(last_trade_day)
+    )
+
+
+def index_live(now: datetime) -> bool:
+    """현물 지수(코스피200)가 갱신되는 시간(평일 09:00~15:30 KST).
+    밖이면 파생 보호선은 지수 조건을 쓰지 않는다."""
+    return is_open("KR", now)
