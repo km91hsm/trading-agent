@@ -815,22 +815,21 @@ def _history_changed(candles: list[Candle], stored: dict[date, float]) -> bool:
 def _stored_closes(
     state: Path | None, markets: set[str], *, since: date
 ) -> dict[tuple[str, str], dict[date, float]]:
-    """(시장, 종목) → {날짜: 저장 종가}. 스토어가 비었거나 읽기 실패면 빈 맵(감지 생략)."""
+    """(시장, 종목) → {날짜: 저장 종가}. 스토어가 비었거나 읽기 실패면 빈 맵(감지 생략). close 열만
+    읽는다(`dataset.close_table`) — 400일치 전 열을 읽으면 발굴 종목 스냅샷마다 초 단위(2-P9)."""
     from trader.ml import dataset  # dataset 이 features 를 가져다 쓴다(순환 방지)
 
     out: dict[tuple[str, str], dict[date, float]] = {}
     for m in markets:
         try:
-            df = dataset.load_all(state, market=m, since=since)
+            table = dataset.close_table(state, m, since=since)
         except Exception as e:  # noqa: BLE001 - 감지는 보조: 실패해도 스냅샷은 간다
             logger.warning("저장 종가 읽기 실패 %s: %s", m, e)
             continue
-        if df.empty:
+        if table.empty:
             continue
-        for t, part in df[["ticker", "date", "close"]].groupby("ticker"):
-            out[(m, str(t))] = {
-                pd.Timestamp(d).date(): float(c)
-                for d, c in zip(part["date"], part["close"], strict=True)
-                if pd.notna(c)
-            }
+        for t in table.columns:
+            series = table[t].dropna()
+            if not series.empty:
+                out[(m, str(t))] = {d: float(c) for d, c in series.items()}
     return out

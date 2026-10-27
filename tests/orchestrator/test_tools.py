@@ -1402,6 +1402,9 @@ def test_summarize_skips_debate_on_consensus(ctx, project):
     r = tools.submit_decision(ctx, ticker="005930", market="KR", date=D, payload=ok_decision())
     assert r["ok"], r
     assert ctx.conn.execute("SELECT COUNT(*) FROM debate_turns").fetchone()[0] == 0
+    # 2-L23: 생략 여부를 원장에 남긴다 — 전후 비교가 run 디렉터리 보존 기간(retention)에 묶이지 않게
+    assert ctx.conn.execute("SELECT skipped_debate FROM decisions").fetchone()[0] == 1
+    assert ctx.conn.execute("SELECT skipped_debate FROM memory_entries").fetchone()[0] == 1
 
 
 def test_summarize_requires_debate_without_consensus(ctx, project):
@@ -1447,6 +1450,9 @@ def test_summarize_with_debate_turns_uses_debate_even_on_consensus(ctx, project)
     assert r["ok"] and not r.get("skipped_debate")
     s = read_checkpoint(run_dir(D, "KR", "005930"), "25_research_summary")["data"]
     assert "skipped_debate" not in s and isinstance(s["sycophantic"], bool)
+    r = tools.submit_decision(ctx, ticker="005930", market="KR", date=D, payload=ok_decision())
+    assert r["ok"], r
+    assert ctx.conn.execute("SELECT skipped_debate FROM decisions").fetchone()[0] == 0  # 2-L23
 
 
 def test_fake_session_submit_does_not_record_portfolio(ctx, project, monkeypatch):

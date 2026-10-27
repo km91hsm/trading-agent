@@ -654,3 +654,24 @@ def test_reevaluate_lane_is_separate_from_light_jobs(project, conn, monkeypatch)
     assert ran == ["reevaluate", "news_collect"]
     ids = {j.id for j in daemon.build_jobs(SCHED, Settings(), markets=["KR"])}
     assert {daemon.REEVAL_QUEUE_JOB_ID, daemon.FAST_QUEUE_JOB_ID} <= ids
+
+
+def test_missed_idempotent_cron_jobs_catch_up(conn, monkeypatch):
+    """2-P3: 놓친 reflect 는 대기열로, ledger_backup·universe_members 는 바로 실행해 따라잡는다.
+    멱등 cron 잡(reflect·백업·유니버스 기록·권리 일정·모의 점검·학습)은 misfire grace 가 몇 시간."""
+    deps = _deps(conn, FakeMarket(), now=lambda: TUE_0900_KST)
+    jobs = daemon.build_jobs(SCHED, Settings(), markets=["KR"])
+    reflect = next(j for j in jobs if j.kind == "reflect")
+    assert daemon.misfire_grace_for(reflect) == daemon.IDEMPOTENT_MISFIRE_GRACE_S
+    assert daemon.misfire_grace_for(next(j for j in jobs if j.kind == "ledger_backup")) == (
+        daemon.IDEMPOTENT_MISFIRE_GRACE_S
+    )
+    out = daemon.on_cron_missed(deps, reflect, notify=False)
+    assert out["queued"] is True and jobq.list_recent(conn)[0]["kind"] == "reflect"
+    ran: list[str] = []
+    monkeypatch.setattr(daemon, "_backup_body", lambda d: ran.append("backup") or {})
+    monkeypatch.setattr(daemon, "_universe_members_body", lambda d: ran.append("members") or {})
+    for kind in ("ledger_backup", "universe_members"):
+        out = daemon.on_cron_missed(deps, next(j for j in jobs if j.kind == kind), notify=False)
+        assert out["ran"] is True
+    assert ran == ["backup", "members"]

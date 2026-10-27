@@ -730,22 +730,23 @@ def _skip_held_by_profile(
     return keep, skipped
 
 
-def _snapshot_listed(deps: DaemonDeps, market: str, t: dict) -> None:
-    """유니버스 밖 발굴 종목은 피처 스토어에 행이 없어 05_quant·섹터 비교가 빈다 → 분석 직전 그
-    종목만 스냅샷 1회(`features.snapshot(tickers=)`). 시세 클라이언트가 없으면 건너뛰고 실패는
-    경고만."""
-    if deps.features_fn is None:
+def _snapshot_listed(deps: DaemonDeps, market: str, targets: list[dict]) -> None:
+    """유니버스 밖 발굴 종목은 피처 스토어에 행이 없어 05_quant·섹터 비교가 빈다 → 분석 앞에서 그
+    종목들을 **모아** 스냅샷 1회(`features.snapshot(tickers=)`; 종목마다 부르면 수정주가 감지가
+    스토어를 그만큼 다시 읽는다, 2-P9). 시세 클라이언트가 없으면 건너뛰고 실패는 경고만."""
+    if deps.features_fn is None or not targets:
         return
+    names = ", ".join(str(t["ticker"]) for t in targets)
     try:
         n = deps.features_fn(
             "snapshot",
             [market],
             progress=lambda s: None,
-            tickers=[(t["ticker"], t.get("exchange"))],
+            tickers=[(t["ticker"], t.get("exchange")) for t in targets],
         )
-        logger.info("발굴 종목 피처 스냅샷 %s %s: %s행", market, t["ticker"], n)
+        logger.info("발굴 종목 피처 스냅샷 %s %s: %s행", market, names, n)
     except Exception as e:  # noqa: BLE001 - 피처 없이도 세션은 돈다
-        logger.warning("발굴 종목 피처 스냅샷 실패 %s %s: %s", market, t["ticker"], e)
+        logger.warning("발굴 종목 피처 스냅샷 실패 %s %s: %s", market, names, e)
 
 
 def _analyze_targets(
@@ -780,10 +781,9 @@ def _analyze_targets(
             )
         except Exception as e:  # noqa: BLE001 - 한 종목 수집 실패는 세션이 다시 시도한다
             logger.warning("수집 실패 %s %s: %s", market, t["ticker"], e)
-        if t.get("discovery") == "listed":
-            _snapshot_listed(deps, market, t)
         _ensure_quant(deps, t["ticker"], market, today)
 
+    _snapshot_listed(deps, market, [t for t in targets if t.get("discovery") == "listed"])
     # 종목당 세션 1회(--max-budget-usd 는 세션 단위). 실패한 종목은 기록하고 다음 종목으로.
     runner = deps.session_runner or run_session
     ok, failed, sessions = 0, [], []
@@ -2633,16 +2633,21 @@ def _scan_analyze_body(deps: DaemonDeps, market: str) -> dict:
 
 def _shadow_record(deps: DaemonDeps, market: str, analyzed: dict | None = None) -> None:
     """섀도 포트폴리오(전체 검토 L1): 오늘 scan 후보·LLM 결정으로 비교 포트폴리오 3개를 남긴다.
-    주문 없음, 실패해도 잡은 계속(경고만). 분석이 끝까지 돌지 않은 날(실패·중단·scan 없음)과
-    FAKE 세션은 남기지 않는다 — 운영 실패나 고정 HOLD 를 LLM 선택으로 채점하지 않게(PR #33)."""
+    주문 없음, 실패해도 잡은 계속(경고만). 전부 실패·중단·scan 없음인 날과 FAKE 세션은 남기지
+    않는다 — 운영 실패나 고정 HOLD 를 LLM 선택으로 채점하지 않게(PR #33). 일부 종목만 실패한 날은
+    성공한 결정으로 기록하되 실패 종목은 후보 기준선에서도 뺀다(LLM 이 고를 수 없었던 종목 —
+    같은 후보 집합 비교, 2-L6: 실패가 변동성 큰 날에 몰려도 표본에서 그날이 빠지지 않게)."""
     from trader.ledger import shadow
     from trader.orchestrator import session as session_mod
     from trader.orchestrator.run_store import read_checkpoint, run_date_for
 
     a = analyzed or {}
-    if a.get("failed") or a.get("stopped") or a.get("error"):
+    failed = {str(t) for t in (a.get("failed") or [])}
+    if a.get("stopped") or a.get("error") or (failed and not a.get("ok")):
         logger.info("섀도 기록 생략 %s: 분석 미완(%s)", market, a)
         return
+    if failed:
+        logger.info("섀도 기록 %s: 실패 종목 제외 %s", market, ", ".join(sorted(failed)))
     today = run_date_for(market, deps.now())
     scan = read_checkpoint(run_store.market_dir(today, market, deps.state), "_scan")
     if not scan or session_mod.is_fake() or ((scan.get("session") or {}).get("fake")):
@@ -2653,7 +2658,15 @@ def _shadow_record(deps: DaemonDeps, market: str, analyzed: dict | None = None) 
             index = shadow.index_table(
                 deps.market_client, deps.settings.hedge, market, now=deps.now()
             )
-            shadow.record(conn, market=market, day=today, scan=scan, now=deps.now(), index=index)
+            shadow.record(
+                conn,
+                market=market,
+                day=today,
+                scan=scan,
+                now=deps.now(),
+                index=index,
+                exclude=frozenset(failed),
+            )
         finally:
             conn.close()
     except Exception as e:  # noqa: BLE001 - 측정 실패가 분석 잡을 실패로 만들지 않는다
@@ -3262,10 +3275,21 @@ START_SOON_S = {"usage_probe": 60}  # 기동 뒤 이 초 만에 첫 실행하는
 
 SCAN_MISFIRE_GRACE_S = 3600  # 절전 등으로 늦어도 1시간 안이면 그냥 돈다(하루를 잃는 것보다 낫다)
 DEFAULT_MISFIRE_GRACE_S = 120
+# 멱등 cron 잡(복기·백업·유니버스 기록·권리 일정·모의 점검·학습)은 몇 시간 늦어도 그냥 돈다 —
+# 노트북이 16:30 에 잠들어 있으면 그날 reflect(복기 + 피처 스냅샷 + 만기 + 정리)·백업이 통째로
+# 빠졌다(2-P3). 시간에 묶인 잡(scan·monitor·체결 동기화)은 그대로
+IDEMPOTENT_MISFIRE_GRACE_S = 6 * 3600
+IDEMPOTENT_KINDS = frozenset(
+    {"reflect", "ledger_backup", "universe_members", "ksd_events", "paper_review", "ml_train"}
+)
 
 
 def misfire_grace_for(job: Job) -> int:
-    return SCAN_MISFIRE_GRACE_S if job.kind == "scan_analyze" else DEFAULT_MISFIRE_GRACE_S
+    if job.kind == "scan_analyze":
+        return SCAN_MISFIRE_GRACE_S
+    if job.kind in IDEMPOTENT_KINDS:
+        return IDEMPOTENT_MISFIRE_GRACE_S
+    return DEFAULT_MISFIRE_GRACE_S
 
 
 # 놓쳤을 때 대기열로 따라잡는 cron 잡(kind → 대기열 kind). 나머지는 알림만
@@ -3273,6 +3297,12 @@ CATCH_UP_KINDS = {
     "scan_analyze": "scan_analyze",
     "fills_sync": "fills_sync",
     "reconcile": "reconcile",
+    "reflect": "reflect",  # 2-P3: 복기·피처 스냅샷·만기·정리는 heavy 대기열로(멱등)
+}
+# 대기열 kind 가 없는 가벼운 멱등 잡은 놓쳤을 때 그 자리에서 돌린다(2-P3; runs 기록은 run_job)
+DIRECT_CATCH_UP_KINDS = {
+    "ledger_backup": "_backup_body",
+    "universe_members": "_universe_members_body",
 }
 CATCH_UP_LOOKBACK = timedelta(hours=20)  # 기동 때 '오늘 놓친' 것으로 보는 범위
 
@@ -3301,6 +3331,15 @@ def on_cron_missed(deps: DaemonDeps, job: Job, *, notify: bool = True) -> dict:
             )
         except Exception:  # noqa: BLE001
             pass
+    direct = DIRECT_CATCH_UP_KINDS.get(job.kind)
+    if direct is not None:
+        body = globals()[direct]
+        try:
+            run_job(job.id, lambda: body(deps), conn_factory=deps.conn_factory)
+            out["ran"] = True
+        except Exception as e:  # noqa: BLE001 - 리스너·기동 따라잡기를 죽이지 않는다
+            logger.warning("놓친 %s 바로 실행 실패: %s", job.id, e)
+        return out
     kind = CATCH_UP_KINDS.get(job.kind)
     if kind is None:
         return out
@@ -3374,7 +3413,7 @@ def catch_up_missed(deps: DaemonDeps, jobs: list[Job]) -> dict:
         if "skipped" in r:
             continue
         real.append(jid)
-        if r.get("queued"):
+        if r.get("queued") or r.get("ran"):
             queued.append(jid)
     if real:
         try:

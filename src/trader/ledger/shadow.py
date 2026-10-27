@@ -33,6 +33,8 @@ INDEX_STRATEGIES = ("index_hold", "index_trend")
 TREND_MA = 100
 DEFAULT_TOP_N = 3
 HORIZON = 5
+# 쌍이 이보다 적으면 이동 블록 재표본이 서로 같아 구간이 [mean, mean] 으로 보인다 — 구간 없음(2-L2)
+MIN_CI_PAIRS = 2 * HORIZON
 LEAD_DAYS = 10  # 시작일 직전 거래일 탐색 여유
 # 비중 있는 종목의 종가가 없을 때 만기 봉 뒤 이만큼(달력일)은 보류 — 그 사이 일일 스냅샷(열린 창
 # 종목, `ledger/open_window`)이 봉을 채운다. 지나면 `partial` 로 채우고 paired_stats 에서 뺀다(2-L1)
@@ -44,9 +46,22 @@ def _equal(tickers: list[str]) -> dict[str, float]:
     return {t: 1 / len(tickers) for t in tickers} if tickers else {}
 
 
-def build(conn: sqlite3.Connection, *, market: str, day: date, scan: dict, top_n: int) -> dict:
-    """전략별 비중 {strategy: {ticker: weight}}."""
-    scored = [c for c in scan.get("candidates") or [] if c.get("score") is not None]
+def build(
+    conn: sqlite3.Connection,
+    *,
+    market: str,
+    day: date,
+    scan: dict,
+    top_n: int,
+    exclude: frozenset[str] = frozenset(),
+) -> dict:
+    """전략별 비중 {strategy: {ticker: weight}}. `exclude` 는 그날 세션이 실패한 종목(2-L6) —
+    LLM 이 고를 수 없었으므로 후보 기준선에서도 뺀다."""
+    scored = [
+        c
+        for c in scan.get("candidates") or []
+        if c.get("score") is not None and str(c.get("ticker")) not in exclude
+    ]
     scored.sort(key=lambda c: float(c["score"]), reverse=True)
     tickers = [str(c["ticker"]) for c in scored]
     rows = conn.execute(
@@ -116,12 +131,13 @@ def record(
     top_n: int = DEFAULT_TOP_N,
     now: datetime | None = None,
     index: pd.DataFrame | None = None,
+    exclude: frozenset[str] = frozenset(),
 ) -> int:
     """운영일 기록. 만기 전 행은 같은 날 재실행(실패 뒤 재시도)이 덮어쓰고, 만기된 행은 그대로
     둔다(PR #33 리뷰). `index` 가 있으면 지수 기준선도. 쓰거나 덮어쓴 행 수."""
     created = (now or datetime.now(UTC)).isoformat()
     n = 0
-    plans = build(conn, market=market, day=day, scan=scan, top_n=top_n)
+    plans = build(conn, market=market, day=day, scan=scan, top_n=top_n, exclude=exclude)
     if index is not None:
         plans.update(index_weights(index, day=day))
     for strategy, weights in plans.items():
@@ -294,6 +310,13 @@ def paired_stats(
     diffs = np.array([float(r["d"]) for r in conn.execute(sql + order, args).fetchall()])
     if diffs.size == 0:
         return {"n": 0, "mean_diff": None, "ci_low": None, "ci_high": None}
+    if diffs.size < MIN_CI_PAIRS:
+        return {
+            "n": int(diffs.size),
+            "mean_diff": round(float(diffs.mean()), 6),
+            "ci_low": None,
+            "ci_high": None,
+        }
     means = _block_bootstrap_means(diffs, block=HORIZON, n_boot=n_boot, seed=seed)
     return {
         "n": int(diffs.size),

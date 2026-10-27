@@ -886,6 +886,11 @@ def submit_decision(
             ctx.conn, date, market, ticker, resume_stage, read_checkpoint(d, resume_stage) or {}
         )
     m_round = _RESUME_RE.match(resume_stage) if resume_stage else None
+    # 합의로 토론을 생략했는지(L17)를 원장 결정·메모리 행에 남긴다(2-L23: 전후 비교용)
+    summ = read_checkpoint(d, "25_research_summary") or {}
+    skipped = bool((summ.get("data") or summ).get("skipped_debate"))
+    if ctx.conn is not None and (did := repo.decision_id(ctx.conn, date, market, ticker)):
+        repo.set_skipped_debate(ctx.conn, did, skipped)
     executions, memory_entry_id = _execute_and_record(
         ctx,
         d,
@@ -897,6 +902,7 @@ def submit_decision(
         resume_round=int(m_round.group(1)) if m_round else None,
         extra_note=requote,
         change_pct=change_pct,
+        skipped_debate=skipped,
     )
     logger.info("결정 저장 %s %s: %s (계좌 %d)", market, ticker, decision.action, len(executions))
     return {
@@ -925,6 +931,7 @@ def _execute_and_record(
     skip_accounts: frozenset[str] = frozenset(),
     extra_note: str | None = None,
     change_pct: float | None = None,
+    skipped_debate: bool | None = None,
 ) -> tuple[list[dict], int | None]:
     """리스크 게이트·계좌별 실행(주문은 executor 안에서만) + 메모리 엔트리.
 
@@ -962,7 +969,13 @@ def _execute_and_record(
         trade_block=_trade_block(inputs),
     )
     memory_entry_id = _record_memory(
-        ctx, decision, market, date, round_no=resume_round or 0, decided_at=decided_at
+        ctx,
+        decision,
+        market,
+        date,
+        round_no=resume_round or 0,
+        decided_at=decided_at,
+        skipped_debate=skipped_debate,
     )
     return executions, memory_entry_id
 
@@ -1000,6 +1013,7 @@ def _record_memory(
     *,
     round_no: int = 0,
     decided_at: datetime | None = None,
+    skipped_debate: bool | None = None,
 ) -> int | None:
     """결정 1건(라운드별)을 메모리 엔트리로 기록한다 ((decision_id, round) 멱등).
 
@@ -1034,6 +1048,7 @@ def _record_memory(
             horizon_days=decision.horizon_days,
             round_no=round_no,
             held_at_decision=held,
+            skipped_debate=skipped_debate,
         )
     except Exception as e:  # noqa: BLE001
         logger.warning("메모리 기록 실패 %s %s: %s", market, decision.ticker, e)

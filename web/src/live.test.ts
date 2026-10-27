@@ -108,3 +108,21 @@ describe("시세 나눠 받기", () => {
     expect(Object.keys(m.quotes).sort()).toEqual(["A", "B"]);
   });
 });
+
+
+describe("degradeQuotes (2-W1)", () => {
+  it("요청 실패·TTL 초과면 모든 시세를 stale 로 내리고 표 머리에 지연을 적는다", async () => {
+    const { degradeQuotes } = await import("./live");
+    const r = degradeQuotes({
+      session: "open",
+      asof: "2026-10-28T00:10:00+00:00",
+      quotes: { "005930": { price: "100", change_pct: 0, asof: "x", stale: false } },
+      stream: true,
+    });
+    expect(r.quotes["005930"].stale).toBe(true);
+    expect(r.degraded).toBe(true);
+    expect(applyQuotes([pos("005930", 1, "90", "90")], r.quotes).liveCount).toBe(0);
+    expect(liveLabel(r, 0)).toContain("지연");
+    expect(liveLabel(r, 0)).toContain("09:10"); // KST 표기
+  });
+});

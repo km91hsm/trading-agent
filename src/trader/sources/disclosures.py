@@ -29,6 +29,9 @@ DART_CRITICAL = (
     "부적정",
 )
 DART_HIGH = ("유상증자", "전환사채", "최대주주변경", "횡령", "배임", "불성실공시")
+# 해제·해소·철회·취소가 붙으면 반대 방향(호재·무효) — critical 로 즉시 재분석·특보를 내지 않는다
+# (`거래정지` 가 '매매거래정지해제', `관리종목` 이 '지정해제' 에 걸리던 것, 2-L11)
+DART_NEGATE = ("해제", "해소", "철회", "취소")
 # 8-K: 1.03 파산·법정관리, 3.01 상장폐지 통지, 4.02 과거 재무제표 신뢰 철회 → critical,
 # 1.05 중대 사이버 사고 → high, 2.02 실적 발표 → info
 EDGAR_ITEMS = {
@@ -47,11 +50,14 @@ def _rank(sev: str | None) -> int:
 
 def classify_dart(report_nm: str) -> str | None:
     t = "".join((report_nm or "").split())
+    sev: str | None = None
     if any(k in t for k in DART_CRITICAL):
-        return "critical"
-    if any(k in t for k in DART_HIGH):
-        return "high"
-    return None
+        sev = "critical"
+    elif any(k in t for k in DART_HIGH):
+        sev = "high"
+    if sev is not None and any(k in t for k in DART_NEGATE):
+        return "info"
+    return sev
 
 
 def classify_8k(items: list[str]) -> str | None:

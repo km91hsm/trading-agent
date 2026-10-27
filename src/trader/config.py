@@ -1418,6 +1418,9 @@ class EventDef(BaseModel):
     kind: Literal["shock", "structural"] = "shock"
     min_news: int = Field(default=3, ge=1)
     keywords: list[str] = Field(min_length=1)
+    # 제외 패턴(2-L10): 한글 키워드는 부분 문자열이라 `전쟁` 이 무역전쟁·반도체전쟁에 걸린다 —
+    # 이 패턴이 든 뉴스는 세지 않는다
+    exclude: list[str] = Field(default_factory=list)
     beneficiaries: dict[Market, list[EventTicker]] = Field(default_factory=dict)
 
     @model_validator(mode="after")

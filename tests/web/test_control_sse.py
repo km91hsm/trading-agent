@@ -447,3 +447,23 @@ def test_shared_snapshot_computes_once_for_many_connections(conn, monkeypatch):
     monkeypatch.setattr(sse, "SHARED_TTL_S", 0)
     sse.shared_snapshot(conn, None)
     assert n["k"] == 2
+
+
+def test_sse_decisions_fingerprint_sees_same_day_update(conn):
+    """2-W2: 같은 날 재평가가 결정 행의 json 만 바꿔도(손절·익절 변경, 주문 없음) decisions 지문이
+    바뀐다 — MAX(id) 만 보면 계좌 화면의 계획(손절까지 거리)이 그대로였다."""
+    from datetime import date as _date
+
+    from trader.ledger import repo
+    from trader.web import sse
+
+    d = _date(2026, 10, 8)
+    base = {"ticker": "005930", "action": "HOLD", "target_weight": 0.1, "confidence": 0.6}
+    repo.ingest_checkpoint(
+        conn, d, "KR", "005930", "30_decision", {"data": {**base, "stop_loss": 90.0}, "call": {}}
+    )
+    s0 = sse.snapshot(conn)
+    repo.ingest_checkpoint(
+        conn, d, "KR", "005930", "31_decision_r1", {"data": {**base, "stop_loss": 95.0}, "call": {}}
+    )
+    assert sse.snapshot(conn)["decisions"] != s0["decisions"]
