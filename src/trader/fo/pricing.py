@@ -17,7 +17,8 @@ def _norm_cdf(x: float) -> float:
 
 
 def price(kind: FoKind, F: Decimal, K: Decimal, iv: float, days_left: int) -> Decimal:
-    """선물은 F 그대로. 옵션은 Black-76(r=0); 잔존일 ≤ 0 또는 iv ≤ 0 이면 내재가치."""
+    """선물은 F 그대로. 옵션은 Black-76(r=0); 잔존일 ≤ 0 또는 iv ≤ 0 이면 내재가치.
+    `iv` 는 연율 **소수**(0.2 = 20%)."""
     if kind == "FUTURES":
         return F
     f, k = float(F), float(K)
@@ -39,11 +40,13 @@ def reprice(
     quote: FoQuote, *, index_shift_pct: float, iv_rel: float, days_left: int
 ) -> Decimal:
     """시나리오 가격: 기초지수 × (1 + shift), IV × (1 + iv_rel). 선물은 선형(현재가 기준),
-    옵션은 행사가·IV·기초지수가 있어야 한다(없으면 ValueError — 호출자가 신규를 거부)."""
+    옵션은 행사가·IV·기초지수가 있어야 한다(없으면 ValueError — 호출자가 신규를 거부).
+    `FoQuote.iv` 는 KIS 그대로 **퍼센트**(18.4)이고 Black-76 은 소수(0.184)를 받으므로 여기서
+    한 번만 /100 한다(Codex 단계 1 P0-3)."""
     if quote.kind == "FUTURES":
         return (quote.price * (Decimal(1) + Decimal(str(index_shift_pct)))).quantize(_Q)
     if quote.strike is None or quote.iv is None or quote.underlying is None:
         raise ValueError(f"옵션 재평가 입력 부족: {quote.code} (행사가·IV·기초지수 필요)")
     F = quote.underlying * (Decimal(1) + Decimal(str(index_shift_pct)))
-    iv = quote.iv * (1.0 + iv_rel)
+    iv = quote.iv / 100.0 * (1.0 + iv_rel)
     return price(quote.kind, F, quote.strike, iv, days_left)

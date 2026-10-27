@@ -492,7 +492,7 @@
 - [ ] 사용자 확인 대기: Trader.app 재시작 1~2분 뒤 시스템 현황 사용량이 '확인 · 방금' 으로 바뀌는지, 장 밖에 이체 뒤 대시보드 새로고침하면 순자산이 바뀌는지
 
 ## Phase 26 선물옵션 방향성 레인 (2026-10-27, 사용자 요청 — `docs/superpowers/plans/2026-10-27-phase26-fo.md`, 스펙 `docs/superpowers/specs/2026-10-27-fo-lane-design.md`)
-- [ ] 단계 1 계좌·브로커·마스터·설정·가격모형 (`feat/phase26-1-fo-broker`): `AccountConfig.asset`·`FoCfg`·`split_accounts`, FO TR 표·모델, `fo_codes`·`fo_master`, `KisFoBroker`(엄격 파서·`get_order_state`)·`FakeFoBroker`, 파생 시세·체인, FO 장 시간·호가단위·Black-76, CLI `_Boot` 세 목록·`fo verify|contracts|chain|order-test`, 거부 목록
+- [x] 단계 1 계좌·브로커·마스터·설정·가격모형 (`feat/phase26-1-fo-broker`): `AccountConfig.asset`·`FoCfg`·`split_accounts`, FO TR 표·모델, `fo_codes`·`fo_master`, `KisFoBroker`(엄격 파서·`get_order_state`)·`FakeFoBroker`, 파생 시세·체인, FO 장 시간·호가단위·Black-76, CLI `_Boot` 세 목록·`fo verify|contracts|chain|order-test`, 거부 목록
 - [ ] 단계 1 Codex·Claude 교차 리뷰 → 수정 → PR(main)
 - [ ] 단계 2 저장 계층·상태기계·게이트·실행·원장 (`feat/phase26-2-store-gate-exec`): 원장 v26, `fo/store`(예약 트랜잭션)·`positions`(복구)·`rules`(대조표·단조)·`sizing`(수명 예산·스트레스·증거금 3겹)·`executor`(진입/축소 분기·회수·청산 절차), 체결·잔고·대조·점검·성과 asset 분기
 - [ ] 단계 2 교차 리뷰 → 수정 → PR

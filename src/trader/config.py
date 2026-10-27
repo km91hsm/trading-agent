@@ -477,6 +477,17 @@ class FoProductCfg(BaseModel):
             out.append((None if upper is None else Decimal(str(upper)), Decimal(str(tick))))
         if not out or out[-1][0] is not None:
             raise ValueError("option_ticks 의 마지막 구간 상한은 inf 여야 합니다")
+        prev: Decimal | None = None
+        for i, (upper, tick) in enumerate(out):
+            if tick <= 0:
+                raise ValueError(f"option_ticks 의 tick 은 양수여야 합니다: {tick}")
+            if upper is None:
+                if i != len(out) - 1:
+                    raise ValueError("option_ticks 의 inf 는 마지막 구간에만 올 수 있습니다")
+                continue
+            if upper <= 0 or (prev is not None and upper <= prev):
+                raise ValueError("option_ticks 의 상한은 양수·엄격한 오름차순이어야 합니다")
+            prev = upper
         return out
 
 

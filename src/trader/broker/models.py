@@ -269,8 +269,8 @@ class FoQuote(BaseModel):
     lower: Decimal | None
     last_trade_date: date | None
     days_left: int | None
-    hist_vol: float | None
-    iv: float | None
+    hist_vol: float | None  # 퍼센트(KIS `hist_vltl` 그대로, 15.2 = 15.2%)
+    iv: float | None  # 퍼센트(KIS `hts_ints_vltl` 그대로) — Black-76 입력은 `fo/pricing` 이 /100
     delta: float | None
     gamma: float | None
     theta: float | None

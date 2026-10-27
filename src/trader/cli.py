@@ -284,7 +284,8 @@ def status() -> None:
     from trader.ledger import db
 
     boot = _boot(settings=True, accounts=True, conn=True)
-    settings, accounts, conn = boot.settings, boot.accounts, boot.conn
+    # STATUS 는 계좌를 가리지 않는다(파생 계좌 포함)
+    settings, accounts, conn = boot.settings, boot.all_accounts, boot.conn
     try:
         db.sync_accounts(conn, accounts)
         text = status_mod.build_status(conn, settings, accounts, paths.docs_dir() / "TODO.md")
@@ -1563,9 +1564,9 @@ def jobs_kinds() -> None:
 
 
 def _control_conn():
-
+    """제어 명령은 계좌를 가리지 않는다(파생 계좌의 모드·일시정지도 여기서, Phase 26)."""
     boot = _boot(accounts=True, conn=True)
-    return boot.conn, boot.accounts
+    return boot.conn, boot.all_accounts
 
 
 @control_app.command("show")

@@ -85,6 +85,24 @@ def _kind_of(r: dict, code: str, product: FoProductCfg) -> tuple[FoKind | None, 
     return by_prefix, None
 
 
+def _qty_of(raw: Any) -> tuple[int | None, str | None]:
+    """잔고 수량의 엄격 해석: 음이 아닌 정수 문자열만 수량, 그 외(결측·비정수·음수)는 사유를 돌려
+    미확정 보유로 남긴다 — `_int` 의 '해석 불가 → 0' 폴백이 보유 행을 조용히 지우지 않게
+    (Codex P0-1)."""
+    s = str(raw).strip() if raw is not None else ""
+    if not s.isdigit():
+        return None, f"수량 해석 불가: {s!r}"
+    return int(s), None
+
+
+def _req_int(row: dict, key: str, order_no: str) -> int:
+    """체결 응답의 필수 수량. 결측·비정수는 '완료 0' 이 아니라 예외(Codex P0-2)."""
+    s = str(row.get(key) or "").strip()
+    if not s.isdigit():
+        raise KisApiError("INVALID_JSON", f"체결 응답 수량 누락({key}): {order_no}", "FO_CCLD")
+    return int(s)
+
+
 def _local_dt(ymd: Any, hms: Any) -> datetime:
     s = f"{ymd or ''}{str(hms or '000000').zfill(6)}"
     try:
@@ -155,14 +173,14 @@ class KisFoBroker:
         positions: list[FoPosition] = []
         unverified: list[UnverifiedHolding] = []
         for r in _rows(data.get("output1")):
-            qty = _int(r.get("cblc_qty"))
-            if qty <= 0:
-                continue
             code = fo_codes.normalize(_first(r, "shtn_pdno", "pdno") or "")
+            qty, why0 = _qty_of(r.get("cblc_qty"))
+            if qty == 0 and why0 is None:
+                continue  # 명시적인 정수 0 만 '보유 없음'
             side, why = _side_of(r)
             kind, why2 = _kind_of(r, code, self.product)
-            reasons = [w for w in (why, why2) if w]
-            if reasons or side is None or kind is None:
+            reasons = [w for w in (why0, why, why2) if w]
+            if reasons or side is None or kind is None or qty is None:
                 unverified.append(
                     UnverifiedHolding(code=code, raw=dict(r), reason="; ".join(reasons))
                 )
@@ -177,7 +195,7 @@ class KisFoBroker:
                     name=str(r.get("prdt_name") or "").strip() or None,
                     kind=kind,
                     contract_side=side,
-                    qty=qty,
+                    qty=qty,  # type: ignore[arg-type]
                     avg_price=_dec(r.get("ccld_avg_unpr1")),
                     current_price=_dec(_first(r, "prpr", "excc_unpr") or "0"),
                     pnl=_dec(r.get("evlu_pfls_amt")),
@@ -344,7 +362,7 @@ class KisFoBroker:
 
     def get_order_state(self, order_no: str, d: date) -> FoOrderState:
         """원주문 계보의 확정 상태. 원주문 행이 없으면 `terminal=False, open`(unknown 유지).
-        모순(체결+거부+취소 > 주문수량)은 예외."""
+        필수 수량 결측·항등식 불일치(체결+거부+취소+잔량 ≠ 주문수량)는 예외 — 완료로 보지 않는다."""
         rows = self._ccnl_rows(d)
         orig = next((r for r in rows if str(r.get("odno") or "") == order_no), None)
         if orig is None:
@@ -352,10 +370,10 @@ class KisFoBroker:
                 order_no=order_no, order_qty=0, filled_qty=0, remaining_qty=0, rejected_qty=0,
                 cancelled_qty=0, terminal=False, state="open",
             )
-        order_qty = _int(orig.get("ord_qty"))
-        filled = _int(orig.get("tot_ccld_qty"))
-        remaining = _int(orig.get("qty"))
-        rejected = _int(orig.get("rjct_qty"))
+        order_qty = _req_int(orig, "ord_qty", order_no)
+        filled = _req_int(orig, "tot_ccld_qty", order_no)
+        remaining = _req_int(orig, "qty", order_no)
+        rejected = _req_int(orig, "rjct_qty", order_no)
         cancel_rows = [
             r for r in rows
             if str(r.get("orgn_odno") or "") == order_no and _is_cancel_row(r)
@@ -367,9 +385,11 @@ class KisFoBroker:
                 raise KisApiError(
                     "INVALID_JSON", f"체결 응답 모순(취소 수량 음수): {order_no}", "FO_CCLD"
                 )
-        if filled + rejected + cancelled > order_qty:
+        if filled + rejected + cancelled + remaining != order_qty:
             raise KisApiError(
-                "INVALID_JSON", f"체결 응답 모순(합 > 주문수량): {order_no}", "FO_CCLD"
+                "INVALID_JSON",
+                f"체결 응답 모순(체결+거부+취소+잔량 ≠ 주문수량): {order_no}",
+                "FO_CCLD",
             )
         if cancel_rows and remaining == 0:
             state = "cancelled"

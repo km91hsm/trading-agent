@@ -116,3 +116,24 @@ def test_schedule_fo_defaults(project):
     assert sch.fo.kr.session == "08:20"
     assert sch.fo.kr.monitor.start == "08:45" and sch.fo.kr.monitor.end == "15:45"
     assert sch.fo.kr.monitor.interval_s == 60
+
+
+def test_option_ticks_validation():
+    """Codex 단계 1 P2: tick 은 양수, 상한은 엄격한 오름차순, inf 는 마지막에만."""
+    base = dict(
+        futures_prefix="105", call_prefix="205", put_prefix="305", multiplier=50000,
+        futures_tick="0.02", name="x",
+    )
+    bad = [
+        [["3", "0"], ["inf", "0.05"]],
+        [["3", "-0.01"], ["inf", "0.05"]],
+        [["10", "0.01"], ["3", "0.02"], ["inf", "0.05"]],
+        [["3", "0.01"], ["3", "0.02"], ["inf", "0.05"]],
+        [["inf", "0.01"], ["3", "0.02"], ["inf", "0.05"]],
+        [["3", "0.01"]],
+    ]
+    for ticks in bad:
+        with pytest.raises(ValueError):
+            config.FoProductCfg(**base, option_ticks=ticks)
+    ok = config.FoProductCfg(**base, option_ticks=[["3", "0.01"], ["10", "0.02"], ["inf", "0.05"]])
+    assert ok.option_ticks[0] == (Decimal("3"), Decimal("0.01"))

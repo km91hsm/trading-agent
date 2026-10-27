@@ -154,3 +154,18 @@ def test_fake_market_fo_methods():
         m.get_fo_price("nope", "FUTURES")
     quotes, errors = m.get_option_chain([], strikes=[])
     assert quotes == [] and errors == []
+
+
+def test_option_quote_iv_is_percent_and_reprice_converts(real_client, respx_mock):
+    """Codex 단계 1 P0-3: 시세 IV 는 KIS 그대로 퍼센트(18.4)이고 Black-76 재평가는 /100 으로
+    넣는다."""
+    from trader.fo import pricing
+
+    respx_mock.get(REAL + BASE + "/inquire-price").mock(
+        return_value=httpx.Response(200, json=load("fo_price_option.json"))
+    )
+    q = KisMarket(real_client, now=lambda: T0).get_fo_price("205W11352", "CALL")
+    assert q.iv == 18.4 and q.hist_vol == 15.2
+    got = pricing.reprice(q, index_shift_pct=0.0, iv_rel=0.0, days_left=q.days_left)
+    want = pricing.price("CALL", q.underlying, q.strike, 0.184, q.days_left)
+    assert got == want and got < Decimal("50")

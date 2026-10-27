@@ -307,3 +307,50 @@ def test_fake_broker_scenarios():
     b4.balance = b4.balance.model_copy(update={"positions": [pos]})
     assert b4.get_balance().positions[0].code == "105W11"
     assert b4.calls.count("get_balance") == 1
+
+
+def test_balance_qty_unparseable_is_unverified(paper_client, respx_mock):
+    """Codex 단계 1 P0-1: 수량이 결측·비정수·음수인 보유 행은 조용히 빠지지 않고 미확정으로 남는다.
+    명시적인 정수 0 만 제외."""
+    d = load("fo_balance.json")
+    base = dict(d["output1"][0])
+    rows = []
+    for q in ("?", "1.5", "-1", ""):
+        r = dict(base)
+        r["cblc_qty"] = q
+        rows.append(r)
+    zero = dict(base)
+    zero["cblc_qty"] = "0"
+    rows.append(zero)
+    d["output1"] = rows
+    respx_mock.get(PAPER + BASE + "/trading/inquire-balance").mock(
+        return_value=httpx.Response(200, json=d)
+    )
+    b = _broker(paper_client).get_balance()
+    assert b.positions == []
+    assert len(b.unverified) == 4 and all("수량" in u.reason for u in b.unverified)
+
+
+def test_order_state_missing_or_inconsistent_quantities_raise(paper_client, respx_mock):
+    """Codex 단계 1 P0-2: 원주문 행의 필수 수량이 비면 예외(완료로 보지 않음), 취소 행 없이
+    체결+거부+잔량 ≠ 주문수량이면 모순 예외."""
+    d = load("fo_ccnl.json")
+    rows = d["output1"]
+    only_odno = {"odno": "0000000201", "orgn_odno": "", "ord_dt": "20261027"}
+    short = dict(rows[1])
+    short.update(odno="0000000202", ord_qty="3", tot_ccld_qty="1", qty="0", rjct_qty="0")
+    over = dict(rows[1])
+    over.update(odno="0000000203", ord_qty="3", tot_ccld_qty="3", qty="1", rjct_qty="0")
+    d["output1"] = rows + [only_odno, short, over]
+    respx_mock.get(PAPER + BASE + "/trading/inquire-ccnl").mock(
+        return_value=httpx.Response(200, json=d)
+    )
+    b = _broker(paper_client)
+    dd = date(2026, 10, 27)
+    with pytest.raises(KisApiError, match="누락"):
+        b.get_order_state("0000000201", dd)
+    for no in ("0000000202", "0000000203"):
+        with pytest.raises(KisApiError, match="모순"):
+            b.get_order_state(no, dd)
+    # 기존 정상 행은 그대로
+    assert b.get_order_state("0000000101", dd).terminal

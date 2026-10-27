@@ -18,6 +18,7 @@ from trader.broker.fake import FakeBroker, FakeFoBroker, FakeMarket
 from trader.broker.fo import CONTRACT_VERSION, KisFoBroker
 from trader.broker.models import Cash, FoBalance, FoCash, FoPosition, FoQuote
 from trader.cli import app
+from trader.control import control
 from trader.ledger import db
 
 T0 = datetime(2026, 10, 27, 1, 15, 30, tzinfo=UTC)
@@ -313,3 +314,37 @@ def test_readiness_cmd_uses_stock_accounts_only(project, monkeypatch):
     r = CliRunner().invoke(app, ["readiness"])
     assert r.exit_code == 0, r.stdout + r.stderr
     assert seen["ids"] == ["paper-main"]
+
+
+def test_fo_verify_no_flag_when_a_step_fails(project, monkeypatch):
+    """Codex 단계 1 P1-4: 마스터·시세·주문가능 중 하나라도 실패하면 보유 행이 있어도 플래그를
+    적지 않고 exit 1."""
+    _accounts(project)
+    bal = FoBalance(positions=[_pos("105W11", "FUTURES", "LONG")], unverified=[], cash=_fo_cash())
+    market, brokers, _ = _fakes(bal, market_fail={"get_kospi200"})
+    monkeypatch.setattr(cli, "_build_market", lambda s, a=None: market)
+    monkeypatch.setattr(cli, "_build_brokers", brokers)
+    monkeypatch.setattr(fo_master, "load", lambda **kw: fo_master.parse(FIX.read_bytes()))
+    r = CliRunner().invoke(app, ["fo", "verify", "--account", "paper-fo"])
+    assert r.exit_code == 1, r.stdout + (r.stderr or "")
+    out = json.loads(r.stdout.strip().splitlines()[-1])
+    assert out["verified"] == [] and out["errors"] and _flags(project) == {}
+
+
+def test_control_and_status_see_fo_account(project):
+    """Codex 단계 1 P1-5: 계좌를 가리지 않는 소비자(control·STATUS)는 all_accounts 를 받는다."""
+    _accounts(project)
+    runner = CliRunner()
+    r = runner.invoke(app, ["control", "mode", "paper-fo", "off"])
+    assert r.exit_code == 0, r.stdout + (r.stderr or "")
+    conn = db.connect()
+    try:
+        assert control.get_flag(conn, "mode:paper-fo") == "off"
+    finally:
+        conn.close()
+    r = runner.invoke(app, ["control", "show"])
+    assert r.exit_code == 0 and "paper-fo" in r.stdout
+    r = runner.invoke(app, ["status"])
+    assert r.exit_code == 0, r.stdout + (r.stderr or "")
+    text = (project / "state" / "STATUS.md").read_text(encoding="utf-8")
+    assert "paper-fo" in text and "paper-main" in text

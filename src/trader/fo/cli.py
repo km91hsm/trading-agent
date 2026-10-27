@@ -236,7 +236,8 @@ def verify_cmd(
     ),
 ) -> None:
     """조회 전용 계약 검증: 마스터·코스피200·선물 시세·주문가능·잔고를 읽고 비식별 스냅샷 JSON 을
-    출력한다. 보유 행으로 방향·종류·NAV 가 확인된 수단만 `fo_verified:*` 플래그를 적는다."""
+    출력한다. 모든 단계가 성공했고 보유 행으로 방향·종류·NAV 가 확인된 수단만 `fo_verified:*`
+    플래그를 적는다(한 단계라도 실패하면 플래그 없이 exit 1)."""
     from trader.cli import _boot, _build_brokers, _build_market
     from trader.control import control
 
@@ -306,7 +307,8 @@ def verify_cmd(
             out["balance"] = _balance_json(balance) if balance is not None else None
 
         verified: list[str] = []
-        if balance is not None:
+        # 마스터·시세·주문가능·잔고 중 하나라도 실패하면 검증 성공 상태를 남기지 않는다(Codex P1-4)
+        if balance is not None and not errors:
             for v in verified_vehicles(balance):
                 if vehicle is not None and v != vehicle:
                     continue
