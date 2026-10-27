@@ -12,3 +12,4 @@ ml_train: {weekday: "sat", time: "10:00"}
 news_collect: {interval_s: 1800}   # 시장 전체 뉴스 저장소 수집 주기 (Phase 19)
 reconcile: {kr: "16:40", us: "16:40"}  # 야간 KIS 대조(보유 수량·미정리 주문), 시장별 현지 시각 (Phase 21)
 rebalance: {weekday: fri, kr: "14:30", us: "15:00"}  # 주간 리밸런스(Phase 25), 시장별 현지 시각 — 마감 전
+fo: {kr: {session: "08:20", monitor: {start: "08:45", end: "15:45", interval_s: 60}}}  # 파생 레인(Phase 26): 아침 세션·KRX 파생 정규장 창

@@ -6,14 +6,24 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from trader.config import Env, Market
 
 __all__ = [
     "Candle",
     "Cash",
+    "ContractSide",
     "Env",
+    "FoBalance",
+    "FoCash",
+    "FoFill",
+    "FoKind",
+    "FoOrderRequest",
+    "FoOrderState",
+    "FoOrderable",
+    "FoPosition",
+    "FoQuote",
     "InvestorFlow",
     "Market",
     "OrderBook",
@@ -21,6 +31,7 @@ __all__ = [
     "OrderResult",
     "Position",
     "Quote",
+    "UnverifiedHolding",
 ]
 
 
@@ -167,3 +178,151 @@ class OrderResult(BaseModel):
     accepted: bool
     message: str
     org_no: str | None = None  # KR 취소 시 필요한 KRX_FWDG_ORD_ORGNO
+
+
+# --- 국내선물옵션(Phase 26). 기존 모델은 불변. 수량은 계약 수, 가격은 지수 포인트 ---------------
+
+FoKind = Literal["FUTURES", "CALL", "PUT"]
+ContractSide = Literal["LONG", "SHORT"]  # 계약 보유 방향(매수·매도). 시장 방향 뷰와 혼용 금지
+
+
+class FoPosition(BaseModel):
+    """잔고 한 행 — 방향·종류 검증을 통과한 행만. 통과하지 못한 행은 `UnverifiedHolding`."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    code: str
+    name: str | None
+    kind: FoKind
+    contract_side: ContractSide
+    qty: int = Field(gt=0)
+    avg_price: Decimal
+    current_price: Decimal
+    pnl: Decimal
+    sellable_qty: int
+    strike: Decimal | None = None
+    expiry: date | None = None
+
+
+class UnverifiedHolding(BaseModel):
+    """방향·종류·승수 중 하나라도 확정 불가한 잔고 행. 어떤 자동 주문의 대상도 아니다(청산 포함)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    code: str
+    raw: dict
+    reason: str
+
+
+class FoCash(BaseModel):
+    """잔고 output2 집계. `nav` 는 `prsm_dpast_amt`(비면 None — 항등식 폴백 금지).
+    `requested_at` 은 요청 시작 시각, `received_at` 은 수신 시각(예약 해제 판정은 requested_at)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    deposit: Decimal
+    orderable_cash: Decimal
+    orderable_total: Decimal
+    margin_total: Decimal
+    add_margin: Decimal
+    nav: Decimal | None
+    realized_today: Decimal
+    unrealized: Decimal
+    requested_at: datetime
+    received_at: datetime
+
+
+class FoBalance(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    positions: list[FoPosition]
+    unverified: list[UnverifiedHolding]
+    cash: FoCash
+
+
+class FoOrderRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    code: str
+    side: Literal["BUY", "SELL"]
+    qty: int = Field(gt=0)
+    order_type: Literal["LIMIT", "MARKET"]
+    price: Decimal | None = None
+
+
+class FoQuote(BaseModel):
+    """시세. `quote_asof` 는 응답의 시장 시각(없으면 None), `received_at` 은 수신 시각 —
+    신선도는 quote_asof 로 본다. 옵션은 그릭·IV·행사가가 채워진다."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    code: str
+    kind: FoKind
+    price: Decimal
+    bid: Decimal | None
+    ask: Decimal | None
+    change_pct: float
+    volume: int
+    open_interest: int | None
+    basis: Decimal | None
+    upper: Decimal | None
+    lower: Decimal | None
+    last_trade_date: date | None
+    days_left: int | None
+    hist_vol: float | None
+    iv: float | None
+    delta: float | None
+    gamma: float | None
+    theta: float | None
+    vega: float | None
+    strike: Decimal | None
+    underlying: Decimal | None
+    underlying_asof: datetime | None
+    quote_asof: datetime | None
+    received_at: datetime
+
+
+class FoFill(BaseModel):
+    """체결 조회 한 행(원주문 계보 누적값). KIS `qty` 는 잔량, `tot_ccld_qty` 는 누적 체결."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    order_no: str
+    orgn_order_no: str | None
+    code: str
+    side: Literal["BUY", "SELL"]
+    remaining_qty: int
+    filled_qty: int
+    rejected_qty: int
+    cancelled_qty: int
+    filled_amount: Decimal
+    avg_price: Decimal | None
+    filled_at: datetime
+
+
+class FoOrderState(BaseModel):
+    """원주문 계보(odno + orgn_odno) 의 확정 상태. terminal 은 `remaining == 0 ∨ state ∈
+    {cancelled, rejected}` ∧ `filled + rejected + cancelled == order_qty`."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    order_no: str
+    order_qty: int
+    filled_qty: int
+    remaining_qty: int
+    rejected_qty: int
+    cancelled_qty: int
+    terminal: bool
+    state: Literal["open", "filled", "cancelled", "rejected"]
+
+
+class FoOrderable(BaseModel):
+    """주문가능 응답. `cash` 는 응답의 기준 현금(없으면 None → 증거금 추론 불가·신규 거부)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    tot_qty: int
+    lqd_qty: int
+    ord_qty: int
+    cash: Decimal | None
+    bass_idx: Decimal | None

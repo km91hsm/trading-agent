@@ -165,3 +165,49 @@ event_blackout:
 
 # 체결통보 웹소켓(데몬, secrets/.env KIS_HTS_ID 필요): 통보가 오면 체결 동기화를 바로 당긴다(Stock D-060)
 fill_notice: true
+
+# 선물옵션 방향성 레인(Phase 26, 모의 선물옵션 계좌 전용, 기본 끔): 코스피200 선물 롱/숏·옵션 콜/풋 매수·매도.
+# enabled 는 신규 진입만 막는다(보유분 감시·축소는 계속, 꺼지면 살아 있는 진입 다리 회수). 배수는 LLM 이
+# 결정마다 정하되 max_leverage·국면 상한(leverage_by_regime: null=max_leverage, 0=그 국면 신규 금지)·
+# 현물 국면×전략가 대조 계수(cross_check) 안으로 파이썬이 자른다. 실전 파생 계좌는 별도 Phase.
+fo:
+  enabled: false
+  product: mini             # products 의 키(mini | regular)
+  vehicles: [FUTURES, OPTION_BUY, OPTION_SELL]   # 신규 진입 허용 수단
+  hold_overnight: true      # false 면 매일 마감 close_before_min 전에 전량 청산
+  entry_window: {start: "09:00", cutoff: "15:30"}  # cutoff 뒤 진입 다리 회수·신규 금지
+  max_input_age_s: 120      # 실행 직전 필수 입력(시세·잔고·체인) 최대 지연, 넘으면 판정만 기록
+  max_quote_age_s: 60       # 위험 산정용 시세 유효 시간(quote_asof 기준)
+  max_leverage: 2.0         # 계좌 NAV 대비 델타 명목 배수 상한(진입·유지 조건)
+  leverage_by_regime: {bull: null, neutral: null, bear: null}
+  max_contracts: 4
+  max_positions: 1          # 상계·반대 보유 없음(증거금 추론 전제)
+  risk_per_trade_pct: 0.02  # 포지션 수명 손실 예산(실현+비용+계획 손실 ≤ 개설 NAV × 이 값, 재충전 없음)
+  overnight_risk_pct: 0.05  # 시나리오 최악 손실 ≤ NAV × 이 값(진입·매 틱·15:00 확정)
+  stress: {index_pct: [0.03, 0.06], iv_rel: [0.0, 0.5]}
+  margin_rate: {futures: 0.12, option_sell: 0.15, asof: 2026-10-27, max_age_days: 30}  # KRX 공표값, 정합성 검사용
+  margin_buffer_pct: 0.3    # 주문 뒤 남길 현금 비율(주문가능 수량 × (1-buffer) 로 보장)
+  daily_loss_stop_pct: 0.03
+  min_stop_pt: 0.5          # 손절 거리 최소(지수 포인트)
+  slippage_pt: 0.1
+  min_confidence: 0.6
+  roll_days: 2              # D-roll 09:00 강제 청산·신규 금지(옵션 매도 +1), 의견은 그 직전 운영일
+  close_before_min: 10
+  exit_retry_max: 3         # 축소 다리 재시도(취소 확정 → 잔량 시장가) 횟수, 넘으면 exit_failed
+  cross_check: tilt         # off | tilt(역행 0.5) | block(역행 0)
+  session_cap: 7            # 파생 세션(아침+재평가) 하루 상한, llm.daily_session_cap 과 함께 본다
+  reeval: {interval_min: 30, max_per_day: 6, periodic_min: 60, periodic_max_per_day: 4, tp_near_pct: 0.002, iv_spike_pct: 0.3}
+  option:
+    max_premium_pct: 0.05   # 옵션 매수 전액 ≤ NAV 비중
+    buy_stop_pct: 0.5       # 매수 프리미엄 손절(진입가 대비)
+    sell_stop_mult: {min: 1.5, default: 2.0, max: 3.0}  # 매도 프리미엄 손절 배수(LLM 선택 범위)
+    sell_max_notional_pct: 1.0
+    sell_against_regime: false
+    min_days_left: 5
+    allowed_strikes: [ATM, OTM1, OTM2, ITM1]
+    weekly: false
+  night_session: false      # 모의 야간 TR 없음
+  costs_bp: {futures: 0.3, option: 1.5}   # 계약 명목 대비 왕복 비용(bp)
+  products:
+    mini:    {futures_prefix: "105", call_prefix: "205", put_prefix: "305", multiplier: 50000,  futures_tick: "0.02", option_ticks: [["3", "0.01"], ["10", "0.02"], ["inf", "0.05"]], name: 미니코스피200}
+    regular: {futures_prefix: "101", call_prefix: "201", put_prefix: "301", multiplier: 250000, futures_tick: "0.05", option_ticks: [["10", "0.01"], ["inf", "0.05"]], name: 코스피200}

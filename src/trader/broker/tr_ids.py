@@ -141,6 +141,65 @@ _TR: dict[str, tuple[str, str, str | None]] = {
         "TTTT1004U",
         "VTTT1004U",
     ),
+    # --- 국내선물옵션(Phase 26). examples_llm/domestic_futureoption/* 2026-10-27 확인.
+    # 시세는 실전·모의 같은 tr_id, 주문·계좌는 모의 주간만, 야간(*_NIGHT)은 모의 미지원(None) ---
+    "FO_PRICE": (  # 선물옵션 시세(옵션은 델타·감마·세타·베가·IV·행사가 포함)
+        "/uapi/domestic-futureoption/v1/quotations/inquire-price",
+        "FHMIF10000000",
+        "FHMIF10000000",
+    ),
+    "FO_ORDERBOOK": (
+        "/uapi/domestic-futureoption/v1/quotations/inquire-asking-price",
+        "FHMIF10010000",
+        "FHMIF10010000",
+    ),
+    "FO_DAILY": (
+        "/uapi/domestic-futureoption/v1/quotations/inquire-daily-fuopchartprice",
+        "FHKIF03020100",
+        "FHKIF03020100",
+    ),
+    "FO_MINUTE": (
+        "/uapi/domestic-futureoption/v1/quotations/inquire-time-fuopchartprice",
+        "FHKIF03020200",
+        "FHKIF03020200",
+    ),
+    "FO_BALANCE": (  # 선물옵션 잔고현황(선물·옵션 같은 TR, CTX_AREA_*200 연속조회)
+        "/uapi/domestic-futureoption/v1/trading/inquire-balance",
+        "CTFO6118R",
+        "VTFO6118R",
+    ),
+    "FO_ORDER": ("/uapi/domestic-futureoption/v1/trading/order", "TTTO1101U", "VTTO1101U"),
+    "FO_ORDER_CANCEL": (
+        "/uapi/domestic-futureoption/v1/trading/order-rvsecncl",
+        "TTTO1103U",
+        "VTTO1103U",
+    ),
+    "FO_CCLD": (  # 주문체결내역(qty 는 잔량, tot_ccld_qty 는 누적 체결)
+        "/uapi/domestic-futureoption/v1/trading/inquire-ccnl",
+        "TTTO5201R",
+        "VTTO5201R",
+    ),
+    "FO_PSBL_ORDER": (
+        "/uapi/domestic-futureoption/v1/trading/inquire-psbl-order",
+        "TTTO5105R",
+        "VTTO5105R",
+    ),
+    "FO_ORDER_NIGHT": ("/uapi/domestic-futureoption/v1/trading/order", "STTN1101U", None),
+    "FO_ORDER_CANCEL_NIGHT": (
+        "/uapi/domestic-futureoption/v1/trading/order-rvsecncl",
+        "TTTN1103U",
+        None,
+    ),
+    "FO_CCLD_NIGHT": (  # 야간 체결 tr_id 는 미확인(실전 전환 Phase 에서 확정)
+        "/uapi/domestic-futureoption/v1/trading/inquire-ccnl",
+        "STTN5201R",
+        None,
+    ),
+    "FO_BALANCE_NIGHT": (
+        "/uapi/domestic-futureoption/v1/trading/inquire-balance",
+        "CTFN6118R",
+        None,
+    ),
 }
 
 

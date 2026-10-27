@@ -10,6 +10,7 @@ import logging
 import os
 import re
 import threading
+from datetime import date
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Literal
@@ -442,6 +443,200 @@ class MemorySettings(BaseModel):
     top_k: int = 5
 
 
+
+# --- 선물옵션 방향성 레인 (Phase 26) ------------------------------------------------
+
+
+Asset = Literal["stock", "fo"]
+FoVehicle = Literal["FUTURES", "OPTION_BUY", "OPTION_SELL"]
+Regime = Literal["bull", "neutral", "bear"]
+
+
+class FoProductCfg(BaseModel):
+    """상품(미니·정규) 코드 접두·승수·호가단위. `option_ticks` 는 `[상한, tick]` 구간 목록이고
+    마지막 구간의 상한은 `inf`(None)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    futures_prefix: str
+    call_prefix: str
+    put_prefix: str
+    multiplier: int = Field(gt=0)
+    futures_tick: Decimal = Field(gt=0)
+    option_ticks: list[tuple[Decimal | None, Decimal]]
+    name: str
+
+    @field_validator("option_ticks", mode="before")
+    @classmethod
+    def _ticks(cls, v):
+        out = []
+        for item in v:
+            upper, tick = item
+            if isinstance(upper, str) and upper.lower() == "inf":
+                upper = None
+            out.append((None if upper is None else Decimal(str(upper)), Decimal(str(tick))))
+        if not out or out[-1][0] is not None:
+            raise ValueError("option_ticks 의 마지막 구간 상한은 inf 여야 합니다")
+        return out
+
+
+class FoEntryWindowCfg(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    start: str = "09:00"
+    cutoff: str = "15:30"
+
+    @field_validator("start", "cutoff")
+    @classmethod
+    def _v(cls, v: str) -> str:
+        return _check_hm(v)
+
+
+class FoStressCfg(BaseModel):
+    """시나리오 격자: 지수 ±index_pct × IV 상대 변화. 옵션은 Black-76 재평가."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    index_pct: list[float] = Field(default_factory=lambda: [0.03, 0.06])
+    iv_rel: list[float] = Field(default_factory=lambda: [0.0, 0.5])
+
+
+class FoMarginRateCfg(BaseModel):
+    """KRX 공표 위탁증거금률(사람이 출처·날짜와 함께 적는다). 상한이 아니라 주문가능 응답의
+    정합성 검사에만 쓰고, asof 가 max_age_days 를 넘으면 선물·옵션 매도 신규를 거부한다."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    futures: float = Field(default=0.12, gt=0, le=1)
+    option_sell: float = Field(default=0.15, gt=0, le=1)
+    asof: date = date(2026, 10, 27)
+    max_age_days: int = Field(default=30, ge=1, le=365)
+
+
+class FoSellStopMultCfg(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    min: float = Field(default=1.5, gt=1)
+    default: float = Field(default=2.0, gt=1)
+    max: float = Field(default=3.0, gt=1)
+
+    @model_validator(mode="after")
+    def _order(self):
+        if not (self.min <= self.default <= self.max):
+            raise ValueError("sell_stop_mult 는 min ≤ default ≤ max 여야 합니다")
+        return self
+
+
+class FoOptionCfg(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    max_premium_pct: float = Field(default=0.05, gt=0, le=0.5)  # 옵션 매수 전액 ≤ NAV 비중
+    buy_stop_pct: float = Field(default=0.5, gt=0, lt=1)  # 매수 프리미엄 손절(진입가 대비)
+    sell_stop_mult: FoSellStopMultCfg = Field(default_factory=FoSellStopMultCfg)
+    sell_max_notional_pct: float = Field(default=1.0, gt=0, le=5)  # 매도 비조정 명목 ≤ NAV 배
+    sell_against_regime: bool = False  # 국면 역행 옵션 매도 허용(기본 거부)
+    min_days_left: int = Field(default=5, ge=1, le=60)
+    allowed_strikes: list[Literal["ATM", "OTM1", "OTM2", "ITM1"]] = Field(
+        default_factory=lambda: ["ATM", "OTM1", "OTM2", "ITM1"]
+    )
+    weekly: bool = False
+
+
+class FoReevalCfg(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    interval_min: int = Field(default=30, ge=1, le=390)
+    max_per_day: int = Field(default=6, ge=1, le=50)
+    periodic_min: int = Field(default=60, ge=5, le=390)
+    periodic_max_per_day: int = Field(default=4, ge=0, le=50)
+    tp_near_pct: float = Field(default=0.002, gt=0, le=0.1)
+    iv_spike_pct: float = Field(default=0.3, gt=0, le=5)
+
+
+class FoCfg(BaseModel):
+    """선물옵션 방향성 레인(Phase 26, 모의 전용·기본 끔). `enabled` 는 신규 진입만 막는다 —
+    보유분 감시·축소는 계속하고 꺼지면 살아 있는 진입 다리를 회수한다. 배수는 LLM 이 결정마다
+    정하되 `max_leverage`·국면 상한·대조 계수 안으로 파이썬이 자른다."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    product: str = "mini"
+    vehicles: list[FoVehicle] = Field(
+        default_factory=lambda: ["FUTURES", "OPTION_BUY", "OPTION_SELL"]
+    )
+    hold_overnight: bool = True
+    entry_window: FoEntryWindowCfg = Field(default_factory=FoEntryWindowCfg)
+    max_input_age_s: int = Field(default=120, ge=10, le=3600)
+    max_quote_age_s: int = Field(default=60, ge=5, le=3600)
+    max_leverage: float = Field(default=2.0, ge=0.1, le=5)
+    # 국면별 배수 상한: null(미설정) 은 max_leverage, 0 은 그 국면 신규 금지 — `or` 로 합치지 않는다
+    leverage_by_regime: dict[Regime, float | None] = Field(default_factory=dict)
+    max_contracts: int = Field(default=4, ge=1, le=100)
+    max_positions: int = Field(default=1, ge=1, le=1)  # 상계·반대 보유 없음이 증거금 추론의 전제
+    risk_per_trade_pct: float = Field(default=0.02, gt=0, le=0.2)  # 포지션 수명 손실 예산
+    overnight_risk_pct: float = Field(default=0.05, gt=0, le=0.5)  # 시나리오 최악 손실 ≤ NAV 비중
+    stress: FoStressCfg = Field(default_factory=FoStressCfg)
+    margin_rate: FoMarginRateCfg = Field(default_factory=FoMarginRateCfg)
+    margin_buffer_pct: float = Field(default=0.3, ge=0, lt=1)
+    daily_loss_stop_pct: float = Field(default=0.03, gt=0, le=0.5)
+    min_stop_pt: float = Field(default=0.5, gt=0)
+    slippage_pt: float = Field(default=0.1, ge=0)
+    min_confidence: float = Field(default=0.6, ge=0, le=1)
+    roll_days: int = Field(default=2, ge=0, le=10)  # D-roll 강제 청산·신규 금지(옵션 매도 +1)
+    close_before_min: int = Field(default=10, ge=1, le=120)
+    exit_retry_max: int = Field(default=3, ge=1, le=10)
+    cross_check: Literal["off", "tilt", "block"] = "tilt"
+    session_cap: int = Field(default=7, ge=1, le=50)
+    reeval: FoReevalCfg = Field(default_factory=FoReevalCfg)
+    option: FoOptionCfg = Field(default_factory=FoOptionCfg)
+    night_session: bool = False
+    costs_bp: dict[str, float] = Field(
+        default_factory=lambda: {"futures": 0.3, "option": 1.5}
+    )  # 계약 명목 대비 왕복 비용(bp) — 성과·실현손익 비용 추정
+    products: dict[str, FoProductCfg] = Field(
+        default_factory=lambda: {
+            "mini": FoProductCfg(
+                futures_prefix="105",
+                call_prefix="205",
+                put_prefix="305",
+                multiplier=50000,
+                futures_tick=Decimal("0.02"),
+                option_ticks=[("3", "0.01"), ("10", "0.02"), ("inf", "0.05")],
+                name="미니코스피200",
+            ),
+            "regular": FoProductCfg(
+                futures_prefix="101",
+                call_prefix="201",
+                put_prefix="301",
+                multiplier=250000,
+                futures_tick=Decimal("0.05"),
+                option_ticks=[("10", "0.01"), ("inf", "0.05")],
+                name="코스피200",
+            ),
+        }
+    )
+
+    @model_validator(mode="after")
+    def _product_known(self):
+        if self.product not in self.products:
+            raise ValueError(f"fo.product {self.product!r} 가 products 에 없습니다")
+        return self
+
+    def product_cfg(self) -> FoProductCfg:
+        return self.products[self.product]
+
+    def regime_cap(self, regime: str) -> float:
+        """국면별 배수 상한. 미설정(null) 은 max_leverage, 0 은 0.0 그대로(신규 금지).
+        설정값이 max_leverage 보다 커도 max_leverage 로 자른다."""
+        if regime not in self.leverage_by_regime:
+            return self.max_leverage
+        v = self.leverage_by_regime[regime]
+        if v is None:
+            return self.max_leverage
+        return min(float(v), self.max_leverage)
+
+
 class Settings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -463,6 +658,7 @@ class Settings(BaseModel):
     event_blackout: BlackoutCfg = Field(default_factory=BlackoutCfg)  # 권리 일정 블랙아웃(기본 끔)
     # 체결통보 웹소켓(데몬, secrets KIS_HTS_ID 필요): 통보가 오면 체결 동기화를 바로 당긴다
     fill_notice: bool = True
+    fo: FoCfg = Field(default_factory=FoCfg)  # Phase 26 선물옵션 레인(모의 전용, 기본 끔)
 
     def excluded_tickers(self, market: str) -> set[str]:
         """분석·monitor·종목 수·섹터 계산에서 뺄 운용 상품: 헤지 ETF(켜져 있으면) + 현금 단기금리
@@ -497,6 +693,15 @@ class AccountConfig(BaseModel):
     # 계좌 전용 키 접두사(KIS 는 앱키를 계좌마다 발급한다). 없으면 계좌 id 로 정한
     # `KIS_<ID>_`(real-2 → KIS_REAL_2_) 에 APP_KEY 가 있을 때 그것을, 그것도 없으면 env 공용 키
     credentials: str | None = None
+    # 계좌 자산군(Phase 26): stock 은 현물 파이프라인, fo 는 선물옵션 레인(`fo/`). 계좌 전달은
+    # `split_accounts` 로 가르고 현물 잡은 stock 만, 파생 잡은 fo 만, 제어·잔고·체결은 전부 받는다
+    asset: Asset = "stock"
+
+    @model_validator(mode="after")
+    def _fo_markets(self):
+        if self.asset == "fo" and self.markets != ["KR"]:
+            raise ValueError(f"asset fo 계좌 {self.id!r} 의 markets 는 [KR] 만 가능합니다")
+        return self
 
     @field_validator("credentials")
     @classmethod
@@ -953,6 +1158,28 @@ class RebalanceSchedule(BaseModel):
         return _check_hm(v)
 
 
+class FoMarketSchedule(BaseModel):
+    """파생 레인(Phase 26) 시장별 시각: 아침 세션 cron + 모니터 창(KRX 파생 정규장 08:45~15:45)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    session: str = "08:20"
+    monitor: MonitorWindow = Field(
+        default_factory=lambda: MonitorWindow(start="08:45", end="15:45", interval_s=60)
+    )
+
+    @field_validator("session")
+    @classmethod
+    def _v(cls, v: str) -> str:
+        return _check_hm(v)
+
+
+class FoSchedule(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kr: FoMarketSchedule = Field(default_factory=FoMarketSchedule)
+
+
 class ScheduleConfig(BaseModel):
     """config/schedule.yaml (KST). 데몬이 잡을 등록할 때 읽는다."""
 
@@ -967,6 +1194,7 @@ class ScheduleConfig(BaseModel):
         default_factory=ReconcileSchedule
     )  # 야간 KIS 대조(Phase 21)
     rebalance: RebalanceSchedule = Field(default_factory=RebalanceSchedule)  # Phase 25
+    fo: FoSchedule = Field(default_factory=FoSchedule)  # Phase 26 파생 레인
 
     @field_validator("reflect")
     @classmethod
@@ -1155,6 +1383,15 @@ def load_accounts(
                 "(런타임 control 에서 확인 문자열로만 전환)"
             )
     return accounts
+
+
+def split_accounts(
+    accounts: list[AccountConfig],
+) -> tuple[list[AccountConfig], list[AccountConfig]]:
+    """계좌 목록을 (현물, 선물옵션) 으로 가른다(순서 유지). 현물 소비자는 첫 목록만 받는다."""
+    stock = [a for a in accounts if a.asset == "stock"]
+    fo = [a for a in accounts if a.asset == "fo"]
+    return stock, fo
 
 
 # --- events.yaml (사건 수혜, 2026-10-27) -------------------------------------------------
