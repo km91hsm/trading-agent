@@ -95,9 +95,36 @@ def same_process(
     current = process_start(pid)
     if current is None or current == start:
         return True
-    # 예전 macOS 잠금은 로캘·시간대가 섞인 lstart('화 10/27 …'·KST 'Tue Oct 27 11:36 …')라 새 값
-    # (`utc:` 접두사, C 로캘·UTC)과 비교할 수 없다 — 그런 잠금은 pid 생존만 본다(Codex 리뷰)
-    return current.startswith(START_FORMAT) and not start.startswith(START_FORMAT)
+    # 예전 macOS 잠금은 로캘·시간대가 섞인 lstart('화 10/27 …'·현지 시각 'Tue Oct 27 11:36 …')다 —
+    # 시각으로 풀어 비교한다. 못 풀면 다른 프로세스로 본다(재부팅 뒤 pid 재사용에 막히지 않게)
+    if current.startswith(START_FORMAT) and not start.startswith(START_FORMAT):
+        now_utc = _parse_lstart(current[len(START_FORMAT) :], local=False)
+        old = _parse_lstart(start, local=True)
+        return now_utc is not None and old is not None and abs((now_utc - old).total_seconds()) <= 2
+    return False
+
+
+_KO_DAYS = ("월", "화", "수", "목", "금", "토", "일")
+
+
+def _parse_lstart(text: str, *, local: bool):
+    """`ps -o lstart` 문자열 → UTC datetime. C 로캘('Tue Oct 27 02:36:26 2026')과 한국어 로캘
+    ('화 10/27 11:36:26 2026')을 읽는다. local=True 면 이 컴퓨터의 현지 시간대로 해석."""
+    from datetime import UTC, datetime
+
+    parts = text.split()
+    try:
+        if len(parts) == 5:  # C: 요일 월 일 시각 연도
+            dt = datetime.strptime(" ".join(parts[1:]), "%b %d %H:%M:%S %Y")
+        elif len(parts) == 4 and parts[0] in _KO_DAYS:  # 한국어: 요일 월/일 시각 연도
+            dt = datetime.strptime(" ".join(parts[1:]), "%m/%d %H:%M:%S %Y")
+        else:
+            return None
+    except ValueError:
+        return None
+    if local:
+        return dt.astimezone().astimezone(UTC)  # naive → 현지 시간대로 본 뒤 UTC
+    return dt.replace(tzinfo=UTC)
 
 
 def pid_alive(pid: int) -> bool:
