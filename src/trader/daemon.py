@@ -3213,6 +3213,8 @@ def catch_up_missed(deps: DaemonDeps, jobs: list[Job]) -> dict:
     """기동 때: 데몬이 꺼져 있던 동안 오늘 예정 시각이 지난 cron 잡 중 runs 기록이 없는 것을
     놓친 것으로 본다. APScheduler 는 새로 등록한 잡의 지난 시각에 MISSED 를 내지 않아 재시작한
     날 07:30 scan 이 조용히 사라졌다(전체 검토 2026-10-27). 알림은 한 건으로 묶는다."""
+    from trader.orchestrator.run_store import run_date_for
+
     now = deps.now()
     missed: list[str] = []
     queued: list[str] = []
@@ -3222,8 +3224,16 @@ def catch_up_missed(deps: DaemonDeps, jobs: list[Job]) -> dict:
             fire = _last_fire(job, now)
             if fire is None:
                 continue
+            # 지난 운영일의 예정분은 오늘로 끌어오지 않는다(전날 US scan 을 다음 날 새벽에 오늘
+            # 분석으로 돌리던 문제, Codex 리뷰). 시장 잡은 시장 운영일, 나머지는 KST 날짜로 비교
+            if job.market:
+                if run_date_for(job.market, fire) != run_date_for(job.market, now):
+                    continue
+            elif fire.astimezone(KST).date() != now.astimezone(KST).date():
+                continue
+            # 끝까지 정상으로 돈 기록만 '실행됨' — running(중간에 죽음)·error 는 놓친 것으로
             ran = conn.execute(
-                "SELECT 1 FROM runs WHERE kind=? AND started_at >= ? LIMIT 1",
+                "SELECT 1 FROM runs WHERE kind=? AND started_at >= ? AND status='ok' LIMIT 1",
                 (job.id, fire.astimezone(UTC).isoformat()),
             ).fetchone()
             if ran is None:

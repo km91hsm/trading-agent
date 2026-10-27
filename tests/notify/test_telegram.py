@@ -94,3 +94,32 @@ def test_failed_send_goes_to_outbox_and_flush_retries(tmp_path):
     calls["ok"] = True
     r = n.flush_outbox()
     assert r == {"sent": 1, "left": 0, "dropped": 0} and not box.exists()
+
+
+def test_flush_keeps_items_queued_during_send(tmp_path):
+    """재전송하는 동안 새로 보관된 알림을 잃지 않는다(전송은 잠금 밖, Codex 리뷰)."""
+    import httpx
+
+    from trader.notify.telegram import TelegramNotifier
+
+    box = tmp_path / "outbox.jsonl"
+    holder = {}
+
+    def handler(request):
+        holder["n"].send("새 실패 알림")  # 재전송 도중 다른 알림이 실패해 보관된다
+        return httpx.Response(429, json={})
+
+    n = TelegramNotifier(
+        "T", "C", http=httpx.Client(transport=httpx.MockTransport(handler)), outbox=box
+    )
+    other = TelegramNotifier(
+        "T",
+        "C",
+        http=httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(429))),
+        outbox=box,
+    )
+    holder["n"] = other
+    other.send("첫 알림")
+    n.flush_outbox()
+    text = box.read_text(encoding="utf-8")
+    assert "첫 알림" in text and "새 실패 알림" in text

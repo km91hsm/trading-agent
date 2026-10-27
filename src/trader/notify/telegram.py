@@ -115,7 +115,7 @@ class TelegramNotifier:
 
         try:
             self._outbox.parent.mkdir(parents=True, exist_ok=True)
-            with locked(self._outbox.with_name(self._outbox.name + ".lock"), timeout=5.0):
+            with locked(self._outbox.with_name(self._outbox.name + ".lock"), timeout=30.0):
                 with self._outbox.open("a", encoding="utf-8") as f:
                     at = datetime.now(UTC).isoformat()
                     for c in chunks:
@@ -132,38 +132,42 @@ class TelegramNotifier:
 
         now = now or datetime.now(UTC)
         sent = dropped = 0
-        with locked(self._outbox.with_name(self._outbox.name + ".lock"), timeout=5.0):
+        lock = self._outbox.with_name(self._outbox.name + ".lock")
+        # 잠금 안에서는 파일을 꺼내 비우기만 하고, 네트워크 전송은 잠금 밖에서 한다 — 느린 재전송이
+        # 잠금을 쥔 동안 다른 실패 알림이 보관되지 못하고 사라지지 않게(Codex 리뷰)
+        with locked(lock, timeout=5.0):
             items = []
             for line in self._outbox.read_text(encoding="utf-8").splitlines():
                 try:
                     items.append(json.loads(line))
                 except ValueError:
                     continue
-            keep: list[dict] = []
-            stop = False
-            for it in items:
-                try:
-                    old = now - datetime.fromisoformat(str(it.get("at"))) > OUTBOX_TTL
-                except ValueError:
-                    old = True
-                if old:
-                    dropped += 1
-                    continue
-                if stop or sent >= OUTBOX_FLUSH_MAX:
-                    keep.append(it)
-                    continue
-                if self._post(str(it.get("chunk") or "")):
-                    sent += 1
-                else:
-                    stop = True
-                    keep.append(it)
-            if keep:
+            self._outbox.unlink(missing_ok=True)
+        keep: list[dict] = []
+        stop = False
+        for it in items:
+            try:
+                old = now - datetime.fromisoformat(str(it.get("at"))) > OUTBOX_TTL
+            except ValueError:
+                old = True
+            if old:
+                dropped += 1
+                continue
+            if stop or sent >= OUTBOX_FLUSH_MAX:
+                keep.append(it)
+                continue
+            if self._post(str(it.get("chunk") or "")):
+                sent += 1
+            else:
+                stop = True
+                keep.append(it)
+        if keep:  # 남은 것은 앞에(오래된 순서 유지), 그사이 새로 보관된 것은 뒤에
+            with locked(lock, timeout=30.0):
+                newer = self._outbox.read_text(encoding="utf-8") if self._outbox.exists() else ""
                 self._outbox.write_text(
-                    "".join(json.dumps(k, ensure_ascii=False) + "\n" for k in keep),
+                    "".join(json.dumps(k, ensure_ascii=False) + "\n" for k in keep) + newer,
                     encoding="utf-8",
                 )
-            else:
-                self._outbox.unlink(missing_ok=True)
         return {"sent": sent, "left": len(keep), "dropped": dropped}
 
 

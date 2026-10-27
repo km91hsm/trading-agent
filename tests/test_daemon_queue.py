@@ -583,3 +583,21 @@ def test_queue_tick_yields_while_cron_waits(conn):
         assert daemon._queue_tick(deps, None) == {"skipped": "예정 잡이 기다리는 중"}
     finally:
         deps.heavy_wanted.leave()
+
+
+def test_catch_up_counts_only_completed_runs_and_today(conn):
+    now = TUE_0900_KST
+    deps = _deps(conn, FakeMarket(), now=lambda: now)
+    deps.notifier = _Sent()
+    jobs = daemon.build_jobs(SCHED, Settings(), markets=["KR", "US"])
+    # scan 시작 직후 죽었다(running) → 놓친 것으로 다시
+    conn.execute(
+        "INSERT INTO runs(kind, market, started_at, status) VALUES (?,?,?,?)",
+        ("kr_scan_analyze", None, now.isoformat(), "running"),
+    )
+    conn.commit()
+    out = daemon.catch_up_missed(deps, jobs)
+    assert "kr_scan_analyze" in out["missed"]
+    # 09:00 KST 는 뉴욕 월요일 20:00 — 월요일 US scan(08:30 ET)은 그 운영일 안이라 놓친 것,
+    # 하지만 장이 끝났으니 따라잡기 등록은 없다
+    assert "us_scan_analyze" not in out["queued"]
