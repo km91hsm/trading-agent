@@ -1,0 +1,37 @@
+{
+ "rt_cd": "0",
+ "msg_cd": "MCA00000",
+ "msg1": "ok",
+ "output1": {
+  "futs_prpr": "350.50"
+ },
+ "output2": [
+  {
+   "stck_bsop_date": "20261027",
+   "stck_cntg_hour": "101500",
+   "futs_prpr": "350.50",
+   "futs_oprc": "350.40",
+   "futs_hgpr": "350.52",
+   "futs_lwpr": "350.38",
+   "cntg_vol": "120"
+  },
+  {
+   "stck_bsop_date": "20261027",
+   "stck_cntg_hour": "101400",
+   "futs_prpr": "350.40",
+   "futs_oprc": "350.30",
+   "futs_hgpr": "350.42",
+   "futs_lwpr": "350.28",
+   "cntg_vol": "110"
+  },
+  {
+   "stck_bsop_date": "20261027",
+   "stck_cntg_hour": "",
+   "futs_prpr": "0",
+   "futs_oprc": "0",
+   "futs_hgpr": "0",
+   "futs_lwpr": "0",
+   "cntg_vol": "0"
+  }
+ ]
+}

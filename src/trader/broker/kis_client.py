@@ -206,6 +206,7 @@ class KisClient:
         ctx_keys: tuple[str, str] = ("CTX_AREA_FK100", "CTX_AREA_NK100"),
         output_key: str = "output1",
         max_pages: int = MAX_PAGES,
+        strict: bool = False,
     ) -> dict:
         """연속조회. 응답 헤더 `tr_cont` 가 F·M 이면 `tr_cont: N` 과 응답의 ctx_area_* 를 넣어 다음
         페이지를 받고 `output_key` 목록을 이어 붙인다(잔고·체결이 한 페이지(20~50행)를 넘을 때).
@@ -233,6 +234,10 @@ class KisClient:
             }
             extra = {"tr_cont": "N"}
         else:
+            if strict:  # 파생 잔고·체결(Phase 26): 미완주는 성공이 아니다
+                raise KisApiError(
+                    "INCOMPLETE", f"연속조회 {max_pages}페이지 상한 도달(미완주)", tr_name
+                )
             logger.warning("KIS 연속조회 %d페이지 상한 도달 (%s)", max_pages, tr_name)
         return merged or {}
 

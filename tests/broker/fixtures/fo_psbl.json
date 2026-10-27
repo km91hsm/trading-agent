@@ -1,0 +1,11 @@
+{
+ "rt_cd": "0",
+ "msg_cd": "KIOK0510",
+ "msg1": "ok",
+ "output": {
+  "tot_psbl_qty": "10",
+  "lqd_psbl_qty1": "0",
+  "ord_psbl_qty": "10",
+  "bass_idx": "350.20"
+ }
+}

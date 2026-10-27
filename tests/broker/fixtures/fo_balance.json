@@ -1,0 +1,59 @@
+{
+ "rt_cd": "0",
+ "msg_cd": "KIOK0510",
+ "msg1": "조회가 완료되었습니다",
+ "ctx_area_fk200": "",
+ "ctx_area_nk200": "",
+ "output1": [
+  {
+   "pdno": "KR4105W10001",
+   "shtn_pdno": "105W11",
+   "prdt_type_cd": "301",
+   "prdt_name": "미니코스피200 F 202611",
+   "sll_buy_dvsn_name": "매수",
+   "sll_buy_dvsn_cd": "02",
+   "cblc_qty": "2",
+   "excc_unpr": "350.50",
+   "ccld_avg_unpr1": "350.00",
+   "evlu_pfls_amt": "50000",
+   "lqd_psbl_qty": "2",
+   "idx_clpr": "349.80"
+  },
+  {
+   "pdno": "KR4305W10350",
+   "shtn_pdno": "305W11350",
+   "prdt_type_cd": "303",
+   "prdt_name": "미니코스피200 P 202611 350.0",
+   "sll_buy_dvsn_name": "매도",
+   "cblc_qty": "1",
+   "excc_unpr": "2.10",
+   "ccld_avg_unpr1": "2.30",
+   "evlu_pfls_amt": "10000",
+   "lqd_psbl_qty": "1"
+  },
+  {
+   "pdno": "",
+   "shtn_pdno": "205W11352",
+   "prdt_type_cd": "302",
+   "prdt_name": "x",
+   "sll_buy_dvsn_name": "매수",
+   "cblc_qty": "0",
+   "excc_unpr": "0",
+   "ccld_avg_unpr1": "0",
+   "evlu_pfls_amt": "0",
+   "lqd_psbl_qty": "0"
+  }
+ ],
+ "output2": {
+  "dnca_cash": "9500000",
+  "tot_dncl_amt": "9500000",
+  "ord_psbl_cash": "8000000",
+  "ord_psbl_tota": "8000000",
+  "mgna_tota": "1500000",
+  "add_mgna_tota": "0",
+  "prsm_dpast_amt": "10050000",
+  "trad_pfls_amt_smtl": "20000",
+  "evlu_pfls_amt_smtl": "50000",
+  "fee": "500"
+ }
+}

@@ -1,0 +1,35 @@
+{
+ "rt_cd": "0",
+ "msg_cd": "MCA00000",
+ "msg1": "ok",
+ "output1": {
+  "futs_prpr": "350.50",
+  "futs_shrn_iscd": "105W11"
+ },
+ "output2": [
+  {
+   "stck_bsop_date": "20261027",
+   "futs_prpr": "350.50",
+   "futs_oprc": "349.0",
+   "futs_hgpr": "351.0",
+   "futs_lwpr": "348.5",
+   "acml_vol": "12345"
+  },
+  {
+   "stck_bsop_date": "20261026",
+   "futs_prpr": "349.30",
+   "futs_oprc": "348.0",
+   "futs_hgpr": "350.0",
+   "futs_lwpr": "347.5",
+   "acml_vol": "11000"
+  },
+  {
+   "stck_bsop_date": "20261023",
+   "futs_prpr": "348.00",
+   "futs_oprc": "347.0",
+   "futs_hgpr": "349.0",
+   "futs_lwpr": "346.5",
+   "acml_vol": "10000"
+  }
+ ]
+}
