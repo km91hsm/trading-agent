@@ -168,8 +168,10 @@ def smoke(exe: Path) -> dict:
     ):
         if not (internal / rel).exists():
             raise SystemExit(f"번들 리소스 누락: {internal.name}/{rel}")
+    # 번들 **안**(리소스 폴더)에 운용 데이터가 섞였는지만 본다 — dist/trader 바로 아래의
+    # secrets·state 는 운용 중인 TRADER_HOME 의 사용자 데이터라 정상이다(zip 은 USER_DATA 를 뺀다)
     for bad in ("secrets", "state"):
-        if (DIST / bad).exists() or (internal / bad).exists():
+        if (internal / bad).exists():
             raise SystemExit(f"번들에 {bad}/ 가 들어갔습니다")
     windowed = DIST / ("TraderApp.exe" if sys.platform == "win32" else "Trader.app/Contents/MacOS/TraderApp")
     if not windowed.exists():
