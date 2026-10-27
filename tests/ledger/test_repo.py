@@ -733,3 +733,26 @@ def test_has_open_order_include_filled_flag(conn):
     )
     assert oid and repo.has_open_order_or_approval(conn, 7, "a", "SELL")
     assert not repo.has_open_order_or_approval(conn, 7, "a", "SELL", include_filled=False)
+
+
+def _ingest_decision(conn, d, stage, **over):
+    return repo.ingest_checkpoint(conn, d, "KR", "005930", stage, {"data": ok_decision(**over)})
+
+
+def test_max_stop_since_keeps_floor_across_same_day_overwrite_and_ignores_sell_trim(conn):
+    """전체 검토 2차 2-O1·2-O2: 같은 날 재평가가 행을 덮어써도 손절선 바닥은 최고값으로 남고(2-O1),
+    SELL/TRIM 결정의 손절가는 바닥 계산에 들어가지 않는다(2-O2)."""
+    _ingest_decision(conn, D, "30_decision", stop_loss=65000.0)
+    _ingest_decision(conn, D, "31_decision_r1", action="HOLD", target_weight=0.0, stop_loss=None)
+    assert repo.max_stop_since(conn, "KR", "005930", D) == Decimal("65000")
+    # 더 낮은 HOLD 손절가도 바닥을 내리지 못한다
+    _ingest_decision(conn, D, "31_decision_r2", action="HOLD", target_weight=0.0, stop_loss=60000.0)
+    assert repo.max_stop_since(conn, "KR", "005930", D) == Decimal("65000")
+    # 게이트가 거부한 TRIM 재평가가 현재가 바로 아래 손절가를 적어도 바닥이 되지 않는다
+    _ingest_decision(
+        conn, D, "31_decision_r3", action="TRIM", target_weight=0.05, stop_loss=69900.0
+    )
+    assert repo.max_stop_since(conn, "KR", "005930", D) == Decimal("65000")
+    _ingest_decision(conn, date(2026, 10, 10), "30_decision", action="SELL", stop_loss=69950.0)
+    assert repo.max_stop_since(conn, "KR", "005930", D) == Decimal("65000")
+    assert repo.max_stop_since(conn, "KR", "005930", None) is None

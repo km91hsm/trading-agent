@@ -56,6 +56,10 @@ def test_daemon_snapshot_fn_passes_edgar(project, monkeypatch):
     monkeypatch.setattr(features, "snapshot", lambda **kw: seen.update(kw) or 1)
     run = cli._daemon_snapshot_fn(object(), object(), market_client=object())
     assert run(["US"]) == 1 and seen["edgar"] == "EDGAR"
+    assert seen.get("extra_targets") is None
+    # 2-L1: 열린 창 종목은 extra_targets 로 유니버스에 더해진다
+    assert run(["US"], extra=[("RIVN", "US", "NAS")]) == 1
+    assert seen["extra_targets"] == [("RIVN", "US", "NAS")]
 
 
 def test_daemon_features_fn_dispatches_actions(project, monkeypatch):

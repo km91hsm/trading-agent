@@ -436,6 +436,40 @@ def test_executor_updates_circuit_breaker_from_nav(ectx):
     assert repo.nav_history(ectx.conn, "paper-main", "KR", days=30)[-1][1] == Decimal("8900000")
 
 
+def test_build_portfolio_records_us_exchange_from_balance(ectx):
+    """전체 검토 2차 2-L1: 잔고 응답의 US 거래소(ovrs_excg_cd)를 원장 `ticker_exchanges` 에 남긴다 —
+    유니버스 밖 보유·미만기 종목의 일일 스냅샷이 거래소를 알 수 있게. KR 은 적지 않는다."""
+    from trader.broker.models import Position
+
+    acct = ectx.accounts[0]
+    broker = ectx.brokers[acct.id]
+    broker.positions = [
+        Position(
+            ticker="RIVN",
+            market="US",
+            qty=3,
+            avg_price=Decimal("10"),
+            current_price=Decimal("11"),
+            eval_amount=Decimal("33"),
+            pnl_pct=0.1,
+            exchange="NAS",
+        ),
+        Position(
+            ticker="005930",
+            market="KR",
+            qty=1,
+            avg_price=Decimal("70000"),
+            current_price=Decimal("71500"),
+            eval_amount=Decimal("71500"),
+            pnl_pct=0.02,
+        ),
+    ]
+    executor.build_portfolio(ectx.conn, broker, acct, "US", D)
+    executor.build_portfolio(ectx.conn, broker, acct, "KR", D)
+    assert repo.ticker_exchanges(ectx.conn, "US") == {"RIVN": "NAS"}
+    assert repo.ticker_exchanges(ectx.conn, "KR") == {}
+
+
 def test_build_portfolio_breaker_uses_settings_and_market(ectx):
     from trader.config import MemorySettings
     from trader.memory import store

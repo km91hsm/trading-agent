@@ -335,8 +335,9 @@ def build_portfolio(
     금액까지로 자른다 — 원장 스냅샷·성과·킬스위치는 실제 NAV 그대로."""
     pos_list, cash = _balance(broker, market)
     positions = {p.ticker: p for p in pos_list}
-    for p in positions.values():  # 잔고 응답의 종목명은 추가 호출 없이 얻는 이름이다
+    for p in positions.values():  # 잔고 응답의 종목명·US 거래소는 추가 호출 없이 얻는 관측값이다
         repo.upsert_ticker_name(conn, p.market, p.ticker, getattr(p, "name", None), "balance")
+        repo.upsert_ticker_exchange(conn, p.market, p.ticker, getattr(p, "exchange", None))
     nav = _nav_of(pos_list, cash)
     if killswitch_pct > 0:
         from trader.risk import killswitch

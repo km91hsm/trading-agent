@@ -490,6 +490,47 @@ def test_submit_decision_runs_executor(ctx, project):
     assert len(ctx.brokers["paper-main"].orders) == 1
 
 
+def test_submit_decision_records_us_exchange_from_inputs_meta(ctx, project):
+    """전체 검토 2차 2-L1: 00_inputs.meta.exchange 를 원장 `ticker_exchanges` 에 남긴다(유니버스 밖
+    US 결정 종목의 만기 스냅샷용). 결정 자체는 dry_run 이라 주문 없음."""
+    from trader.ledger import repo
+
+    d = _inputs(project, ticker="RIVN", market="US")
+    payload = run_store.read_checkpoint(d, "00_inputs")
+    payload["meta"]["exchange"] = "NAS"
+    run_store.write_checkpoint(d, "00_inputs", payload)
+    for role in ("technical", "fundamental"):
+        tools.checkpoint_write(
+            ctx,
+            ticker="RIVN",
+            market="US",
+            date=D,
+            stage=f"10_analyst_{role}",
+            payload=ok_report(role=role, ticker="RIVN"),
+            agent="a",
+        )
+    for side in ("bull", "bear"):
+        tools.checkpoint_write(
+            ctx,
+            ticker="RIVN",
+            market="US",
+            date=D,
+            stage=f"20_debate_r0_{side}",
+            payload=ok_turn(side),
+            agent="r",
+        )
+    tools.checkpoint_summarize(ctx, ticker="RIVN", market="US", date=D)
+    r = tools.submit_decision(
+        ctx,
+        ticker="RIVN",
+        market="US",
+        date=D,
+        payload=ok_decision(ticker="RIVN", limit_price=11.0, stop_loss=9.0, take_profit=14.0),
+    )
+    assert r["ok"]
+    assert repo.ticker_exchanges(ctx.conn, "US") == {"RIVN": "NAS"}
+
+
 def test_submit_rejects_invalid_decision(ctx, project):
     _inputs(project)
     for role in ("technical", "fundamental"):

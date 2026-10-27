@@ -877,10 +877,10 @@ def submit_decision(
     stage_name = resume_stage or "30_decision"
     path = write_checkpoint(d, stage_name, _wrap(decision.model_dump(), _call(agent, call_meta)))
     _ingest_run(ctx, d, date, market, ticker)
-    if ctx.conn is not None:  # 수집이 알아낸 종목명을 원장에 남긴다 (웹·알림 표기용)
-        repo.upsert_ticker_name(
-            ctx.conn, market, ticker, (inputs.get("meta") or {}).get("name"), "inputs"
-        )
+    if ctx.conn is not None:  # 수집이 알아낸 종목명·US 거래소를 원장에 남긴다 (표기·만기 스냅샷용)
+        meta = inputs.get("meta") or {}
+        repo.upsert_ticker_name(ctx.conn, market, ticker, meta.get("name"), "inputs")
+        repo.upsert_ticker_exchange(ctx.conn, market, ticker, meta.get("exchange"))
     if resume_stage:  # 재평가 결정이 최신 결정이 되도록 마지막에 적재
         repo.ingest_checkpoint(
             ctx.conn, date, market, ticker, resume_stage, read_checkpoint(d, resume_stage) or {}

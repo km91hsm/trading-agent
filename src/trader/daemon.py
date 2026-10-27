@@ -516,9 +516,9 @@ class DaemonDeps:
     web_app_factory: Callable[[], Any] | None = None
     dry_run: bool = False
     session_runner: Callable[..., Any] | None = None  # 테스트 주입용 (기본 run_session)
-    snapshot_fn: Callable[[list[str]], int] | None = (
-        None  # reflect 전 피처 스냅샷(시장 목록 → 행 수)
-    )
+    # reflect 전 피처 스냅샷: (시장 목록, extra=[(코드, 시장, 거래소)]) → 행 수. extra 는 유니버스
+    # 밖 열린 창 종목(ledger/open_window, 2-L1)
+    snapshot_fn: Callable[..., int] | None = None
     stop_event: threading.Event = field(default_factory=threading.Event)  # SIGTERM 뒤 세션 중단
     # 피처 스토어 작업: (action: backfill|snapshot|derive, markets, *, progress, **kw) -> 행 수
     features_fn: Callable[..., int] | None = None
@@ -2409,6 +2409,24 @@ def _discover_body(deps: DaemonDeps, market: str) -> dict:
         conn.close()
 
 
+def _open_window_targets(deps: DaemonDeps) -> list[tuple[str, str, str | None]]:
+    """일일 스냅샷에 더할 유니버스 밖 열린 창 종목(보유·미만기 메모리·미만기 섀도, 2-L1). 실패는
+    경고만(스냅샷은 유니버스로 계속)."""
+    from trader.ledger import open_window
+
+    out: list[tuple[str, str, str | None]] = []
+    try:
+        conn = deps.conn_factory()
+        try:
+            for m in deps.settings.markets:
+                out += open_window.targets(conn, m, deps.universe)
+        finally:
+            conn.close()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("열린 창 종목 수집 실패: %s", e)
+    return out
+
+
 def _reflect_body(deps: DaemonDeps) -> dict:
     """장 마감 후: 만기 결정 결과 채우기 → 반성 대기가 있는 시장만 세션 → 메모리 정리."""
     from trader.memory import outcomes, store
@@ -2417,7 +2435,8 @@ def _reflect_body(deps: DaemonDeps) -> dict:
     features_n: int | None = None
     if deps.snapshot_fn is not None:
         try:
-            features_n = int(deps.snapshot_fn(list(deps.settings.markets)))
+            extra = _open_window_targets(deps)
+            features_n = int(deps.snapshot_fn(list(deps.settings.markets), extra=extra))
         except Exception as e:  # noqa: BLE001 - 스냅샷 실패는 통보하고 반성은 계속
             logger.warning("피처 스냅샷 실패: %s", e)
             deps.notifier.send(

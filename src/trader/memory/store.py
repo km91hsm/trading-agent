@@ -55,6 +55,17 @@ def held_at(
     return bool(row and int(row["qty"] or 0) > 0)
 
 
+def pending_tickers(conn: sqlite3.Connection, market: str) -> set[str]:
+    """결과(outcome_at)가 아직 없는 엔트리의 종목 — 열린 창 종목(2-L1) 의 메모리 부분."""
+    return {
+        str(r["ticker"])
+        for r in conn.execute(
+            "SELECT DISTINCT ticker FROM memory_entries WHERE market=? AND outcome_at IS NULL",
+            (market,),
+        )
+    }
+
+
 def record_decision(
     conn: sqlite3.Connection,
     *,

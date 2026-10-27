@@ -442,9 +442,9 @@ def test_us_holiday_skipped(conn):
 def test_reflect_job_snapshots_features_first(conn):
     calls = []
     deps = _deps(conn, FakeMarket(), now=lambda: datetime(2026, 10, 8, 7, 0, tzinfo=UTC))
-    deps.snapshot_fn = lambda markets: calls.append(list(markets)) or 3
+    deps.snapshot_fn = lambda markets, extra=None: calls.append((list(markets), extra)) or 3
     r = daemon._reflect_body(deps)
-    assert calls == [["KR", "US"]] and r["features"] == 3
+    assert calls == [(["KR", "US"], [])] and r["features"] == 3
 
     class Sent:
         msgs = []
@@ -461,6 +461,35 @@ def test_reflect_job_snapshots_features_first(conn):
     deps.snapshot_fn = boom
     r = daemon._reflect_body(deps)  # 스냅샷 실패는 통보하고 반성은 계속
     assert r["features"] is None and any("피처 스냅샷 실패" in m for m in Sent.msgs)
+
+
+def test_reflect_snapshot_includes_open_window_tickers_outside_universe(conn):
+    """전체 검토 2차 2-L1: reflect 앞 일일 스냅샷은 유니버스 + 열린 창(보유·미만기 메모리·미만기
+    섀도) 종목을 함께 찍는다 — 유니버스 밖 매수 종목도 만기 봉이 생기게. 거래소 미상 US 는 뺀다."""
+    from trader.config import Universe, UsSymbol
+    from trader.ledger import repo
+    from trader.memory import store
+
+    for i, (market, ticker) in enumerate([("KR", "247540"), ("US", "RIVN"), ("US", "AAPL")]):
+        store.record_decision(
+            conn,
+            decision_id=i + 1,
+            ticker=ticker,
+            market=market,
+            account_id="paper-main",
+            decided_at="2026-10-07T00:00:00+00:00",
+            decision={"action": "BUY", "confidence": 0.6},
+            row=None,
+            horizon_days=5,
+            vector=[0.0] * 12,
+        )
+    repo.upsert_ticker_exchange(conn, "US", "RIVN", "NAS")
+    calls = []
+    deps = _deps(conn, FakeMarket(), now=lambda: datetime(2026, 10, 8, 7, 0, tzinfo=UTC))
+    deps.universe = Universe(kr=["005930"], us=[UsSymbol(symbol="AAPL", exchange="NAS")])
+    deps.snapshot_fn = lambda markets, extra=None: calls.append((list(markets), extra)) or 3
+    daemon._reflect_body(deps)
+    assert calls == [(["KR", "US"], [("247540", "KR", None), ("RIVN", "US", "NAS")])]
 
 
 def test_ml_train_job_trains_sizer_even_when_not_enabled(conn, monkeypatch):

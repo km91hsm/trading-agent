@@ -1012,7 +1012,10 @@ def _daemon_snapshot_fn(secrets: config.Secrets, universe, market_client, notifi
         if notifier is not None:
             notifier.send(messages.adjusted_prices(market, tickers))
 
-    return lambda markets: features_fn("snapshot", markets, on_adjusted=on_adjusted)
+    # extra = 유니버스 밖 열린 창 종목 [(코드, 시장, 거래소)] (daemon._open_window_targets, 2-L1)
+    return lambda markets, extra=None: features_fn(
+        "snapshot", markets, on_adjusted=on_adjusted, extra_targets=extra
+    )
 
 
 @app.command("daemon")

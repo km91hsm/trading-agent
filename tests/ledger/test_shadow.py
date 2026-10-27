@@ -96,6 +96,37 @@ def test_mature_cash_portfolio_is_zero_when_window_closed(conn, project):
     assert got["llm"] == 0.0
 
 
+def test_mature_holds_when_weighted_ticker_has_no_close_then_marks_partial(conn, project):
+    """전체 검토 2차 2-L1: 비중 있는 종목이 하나라도 종가가 없으면(유니버스 밖 매수 종목의 봉 없음)
+    남은 비중으로 재정규화해 확정하지 않고 만기 + 유예까지 보류한다. 유예가 지나도 없으면 `partial`
+    로 표시해 채우되 `paired_stats` 에서는 뺀다(선택 편향 방지)."""
+    from datetime import timedelta
+
+    _store({"A": [100, 101, 102, 103, 104, 110, 111], "C": [100.0] * 7})  # B 는 종가 없음
+    _decision(conn, "B", "BUY", 0.2)
+    shadow.record(conn, market="KR", day=DAYS[0], scan=SCAN, top_n=2)
+    # 만기 봉(DAYS[5])이 지났어도 B 가 비어 있는 llm·candidates_1n·quant_topn 은 보류
+    assert shadow.mature(conn, state=project / "state", today=DAYS[6], horizon=5) == 0
+    assert all(r["fwd_ret"] is None for r in shadow.rows(conn, market="KR"))
+    # 유예(GRACE_DAYS)가 지나면 partial 로 채운다 — 있는 종목만의 비중 평균, 전부 없으면 0
+    late = DAYS[5] + timedelta(days=shadow.GRACE_DAYS + 1)
+    assert shadow.mature(conn, state=project / "state", today=late, horizon=5) == 3
+    got = {r["strategy"]: r for r in shadow.rows(conn, market="KR")}
+    assert all(r["partial"] is True for r in got.values())
+    assert abs(got["quant_topn"]["fwd_ret"] - 0.10) < 1e-9  # A 만
+    assert got["llm"]["fwd_ret"] == 0.0
+    assert shadow.paired_stats(conn)["n"] == 0
+    assert shadow.paired_stats(conn, b="quant_topn")["n"] == 0
+
+
+def test_mature_full_rows_are_not_partial(conn, project):
+    _store({"A": [100.0] * 7, "B": [100.0] * 7, "C": [100.0] * 7})
+    shadow.record(conn, market="KR", day=DAYS[0], scan=SCAN, top_n=2)
+    shadow.mature(conn, state=project / "state", today=DAYS[6], horizon=5)
+    assert all(r["partial"] is False for r in shadow.rows(conn, market="KR"))
+    assert shadow.paired_stats(conn)["n"] == 1
+
+
 def _seed_matured(conn, diffs: list[float]):
     for i, dlt in enumerate(diffs):
         d = date(2026, 1, 1).toordinal() + i

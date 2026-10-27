@@ -692,10 +692,12 @@ def snapshot(
     progress: Callable[[str], None] = lambda s: None,
     tickers: list[tuple[str, str | None]] | None = None,
     on_adjusted: Callable[[str, list[str]], None] | None = None,
+    extra_targets: list[tuple[str, str, str | None]] | None = None,
 ) -> int:
     """오늘 행(종목당 1행)을 저장한다. 뉴스·커뮤니티 건수는 같은 날 00_inputs 에서 센다.
     `tickers=[(코드, 거래소)]` 를 주면 유니버스 대신 그 종목만(유니버스 밖 발굴 종목의 당일 1회
-    스냅샷, Phase 21) — 시장은 `markets[0]`.
+    스냅샷, Phase 21) — 시장은 `markets[0]`. `extra_targets=[(코드, 시장, 거래소)]` 는 대상에
+    **더한다**(열린 창 종목 — 보유·미만기 창의 유니버스 밖 종목, 2-L1; 겹치면 한 번만).
 
     수정주가 감지(Stock D-034·D-064·D-070): 분할·병합이 나면 KIS 는 과거 일봉을 새 기준으로 다시
     준다. 받은 일봉의 최근 `ADJUST_WINDOW` 봉(마지막 봉 제외)이 저장 종가와 `ADJUST_TOL` 넘게
@@ -710,6 +712,11 @@ def snapshot(
         targets = [(t, markets[0], ex) for t, ex in tickers]
     else:
         targets = _targets(universe, markets)
+    seen = {(t, m) for t, m, _ in targets}
+    for t, m, ex in extra_targets or []:
+        if (t, m) not in seen:
+            targets.append((t, m, ex))  # type: ignore[arg-type]
+            seen.add((t, m))
     stored = _stored_closes(state, {m for _, m, _ in targets}, since=asof.date() - timedelta(400))
     adjusted: dict[str, list[tuple[str, str | None]]] = {}
     for ticker, market, exchange in targets:

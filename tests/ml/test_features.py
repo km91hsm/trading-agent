@@ -648,6 +648,25 @@ def test_snapshot_tickers_override_universe(project):
     assert list(got["ticker"]) == ["247540"]
 
 
+def test_snapshot_extra_targets_are_added_to_universe(project):
+    """전체 검토 2차 2-L1: `extra_targets=[(코드, 시장, 거래소)]` 는 유니버스에 **더한다**(보유·
+    미만기 창의 유니버스 밖 종목도 매일 봉이 쌓이게). 유니버스와 겹치면 한 번만."""
+    from helpers_sources import T0
+
+    n = features.snapshot(
+        market_client=FakeMarket(),
+        dart=FakeDart(),
+        universe=Universe(kr=["005930"]),
+        markets=["KR"],
+        asof=T0,
+        now=lambda: T0,
+        extra_targets=[("247540", "KR", None), ("005930", "KR", None)],
+    )
+    assert n == 2
+    got = pd.read_parquet(next((project / "state" / "features").glob("*.parquet")))
+    assert sorted(got["ticker"]) == ["005930", "247540"]
+
+
 def test_rederive_reports_progress_outside_store_lock(project, monkeypatch):
     """전체 검토 P9: 진행 콜백(데몬은 heavy 락 양보)이 파일 락을 쥔 채 불리지 않는다."""
     import contextlib
