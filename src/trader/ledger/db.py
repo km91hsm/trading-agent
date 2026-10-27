@@ -444,6 +444,68 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
             "ON positions_snapshot(market, ticker, date)",
         ],
     ),
+    (
+        # Phase 26 선물옵션 방향성 레인: 주문·계좌 asset, 포지션 상태기계, 주문 다리(실행 키 =
+        # (position, intent, round, attempt) UNIQUE), 파생 결정(계좌·포지션·라운드 단위),
+        # NAV·보유 스냅샷
+        26,
+        [
+            "ALTER TABLE orders ADD COLUMN asset TEXT NOT NULL DEFAULT 'stock'",
+            "ALTER TABLE accounts ADD COLUMN asset TEXT NOT NULL DEFAULT 'stock'",
+            """CREATE TABLE IF NOT EXISTS fo_positions (
+                id INTEGER PRIMARY KEY,
+                account_id TEXT NOT NULL, code TEXT NOT NULL, kind TEXT NOT NULL,
+                contract_side TEXT NOT NULL, direction TEXT NOT NULL, vehicle TEXT NOT NULL,
+                status TEXT NOT NULL,
+                qty_target INTEGER NOT NULL DEFAULT 0, qty_held INTEGER NOT NULL DEFAULT 0,
+                leverage_used REAL, stop_pt TEXT, stop_fut TEXT, tp_pt TEXT, approved_mult REAL,
+                premium_stop TEXT, entry_premium TEXT, nav_at_open TEXT,
+                realized_loss TEXT NOT NULL DEFAULT '0', fees TEXT NOT NULL DEFAULT '0',
+                active_reduce_leg_id INTEGER, horizon_until TEXT, last_trade_date TEXT,
+                decision_date TEXT, round INTEGER NOT NULL DEFAULT 0,
+                version INTEGER NOT NULL DEFAULT 0,
+                opened_at TEXT, closed_at TEXT, note TEXT, created_at TEXT NOT NULL
+            )""",
+            "CREATE INDEX IF NOT EXISTS ix_fo_positions_account_status "
+            "ON fo_positions(account_id, status)",
+            """CREATE TABLE IF NOT EXISTS fo_order_legs (
+                id INTEGER PRIMARY KEY,
+                position_id INTEGER NOT NULL, account_id TEXT NOT NULL, intent TEXT NOT NULL,
+                round INTEGER NOT NULL DEFAULT 0, attempt INTEGER NOT NULL DEFAULT 1,
+                status TEXT NOT NULL, order_id INTEGER, order_no TEXT,
+                qty INTEGER NOT NULL, filled_qty INTEGER NOT NULL DEFAULT 0,
+                price TEXT, order_type TEXT, sent_at TEXT, accepted_at TEXT,
+                created_at TEXT NOT NULL,
+                UNIQUE(position_id, intent, round, attempt)
+            )""",
+            "CREATE INDEX IF NOT EXISTS ix_fo_legs_account_status "
+            "ON fo_order_legs(account_id, status)",
+            """CREATE TABLE IF NOT EXISTS fo_decisions (
+                id INTEGER PRIMARY KEY,
+                date TEXT NOT NULL, account_id TEXT, position_id INTEGER,
+                round INTEGER NOT NULL DEFAULT 0, request_id TEXT NOT NULL,
+                intent TEXT NOT NULL, direction TEXT NOT NULL, vehicle TEXT NOT NULL,
+                target_leverage REAL, leverage_used REAL, approved_mult REAL, confidence REAL,
+                index_at_decision TEXT, quote_asof TEXT, data TEXT NOT NULL,
+                matured_at TEXT, index_return REAL, direction_hit INTEGER, contract_pnl TEXT,
+                cost TEXT, created_at TEXT NOT NULL,
+                UNIQUE(date, account_id, position_id, round)
+            )""",
+            """CREATE TABLE IF NOT EXISTS fo_nav_snapshot (
+                account_id TEXT NOT NULL, date TEXT NOT NULL,
+                nav TEXT, cash TEXT, margin_total TEXT, add_margin TEXT,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (account_id, date)
+            )""",
+            """CREATE TABLE IF NOT EXISTS fo_positions_snapshot (
+                account_id TEXT NOT NULL, date TEXT NOT NULL, code TEXT NOT NULL,
+                kind TEXT NOT NULL, contract_side TEXT NOT NULL, qty INTEGER NOT NULL,
+                avg TEXT, current TEXT, delta REAL, delta_notional TEXT, eval TEXT,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (account_id, date, code)
+            )""",
+        ],
+    ),
 ]
 
 
@@ -513,11 +575,11 @@ def sync_accounts(conn: sqlite3.Connection, accounts: list[AccountConfig]) -> No
     created = now_iso()
     for a in accounts:
         conn.execute(
-            "INSERT INTO accounts(id, env, cano, acnt_prdt_cd, markets, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?) "
+            "INSERT INTO accounts(id, env, cano, acnt_prdt_cd, markets, created_at, asset) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(id) DO UPDATE SET env=excluded.env, cano=excluded.cano, "
-            "acnt_prdt_cd=excluded.acnt_prdt_cd, markets=excluded.markets",
-            (a.id, a.env, a.cano, a.acnt_prdt_cd, json.dumps(a.markets), created),
+            "acnt_prdt_cd=excluded.acnt_prdt_cd, markets=excluded.markets, asset=excluded.asset",
+            (a.id, a.env, a.cano, a.acnt_prdt_cd, json.dumps(a.markets), created, a.asset),
         )
     conn.commit()
 

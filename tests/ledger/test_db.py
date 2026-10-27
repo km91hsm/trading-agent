@@ -118,3 +118,83 @@ def test_v8_adds_query_indexes(conn):
         "ix_positions_account_market_date",
         "ix_fills_order",
     } <= names
+
+
+def test_v26_tables_and_columns(conn):
+    """Phase 26 단계 2: orders/accounts.asset, fo_positions·fo_order_legs(실행 키 UNIQUE)·
+    fo_decisions(UNIQUE date·account·position·round)·fo_nav_snapshot·fo_positions_snapshot."""
+    tables = {
+        r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    }
+    assert {
+        "fo_positions",
+        "fo_order_legs",
+        "fo_decisions",
+        "fo_nav_snapshot",
+        "fo_positions_snapshot",
+    } <= tables
+    for t in ("orders", "accounts"):
+        cols = {r["name"]: r for r in conn.execute(f"PRAGMA table_info({t})")}
+        assert cols["asset"]["dflt_value"] == "'stock'" and cols["asset"]["notnull"] == 1
+    pcols = {r["name"] for r in conn.execute("PRAGMA table_info(fo_positions)")}
+    assert {
+        "account_id", "code", "kind", "contract_side", "direction", "vehicle", "status",
+        "qty_target", "qty_held", "leverage_used", "stop_pt", "stop_fut", "tp_pt",
+        "approved_mult", "premium_stop", "entry_premium", "nav_at_open", "realized_loss",
+        "fees", "active_reduce_leg_id", "horizon_until", "last_trade_date", "decision_date",
+        "round", "version", "opened_at", "closed_at", "note", "created_at",
+    } <= pcols  # fmt: skip
+    lcols = {r["name"] for r in conn.execute("PRAGMA table_info(fo_order_legs)")}
+    assert {
+        "position_id", "account_id", "intent", "round", "attempt", "status", "order_id",
+        "order_no", "qty", "filled_qty", "price", "order_type", "sent_at", "accepted_at",
+    } <= lcols  # fmt: skip
+    conn.execute(
+        "INSERT INTO fo_positions(account_id, code, kind, contract_side, direction, vehicle, "
+        "status, created_at) VALUES ('paper-fo','105W11','FUTURES','LONG','LONG','FUTURES',"
+        "'entering','t')"
+    )
+    leg = (
+        "INSERT INTO fo_order_legs(position_id, account_id, intent, round, attempt, status, qty, "
+        "created_at) VALUES (1,'paper-fo','OPEN',0,1,'prepared',2,'t')"
+    )
+    conn.execute(leg)
+    with pytest.raises(sqlite3.IntegrityError):  # 실행 키 = (position, intent, round, attempt)
+        conn.execute(leg)
+    dec = (
+        "INSERT INTO fo_decisions(date, account_id, position_id, round, request_id, intent, "
+        "direction, vehicle, data, created_at) VALUES ('2026-10-27','paper-fo',1,0,'r1','OPEN',"
+        "'LONG','FUTURES','{}','t')"
+    )
+    conn.execute(dec)
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(dec)
+    nav = (
+        "INSERT INTO fo_nav_snapshot(account_id, date, nav, cash, margin_total, add_margin, "
+        "created_at) VALUES ('paper-fo','2026-10-27','1','1','0','0','t')"
+    )
+    conn.execute(nav)
+    with pytest.raises(sqlite3.IntegrityError):  # PK(account_id, date)
+        conn.execute(nav)
+    snap = (
+        "INSERT INTO fo_positions_snapshot(account_id, date, code, kind, contract_side, qty, "
+        "created_at) VALUES ('paper-fo','2026-10-27','105W11','FUTURES','LONG',1,'t')"
+    )
+    conn.execute(snap)
+    with pytest.raises(sqlite3.IntegrityError):  # PK(account_id, date, code)
+        conn.execute(snap)
+
+
+def test_sync_accounts_writes_asset(conn):
+    from trader.config import AccountConfig
+
+    fo = AccountConfig(
+        id="paper-fo", env="paper", cano="00000000", acnt_prdt_cd="03", markets=["KR"],
+        mode="auto", asset="fo",
+    )  # fmt: skip
+    db.sync_accounts(conn, [make_account("a", "paper", "auto"), fo])
+    rows = {r["id"]: r["asset"] for r in conn.execute("SELECT id, asset FROM accounts")}
+    assert rows == {"a": "stock", "paper-fo": "fo"}
+    fo2 = fo.model_copy(update={"asset": "stock"})
+    db.sync_accounts(conn, [fo2])
+    assert conn.execute("SELECT asset FROM accounts WHERE id='paper-fo'").fetchone()[0] == "stock"
