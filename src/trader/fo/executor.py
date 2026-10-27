@@ -75,6 +75,8 @@ class FoExecContext:
     historical: bool = False  # 과거 asof 세션 — 신규 금지(판정은 기록)
     regime_of: Callable[[], str] = field(default=lambda: "neutral")
     view_of: Callable[[], dict | None] = field(default=lambda: None)
+    # 재평가 결정 적용 훅(단계 4 `fo/reeval.apply`): (봉투, 라운드) → 결과 dict. 없으면 기록만
+    reeval_apply: Callable[[FoDecisionEnvelope, int], dict] | None = None
 
 
 @dataclass
@@ -229,6 +231,11 @@ def _resolve_contract(
         expiry_rule=d.expiry_rule, underlying=underlying, today=today, roll_days=cfg.roll_days,
         last_trade_date_of=_no_quote,
     )  # fmt: skip
+
+
+# 도구(`submit-fo-decision`)가 결정 저장 때 계약·잔존일을 같은 규칙으로 적도록 공개 이름을 둔다
+resolve_contract = _resolve_contract
+days_left_of = _days_left
 
 
 def _name_of(ctx: FoExecContext, code: str) -> str | None:

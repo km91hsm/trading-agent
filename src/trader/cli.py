@@ -709,6 +709,7 @@ def _tool_ctx():
         if not isinstance(h, logging.StreamHandler) or isinstance(h, logging.FileHandler)
     ]  # stdout 은 JSON 전용이므로 콘솔 핸들러 제거
     conn, secrets, accounts = boot.conn, boot.secrets, boot.accounts
+    settings = config.load_settings()
     # 세션이 env 로 넘긴 값. 없으면 안전하게 dry_run(주문·승인 요청 없음).
     dry_run = os.environ.get("TRADER_DRY_RUN", "1") != "0"
     # dry_run 도 잔고로 판정은 한다(주문·승인 요청만 생략). 브로커 생성은 네트워크를 쓰지 않는다.
@@ -719,15 +720,48 @@ def _tool_ctx():
     except Exception:  # noqa: BLE001 - 실전 앱키가 없으면 휴장일 없이 평일 수로 계산
         market_client = None
         holiday_fn = None
+    notifier = make_notifier(secrets)
     return ToolContext(
-        settings=config.load_settings(),
+        settings=settings,
         accounts=accounts,
         conn=conn,
         brokers=brokers,
-        notifier=make_notifier(secrets),
+        notifier=notifier,
         dry_run=dry_run,
         holiday_fn=holiday_fn,
         market_client=market_client,
+        fo=_fo_tool_ctx(boot, settings, market_client, notifier, dry_run=dry_run),
+    )
+
+
+def _fo_tool_ctx(boot, settings: config.Settings, market_client, notifier, *, dry_run: bool):
+    """파생 세션 도구의 실행 컨텍스트(Phase 26). `asset: fo` 계좌가 없으면 None — `tool fo *`·
+    `submit-fo-decision` 은 그때 거부한다. 과거 asof 세션은 env `TRADER_FO_HISTORICAL=1` 로
+    신규 금지(판정만 기록)."""
+    from trader.broker import fo_master
+    from trader.fo.executor import FoExecContext
+
+    fo_accounts = list(boot.fo_accounts)
+    if not fo_accounts:
+        return None
+    brokers = {
+        b.account.id: b for b in _build_brokers(boot.secrets, fo_accounts, settings=settings)
+    }
+    try:
+        master = fo_master.load(cache_dir=paths.state_dir() / "fo")
+    except Exception as e:  # noqa: BLE001 — 마스터 없이도 보유분 처리는 가능(신규는 게이트가 거부)
+        logging.getLogger("trader.fo").warning("파생 마스터 적재 실패(빈 목록으로 진행): %s", e)
+        master = []
+    return FoExecContext(
+        settings=settings,
+        accounts=fo_accounts,
+        conn=boot.conn,
+        brokers=brokers,
+        market_client=market_client,
+        master=master,
+        notifier=notifier,
+        dry_run=dry_run,
+        historical=os.environ.get("TRADER_FO_HISTORICAL", "0") == "1",
     )
 
 
@@ -1847,6 +1881,67 @@ def tool_submit_market_view(
     from trader.orchestrator import tools
 
     _tool_run(tools.submit_market_view, market=market, date=date, payload=_payload_arg(json_text))
+
+
+fo_tool_app = typer.Typer(help="파생 세션 도구 (Phase 26)", no_args_is_help=True)
+tool_app.add_typer(fo_tool_app, name="fo")
+
+
+@fo_tool_app.command("bundle")
+def tool_fo_bundle(
+    market: str = typer.Option("KR", "--market"),
+    date: str = typer.Option(..., "--date"),
+    kind: str = typer.Option(..., "--kind", help="analyst | researcher | trader"),
+    role: str | None = typer.Option(None, "--role", help="technical | sentiment | news_macro"),
+    round: int | None = typer.Option(None, "--round"),
+    side: str | None = typer.Option(None, "--side"),
+    position_id: int | None = typer.Option(None, "--position-id", help="재평가 포지션 id"),
+    account: str | None = typer.Option(None, "--account", help="재평가 계좌 id"),
+) -> None:
+    from trader.orchestrator import tools
+
+    _tool_run(
+        tools.fo_bundle, date=date, kind=kind, role=role, round=round, side=side,
+        position_id=position_id, account=account,
+    )  # fmt: skip
+
+
+@fo_tool_app.command("write")
+def tool_fo_write(
+    market: str = typer.Option("KR", "--market"),
+    date: str = typer.Option(..., "--date"),
+    stage: str = typer.Option(..., "--stage", help="_fo_analyst_<role> | _fo_debate_r<n>_<side>"),
+    agent: str | None = typer.Option(None, "--agent"),
+    json_text: str | None = typer.Option(None, "--json", help="JSON (없으면 stdin)"),
+) -> None:
+    from trader.orchestrator import tools
+
+    _tool_run(tools.fo_write, date=date, stage=stage, payload=_payload_arg(json_text), agent=agent)
+
+
+@fo_tool_app.command("summarize")
+def tool_fo_summarize(
+    market: str = typer.Option("KR", "--market"), date: str = typer.Option(..., "--date")
+) -> None:
+    from trader.orchestrator import tools
+
+    _tool_run(tools.fo_summarize, date=date)
+
+
+@tool_app.command("submit-fo-decision")
+def tool_submit_fo_decision(
+    market: str = typer.Option("KR", "--market"),
+    date: str = typer.Option(..., "--date"),
+    stage: str | None = typer.Option(
+        None, "--stage", help="재평가면 _fo_decision_r<n>_<계좌> (아침은 생략)"
+    ),
+    json_text: str | None = typer.Option(
+        None, "--json", help="FoDecisionEnvelope JSON (없으면 stdin)"
+    ),
+) -> None:
+    from trader.orchestrator import tools
+
+    _tool_run(tools.submit_fo_decision, date=date, payload=_payload_arg(json_text), stage=stage)
 
 
 scan_tool_app = typer.Typer(help="scan 세션 도구 (Phase 19 발굴)", no_args_is_help=True)
