@@ -251,8 +251,11 @@ def _build_brokers(
         creds = secrets.kis_creds(a)
         other = owners.setdefault((a.env, creds.prefix), a.id)
         if other != a.id:
-            # KIS 는 앱키를 계좌마다 발급한다 — 같은 키로 다른 계좌를 부르면 거부될 수 있다
-            logging.getLogger("trader.kis").warning(
+            # KIS 는 앱키를 계좌마다 발급한다 — 같은 키로 다른 계좌를 부르면 거부될 수 있다.
+            # 파생 계좌의 공용 키 폴백(KIS_PAPER_FO_* 없음)은 설계상 허용이라 INFO 로만 남긴다
+            level = logging.INFO if a.asset == "fo" else logging.WARNING
+            logging.getLogger("trader.kis").log(
+                level,
                 "계좌 %s 가 %s 와 같은 앱키(%s*)를 씁니다 — 계좌 전용 키(%s*)를 넣으세요",
                 a.id,
                 other,

@@ -493,7 +493,7 @@
 
 ## Phase 26 선물옵션 방향성 레인 (2026-10-27, 사용자 요청 — `docs/superpowers/plans/2026-10-27-phase26-fo.md`, 스펙 `docs/superpowers/specs/2026-10-27-fo-lane-design.md`)
 - [x] 단계 1 계좌·브로커·마스터·설정·가격모형 (`feat/phase26-1-fo-broker`): `AccountConfig.asset`·`FoCfg`·`split_accounts`, FO TR 표·모델, `fo_codes`·`fo_master`, `KisFoBroker`(엄격 파서·`get_order_state`)·`FakeFoBroker`, 파생 시세·체인, FO 장 시간·호가단위·Black-76, CLI `_Boot` 세 목록·`fo verify|contracts|chain|order-test`, 거부 목록
-- [ ] 단계 1 Codex·Claude 교차 리뷰 → 수정 → PR(main)
+- [x] 단계 1 Codex·Claude 교차 리뷰 → 수정 → PR(main): Codex P0 3·P1 2·P2 1 + Claude 7 반영(`docs/reviews/2026-10-27-phase26-fo-review.md`) (2026-10-27)
 - [ ] 단계 2 저장 계층·상태기계·게이트·실행·원장 (`feat/phase26-2-store-gate-exec`): 원장 v26, `fo/store`(예약 트랜잭션)·`positions`(복구)·`rules`(대조표·단조)·`sizing`(수명 예산·스트레스·증거금 3겹)·`executor`(진입/축소 분기·회수·청산 절차), 체결·잔고·대조·점검·성과 asset 분기
 - [ ] 단계 2 교차 리뷰 → 수정 → PR
 - [ ] 단계 3 세션·도구·에이전트 (`feat/phase26-3-session`): `fo-trader.md`·orchestrator fo 모드, `FO_AGENTS`, kind `fo|fo_resume`·`usage.RESUME_KINDS`·상한 트랜잭션, `fo/inputs`, `tool fo bundle|write|summarize`·`submit-fo-decision`, `fo session`

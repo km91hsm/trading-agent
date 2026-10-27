@@ -315,7 +315,7 @@ def test_balance_qty_unparseable_is_unverified(paper_client, respx_mock):
     d = load("fo_balance.json")
     base = dict(d["output1"][0])
     rows = []
-    for q in ("?", "1.5", "-1", ""):
+    for q in ("?", "1.5", "-1", "", "\u00b2"):  # '²' 는 isdigit True·int() 실패(Claude 리뷰 2)
         r = dict(base)
         r["cblc_qty"] = q
         rows.append(r)
@@ -328,7 +328,7 @@ def test_balance_qty_unparseable_is_unverified(paper_client, respx_mock):
     )
     b = _broker(paper_client).get_balance()
     assert b.positions == []
-    assert len(b.unverified) == 4 and all("수량" in u.reason for u in b.unverified)
+    assert len(b.unverified) == 5 and all("수량" in u.reason for u in b.unverified)
 
 
 def test_order_state_missing_or_inconsistent_quantities_raise(paper_client, respx_mock):
@@ -337,18 +337,21 @@ def test_order_state_missing_or_inconsistent_quantities_raise(paper_client, resp
     d = load("fo_ccnl.json")
     rows = d["output1"]
     only_odno = {"odno": "0000000201", "orgn_odno": "", "ord_dt": "20261027"}
+    sup = dict(rows[1])
+    sup.update(odno="0000000204", ord_qty="\u00b2")  # 비십진 숫자 문자는 누락과 같다
     short = dict(rows[1])
     short.update(odno="0000000202", ord_qty="3", tot_ccld_qty="1", qty="0", rjct_qty="0")
     over = dict(rows[1])
     over.update(odno="0000000203", ord_qty="3", tot_ccld_qty="3", qty="1", rjct_qty="0")
-    d["output1"] = rows + [only_odno, short, over]
+    d["output1"] = rows + [only_odno, short, over, sup]
     respx_mock.get(PAPER + BASE + "/trading/inquire-ccnl").mock(
         return_value=httpx.Response(200, json=d)
     )
     b = _broker(paper_client)
     dd = date(2026, 10, 27)
-    with pytest.raises(KisApiError, match="누락"):
-        b.get_order_state("0000000201", dd)
+    for no in ("0000000201", "0000000204"):
+        with pytest.raises(KisApiError, match="누락"):
+            b.get_order_state(no, dd)
     for no in ("0000000202", "0000000203"):
         with pytest.raises(KisApiError, match="모순"):
             b.get_order_state(no, dd)

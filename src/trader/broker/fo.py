@@ -90,7 +90,7 @@ def _qty_of(raw: Any) -> tuple[int | None, str | None]:
     미확정 보유로 남긴다 — `_int` 의 '해석 불가 → 0' 폴백이 보유 행을 조용히 지우지 않게
     (Codex P0-1)."""
     s = str(raw).strip() if raw is not None else ""
-    if not s.isdigit():
+    if not s.isdecimal():  # isdigit 은 '²' 같은 비십진 문자도 True 라 int() 가 터진다
         return None, f"수량 해석 불가: {s!r}"
     return int(s), None
 
@@ -98,7 +98,7 @@ def _qty_of(raw: Any) -> tuple[int | None, str | None]:
 def _req_int(row: dict, key: str, order_no: str) -> int:
     """체결 응답의 필수 수량. 결측·비정수는 '완료 0' 이 아니라 예외(Codex P0-2)."""
     s = str(row.get(key) or "").strip()
-    if not s.isdigit():
+    if not s.isdecimal():
         raise KisApiError("INVALID_JSON", f"체결 응답 수량 누락({key}): {order_no}", "FO_CCLD")
     return int(s)
 

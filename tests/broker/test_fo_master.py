@@ -153,3 +153,19 @@ def test_normalize_std_code_to_short(contracts):
     assert fo_codes.kind_of("305W11347", MINI) == "PUT"
     assert fo_codes.kind_of("105W11", MINI) == "FUTURES"
     assert fo_codes.kind_of("101W12", MINI) is None
+
+
+def test_of_product_and_option_front_public(contracts):
+    """Claude 리뷰 6: CLI 가 쓰는 공개 헬퍼 — 상품·종류 필터와 roll 창 밖 가장 가까운 옵션 월물."""
+    futs = fo_master.of_product(contracts, MINI, "FUTURES")
+    assert futs and all(c.kind == "FUTURES" and c.code.startswith("105") for c in futs)
+    ym, chain = fo_master.option_front(
+        contracts, MINI, today=date(2026, 10, 27), roll_days=2, last_trade_date_of=lambda c: None
+    )
+    assert ym == "202611"
+    assert chain and {c.kind for c in chain} == {"CALL", "PUT"}
+    assert all(c.expiry_ym == "202611" for c in chain)
+    # 월물이 전부 roll 창 안·만기면 (None, [])
+    assert fo_master.option_front(
+        contracts, MINI, today=date(2030, 1, 1), roll_days=2, last_trade_date_of=lambda c: None
+    ) == (None, [])

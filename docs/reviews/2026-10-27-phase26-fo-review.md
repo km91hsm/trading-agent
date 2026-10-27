@@ -19,3 +19,17 @@
 확인함(두 리뷰어 공통): 방향·종류 분리 검증과 `UnverifiedHolding`, NAV None·연속조회 완주, 모의 야간 TR 전부 `UNSUPPORTED`, 호가단위 경계(3.00→0.02, 10.00→0.05), 플래그 키·`--vehicle` 필터, **현물 기본 경로 회귀 없음**(`boot.accounts` 소비자 전부 현물만, `paper-fo` 가 현물 브로커·잔고·데몬·웹에 섞이는 경로 없음 — 단계 1 의 영향은 혼입이 아니라 파생 계좌의 감시·동기화·웹 표시 **제외**), fixture 합성·비밀정보 없음.
 
 Claude `/code-review`: 아래 「단계 1 Claude 리뷰」.
+
+### 단계 1 Claude 리뷰 (`/code-review` high, main `a39e102` 위 재배치 뒤 `48dcba2`·`61026ac`)
+
+| # | 분류 | 위치 | 문제 | 조치 |
+|---|---|---|---|---|
+| C1-1 | 정확성 | `fo/cli.py` `verify_cmd` | 마스터에 roll 창 밖 선물 월물이 없으면 `front=None` 으로 시세·주문가능 단계를 **조용히 건너뛰고** 잔고만으로 플래그를 적음(S1-4 의 빈틈) | 마스터 빈 응답·월물 없음을 `errors` 로 세어 플래그 없이 exit 1. 테스트 `test_fo_verify_no_flag_when_no_front_month`·`_master_empty` |
+| C1-2 | 정확성 | `broker/fo.py` `_qty_of`·`_req_int` | `str.isdigit()` 은 `'²'` 같은 비십진 숫자 문자도 True 라 `int()` 가 ValueError 로 터짐(미확정/예외 계약 밖) | `isdecimal()`. 테스트에 `'²'` 사례 추가 |
+| C1-3 | 정확성 | `fo/cli.py` `chain_cmd` | 행사가가 전부 None 인 월물이면 `min(range(0))` 트레이스백 | `ConfigError`(exit 1). 테스트 `test_fo_chain_atm_window_and_errors` |
+| C1-4 | 테스트 | `fo chain` | 테스트 없음 | 위 테스트(ATM ± n 창·errors·실패 경로) |
+| C1-5 | 단순화 | `fo/cli.py` `_mask_cash` | 모델이 강제하는 필드의 '있음' 은 항상 True | NAV(선택 필드)만 보고 |
+| C1-6 | 재사용 | `fo/cli.py` ↔ `fo_master` | 비공개 `_of_product`·`_expiries` 에 의존 | 공개 `fo_master.of_product`·`option_front`. 테스트 `test_of_product_and_option_front_public` |
+| C1-7 | 운영 | `cli.py` `_build_brokers` | 파생 계좌의 공용 모의 키 폴백(설계상 허용)이 부트마다 '같은 앱키' WARNING | fo 계좌는 INFO, 현물은 WARNING 그대로. 테스트 `test_fo_key_fallback_logs_info_not_warning` |
+
+단계 1 결론: Codex P0 3·P1 2·P2 1 + Claude 7 전부 반영, `uv run ruff check`·`uv run pytest` 통과 뒤 PR(main).

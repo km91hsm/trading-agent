@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace as dc_replace
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -348,3 +349,81 @@ def test_control_and_status_see_fo_account(project):
     assert r.exit_code == 0, r.stdout + (r.stderr or "")
     text = (project / "state" / "STATUS.md").read_text(encoding="utf-8")
     assert "paper-fo" in text and "paper-main" in text
+
+
+def test_fo_verify_no_flag_when_no_front_month(project, monkeypatch):
+    """Claude 리뷰 1: 마스터에 roll 창 밖 선물 월물이 없으면 시세·주문가능 단계가 돌지 않으므로
+    검증 실패(errors, exit 1, 플래그 없음)로 센다 — 조용히 건너뛰고 플래그를 적지 않는다."""
+    _accounts(project)
+    bal = FoBalance(positions=[_pos("105W11", "FUTURES", "LONG")], unverified=[], cash=_fo_cash())
+    market, brokers, _ = _fakes(bal)
+    monkeypatch.setattr(cli, "_build_market", lambda s, a=None: market)
+    monkeypatch.setattr(cli, "_build_brokers", brokers)
+    no_futs = [c for c in fo_master.parse(FIX.read_bytes()) if c.kind != "FUTURES"]
+    monkeypatch.setattr(fo_master, "load", lambda **kw: no_futs)
+    r = CliRunner().invoke(app, ["fo", "verify", "--account", "paper-fo"])
+    assert r.exit_code == 1, r.stdout + (r.stderr or "")
+    out = json.loads(r.stdout.strip().splitlines()[-1])
+    assert out["front"] is None and any("front" in e for e in out["errors"])
+    assert out["verified"] == [] and _flags(project) == {}
+    assert "get_fo_price" not in market.calls  # 시세 단계는 돌지 않았다(그래서 실패로 센다)
+
+
+def test_fo_verify_no_flag_when_master_empty(project, monkeypatch):
+    _accounts(project)
+    market, brokers, _ = _fakes()
+    monkeypatch.setattr(cli, "_build_market", lambda s, a=None: market)
+    monkeypatch.setattr(cli, "_build_brokers", brokers)
+    monkeypatch.setattr(fo_master, "load", lambda **kw: [])
+    r = CliRunner().invoke(app, ["fo", "verify", "--account", "paper-fo"])
+    assert r.exit_code == 1
+    out = json.loads(r.stdout.strip().splitlines()[-1])
+    assert any("master" in e for e in out["errors"]) and _flags(project) == {}
+
+
+def _chain_market(**kw):
+    q = _quote("205W11350", "CALL").model_copy(update={"strike": Decimal("350"), "iv": 18.0})
+    return FakeMarket(
+        prices={},
+        fo_quotes={"205W11350": q},
+        kospi200=(Decimal("349.8"), T0),
+        **kw,
+    )
+
+
+def test_fo_chain_atm_window_and_errors(project, monkeypatch):
+    """Claude 리뷰 3·4: ATM ± n 행사가만 묻고 시세 없는 계약은 errors 로, 행사가가 없는 월물은
+    ConfigError(exit 1, 트레이스백 없음)."""
+    market = _chain_market()
+    monkeypatch.setattr(cli, "_build_market", lambda s, a=None: market)
+    monkeypatch.setattr(fo_master, "load", lambda **kw: fo_master.parse(FIX.read_bytes()))
+    r = CliRunner().invoke(app, ["fo", "chain", "--today", "2026-10-27", "--strikes", "1"])
+    assert r.exit_code == 0, r.stdout + (r.stderr or "")
+    out = json.loads(r.stdout)
+    assert out["expiry_ym"] == "202611" and out["underlying"] == "349.8"
+    assert len(out["strikes"]) <= 3 and Decimal("350") in {Decimal(k) for k in out["strikes"]}
+    assert [q["code"] for q in out["quotes"]] == ["205W11350"]
+    assert out["errors"] and all(c != "205W11350" for c in out["errors"])
+    # 행사가 없는 월물(옵션 계약의 strike 가 전부 None)
+    stripped = [
+        dc_replace(c, strike=None) if c.kind != "FUTURES" else c
+        for c in fo_master.parse(FIX.read_bytes())
+    ]
+    monkeypatch.setattr(fo_master, "load", lambda **kw: stripped)
+    r = CliRunner().invoke(app, ["fo", "chain", "--today", "2026-10-27"])
+    assert r.exit_code == 1 and "행사가" in (r.stdout + (r.stderr or ""))
+    assert "Traceback" not in (r.stdout + (r.stderr or ""))
+
+
+def test_fo_key_fallback_logs_info_not_warning(project, caplog):
+    """Claude 리뷰 7: 파생 계좌의 공용 모의 키 폴백(KIS_PAPER_FO_* 없음)은 설계상 허용이라 부트마다
+    WARNING 을 내지 않는다(INFO)."""
+    import logging
+
+    _accounts(project)
+    accounts = config.load_accounts()
+    secrets = config.Secrets(KIS_PAPER_APP_KEY="k", KIS_PAPER_APP_SECRET="s")
+    with caplog.at_level(logging.INFO, logger="trader.kis"):
+        cli._build_brokers(secrets, accounts, settings=config.load_settings())
+    shared = [r for r in caplog.records if "같은 앱키" in r.message]
+    assert shared and all(r.levelno == logging.INFO for r in shared)

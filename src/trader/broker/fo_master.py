@@ -165,6 +165,13 @@ def last_trade_date(contract: Contract, quote: Any | None) -> date | None:
     return est
 
 
+def of_product(
+    contracts: Iterable[Contract], product: FoProductCfg, kind: FoKind
+) -> list[Contract]:
+    """상품(접두)·종류의 월물 계약만(위클리 제외)."""
+    return _of_product(contracts, product, kind)
+
+
 def _of_product(
     contracts: Iterable[Contract], product: FoProductCfg, kind: FoKind
 ) -> list[Contract]:
@@ -212,6 +219,24 @@ def front_month(
     if not yms:
         return None
     return next(c for c in cs if c.expiry_ym == yms[0])
+
+
+def option_front(
+    contracts: Iterable[Contract],
+    product: FoProductCfg,
+    *,
+    today: date,
+    roll_days: int,
+    last_trade_date_of: Callable[[Contract], date | None],
+) -> tuple[str | None, list[Contract]]:
+    """roll 창 밖의 가장 가까운 옵션 월물(YYYYMM)과 그 월물의 콜·풋 계약 전부. 없으면 (None, [])."""
+    calls = _of_product(contracts, product, "CALL")
+    yms = _expiries(calls, today=today, roll_days=roll_days, last_trade_date_of=last_trade_date_of)
+    if not yms:
+        return None, []
+    ym = yms[0]
+    puts = _of_product(contracts, product, "PUT")
+    return ym, [c for c in calls + puts if c.expiry_ym == ym]
 
 
 def resolve_option(

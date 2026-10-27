@@ -79,14 +79,9 @@ def _option_front(
     today: date,
     roll_days: int,
 ) -> tuple[str | None, list[fo_master.Contract]]:
-    """roll 창 밖의 가장 가까운 옵션 월물과 그 월물의 콜·풋 계약."""
-    calls = fo_master._of_product(contracts, product, "CALL")
-    yms = fo_master._expiries(calls, today=today, roll_days=roll_days, last_trade_date_of=_no_quote)
-    if not yms:
-        return None, []
-    ym = yms[0]
-    puts = fo_master._of_product(contracts, product, "PUT")
-    return ym, [c for c in calls + puts if c.expiry_ym == ym]
+    return fo_master.option_front(
+        contracts, product, today=today, roll_days=roll_days, last_trade_date_of=_no_quote
+    )
 
 
 def _vehicle_of(p: FoPosition) -> str:
@@ -122,7 +117,7 @@ def contracts_cmd(
     pcfg = settings.fo.products[name]
     d = _today(today)
     cs = _master(settings)
-    futs = fo_master._of_product(cs, pcfg, "FUTURES")
+    futs = fo_master.of_product(cs, pcfg, "FUTURES")
     front = _front_futures(cs, pcfg, today=d, roll_days=settings.fo.roll_days)
     ym, chain = _option_front(cs, pcfg, today=d, roll_days=settings.fo.roll_days)
     months = sorted({c.expiry_ym for c in futs if c.expiry_ym})
@@ -189,6 +184,8 @@ def chain_cmd(
     market = _build_market(boot.secrets)
     underlying, asof = market.get_kospi200()
     ks = sorted({c.strike for c in chain if c.strike is not None})
+    if not ks:
+        raise config.ConfigError(f"옵션 월물 {ym} 에 행사가가 있는 계약이 없습니다")
     atm = min(range(len(ks)), key=lambda i: abs(ks[i] - underlying))
     wanted = ks[max(0, atm - strikes) : atm + strikes + 1]
     quotes, errors = market.get_option_chain(chain, strikes=wanted)
@@ -214,17 +211,9 @@ def _find_fo_account(accounts: list[config.AccountConfig], account: str) -> conf
 
 
 def _mask_cash(cash) -> dict[str, bool]:
-    """금액은 값이 아니라 '있음/없음' 만 남긴다(비식별 스냅샷)."""
-    return {
-        "nav": cash.nav is not None,
-        "deposit": cash.deposit is not None,
-        "orderable_cash": cash.orderable_cash is not None,
-        "orderable_total": cash.orderable_total is not None,
-        "margin_total": cash.margin_total is not None,
-        "add_margin": cash.add_margin is not None,
-        "realized_today": cash.realized_today is not None,
-        "unrealized": cash.unrealized is not None,
-    }
+    """금액은 값이 아니라 '있음/없음' 만 남긴다(비식별 스냅샷). 모델이 강제하는 필드는 늘 있으므로
+    선택 필드 NAV 만 보고한다."""
+    return {"nav": cash.nav is not None}
 
 
 @app.command("verify")
@@ -269,8 +258,13 @@ def verify_cmd(
         d = datetime.now(KST).date()
         cs = step("master", lambda: _master(settings)) or []
         out["master"] = {"contracts": len(cs)} if cs else out["master"]
+        if not cs and not errors:
+            errors.append("master: 계약이 없습니다")
         front = _front_futures(cs, pcfg, today=d, roll_days=settings.fo.roll_days) if cs else None
         out["front"] = _contract_json(front) if front else None
+        if cs and front is None:
+            # 월물이 없으면 시세·주문가능 단계를 못 돌리므로 검증 실패로 센다(플래그 없음)
+            errors.append("front: roll 창 밖 선물 월물이 없습니다")
 
         market = step("market_client", lambda: _build_market(boot.secrets))
         out["market_client"] = market is not None
