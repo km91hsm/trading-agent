@@ -36,12 +36,13 @@ export function SecretsPanel({ token }: { token: string | null }) {
   const save = async () => {
     setBusy(true);
     try {
-      const r = await postJson<{ updated: string[]; cleared: string[]; backup: string | null }>(
+      const r = await postJson<{ updated: string[]; cleared: string[]; backup: string | null; env_overridden: string[] }>(
         "/api/control/secrets",
         payload,
         token,
       );
       toast(`저장했어요: 설정 ${r.updated.length} · 지움 ${r.cleared.length}${r.backup ? ` (백업 ${r.backup})` : ""}`, "ok");
+      if (r.env_overridden.length) toast(`환경변수가 우선이라 적용되지 않는 키: ${r.env_overridden.join(", ")}`, "error");
       setDrafts({});
       setClears(new Set());
       setRestart(true);
@@ -117,7 +118,10 @@ export function SecretsPanel({ token }: { token: string | null }) {
                           <code>{k.name}</code>
                         </div>
                       </Td>
-                      <Td>{clears.has(k.name) ? <Badge kind="danger" value="지울 예정" /> : k.set ? <Badge kind="ok" value="설정됨" /> : <Badge kind="neutral" value="없음" />}</Td>
+                      <Td>
+                        {clears.has(k.name) ? <Badge kind="danger" value="지울 예정" /> : k.set ? <Badge kind="ok" value="설정됨" /> : <Badge kind="neutral" value="없음" />}
+                        {k.env && <Badge kind="pending" value="환경변수 우선" title="이 키는 환경변수가 .env 값을 덮어씁니다 — 여기서 바꿔도 환경변수를 지우기 전까지 적용되지 않습니다" />}
+                      </Td>
                       <Td>
                         <input
                           type="password"

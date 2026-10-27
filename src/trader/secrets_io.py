@@ -7,8 +7,12 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 import shutil
+import threading
+import uuid
+from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -21,6 +25,7 @@ from trader.config import (
     Secrets,
     account_prefix,
 )
+from trader.platform.filelock import locked
 from trader.platform.fsutil import atomic_replace
 
 # 원본 키 이름 → 이 저장소 키 이름. 같은 이름은 그대로 (Secrets 필드 전부가 대상).
@@ -78,8 +83,9 @@ def import_env(
         copied.append(name)
     backup: str | None = None
     if copied:
-        backup = _backup(dst)
-        _write(dst, {k: mapped[k] for k in copied})
+        with _editing(dst):
+            backup = _backup(dst)
+            _write(dst, {k: mapped[k] for k in copied})
     return {
         "copied": copied,
         "kept": kept,
@@ -90,12 +96,28 @@ def import_env(
     }
 
 
+_THREAD_LOCK = threading.Lock()
+
+
+@contextlib.contextmanager
+def _editing(dst: Path) -> Iterator[None]:
+    """백업·읽기·고치기·바꿔 넣기 전체를 한 번에 하나만(같은 프로세스의 웹 요청 스레드 둘, 데몬과
+    CLI 처럼 다른 프로세스 둘이 동시에 저장해도 한쪽 변경이 사라지지 않게)."""
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    with _THREAD_LOCK, locked(dst.with_name(dst.name + ".lock"), timeout=10.0):
+        yield
+
+
 def _backup(dst: Path) -> str | None:
     """되돌릴 수 있게 바꾸기 전 파일을 남긴다 (파일명에 ':' 금지 → YYYYMMDD_HHMMSS)."""
     if not dst.exists():
         return None
     stamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
     bak = dst.with_name(f"{dst.name}.bak-{stamp}")
+    n = 1
+    while bak.exists():  # 같은 초에 두 번 저장해도 앞 백업을 덮지 않는다
+        n += 1
+        bak = dst.with_name(f"{dst.name}.bak-{stamp}-{n}")
     shutil.copy2(dst, bak)
     try:
         os.chmod(bak, 0o600)
@@ -126,7 +148,7 @@ def _write(dst: Path, values: dict[str, str], remove: set[str] | frozenset = fro
         if k not in seen:
             out.append(f"{k}={v}")
     dst.parent.mkdir(parents=True, exist_ok=True)
-    tmp = dst.with_name(f"{dst.name}.tmp-{os.getpid()}")
+    tmp = dst.with_name(f"{dst.name}.tmp-{os.getpid()}-{uuid.uuid4().hex[:8]}")
     tmp.write_text("\n".join(out).rstrip("\n") + "\n", encoding="utf-8")
     try:
         os.chmod(tmp, 0o600)
@@ -186,12 +208,24 @@ def catalog(accounts: list[AccountConfig]) -> list[dict]:
     return out
 
 
+def _env_overrides(names: list[str]) -> list[str]:
+    """비어 있지 않은 환경변수가 .env 값을 덮어쓰는 이름(`config.load_secrets` 와 같은 규칙)."""
+    return [n for n in names if (os.environ.get(n) or "").strip()]
+
+
 def status(path: Path, accounts: list[AccountConfig]) -> dict:
-    """{keys: [{name, group, label, account, set}], accounts: [{id, env, uses}]} — 값은 없다.
-    uses 는 그 계좌가 지금 쓰는 키 묶음('전용'·'공용'·'없음')."""
-    current = _read(path)
-    secrets = Secrets.model_validate({k: v for k, v in current.items() if v})
-    keys = [{**e, "set": bool(current.get(e["name"]))} for e in catalog(accounts)]
+    """{keys: [{name, group, label, account, set, env}], accounts: [{id, env, uses, prefix}]}
+    — 값은 없다. 판정은 실제 로더(`config.load_secrets`: .env + 환경변수)와 같고, env=True 인
+    칸은 환경변수가 우선이라 여기서 바꿔도 적용되지 않는다. uses 는 계좌가 쓰는 키."""
+    from trader.config import load_secrets
+
+    secrets = load_secrets(path)
+    entries = catalog(accounts)
+    overridden = set(_env_overrides([e["name"] for e in entries]))
+    keys = [
+        {**e, "set": secrets.get(e["name"]) is not None, "env": e["name"] in overridden}
+        for e in entries
+    ]
     uses = []
     for a in accounts:
         c = secrets.kis_creds(a)
@@ -227,10 +261,17 @@ def update(
             raise ConfigError(f"{k}: 공백 없는 한 줄 값만 넣을 수 있습니다(따옴표·# 로 시작 불가)")
     clear_set -= set(values)
     if not values and not clear_set:
-        return {"updated": [], "cleared": [], "backup": None}
-    backup = _backup(path)
-    _write(path, values, remove=clear_set)
-    return {"updated": sorted(values), "cleared": sorted(clear_set), "backup": backup}
+        return {"updated": [], "cleared": [], "backup": None, "env_overridden": []}
+    with _editing(path):
+        backup = _backup(path)
+        _write(path, values, remove=clear_set)
+    return {
+        "updated": sorted(values),
+        "cleared": sorted(clear_set),
+        "backup": backup,
+        # 환경변수가 덮어쓰는 이름 — 파일은 바뀌었지만 재시작해도 환경변수 값이 쓰인다
+        "env_overridden": _env_overrides(sorted(set(values) | clear_set)),
+    }
 
 
 def ensure_web_token(path: Path) -> tuple[str, bool]:
@@ -238,9 +279,13 @@ def ensure_web_token(path: Path) -> tuple[str, bool]:
     (토큰, 새로 만들었는가). 값은 반환만 하고 로그에 남기지 않는다."""
     import secrets as _secrets
 
-    current = _read(path).get("WEB_TOKEN") or (os.environ.get("WEB_TOKEN") or "").strip()
-    if current:
-        return current, False
-    token = _secrets.token_urlsafe(24)
-    _write(path, {"WEB_TOKEN": token})
+    env = (os.environ.get("WEB_TOKEN") or "").strip()
+    if env:
+        return env, False
+    with _editing(path):
+        current = _read(path).get("WEB_TOKEN")
+        if current:
+            return current, False
+        token = _secrets.token_urlsafe(24)
+        _write(path, {"WEB_TOKEN": token})
     return token, True

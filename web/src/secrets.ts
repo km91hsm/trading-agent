@@ -1,6 +1,6 @@
 // 연결 키(secrets/.env) 화면용 순수 함수 — 서버는 값을 돌려주지 않고 '설정됨' 여부만 준다.
 
-export type SecretKey = { name: string; group: string; label: string; account: string | null; set: boolean };
+export type SecretKey = { name: string; group: string; label: string; account: string | null; set: boolean; env?: boolean };
 export type SecretAccount = { id: string; env: string; uses: "전용" | "공용" | "없음"; prefix: string };
 export type SecretStatus = { keys: SecretKey[]; accounts: SecretAccount[] };
 

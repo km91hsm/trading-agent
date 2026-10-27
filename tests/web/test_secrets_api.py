@@ -96,3 +96,43 @@ def test_ensure_web_token_creates_once(project):
     t2, made2 = secrets_io.ensure_web_token(p)
     assert made1 and not made2 and t1 == t2 and len(t1) >= 24
     assert f"WEB_TOKEN={t1}" in p.read_text(encoding="utf-8")
+
+
+def test_status_reflects_env_overrides(project, deps, monkeypatch):
+    """Codex(PR #48): 상태는 실제 로더와 같게(.env + 환경변수), 환경변수가 덮는 칸은 표시."""
+    monkeypatch.setenv("KIS_REAL_MAIN_APP_KEY", "from-env")
+    monkeypatch.setenv("KIS_REAL_MAIN_APP_SECRET", "from-env-s")
+    c = _client(deps)
+    r = c.post("/api/control/secrets/status", headers=AUTH).json()
+    keys = {k["name"]: k for k in r["keys"]}
+    assert keys["KIS_REAL_MAIN_APP_KEY"]["set"] and keys["KIS_REAL_MAIN_APP_KEY"]["env"]
+    assert not keys["KIS_HTS_ID"]["env"]
+    assert {a["id"]: a["uses"] for a in r["accounts"]}["real-main"] == "전용"
+    w = c.post(
+        "/api/control/secrets", headers=AUTH, json={"values": {"KIS_REAL_MAIN_APP_KEY": "x"}}
+    )
+    assert w.json()["env_overridden"] == ["KIS_REAL_MAIN_APP_KEY"]
+
+
+def test_concurrent_updates_keep_both(project):
+    import threading
+
+    from helpers_web import _accounts
+
+    p = _env(project)
+    names = ["TELEGRAM_CHAT_ID", "DART_API_KEY", "FRED_API_KEY", "ECOS_API_KEY", "REDDIT_USER"]
+    errors = []
+
+    def put(name):
+        try:
+            secrets_io.update(p, _accounts(), values={name: "v" + name[:3]})
+        except Exception as e:  # noqa: BLE001
+            errors.append(e)
+
+    threads = [threading.Thread(target=put, args=(n,)) for n in names]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    text = p.read_text(encoding="utf-8")
+    assert not errors and all(f"{n}=" in text for n in names)
