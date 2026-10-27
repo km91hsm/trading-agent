@@ -45,7 +45,14 @@ def settings(request: Request) -> dict:
         "risk": s.risk.model_dump(),
         "debate_rounds": s.debate_rounds,
         "models": dict(s.models),
-        "web": s.web.model_dump(),
+        # 토큰 없는 조회 API 라 tailnet 사용자 이메일·호스트명은 수만(2-W7)
+        "web": {
+            "bind": s.web.bind,
+            "port": s.web.port,
+            "realtime_ws": s.web.realtime_ws,
+            "tailscale_hosts_count": len(s.web.tailscale_hosts),
+            "tailscale_users_count": len(s.web.tailscale_users),
+        },
         "llm": {"budget_usd": s.llm.budget_usd, "daily_session_cap": s.llm.daily_session_cap},
     }
 
@@ -78,7 +85,7 @@ def usage_view(request: Request) -> dict:
             "state": "ok" if ok_new else ("soft" if ok_re else "hard"),
             "reason": why_new or why_re,
         },
-        "usage_file": str(path) if path is not None else None,
+        "usage_file_present": path is not None and path.is_file(),  # 홈 경로는 안 돌려줌(2-W7)
         "windows": windows,
         "note": USAGE_NOTE,
     }

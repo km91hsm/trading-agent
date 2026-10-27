@@ -14,7 +14,23 @@ export type QuotesResp = {
   asof: string;
   quotes: Record<string, LiveQuote>;
   stream?: boolean; // 서버 실시간 허브(웹소켓)가 붙어 있다
+  degraded?: boolean; // 시세 요청이 실패했거나 TTL 이 지나 모든 시세를 stale 로 내렸다(2-W1)
 };
+export const QUOTE_TTL_MS = 30_000; // 이 안에 새 응답이 없으면 이전 시세를 '실시간' 으로 두지 않는다
+
+/** 시세 요청 실패·TTL 초과: 모든 시세를 stale 로 내린다(표의 현재가·NAV·손절 거리가 스냅샷으로 돌아간다). */
+export function degradeQuotes(resp: QuotesResp): QuotesResp {
+  const quotes: Record<string, LiveQuote> = {};
+  for (const [t, q] of Object.entries(resp.quotes)) quotes[t] = { ...q, stale: true };
+  return { ...resp, quotes, degraded: true };
+}
+
+function kstHm(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const t = new Date(d.getTime() + 9 * 3_600_000);
+  return `${String(t.getUTCHours()).padStart(2, "0")}:${String(t.getUTCMinutes()).padStart(2, "0")}`;
+}
 export type LivePosition = Position & { live?: boolean; change_pct?: number | null };
 
 function dist(target: number | null | undefined, price: number): number | null {
@@ -77,6 +93,10 @@ export function nextDelay(resp: QuotesResp | null): number {
 export function liveLabel(resp: QuotesResp | null, liveCount: number): string {
   if (!resp) return "";
   if (resp.session === "closed") return "장 밖 · 마지막 잔고 기준";
+  if (resp.degraded) {
+    const at = kstHm(resp.asof);
+    return at ? `시세 지연 · 마지막 ${at} 기준` : "시세 지연 · 마지막 응답 기준";
+  }
   if (!liveCount) return "실시간 대기";
   return resp.stream ? `실시간 ${liveCount}종목 · 체결 즉시` : `실시간 ${liveCount}종목 · 10초마다`;
 }

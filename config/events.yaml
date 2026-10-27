@@ -4,7 +4,9 @@
 # 종목은 2026-10-27 DART 고유번호·KIS 시세로 확인했다. 바꾸면 `trader events check` 로 시세를 확인한다.
 #
 # kind: shock(갑작스러운 사건 — 단기, 안전장치) | structural(몇 달 가는 흐름 — 일반 규칙)
-# keywords: 제목·요약에 하나라도 있으면 그 뉴스를 이 사건으로 센다(대소문자 무시)
+# keywords: 제목·요약에 하나라도 있으면 그 뉴스를 이 사건으로 센다(대소문자 무시). 같은 기사가 매체마다
+#   따로 적재돼도 정규화 제목으로 1건만 센다
+# exclude: 이 패턴이 든 뉴스는 세지 않는다(한글 키워드는 부분 문자열이라 '전쟁' 이 무역전쟁에 걸린다)
 # min_news: 최근 lookback_hours 안에 이만큼 이상이면 '감지'
 enabled: true
 lookback_hours: 48
@@ -18,6 +20,8 @@ events:
     min_news: 3
     keywords: [전쟁, 침공, 공습, 교전, 미사일 발사, 군사 충돌, 지정학, 확전, 휴전 결렬, war, invasion,
                airstrike, missile strike, military conflict, geopolitical, escalation]
+    exclude: [무역전쟁, 관세전쟁, 반도체전쟁, 반도체 전쟁, 환율전쟁, 가격전쟁, 기술전쟁, 패권전쟁, 전쟁터,
+               trade war, price war, chip war, tariff war]
     beneficiaries:
       KR:
         - {ticker: "012450", name: 한화에어로스페이스, role: 방산}
@@ -46,6 +50,7 @@ events:
     min_news: 3
     keywords: [유가 급등, 국제유가 상승, 감산, 원유 공급 차질, 호르무즈, 산유국, OPEC+ 감산, oil price surge,
                crude rally, output cut, supply disruption, Strait of Hormuz]
+    exclude: [반도체 감산, 메모리 감산, 낸드 감산, D램 감산, 철강 감산, 감산 해제, 감산 종료, 감산 완화]
     beneficiaries:
       KR:
         - {ticker: "010950", name: S-Oil, role: 정유}

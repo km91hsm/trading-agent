@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hmac
+from urllib.parse import urlsplit
 
 from fastapi import HTTPException, Request
 
@@ -13,7 +14,10 @@ def is_direct_local(request: Request) -> bool:
     """이 PC 의 브라우저가 직접 연 요청인가: 루프백 클라이언트 ∧ 프록시 흔적 없음 ∧ Host 가
     루프백(tailscale serve 로 들어온 폰 요청은 아니다). 키 입력·토큰 받기는 이때만."""
     client = request.client.host if request.client else ""
-    host = (request.headers.get("host") or "").rsplit(":", 1)[0].strip("[]").lower()
+    try:  # URL 파서로 호스트·포트를 가른다 — `[::1]`(포트 없음)을 rsplit 이 `:` 로 만들던 것(2-W8)
+        host = (urlsplit("//" + (request.headers.get("host") or "")).hostname or "").lower()
+    except ValueError:
+        host = ""
     return (
         client in ("127.0.0.1", "::1")
         and host in ("127.0.0.1", "localhost", "::1")

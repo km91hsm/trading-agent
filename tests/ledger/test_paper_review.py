@@ -21,9 +21,9 @@ def _order(
     acct="paper-main",
     decision=True,
     at="2026-10-26T01:00:00+00:00",
+    did=None,
 ):
-    did = None
-    if decision:
+    if decision and did is None:
         conn.execute(
             "INSERT INTO decisions(date, market, ticker, action, target_weight, confidence, json,"
             " created_at) VALUES ('2026-10-26','KR',?, 'BUY', 0.1, 0.7, '{}', ?)",
@@ -89,3 +89,18 @@ def test_partial_is_in_progress_and_qty_rate(conn):
     (row,) = r["items"]
     assert row["open"] == 5 and row["terminal"] == 2
     assert abs(row["qty_fill_rate"] - 14 / 20) < 1e-9
+
+
+def test_reprice_chain_counts_once_with_slippage_vs_original_limit(conn):
+    """2-L12: 재호가가 원 주문을 cancelled(체결 0)로 남겨도 결정 단위 주문 사슬 하나로 세고,
+    슬리피지는 원 지정가(백테스트가 가정한 체결가) 대비 실제 체결가로 잰다."""
+    _order(conn, "BUY", 10000, "cancelled")  # 원 지정가 — 재호가로 취소
+    did = conn.execute("SELECT MAX(id) FROM decisions").fetchone()[0]
+    _order(conn, "BUY", 10050, "filled", [(10, 10050)], did=did)  # 현재가 지정가 재제출·체결
+    for _ in range(4):
+        _order(conn, "BUY", 10000, "filled", [(10, 10000)])
+    r = paper_review.compute(conn, [PAPER], since=date(2026, 10, 20), until=date(2026, 10, 27))
+    (row,) = r["items"]
+    assert row["terminal"] == 5 and row["filled"] == 5 and abs(row["fill_rate"] - 1.0) < 1e-9
+    assert abs(row["slippage_bp"] - 10.0) < 1e-6  # (50 + 0 × 4) / 5
+    assert not any("체결률" in a for a in r["alerts"])

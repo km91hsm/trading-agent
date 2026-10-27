@@ -136,13 +136,15 @@ def ingest_checkpoint(
         )
         conn.execute(
             "INSERT INTO decisions(date, market, ticker, action, target_weight, confidence, "
-            "session_id, json, created_at, stop_floor) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "session_id, json, created_at, stop_floor, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(date, market, ticker) DO UPDATE SET action=excluded.action, "
             "target_weight=excluded.target_weight, confidence=excluded.confidence, "
             "session_id=excluded.session_id, json=excluded.json, "
             "stop_floor=CASE WHEN decisions.stop_floor IS NULL THEN excluded.stop_floor "
             "WHEN excluded.stop_floor IS NULL THEN decisions.stop_floor "
-            "ELSE MAX(decisions.stop_floor, excluded.stop_floor) END",
+            "ELSE MAX(decisions.stop_floor, excluded.stop_floor) END, "
+            "updated_at=excluded.updated_at",
             (
                 d.isoformat(),
                 market,
@@ -154,6 +156,7 @@ def ingest_checkpoint(
                 js,
                 created,
                 floor,
+                created,
             ),
         )
         conn.commit()
@@ -167,10 +170,11 @@ def insert_hedge_decision(
     """파이썬이 만든 헤지 결정 행(source='hedge'). 같은 날·종목이면 갱신. 메모리·분포 제외."""
     conn.execute(
         "INSERT INTO decisions(date, market, ticker, action, target_weight, confidence, "
-        "session_id, json, created_at, source) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, 'hedge') "
+        "session_id, json, created_at, source, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, 'hedge', ?) "
         "ON CONFLICT(date, market, ticker) DO UPDATE SET action=excluded.action, "
         "target_weight=excluded.target_weight, confidence=excluded.confidence, "
-        "json=excluded.json, source='hedge'",
+        "json=excluded.json, source='hedge', updated_at=excluded.updated_at",
         (
             d.isoformat(),
             market,
@@ -180,12 +184,21 @@ def insert_hedge_decision(
             data.get("confidence"),
             json.dumps(data, ensure_ascii=False, default=str),
             now_iso(),
+            now_iso(),
         ),
     )
     conn.commit()
     did = decision_id(conn, d, market, ticker)
     assert did is not None
     return did
+
+
+def set_skipped_debate(conn: sqlite3.Connection, decision_id: int, skipped: bool) -> None:
+    """결정 행에 토론 생략 여부(합의 L17)를 남긴다(2-L23). 재평가도 같은 행."""
+    conn.execute(
+        "UPDATE decisions SET skipped_debate=? WHERE id=?", (int(bool(skipped)), decision_id)
+    )
+    conn.commit()
 
 
 def _hydrate_decision(row: sqlite3.Row) -> dict:

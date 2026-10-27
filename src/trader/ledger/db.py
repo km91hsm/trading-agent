@@ -485,6 +485,19 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
             "(SELECT id FROM decisions WHERE source='hedge')",
         ],
     ),
+    (
+        # 전체 검토 2차 2-L23: 합의로 토론을 생략했는지(L17)를 원장에 남긴다 — run 디렉터리의
+        # 25_research_summary 는 retention 이 지우고 섀도는 날짜 집계라 종목별 전후 비교가 안 됐다.
+        # NULL = 기록 전 행
+        # + decisions.updated_at: 같은 날 재평가가 json 만 바꿔도(손절·익절, 주문 없음) 웹 SSE
+        # 지문이 바뀌게(2-W2 — MAX(id) 만 보면 못 본다)
+        29,
+        [
+            "ALTER TABLE decisions ADD COLUMN skipped_debate INTEGER",
+            "ALTER TABLE memory_entries ADD COLUMN skipped_debate INTEGER",
+            "ALTER TABLE decisions ADD COLUMN updated_at TEXT",
+        ],
+    ),
 ]
 
 

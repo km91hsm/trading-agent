@@ -854,3 +854,20 @@ def test_snapshot_intraday_uses_previous_completed_bar(project):
     assert features.snapshot(market_client=m, asof=t1, now=lambda: t1, **kw) == 1
     got = features.read_part(project / "state" / "features" / "2026-10-09.parquet")
     assert len(got) == 1 and Decimal(str(got.iloc[0]["close"])) == cs[-1].close
+
+
+def test_stored_closes_reads_only_close_column(project, monkeypatch):
+    """2-P9: 수정주가 감지용 저장 종가는 `dataset.close_table`(close 열만) 로 읽는다 — 400일치
+    전 열을 발굴 종목마다 읽어 scan→analyze 사이 heavy 락 시간이 늘던 것."""
+    from trader.ml import dataset
+
+    seen: dict = {}
+    orig = dataset.load_all
+
+    def spy(state, *, market, since=None, until=None, columns=None):
+        seen["columns"] = columns
+        return orig(state, market=market, since=since, until=until, columns=columns)
+
+    monkeypatch.setattr(dataset, "load_all", spy)
+    got = features._stored_closes(project / "state", {"KR"}, since=date(2026, 1, 1))
+    assert got == {} and seen["columns"] == ["close"]

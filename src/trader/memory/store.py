@@ -80,6 +80,7 @@ def record_decision(
     vector: list[float] | None = None,
     round_no: int = 0,
     held_at_decision: bool | None = None,
+    skipped_debate: bool | None = None,
 ) -> int:
     """결정·라운드 1건당 엔트리 1건 ((decision_id, round) UNIQUE, 멱등). importance 초기값 =
     confidence.
@@ -100,7 +101,8 @@ def record_decision(
     cur = conn.execute(
         "INSERT INTO memory_entries(ticker, market, account_id, decision_id, round, decided_at, "
         "situation_vector, situation_summary, decision, horizon_days, tier, importance, "
-        "created_at, held_at_decision) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'short', ?, ?, ?)",
+        "created_at, held_at_decision, skipped_debate) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'short', ?, ?, ?, ?)",
         (
             ticker,
             market,
@@ -115,6 +117,7 @@ def record_decision(
             max(0.0, min(1.0, importance)),
             now_iso(),
             None if held_at_decision is None else int(bool(held_at_decision)),
+            None if skipped_debate is None else int(bool(skipped_debate)),
         ),
     )
     conn.commit()

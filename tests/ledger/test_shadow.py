@@ -235,3 +235,12 @@ def test_index_table_drops_incomplete_today_bar(conn):
     mid = datetime(2026, 10, 23, 1, 0, tzinfo=UTC)  # 10:00 KST 장중
     assert list(shadow.index_table(m, cfg, "KR", now=mid).index) == [c.date for c in cs[:3]]
     assert len(shadow.index_table(m, cfg, "KR", now=mid + timedelta(hours=6))) == 4
+
+
+def test_paired_stats_ci_none_below_two_blocks(conn):
+    """2-L2: 쌍이 2×블록(10) 미만이면 이동 블록 재표본이 서로 같아 신뢰구간이 `[mean, mean]` 으로
+    보인다 — 평균만 내고 구간은 없음(웹은 '부족', readiness 는 20쌍 조건으로 이미 막힘)."""
+    _seed_matured(conn, [0.01] * 9)
+    s = shadow.paired_stats(conn)
+    assert s["n"] == 9 and abs(s["mean_diff"] - 0.01) < 1e-9
+    assert s["ci_low"] is None and s["ci_high"] is None
