@@ -28,11 +28,14 @@ _LOCK = threading.Lock()
 def _version(conn: sqlite3.Connection, account_id: str, market: str, state: Path | None) -> tuple:
     from trader.ml import features
 
+    # MAX(created_at): 같은 날 같은 종목의 upsert(평가액·NAV 변경)는 행 수·id 를 바꾸지 않지만
+    # created_at 은 매번 갱신된다 — 값이 바뀐 잔고를 낡은 카드로 돌려주지 않게(Codex 리뷰)
     snap = conn.execute(
-        "SELECT COUNT(*), MAX(id) FROM positions_snapshot WHERE account_id=? AND market=?",
+        "SELECT COUNT(*), MAX(id), MAX(created_at) FROM positions_snapshot "
+        "WHERE account_id=? AND market=?",
         (account_id, market),
     ).fetchone()
-    return (snap[0], snap[1], features.store_mtime(state))
+    return (snap[0], snap[1], snap[2], features.store_mtime(state))
 
 
 def cached_compute(

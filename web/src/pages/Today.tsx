@@ -284,7 +284,9 @@ export function TodayPage({ title = "오늘의 실행", inputsOnly = false }: { 
         return out;
       });
     },
-    [ticker, runDate, market, files.join(), inputsOnly],
+    // tCp: 같은 이름의 파일이 덮어써져도(애널리스트·토론 재작성) 다시 쓰일 수 있는 파일만 다시 받는다
+    // (stageFetchPlan 은 새 파일 + MUTABLE 파일만 고른다, Codex 리뷰)
+    [ticker, runDate, market, files.join(), inputsOnly, tCp],
   );
   // 고른 단계 파일: 요약이 이미 받은 것은 그대로 쓰고, 다시 쓰일 수 있는 파일만 목록이 바뀔 때 다시 받는다
   const stageMutable = MUTABLE_STAGE.test(stage);
@@ -295,7 +297,7 @@ export function TodayPage({ title = "오늘의 실행", inputsOnly = false }: { 
       if (hit && !stageMutable) return Promise.resolve(hit);
       return getJson<Checkpoint>("/api/checkpoint", { ticker, market, date: runDate, stage });
     },
-    [ticker, stage, market, runDate, stageMutable ? files.join() : ""],
+    [ticker, stage, market, runDate, stageMutable ? `${files.join()}|${tCp}` : ""],
   );
   const cpData = cp.data?.data as Record<string, unknown> | undefined;
   const tickers = Object.keys(today.data?.tickers ?? {});

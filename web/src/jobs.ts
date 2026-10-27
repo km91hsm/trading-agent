@@ -142,11 +142,11 @@ export type JobsResp = { alive: boolean; active: number; requests: JobRequest[] 
 export const JOBS_POLL_MS = 3000;
 export const JOBS_CHANNEL = "trader-jobs";
 
-/** 활성 요청이 있을 때 이 탭이 /api/jobs 를 폴링할까: SSE 리더 탭 하나만(다른 탭은 리더가
- * BroadcastChannel 로 중계한 응답을 받는다). 리더가 가려진 탭이어도 폴링한다 — 보이는 탭의 진행
- * 문구가 그 중계로 갱신되기 때문(전체 검토 3차). */
-export function pollsJobs(active: boolean, leader: boolean): boolean {
-  return active && leader;
+/** 활성 요청이 있을 때 이 탭이 /api/jobs 를 폴링할까: SSE 리더 탭(가려져 있어도 — 중계 몫) 또는
+ * **보이는** 탭. 리더 탭에 작업 표가 없으면(대시보드 리더 + 시스템 현황 팔로워) 보이는 탭이 직접
+ * 폴링해야 진행 문구가 멈추지 않는다(Codex 리뷰). 가려진 팔로워는 중계만 받는다. */
+export function pollsJobs(active: boolean, leader: boolean, visible = false): boolean {
+  return active && (leader || visible);
 }
 
 export const REQUEST_STATUS_LABEL: Record<RequestStatus, string> = {

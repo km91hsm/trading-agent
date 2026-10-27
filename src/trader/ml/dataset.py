@@ -45,11 +45,7 @@ def load_all(
         files = [f for f in files if f.stem >= since.isoformat()]
     if until is not None:
         files = [f for f in files if f.stem <= until.isoformat()]
-    cols = (
-        None
-        if columns is None
-        else list(dict.fromkeys([*_ID_COLUMNS, *columns]))
-    )
+    cols = None if columns is None else list(dict.fromkeys([*_ID_COLUMNS, *columns]))
     empty_cols = features.FEATURE_COLUMNS if cols is None else cols
     if not files:
         return pd.DataFrame(columns=empty_cols)

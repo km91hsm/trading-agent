@@ -71,5 +71,6 @@ describe("pollsJobs", () => {
     expect(pollsJobs(true, true)).toBe(true);
     expect(pollsJobs(true, false)).toBe(false);
     expect(pollsJobs(false, true)).toBe(false);
+    expect(pollsJobs(true, false, true)).toBe(true); // 리더에 작업 표가 없어도 보이는 탭은 직접
   });
 });

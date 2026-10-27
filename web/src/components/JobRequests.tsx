@@ -88,7 +88,7 @@ export function JobRequestsBlock({ now }: { now: Date }) {
     if (ch) ch.onmessage = (e: MessageEvent) => setRelayed(e.data as JobsResp);
     if (!active) return () => ch?.close();
     const h = setInterval(() => {
-      if (!pollsJobs(active, isEventsLeader())) return;
+      if (!pollsJobs(active, isEventsLeader(), document.visibilityState === "visible")) return;
       getJson<JobsResp>("/api/jobs?limit=20")
         .then((d) => {
           setRelayed(d);

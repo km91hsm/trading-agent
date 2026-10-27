@@ -99,3 +99,20 @@ def test_risk_card_cache_reuses_until_snapshot_or_store_changes(conn, project, m
     _snap(conn, DAYS[-1].isoformat(), [("A", 600)], 1000)
     risk_card.cached_compute(conn, **kw)
     assert len(calls) == 2
+
+
+def test_risk_card_cache_sees_same_day_upsert(conn, project, monkeypatch):
+    """같은 날 같은 종목 upsert(평가액 변경)는 행 수·id 가 그대로여도 다시 계산한다(Codex 리뷰)."""
+    rng = np.random.default_rng(3)
+    _store({"A": list(100 * np.cumprod(1 + rng.normal(0, 0.01, 80)))})
+    _snap(conn, DAYS[-2].isoformat(), [("A", 500)], 1000)
+    calls: list[int] = []
+    real = risk_card.compute
+    monkeypatch.setattr(risk_card, "compute", lambda *a, **k: calls.append(1) or real(*a, **k))
+    risk_card._CACHE.clear()
+    kw = {"account_id": "paper-main", "market": "KR", "today": DAYS[-1]}
+    risk_card.cached_compute(conn, **kw)
+    conn.execute("UPDATE positions_snapshot SET eval_amount='900', created_at=created_at || 'x'")
+    conn.commit()
+    risk_card.cached_compute(conn, **kw)
+    assert len(calls) == 2

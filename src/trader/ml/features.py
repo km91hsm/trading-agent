@@ -309,18 +309,22 @@ def _latest_rows_read(
     return out if keep is None else out[keep]
 
 
-def known_tickers(state: Path | None, market: str, *, asof: date | None = None) -> set[str]:
-    """asof 이하 가장 최근 날짜 파일에 있는 그 시장 종목(ticker·market 열만 읽는다). 스토어에 없는
-    종목을 `latest_rows` 에 넘기면 max_files 개를 다 읽으므로 호출 전에 거를 때 쓴다."""
+def known_tickers(
+    state: Path | None, market: str, *, asof: date | None = None, max_files: int = 60
+) -> set[str]:
+    """`latest_rows` 가 보는 범위(asof 이하 최근 max_files 개 파일)에 있는 그 시장 종목
+    (ticker·market 열만 읽는다). 스토어에 없는 종목을 `latest_rows` 에 넘기면 그 범위를 다 읽으므로
+    호출 전에 거를 때 쓴다. 최신 파일만 보면 다른 시장만 담긴 날 그 시장 종목이 빠졌다(Codex)."""
     fdir = _features_dir(state)
     files = sorted(fdir.glob("*.parquet"), reverse=True) if fdir.exists() else []
     if asof is not None:
         files = [f for f in files if f.stem <= asof.isoformat()]
-    for f in files[:5]:  # 깨진 파일이면 그 앞 파일
+    out: set[str] = set()
+    for f in files[:max_files]:
         raw = read_part(f, columns=["ticker", "market"])
         if raw is not None:
-            return {str(t) for t in raw.loc[raw["market"] == market, "ticker"]}
-    return set()
+            out |= {str(t) for t in raw.loc[raw["market"] == market, "ticker"]}
+    return out
 
 
 def _write_day_file(
