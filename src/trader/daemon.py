@@ -374,6 +374,8 @@ def build_jobs(schedule: ScheduleConfig, settings: Settings, *, markets: list[st
     jobs.append(Job("balance_refresh", "balance_refresh", interval_s=BALANCE_REFRESH_S))
     jobs.append(Job("saveticker", "saveticker", interval_s=SAVETICKER_WATCH_S))
     jobs.append(Job("ledger_backup", "ledger_backup", cron={"hour": 17, "minute": 10}))
+    # 시점 기준 유니버스 기록(Stock D-037): 매일 그날의 유니버스 + 보유를 universe_members 에
+    jobs.append(Job("universe_members", "universe_members", cron={"hour": 6, "minute": 40}))
     if "KR" in markets:  # 권리 일정 수집(블랙아웃이 꺼져 있어도 모아 둔다 — 켤 때 바로 쓰게)
         jobs.append(
             Job(
@@ -1625,6 +1627,35 @@ def _saveticker_body(deps: DaemonDeps) -> dict:
     return out
 
 
+def _universe_members_body(deps: DaemonDeps) -> dict:
+    """그날의 유니버스(제외 목록 뺌) + 계좌 보유 종목을 시장별 운영일로 기록한다(시점 기준 학습)."""
+    from trader.ledger import views
+    from trader.ml import universe_pit
+
+    uni = deps.universe
+    out: dict[str, int] = {}
+    conn = deps.conn_factory()
+    try:
+        for m in deps.settings.markets:
+            if uni is None:
+                tickers: set[str] = set()
+            elif m == "KR":
+                tickers = {t for t in uni.kr if t not in uni.exclude}
+            else:
+                tickers = {s.symbol for s in uni.us if s.symbol not in uni.exclude}
+            for a in deps.accounts:
+                if m in a.markets:
+                    snap = views.latest_positions(conn, a.id, m) or {}
+                    tickers |= {str(p["ticker"]) for p in snap.get("positions") or []}
+            tickers -= deps.settings.excluded_tickers(m)  # 헤지·현금 운용 ETF 는 학습 대상 아님
+            out[m] = universe_pit.record(
+                conn, market=m, tickers=tickers, day=universe_pit.effective_day(m, deps.now())
+            )
+    finally:
+        conn.close()
+    return out
+
+
 def _backup_body(deps: DaemonDeps) -> dict:
     """원장 백업(매일 17:10 KST, Stock D-075): 사본 1개 + 보존 규칙 정리. 실패는 run_job 이 기록."""
     from trader.ledger import backup
@@ -2604,6 +2635,8 @@ def job_body(
         return lambda: _usage_probe_body(deps)
     if job.kind == "saveticker":
         return lambda: _saveticker_body(deps)
+    if job.kind == "universe_members":
+        return lambda: _universe_members_body(deps)
     if job.kind == "ledger_backup":
         return lambda: _backup_body(deps)
     if job.kind == "paper_review":

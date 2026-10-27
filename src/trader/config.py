@@ -908,11 +908,26 @@ class LabelCfg(BaseModel):
     mode: Literal["absolute", "relative_tercile"] = "absolute"
 
 
+class PitCfg(BaseModel):
+    """시점 기준 유니버스(Stock D-037): 종목이 그날 유니버스에 있었을 때의 행만 학습한다.
+    - 기록(`universe_members`) 시작일 이후는 그날 구성원만(편출·상장폐지 종목의 과거 행은 남는다)
+    - strict: 기록 전 날짜(현재 구성으로 백필한 과거)를 아예 뺀다 — 기록이 충분히 쌓인 뒤 켠다
+    - liquidity_top_n: 그날까지의 `liquidity_window` 일 평균 거래대금 상위 N 만(0 이면 끔) —
+      '지금 유동성 높은 종목' 이 과거에도 그랬다고 보는 선택 편향을 줄인다"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    strict: bool = False
+    liquidity_top_n: int = Field(default=0, ge=0, le=2000)
+    liquidity_window: int = Field(default=20, ge=5, le=120)
+
+
 class TrainCfg(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     window_years: int = Field(default=3, ge=1, le=10)
     walk_forward_folds: int = Field(default=6, ge=2, le=20)
+    pit: PitCfg = Field(default_factory=PitCfg)
 
 
 class QuantModelCfg(BaseModel):

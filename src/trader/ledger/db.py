@@ -421,6 +421,20 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
             WHERE outcome_at IS NOT NULL AND price_return IS NOT NULL""",
         ],
     ),
+    (
+        # 시점 기준 유니버스(Stock D-037): 유니버스에 있던 구간들(관측일 기준, 재편입은 새 구간)
+        24,
+        [
+            """CREATE TABLE IF NOT EXISTS universe_members (
+                market TEXT NOT NULL,
+                ticker TEXT NOT NULL,
+                first_seen TEXT NOT NULL,
+                last_seen TEXT NOT NULL,
+                source TEXT NOT NULL DEFAULT 'universe',
+                PRIMARY KEY (market, ticker, first_seen)
+            )""",
+        ],
+    ),
 ]
 
 

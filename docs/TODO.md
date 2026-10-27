@@ -409,7 +409,8 @@
 - [ ] 실기(사용자 확인 대기): 관리·경고 종목 현재가 응답에 `iscd_stat_cls_code`·`mrkt_warn_cls_code`·`temp_stop_yn` 이 실제로 오는지(`00_inputs.technical.quote.data`)
 - [ ] 결정 대기(사용자, 실전 전): `config/accounts.yaml` 실전 계좌 `capital_cap` 첫 금액(예: KR 300만·US 2000달러)
 - [ ] 운영 규칙(Stock D-120): `scalp.enabled` 를 켜기 전 수개월 분봉 재생·비용 반영·보류 구간 1회 검증(코드 강제 없음)
-- [ ] 다음 단계: 시점 기준 유니버스(그날까지의 거래대금 상위 N + 상장폐지 포함)로 ML 재학습 — 생존 편향 제거
+- [x] 시점 기준 유니버스 — 오늘부터 매일 구성원 기록(원장 v24 `universe_members`), 학습은 기록 뒤 행을 그날 구성원만·coverage 보고·strict·거래대금 상위 N 옵션 (2026-10-27)
+- [ ] 결정 대기(사용자, 기록 3~6개월 뒤): `ml.yaml train.pit.strict: true` 로 기록된 기간만 학습할지(학습 행 수와 알파 비교 후)
 
 ## Stock 교훈 2차 — 운용·화면 (2026-10-27, `docs/superpowers/plans/2026-10-27-stock-lessons-2.md`)
 - [x] 장 마감 일일 리포트(현지 16:20)·`/daily`, 위험 카드(VaR·CVaR·베타·상관·위험 기여), 스냅샷 기준 시각 오래됨, ML 생존 편향 표시, 아침 브리핑(07:20 haiku), 권리 일정 블랙아웃(기본 끔·수집은 매일), 현금 단기금리 ETF(기본 끔·하락 국면만), Tailscale 폰 접속(설정 시) (2026-10-27)
