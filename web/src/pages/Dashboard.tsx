@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import { getJson, withAccount } from "../api";
 import { Badge } from "../components/Badge";
 import { EmptyState } from "../components/EmptyState";
@@ -7,9 +8,6 @@ import { Skeleton } from "../components/Skeleton";
 import { Delta, Mark, Num, RowButton, Table, Td, Th } from "../components/Table";
 import { ErrorBox } from "../components/Tables";
 import { Term } from "../components/Term";
-import { UsageBlock } from "../components/Usage";
-import { JobsBlock } from "../components/Jobs";
-import { JobRequestsBlock } from "../components/JobRequests";
 import { fmtDate, fmtMoney, fmtPct, fmtTime, marketDate, minutesLeft } from "../format";
 import { useApp, useEnsureFresh, useLiveQuotes, useLoad, useNow } from "../hooks";
 import { applyQuotes } from "../live";
@@ -41,8 +39,6 @@ import type {
 } from "../types";
 import { Ticker } from "../components/Ticker";
 
-type ModelsResp = { active: { version: string; metrics: { alpha: number | null; accuracy: number | null } } | null };
-type RlResp = { active: { version: string } | null; experiments: Array<{ version: string }> };
 /** 행마다 체크포인트에서 읽는 보조 정보 (30_decision 의 손절·익절·근거, 00_inputs 의 종목명). */
 type RowDetail = { name: string | null; stop_loss: string | null; take_profit: string | null; rationale: string | null };
 
@@ -69,7 +65,6 @@ export function Dashboard() {
   const tDecisions = tickOf("decisions");
   const tApprovals = tickOf("approvals", "approvals_pending");
   const tWatch = tickOf("watchlist");
-  const tJobs = tickOf("jobs_done", "runs");
   // '전체' 선택이면 게이트 열의 기준 계좌는 첫 계좌, 보유는 전체 합산(overview)을 쓴다 (Phase 24)
   const primaryId = accountId || accounts[0]?.id || "";
   const acct = accounts.find((a) => a.id === primaryId);
@@ -129,8 +124,6 @@ export function Dashboard() {
   const themeKR = useLoad(() => getJson<ThemeResp>("/api/system/theme", { market: "KR" }), [tRuns, tTheme]);
   const scalp = useLoad(() => getJson<ScalpResp>("/api/system/scalp"), [tRuns, tOrders, minute]);
   const ops = useLoad(() => getJson<OpsResp>("/api/system/ops"), [tRuns, tOrders, tControl]);
-  const models = useLoad(() => getJson<ModelsResp>("/api/ml/models"), [tJobs]);
-  const rl = useLoad(() => getJson<RlResp>("/api/rl/experiments"), [tJobs]);
   const perfKR = useLoad(
     () => (primaryId && acctMarkets.includes("KR") ? getJson<PerformanceReport>(withAccount("/api/performance?market=KR&days=30", primaryId)) : null),
     [primaryId, acctMarkets.join(), tRuns, tPos],
@@ -306,19 +299,19 @@ export function Dashboard() {
       <Advisory ops={ops.data} />
 
       <div className="statusline" role="status">
-        <span className={signal.level === "none" ? "" : signal.level} title="daemon.lock 의 pid 생존 + 하트비트 파일(잡마다 갱신)">
+        <Link to="/system" className={signal.level === "none" ? "" : signal.level} title="daemon.lock 의 pid 생존 + 하트비트 파일(잡마다 갱신) — 누르면 시스템 현황">
           데몬 <b>{signal.text}</b>
           {daemon.data?.pid ? <span className="muted"> pid {daemon.data.pid}</span> : null}
-        </span>
+        </Link>
         <span>
           오늘 세션 <b>{calls.data?.sessions_today ?? 0}{cap ? ` / ${cap}` : ""}</b> · ${(calls.data?.cost_today ?? 0).toFixed(2)}
         </span>
-        <span title="구독 사용률 최신 관측값 (분석 세션 또는 대화형 claude 상태줄)">
+        <Link to="/system" title="구독 사용률 최신 관측값 (데몬 확인·분석 세션·대화형 claude 상태줄) — 누르면 시스템 현황">
           Claude{" "}
           <b>
             {usage.data?.rate_limits ? usageChip(usage.data.rate_limits) : usage.data ? "관측 없음" : "확인 중"}
           </b>
-        </span>
+        </Link>
         <span className={pendingApprovals.length ? "pend" : ""}>
           미승인 <b>{pendingApprovals.length}건</b>
           {earliestExpiry !== undefined ? ` (${earliestExpiry}분 뒤 만료)` : ""}
@@ -525,48 +518,6 @@ export function Dashboard() {
             ) : (
               <EmptyState title="성과를 낼 스냅샷이 없어요" hint="판정이 쌓이면 NAV 와 벤치마크가 표시돼요." />
             )}
-          </Section>
-          <Section title="Claude 사용량" aside="구독 창 · 세션">
-            <UsageBlock data={usage.data} />
-          </Section>
-          <Section title="모델" aside="승격 상태">
-            <Table dense caption="모델 승격 상태">
-              <tbody>
-                <tr>
-                  <Td>quant</Td>
-                  <Td num>
-                    {models.data?.active ? (
-                      <>
-                        {models.data.active.version} · α {models.data.active.metrics.alpha ?? "—"}
-                      </>
-                    ) : (
-                      <span className="muted">미승격 · ML 없이 운영</span>
-                    )}
-                  </Td>
-                </tr>
-                <tr>
-                  <Td>RL 사이저</Td>
-                  <Td num>{rl.data?.active ? rl.data.active.version : <span className="muted">미승격 · 섀도</span>}</Td>
-                </tr>
-                <tr>
-                  <Td>
-                    <Term k="calibration" />
-                  </Td>
-                  <Td num>
-                    <span className="muted">만기 결정 60건부터</span>
-                  </Td>
-                </tr>
-              </tbody>
-            </Table>
-          </Section>
-          <Section title="작업 대기열" aside="지금 실행 요청 · 데몬이 순서대로">
-            <JobRequestsBlock now={now} />
-          </Section>
-          <Section title="데몬 잡" aside={daemon.data ? `${daemon.data.jobs.length}개 · 실시간` : undefined}>
-            <details className="fold">
-              <summary>잡 예정표·마지막 실행 펼치기</summary>
-              <JobsBlock data={daemon.data} now={now} />
-            </details>
           </Section>
         </aside>
       </div>

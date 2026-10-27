@@ -52,6 +52,13 @@ const KIND_LABEL: Record<string, string> = {
   rebalance: "주간 리밸런스",
   balance_refresh: "잔고 갱신",
   usage_probe: "Claude 사용량 확인",
+  daily_report: "일일 리포트",
+  ledger_backup: "원장 백업",
+  universe_members: "유니버스 구성 기록",
+  ksd_events: "권리 일정 수집",
+  morning_briefing: "아침 브리핑",
+  paper_review: "모의 체결 점검",
+  saveticker: "세이브티커 수집",
 };
 
 export function jobLabel(j: Pick<JobRow, "id" | "kind" | "market">): string {
@@ -59,7 +66,18 @@ export function jobLabel(j: Pick<JobRow, "id" | "kind" | "market">): string {
   return j.market ? `${j.market} ${base}` : base;
 }
 
-const DOW: Record<string, string> = { "mon-fri": "평일", "mon-sat": "월–토", sat: "토", sun: "일", "mon-sun": "매일" };
+const DOW: Record<string, string> = {
+  "mon-fri": "평일",
+  "mon-sat": "월–토",
+  "mon-sun": "매일",
+  mon: "월",
+  tue: "화",
+  wed: "수",
+  thu: "목",
+  fri: "금",
+  sat: "토",
+  sun: "일",
+};
 
 /** "매일 07:30" / "평일 07:30 (뉴욕)" / "60초마다". */
 export function scheduleText(j: Pick<JobRow, "cron" | "interval_s">): string {

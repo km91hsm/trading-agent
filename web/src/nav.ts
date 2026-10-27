@@ -8,7 +8,7 @@ export const NAV: NavGroup[] = [
     id: "ops",
     title: "운용",
     items: [
-      { to: "/", label: "대시보드", purpose: "오늘의 시세표·점검·잡·사용량", key: "d" },
+      { to: "/", label: "대시보드", purpose: "오늘의 시세표·보유·점검·성과", key: "d" },
       { to: "/today", label: "오늘의 실행", purpose: "스캔·장중 발굴·단타·종목별 단계 파일", key: "t" },
       { to: "/orders", label: "주문/승인", purpose: "승인 대기·주문·판정·결정 추적", key: "o" },
       { to: "/account", label: "계좌", purpose: "보유·업종·주문·승인", key: "a" },
@@ -29,6 +29,7 @@ export const NAV: NavGroup[] = [
     id: "system",
     title: "시스템",
     items: [
+      { to: "/system", label: "시스템 현황", purpose: "Claude 사용량·모델·작업 대기열·데몬 잡", key: "y" },
       { to: "/how", label: "작동 방식", purpose: "흐름·규칙·최근 추가", key: "h" },
       { to: "/settings", label: "설정/제어", purpose: "토큰·모드·일시정지·관심종목", key: "s" },
     ],
@@ -42,6 +43,7 @@ export type Feature = { since: string; title: string; what: string; to: string }
 
 /** 최근 추가 기능(새 것이 위). 화면·기능을 더하면 여기 한 줄. */
 export const FEATURES: Feature[] = [
+  { since: "2026-10-27", title: "시스템 현황", what: "Claude 사용량(5시간·7일 초기화 시각)·모델·작업 대기열·데몬 잡을 대시보드에서 분리", to: "/system" },
   { since: "Phase 23", title: "장중 뉴스 발굴", what: "30분마다 새 뉴스(유사 기사 제외)가 있으면 종목 재분석·scout 발굴 세션", to: "/today" },
   { since: "Phase 23", title: "보유기간 프로필", what: "단기·중기·장기 결정마다 급등락 임계·재평가 간격·아침 재분석 주기가 다르다", to: "/account" },
   { since: "Phase 23", title: "분 단위 단타(모의)", what: "1분봉 거래량 급증 ∧ 당일 고가·VWAP 돌파 → 파이썬 진입·청산, 기본 끔", to: "/today" },
