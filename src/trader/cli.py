@@ -2491,6 +2491,11 @@ def backtest_cmd(
 regime_app = typer.Typer(help="시장 국면 (Phase 17 H): 조회·과거 재현", no_args_is_help=True)
 app.add_typer(regime_app, name="regime")
 
+events_app = typer.Typer(
+    help="사건 수혜 (2026-10-27): 뉴스 감지 결과 보기·수혜 표 시세 확인", no_args_is_help=True
+)
+app.add_typer(events_app, name="events")
+
 scalp_app = typer.Typer(
     help="분 단위 단타 (Phase 23 S, 모의 전용·기본 끔): 1분봉 백테스트·실적 보고",
     no_args_is_help=True,
@@ -2745,4 +2750,64 @@ def notify_test() -> None:
         typer.echo("전송 성공")
     else:
         typer.echo("전송 실패")
+        raise typer.Exit(code=1)
+
+
+@events_app.command("show")
+@_config_errors
+def events_show(market: str = typer.Option("KR", "--market", help="KR|US")) -> None:
+    """지금 뉴스 저장소로 사건을 감지해 JSON 으로(기록·알림 없음, 읽기만)."""
+    import json
+    from datetime import UTC, datetime
+
+    from trader.scan import events
+
+    if market not in ("KR", "US"):
+        raise config.ConfigError("--market 은 KR|US")
+    boot = _boot(conn=True)
+    try:
+        cfg = config.load_events()
+        found = events.detect(boot.conn, cfg, market=market, asof=datetime.now(UTC))
+    finally:
+        boot.conn.close()
+    typer.echo(
+        json.dumps(
+            {"enabled": cfg.enabled, "market": market, "detected": found},
+            ensure_ascii=False,
+            indent=1,
+        )
+    )
+
+
+@events_app.command("check")
+@_config_errors
+def events_check(market: str = typer.Option("", "--market", help="KR|US (비우면 둘 다)")) -> None:
+    """수혜 표의 종목이 KIS 시세로 확인되는지(코드·거래소 오타 점검, 읽기 전용 시세 조회만)."""
+    boot = _boot(secrets=True)
+    cfg = config.load_events()
+    mk = _build_market(boot.secrets)
+    seen: set[tuple[str, str]] = set()
+    bad: list[str] = []
+    for ev in cfg.events:
+        for m, items in ev.beneficiaries.items():
+            if market and m != market:
+                continue
+            for t in items:
+                if (m, t.ticker) in seen:
+                    continue
+                seen.add((m, t.ticker))
+                try:
+                    q = (
+                        mk.get_price_kr(t.ticker)
+                        if m == "KR"
+                        else mk.get_price_us(t.ticker, t.exchange or "")
+                    )
+                    ok = bool(getattr(q, "price", None))
+                except Exception as e:  # noqa: BLE001
+                    ok = False
+                    typer.echo(f"{m} {t.ticker} {t.name}: 실패 {type(e).__name__}")
+                if not ok:
+                    bad.append(f"{m}:{t.ticker}")
+    typer.echo(f"확인 {len(seen)}종목, 실패 {len(bad)}건" + (f": {', '.join(bad)}" if bad else ""))
+    if bad:
         raise typer.Exit(code=1)

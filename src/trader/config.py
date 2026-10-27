@@ -1157,6 +1157,68 @@ def load_accounts(
     return accounts
 
 
+# --- events.yaml (사건 수혜, 2026-10-27) -------------------------------------------------
+
+
+class EventTicker(BaseModel):
+    """사건 수혜 종목 하나. 코드는 표가 출처(LLM 이 지어내지 않게), US 는 KIS 거래소 코드."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    ticker: str
+    name: str
+    role: str = ""
+    exchange: Literal["NAS", "NYS", "AMS"] | None = None
+
+
+class EventDef(BaseModel):
+    """사건(또는 구조적 흐름) 하나: 뉴스 키워드가 min_news 건 이상이면 '감지'."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(pattern=r"^[a-z0-9_]+$")
+    label: str
+    kind: Literal["shock", "structural"] = "shock"
+    min_news: int = Field(default=3, ge=1)
+    keywords: list[str] = Field(min_length=1)
+    beneficiaries: dict[Market, list[EventTicker]] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _us_needs_exchange(self) -> EventDef:
+        for t in self.beneficiaries.get("US", []):
+            if t.exchange is None:
+                raise ValueError(f"{self.id}: US 종목 {t.ticker} 에 exchange 가 필요합니다")
+        for t in self.beneficiaries.get("KR", []):
+            if not re.fullmatch(r"\d{6}", t.ticker):
+                raise ValueError(f"{self.id}: KR 코드는 6자리 숫자: {t.ticker}")
+        return self
+
+
+class EventsConfig(BaseModel):
+    """`config/events.yaml` — 사건 → 수혜 묶음. 없으면 꺼짐(빈 표)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    lookback_hours: int = Field(default=48, ge=1, le=168)
+    max_picks_per_event: int = Field(default=2, ge=1, le=5)
+    max_event_picks: int = Field(default=4, ge=0, le=8)
+    events: list[EventDef] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _unique_ids(self) -> EventsConfig:
+        ids = [e.id for e in self.events]
+        dup = {i for i in ids if ids.count(i) > 1}
+        if dup:
+            raise ValueError(f"사건 id 중복: {sorted(dup)}")
+        return self
+
+
+def load_events(path: Path | None = None) -> EventsConfig:
+    p = path or paths.config_dir() / "events.yaml"
+    return _validate(EventsConfig, _read_yaml(p), p.name)
+
+
 def load_sources(path: Path | None = None) -> SourcesConfig:
     p = path or paths.config_dir() / "sources.yaml"
     return _validate(SourcesConfig, _read_yaml(p), p.name)

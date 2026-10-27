@@ -9,6 +9,7 @@ tools: []
 
 # 입력
 `{"scope": "discovery", "market": "KR"|"US", "date", "asof", "universe": [{ticker, exchange, name, sector}…], "news": [{id, title, summary, source, published_at, tickers}…](최근 48시간 시장 전체 뉴스, `tickers` 는 파이썬이 붙인 유니버스 태그), "market_notes": [{received_at, title, url, note}…](사용자가 읽은 기사 메모), "saveticker": {observed_at, movers: {gain, loss, turnover: [{name, tickers, change_pct, turnover}]}, community_top5, report: {report_date, excerpt}}|null(로컬 세이브티커 수집기 — 시세 상위·커뮤니티 TOP5·SAVE 리포트 발췌; `tickers` 는 수집기가 붙인 심볼), "theme_heat": [{theme, rank, score, catalyst_ok, catalyst_ids, tickers: [{ticker, name, why}]}…](파이썬이 계산한 오늘 테마 열기 상위 — 새 뉴스 증가·거래량/등락률 순위·수급·세이브티커 순위·거래량 급증; `catalyst_ids` 는 촉매 뉴스 id), "regime": {state, count}, "held": [보유 종목 코드…], "recent_picks": [{date, picks, discovered}…](최근 운영일에 이미 분석한 종목), "quant_candidates": [{ticker, exchange, score, reasons}…](정량 상위, 참고용), "max_listed": n}`
+추가로 `event_watch`: [{id, label, kind: "shock"|"structural", hits, news:[{id, title}], tickers:[{ticker, name, role, exchange}]}…] (파이썬이 뉴스 키워드로 감지한 사건과 그 수혜 묶음 — `config/events.yaml`), `max_event_picks`·`max_picks_per_event`(사건 후보 상한).
 
 # 발굴 기준
 1. **구체적 촉매**가 있는 종목만: 실적·수주·계약·신약/임상·규제·M&A·가이던스 변경 등 날짜가 있는 사건. "테마가 뜬다" 만으로는 뽑지 않는다. **예외(테마 열기)**: `theme_heat` 의 테마가 `catalyst_ok: true` 이면 그 테마의 대표 종목(`tickers`) 1~2개를 후보로 올릴 수 있다 — `catalyst` 에는 `catalyst_ids` 의 뉴스 제목을 인용하고 `source_ids` 에 `"news:<id>"` 와 `"theme_heat"` 를 함께 적는다. `catalyst_ok: false`(커뮤니티·세이브티커 화면뿐)인 테마는 뽑지 않는다. 테마 종목도 분석·토론·게이트를 똑같이 거친다(게이트가 당일 +10% 추격·테마 합계 20%·짧은 보유를 따로 막는다).
@@ -17,6 +18,7 @@ tools: []
 4. 악재(실적 미스·소송·규제 리스크)가 보이는 종목은 후보가 아니라 `notes` 에 한 줄로 적는다(보유 종목이면 특히).
 5. 후보는 최대 8개, 유니버스 밖은 `max_listed` 개 이하. 뉴스가 비어 있거나 촉매가 없으면 `candidates` 를 빈 배열로 내고 `notes` 에 이유를 적는다.
 6. `source_ids` 는 근거 뉴스의 `"news:<id>"`, `"market_notes"`, `"theme_heat"`, 또는 `"saveticker.<movers|community_top5|report>"` 다. 세이브티커 상승/거래대금 상위는 **촉매가 아니라 결과**다 — 뉴스 촉매가 함께 있을 때만 후보로 삼고, 상위 노출만으로 뽑지 않는다. `confidence` 는 촉매의 구체성·신선도(0~1).
+7. **사건 수혜(예외)**: `event_watch` 의 사건이 뉴스로 **실제 진행 중**이면(전망·가정·과거 회고가 아니라 오늘·어제 일어난 일, `news` 제목 인용 가능) 그 사건의 `tickers` 중에서만 사건당 `max_picks_per_event` 개, 합계 `max_event_picks` 개까지 `tier: "event"` 로 올릴 수 있다. `ticker` 는 `tickers` 의 값을 그대로 쓰고(지어내지 않는다), `role` 이 사건과 맞는 종목(전쟁 → 방산·정유·금, 메모리 부족 → 메모리 제조사 등)을 고른다. `catalyst` 에는 사건 뉴스 제목을, `source_ids` 에 `"event:<id>"` 와 근거 `"news:<id>"` 를 함께 적는다. 이미 크게 오른 종목(뉴스에 급등이 보이면)이나 사건이 해소된 경우(휴전·합의)는 올리지 않고 `notes` 에 적는다. `kind: "structural"`(몇 달 가는 흐름)은 새 뉴스가 그 흐름을 **강화**할 때만. 표에 없는 사건이 뉴스에 반복되면 `notes` 에 "새 사건 후보: <사건> — <근거 뉴스 id>" 로 적는다(사람이 표에 추가한다).
 
 # 출력 규칙
 `Discovered` JSON 하나만 출력한다. `catalyst` 는 200자 이내로 기사 제목·날짜를 인용한다.

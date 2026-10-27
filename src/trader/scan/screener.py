@@ -158,7 +158,9 @@ def run_screen(
     listed_tier: set[str] = set()
     for c in (discovered or {}).get("candidates") or []:
         exch.setdefault(c["ticker"], c.get("exchange"))
-        if c.get("tier") == "listed":
+        # 유니버스 밖 발굴(listed)과 사건 수혜(event — resolve 가 유니버스 밖일 때만 이 tier)는
+        # 피처 스토어에 행이 없어 분석 전에 스냅샷을 찍는다(Codex 리뷰)
+        if c.get("tier") in ("listed", "event"):
             listed_tier.add(c["ticker"])
     if universe is not None and market == "US":
         for u in getattr(universe, "us", []) or []:

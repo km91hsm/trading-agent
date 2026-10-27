@@ -461,3 +461,9 @@
 - [x] `latest_rows` 필요한 열만·메모, theme 은 스토어에 있는 종목만 (2026-10-27)
 - [x] 작업 대기열 진행 폴링은 SSE 리더 탭만 + BroadcastChannel 중계 (2026-10-27)
 - [x] 단타 판정자 제출 기록 30분 만료 (2026-10-27)
+
+## 사건 수혜 (2026-10-27, 사용자 요청 — 전쟁·AI 메모리 부족 등 사건 → 수혜주 발굴)
+- [x] `config/events.yaml` 사건 31종·수혜 종목(DART·KIS 시세 확인), `trader events show|check` (2026-10-27)
+- [x] 뉴스 키워드 감지(`scan/events`) → scout `event_watch`·tier event·파이썬 검증, shock 사건 테마 안전장치, `[사건 감지]` 알림, 데이터 화면 '사건 감지' (2026-10-27)
+- [ ] 사용자 확인 대기: 사건 표(`config/events.yaml`)의 사건·종목·키워드를 보고 빼거나 더할 것(특히 키워드 오탐 — 데이터 화면 '사건 감지'와 텔레그램 `[사건 감지]` 로 며칠 지켜보기)
+- [ ] 실기(사용자 확인 대기): 사건이 감지된 날 scan 의 `_discovery.json` 에 `tier: "event"` 후보와 `event_id` 가 남는지, 그 종목 결정이 BUY 면 게이트 사유·`take_profit`·`horizon_days ≤ 10`(shock) 이 지켜지는지

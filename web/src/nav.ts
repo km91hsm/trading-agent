@@ -43,6 +43,7 @@ export type Feature = { since: string; title: string; what: string; to: string }
 
 /** 최근 추가 기능(새 것이 위). 화면·기능을 더하면 여기 한 줄. */
 export const FEATURES: Feature[] = [
+  { since: "2026-10-27", title: "사건 수혜", what: "전쟁·유가·AI 메모리 부족 등 사건 31종을 뉴스로 감지하고 수혜 묶음에서 발굴, 단기 사건은 안전장치", to: "/data" },
   { since: "2026-10-27", title: "시스템 현황", what: "Claude 사용량(5시간·7일 초기화 시각)·모델·작업 대기열·데몬 잡을 대시보드에서 분리", to: "/system" },
   { since: "Phase 23", title: "장중 뉴스 발굴", what: "30분마다 새 뉴스(유사 기사 제외)가 있으면 종목 재분석·scout 발굴 세션", to: "/today" },
   { since: "Phase 23", title: "보유기간 프로필", what: "단기·중기·장기 결정마다 급등락 임계·재평가 간격·아침 재분석 주기가 다르다", to: "/account" },

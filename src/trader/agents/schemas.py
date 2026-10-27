@@ -198,7 +198,8 @@ class DiscoveredCandidate(BaseModel):
     name: str = Field(max_length=80)
     ticker: str | None = None
     market: Literal["KR", "US"]
-    tier: Literal["universe", "listed"]
+    # event: 사건 수혜(입력 event_watch 의 종목만 — 파이썬이 표로 검증, 2026-10-27)
+    tier: Literal["universe", "listed", "event"]
     catalyst: str = Field(max_length=200)
     source_ids: list[str] = Field(default_factory=list)
     confidence: float = Field(ge=0, le=1)

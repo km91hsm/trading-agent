@@ -1,0 +1,462 @@
+# 사건 → 수혜 묶음(사건 수혜, 2026-10-27). 뉴스에서 사건 키워드가 기준 이상 잡히면 scout 가 이 표의
+# 종목 중에서만 후보를 고른다(종목 코드는 LLM 이 아니라 이 표가 출처). 매수는 일반 분석·리스크
+# 게이트를 그대로 거치고, kind: shock 은 테마 안전장치(묶음 비중 상한·단기 보유·익절 필수)가 붙는다.
+# 종목은 2026-10-27 DART 고유번호·KIS 시세로 확인했다. 바꾸면 `trader events check` 로 시세를 확인한다.
+#
+# kind: shock(갑작스러운 사건 — 단기, 안전장치) | structural(몇 달 가는 흐름 — 일반 규칙)
+# keywords: 제목·요약에 하나라도 있으면 그 뉴스를 이 사건으로 센다(대소문자 무시)
+# min_news: 최근 lookback_hours 안에 이만큼 이상이면 '감지'
+enabled: true
+lookback_hours: 48
+max_picks_per_event: 2   # scout 가 한 사건에서 고를 수 있는 종목 수
+max_event_picks: 4       # 하루 사건 후보 합계(시장별)
+
+events:
+  - id: war_geopolitics
+    label: 전쟁·지정학 위기
+    kind: shock
+    min_news: 3
+    keywords: [전쟁, 침공, 공습, 교전, 미사일 발사, 군사 충돌, 지정학, 확전, 휴전 결렬, war, invasion,
+               airstrike, missile strike, military conflict, geopolitical, escalation]
+    beneficiaries:
+      KR:
+        - {ticker: "012450", name: 한화에어로스페이스, role: 방산}
+        - {ticker: "079550", name: LIG디펜스앤에어로스페이스, role: 방산}
+        - {ticker: "064350", name: 현대로템, role: 방산}
+        - {ticker: "047810", name: 한국항공우주, role: 방산}
+        - {ticker: "272210", name: 한화시스템, role: 방산}
+        - {ticker: "103140", name: 풍산, role: 탄약}
+        - {ticker: "010950", name: S-Oil, role: 정유}
+        - {ticker: "132030", name: KODEX 골드선물(H), role: 금}
+        - {ticker: "411060", name: ACE KRX금현물, role: 금}
+        - {ticker: "261240", name: KODEX 미국달러선물, role: 달러}
+      US:
+        - {ticker: LMT, exchange: NYS, name: Lockheed Martin, role: 방산}
+        - {ticker: NOC, exchange: NYS, name: Northrop Grumman, role: 방산}
+        - {ticker: RTX, exchange: NYS, name: RTX, role: 방산}
+        - {ticker: GD, exchange: NYS, name: General Dynamics, role: 방산}
+        - {ticker: LHX, exchange: NYS, name: L3Harris, role: 방산}
+        - {ticker: XOM, exchange: NYS, name: ExxonMobil, role: 에너지}
+        - {ticker: GLD, exchange: AMS, name: SPDR Gold Trust, role: 금}
+        - {ticker: UUP, exchange: AMS, name: Invesco DB US Dollar Bullish, role: 달러}
+
+  - id: oil_spike
+    label: 유가 급등(공급 차질·감산)
+    kind: shock
+    min_news: 3
+    keywords: [유가 급등, 국제유가 상승, 감산, 원유 공급 차질, 호르무즈, 산유국, OPEC+ 감산, oil price surge,
+               crude rally, output cut, supply disruption, Strait of Hormuz]
+    beneficiaries:
+      KR:
+        - {ticker: "010950", name: S-Oil, role: 정유}
+        - {ticker: "096770", name: SK이노베이션, role: 정유}
+        - {ticker: "078930", name: GS, role: 정유}
+      US:
+        - {ticker: XOM, exchange: NYS, name: ExxonMobil, role: 석유}
+        - {ticker: CVX, exchange: NYS, name: Chevron, role: 석유}
+        - {ticker: OXY, exchange: NYS, name: Occidental, role: 석유}
+        - {ticker: FRO, exchange: NYS, name: Frontline, role: 유조선}
+
+  - id: oil_drop
+    label: 유가 급락
+    kind: shock
+    min_news: 3
+    keywords: [유가 급락, 국제유가 하락, 증산, 원유 공급 과잉, oil price plunge, crude slump, output hike, oil glut]
+    beneficiaries:
+      KR:
+        - {ticker: "003490", name: 대한항공, role: 항공(연료비)}
+        - {ticker: "086280", name: 현대글로비스, role: 물류(연료비)}
+
+  - id: shipping_disruption
+    label: 해상 운송 차질(운하·해협 봉쇄)
+    kind: shock
+    min_news: 3
+    keywords: [홍해, 수에즈, 파나마 운하, 해상 운임 급등, 해협 봉쇄, Red Sea, Suez, Panama Canal, freight rates surge,
+               shipping disruption]
+    beneficiaries:
+      KR:
+        - {ticker: "011200", name: HMM, role: 해운}
+        - {ticker: "028670", name: 팬오션, role: 해운}
+      US:
+        - {ticker: FRO, exchange: NYS, name: Frontline, role: 유조선}
+
+  - id: ai_memory_shortage
+    label: AI 확산 → 메모리(HBM·D램) 부족
+    kind: structural
+    min_news: 3
+    keywords: [HBM, 고대역폭메모리, D램 가격, 메모리 가격 상승, 메모리 부족, 낸드 가격, DRAM price, memory shortage,
+               memory prices, NAND price, high-bandwidth memory]
+    beneficiaries:
+      KR:
+        - {ticker: "000660", name: SK하이닉스, role: 메모리}
+        - {ticker: "005930", name: 삼성전자, role: 메모리}
+        - {ticker: "042700", name: 한미반도체, role: HBM 장비}
+        - {ticker: "240810", name: 원익IPS, role: 반도체 장비}
+        - {ticker: "058470", name: 리노공업, role: 테스트 부품}
+        - {ticker: "091160", name: KODEX 반도체, role: 반도체 ETF}
+      US:
+        - {ticker: MU, exchange: NAS, name: Micron, role: 메모리}
+        - {ticker: SNDK, exchange: NAS, name: Sandisk, role: 낸드}
+        - {ticker: WDC, exchange: NAS, name: Western Digital, role: 저장장치}
+        - {ticker: STX, exchange: NAS, name: Seagate, role: 저장장치}
+
+  - id: ai_capex
+    label: AI 투자 확대(빅테크 설비투자·AI 칩 수요)
+    kind: structural
+    min_news: 3
+    keywords: [AI 투자 확대, 데이터센터 투자, 설비투자 상향, AI 칩 수요, 엔비디아 실적, capex, AI spending,
+               data center investment, AI chip demand, hyperscaler]
+    beneficiaries:
+      KR:
+        - {ticker: "000660", name: SK하이닉스, role: AI 메모리}
+        - {ticker: "042700", name: 한미반도체, role: AI 장비}
+        - {ticker: "091160", name: KODEX 반도체, role: 반도체 ETF}
+      US:
+        - {ticker: NVDA, exchange: NAS, name: NVIDIA, role: AI 칩}
+        - {ticker: AVGO, exchange: NAS, name: Broadcom, role: AI 칩}
+        - {ticker: AMD, exchange: NAS, name: AMD, role: AI 칩}
+        - {ticker: TSM, exchange: NYS, name: TSMC, role: 파운드리}
+
+  - id: ai_power_demand
+    label: AI 데이터센터 전력 수요(전력망·원전)
+    kind: structural
+    min_news: 3
+    keywords: [전력 수요 급증, 전력망, 변압기, 원전, 소형모듈원자로, SMR, 데이터센터 전력, power demand, power grid,
+               transformer shortage, nuclear power, small modular reactor, data center power]
+    beneficiaries:
+      KR:
+        - {ticker: "267260", name: HD현대일렉트릭, role: 변압기}
+        - {ticker: "298040", name: 효성중공업, role: 변압기}
+        - {ticker: "010120", name: LS ELECTRIC, role: 전력기기}
+        - {ticker: "034020", name: 두산에너빌리티, role: 원전}
+        - {ticker: "052690", name: 한전기술, role: 원전 설계}
+        - {ticker: "051600", name: 한전KPS, role: 원전 정비}
+      US:
+        - {ticker: GEV, exchange: NYS, name: GE Vernova, role: 전력 설비}
+        - {ticker: ETN, exchange: NYS, name: Eaton, role: 전력 기기}
+        - {ticker: VST, exchange: NYS, name: Vistra, role: 발전}
+        - {ticker: CEG, exchange: NAS, name: Constellation Energy, role: 원전 발전}
+        - {ticker: CCJ, exchange: NYS, name: Cameco, role: 우라늄}
+
+  - id: shipbuilding_cycle
+    label: 조선 수주 호황(LNG선·미국 조선 협력)
+    kind: structural
+    min_news: 3
+    keywords: [LNG선 수주, 선박 수주, 조선 수주, 미국 조선 협력, 마스가, 함정 정비, LNG carrier order, shipbuilding order,
+               US shipbuilding]
+    beneficiaries:
+      KR:
+        - {ticker: "009540", name: HD한국조선해양, role: 조선}
+        - {ticker: "329180", name: HD현대중공업, role: 조선}
+        - {ticker: "042660", name: 한화오션, role: 조선}
+        - {ticker: "010140", name: 삼성중공업, role: 조선}
+
+  - id: safe_haven
+    label: 금융 불안·위험 회피(안전자산 선호)
+    kind: shock
+    min_news: 3
+    keywords: [안전자산 선호, 금값 사상 최고, 금 가격 급등, 신용 위기, 은행 파산, 디폴트, 증시 폭락, safe haven, gold record,
+               bank failure, credit crisis, market crash, flight to safety]
+    beneficiaries:
+      KR:
+        - {ticker: "132030", name: KODEX 골드선물(H), role: 금}
+        - {ticker: "411060", name: ACE KRX금현물, role: 금}
+        - {ticker: "148070", name: KOSEF 국고채10년, role: 국채}
+        - {ticker: "261240", name: KODEX 미국달러선물, role: 달러}
+      US:
+        - {ticker: GLD, exchange: AMS, name: SPDR Gold Trust, role: 금}
+        - {ticker: IAU, exchange: AMS, name: iShares Gold Trust, role: 금}
+        - {ticker: TLT, exchange: NAS, name: iShares 20+ Year Treasury, role: 장기 국채}
+        - {ticker: IEF, exchange: NAS, name: iShares 7-10 Year Treasury, role: 중기 국채}
+
+  - id: won_weakness
+    label: 원화 약세(환율 급등)
+    kind: shock
+    min_news: 3
+    keywords: [원달러 환율 급등, 환율 1400, 환율 1500, 원화 약세, 달러 강세, 강달러]
+    beneficiaries:
+      KR:
+        - {ticker: "005380", name: 현대자동차, role: 수출}
+        - {ticker: "000270", name: 기아, role: 수출}
+        - {ticker: "261240", name: KODEX 미국달러선물, role: 달러}
+
+  - id: reconstruction
+    label: 전후 재건(우크라이나·중동)
+    kind: structural
+    min_news: 3
+    keywords: [재건 사업, 전후 재건, 종전 협상, 휴전 합의, 재건 수주, reconstruction, ceasefire deal, peace agreement]
+    beneficiaries:
+      KR:
+        - {ticker: "000720", name: 현대건설, role: 건설}
+        - {ticker: "042670", name: HD현대인프라코어, role: 건설기계}
+      US:
+        - {ticker: CAT, exchange: NYS, name: Caterpillar, role: 건설기계}
+
+  - id: battery_policy
+    label: 2차전지 정책·수요 회복(보조금·관세)
+    kind: structural
+    min_news: 3
+    keywords: [배터리 보조금, 전기차 수요 회복, 2차전지 수주, ESS 수주, 배터리 관세, battery subsidy, EV demand rebound,
+               ESS order]
+    beneficiaries:
+      KR:
+        - {ticker: "373220", name: LG에너지솔루션, role: 배터리}
+        - {ticker: "006400", name: 삼성SDI, role: 배터리}
+        - {ticker: "305720", name: KODEX 2차전지산업, role: 2차전지 ETF}
+
+  - id: north_korea
+    label: 남북 긴장(북한 도발)
+    kind: shock
+    min_news: 3
+    keywords: [북한 도발, 북 미사일, 북한 미사일, 핵실험, 북한 포격, 휴전선, 대북 긴장, North Korea missile, nuclear test,
+               Pyongyang provocation]
+    beneficiaries:
+      KR:
+        - {ticker: "012450", name: 한화에어로스페이스, role: 방산}
+        - {ticker: "079550", name: LIG디펜스앤에어로스페이스, role: 방산}
+        - {ticker: "064350", name: 현대로템, role: 방산}
+        - {ticker: "272210", name: 한화시스템, role: 방산}
+        - {ticker: "053800", name: 안랩, role: 사이버보안}
+
+  - id: defense_exports
+    label: K-방산 수출·국방비 증액
+    kind: structural
+    min_news: 3
+    keywords: [방산 수출, 방산 수주, K9 수출, K2 전차 수출, 천무 수출, 국방비 증액, 방위비 증액, NATO 국방비, defense export,
+               defense spending increase, NATO spending]
+    beneficiaries:
+      KR:
+        - {ticker: "012450", name: 한화에어로스페이스, role: 방산}
+        - {ticker: "064350", name: 현대로템, role: 방산}
+        - {ticker: "079550", name: LIG디펜스앤에어로스페이스, role: 방산}
+        - {ticker: "047810", name: 한국항공우주, role: 항공}
+        - {ticker: "103140", name: 풍산, role: 탄약}
+      US:
+        - {ticker: LMT, exchange: NYS, name: Lockheed Martin, role: 방산}
+        - {ticker: RTX, exchange: NYS, name: RTX, role: 방산}
+        - {ticker: GD, exchange: NYS, name: General Dynamics, role: 방산}
+
+  - id: cyber_attack
+    label: 대형 해킹·사이버 공격
+    kind: shock
+    min_news: 3
+    keywords: [해킹, 사이버 공격, 랜섬웨어, 개인정보 유출, 정보 유출 사고, cyberattack, ransomware, data breach, hack]
+    beneficiaries:
+      KR:
+        - {ticker: "053800", name: 안랩, role: 보안}
+      US:
+        - {ticker: CRWD, exchange: NAS, name: CrowdStrike, role: 보안}
+        - {ticker: PANW, exchange: NAS, name: Palo Alto Networks, role: 보안}
+
+  - id: rate_cut
+    label: 금리 인하(완화 전환)
+    kind: shock
+    min_news: 3
+    keywords: [금리 인하, 기준금리 인하, 피벗, 완화 전환, 빅컷, rate cut, Fed cuts, pivot, easing cycle]
+    beneficiaries:
+      KR:
+        - {ticker: "207940", name: 삼성바이오로직스, role: 성장(바이오)}
+        - {ticker: "196170", name: 알테오젠, role: 성장(바이오)}
+        - {ticker: "068270", name: 셀트리온, role: 성장(바이오)}
+        - {ticker: "148070", name: KOSEF 국고채10년, role: 채권}
+        - {ticker: "039490", name: 키움증권, role: 증권(거래대금)}
+      US:
+        - {ticker: TLT, exchange: NAS, name: iShares 20+ Year Treasury, role: 장기 국채}
+        - {ticker: IEF, exchange: NAS, name: iShares 7-10 Year Treasury, role: 중기 국채}
+        - {ticker: HOOD, exchange: NAS, name: Robinhood, role: 증권(거래대금)}
+
+  - id: higher_for_longer
+    label: 고금리 지속(금리 인상·동결 장기화)
+    kind: structural
+    min_news: 3
+    keywords: [금리 인상, 고금리 장기화, 금리 동결 장기화, 매파적, rate hike, higher for longer, hawkish]
+    beneficiaries:
+      KR:
+        - {ticker: "105560", name: KB금융, role: 은행}
+        - {ticker: "055550", name: 신한지주, role: 은행}
+        - {ticker: "086790", name: 하나금융지주, role: 은행}
+        - {ticker: "032830", name: 삼성생명, role: 보험}
+      US:
+        - {ticker: JPM, exchange: NYS, name: JPMorgan Chase, role: 은행}
+        - {ticker: BAC, exchange: NYS, name: Bank of America, role: 은행}
+
+  - id: value_up
+    label: 밸류업·주주환원 정책
+    kind: structural
+    min_news: 3
+    keywords: [밸류업, 주주환원, 자사주 소각, 배당 확대, 저PBR, 상법 개정, 기업가치 제고, value-up, shareholder return,
+               buyback]
+    beneficiaries:
+      KR:
+        - {ticker: "105560", name: KB금융, role: 금융지주}
+        - {ticker: "055550", name: 신한지주, role: 금융지주}
+        - {ticker: "086790", name: 하나금융지주, role: 금융지주}
+        - {ticker: "316140", name: 우리금융지주, role: 금융지주}
+        - {ticker: "028260", name: 삼성물산, role: 지주}
+        - {ticker: "005380", name: 현대자동차, role: 저PBR}
+        - {ticker: "006800", name: 미래에셋증권, role: 증권}
+
+  - id: us_tariffs
+    label: 미국 관세 강화(무역 분쟁)
+    kind: shock
+    min_news: 3
+    keywords: [관세 부과, 관세 인상, 보복 관세, 무역 분쟁, 무역 전쟁, 상호 관세, tariff hike, new tariffs, trade war,
+               reciprocal tariff]
+    beneficiaries:
+      KR:
+        - {ticker: "267260", name: HD현대일렉트릭, role: 미국 현지 생산}
+        - {ticker: "298040", name: 효성중공업, role: 미국 현지 생산}
+        - {ticker: "261240", name: KODEX 미국달러선물, role: 달러}
+      US:
+        - {ticker: NUE, exchange: NYS, name: Nucor, role: 미국 철강}
+        - {ticker: UUP, exchange: AMS, name: Invesco DB US Dollar Bullish, role: 달러}
+
+  - id: china_stimulus
+    label: 중국 경기부양책
+    kind: shock
+    min_news: 3
+    keywords: [중국 경기부양, 중국 부양책, 인민은행 지준율 인하, 중국 인프라 투자, 중국 소비 진작, China stimulus,
+               PBOC cut, Beijing stimulus]
+    beneficiaries:
+      KR:
+        - {ticker: "005490", name: POSCO홀딩스, role: 철강}
+        - {ticker: "051910", name: LG화학, role: 화학}
+        - {ticker: "090430", name: 아모레퍼시픽, role: 소비재}
+        - {ticker: "051900", name: LG생활건강, role: 소비재}
+      US:
+        - {ticker: FCX, exchange: NYS, name: Freeport-McMoRan, role: 구리}
+        - {ticker: CAT, exchange: NYS, name: Caterpillar, role: 건설기계}
+
+  - id: china_opening
+    label: 중국 단체관광 재개·한한령 해제
+    kind: shock
+    min_news: 3
+    keywords: [단체관광 재개, 중국 단체관광, 한한령 해제, 유커, 중국인 관광객, 무비자 입국, 한중 관계 개선]
+    beneficiaries:
+      KR:
+        - {ticker: "008770", name: 호텔신라, role: 면세}
+        - {ticker: "034230", name: 파라다이스, role: 카지노}
+        - {ticker: "114090", name: GKL, role: 카지노}
+        - {ticker: "090430", name: 아모레퍼시픽, role: 화장품}
+        - {ticker: "352820", name: 하이브, role: 엔터}
+        - {ticker: "035900", name: JYP Ent., role: 엔터}
+        - {ticker: "041510", name: 에스엠, role: 엔터}
+
+  - id: copper_rally
+    label: 구리 가격 급등
+    kind: shock
+    min_news: 3
+    keywords: [구리 가격 급등, 구리값 사상 최고, 전기동 가격, copper price surge, copper record, copper rally]
+    beneficiaries:
+      KR:
+        - {ticker: "001440", name: 대한전선, role: 전선}
+        - {ticker: "006260", name: LS, role: 전선}
+        - {ticker: "103140", name: 풍산, role: 동 가공}
+      US:
+        - {ticker: FCX, exchange: NYS, name: Freeport-McMoRan, role: 구리}
+        - {ticker: SCCO, exchange: NYS, name: Southern Copper, role: 구리}
+
+  - id: obesity_drugs
+    label: 비만치료제(GLP-1) 시장 확대
+    kind: structural
+    min_news: 3
+    keywords: [비만치료제, GLP-1, 위고비, 마운자로, 젭바운드, 비만약, obesity drug, Wegovy, Mounjaro, Zepbound]
+    beneficiaries:
+      KR:
+        - {ticker: "128940", name: 한미약품, role: 비만약}
+        - {ticker: "087010", name: 펩트론, role: 장기지속형 제형}
+        - {ticker: "347850", name: 디앤디파마텍, role: 경구 비만약}
+      US:
+        - {ticker: LLY, exchange: NYS, name: Eli Lilly, role: 비만약}
+        - {ticker: NVO, exchange: NYS, name: Novo Nordisk, role: 비만약}
+
+  - id: robotics
+    label: 로봇·휴머노이드
+    kind: structural
+    min_news: 3
+    keywords: [휴머노이드, 로봇 상용화, 협동로봇, 옵티머스, humanoid robot, Optimus, robotics]
+    beneficiaries:
+      KR:
+        - {ticker: "277810", name: 레인보우로보틱스, role: 로봇}
+        - {ticker: "454910", name: 두산로보틱스, role: 로봇}
+      US:
+        - {ticker: TSLA, exchange: NAS, name: Tesla, role: 휴머노이드}
+        - {ticker: ISRG, exchange: NAS, name: Intuitive Surgical, role: 의료 로봇}
+
+  - id: space
+    label: 우주·위성
+    kind: structural
+    min_news: 3
+    keywords: [위성 발사, 누리호, 우주항공청, 저궤도 위성, 스페이스X, 발사체, satellite launch, SpaceX, rocket launch,
+               low earth orbit]
+    beneficiaries:
+      KR:
+        - {ticker: "099320", name: 쎄트렉아이, role: 위성}
+        - {ticker: "047810", name: 한국항공우주, role: 우주항공}
+        - {ticker: "012450", name: 한화에어로스페이스, role: 발사체}
+      US:
+        - {ticker: RKLB, exchange: NAS, name: Rocket Lab, role: 발사체}
+
+  - id: hydrogen
+    label: 수소 경제 정책
+    kind: structural
+    min_news: 3
+    keywords: [수소 경제, 수소 발전, 연료전지, 청정수소, hydrogen economy, fuel cell, clean hydrogen]
+    beneficiaries:
+      KR:
+        - {ticker: "336260", name: 두산퓨얼셀, role: 연료전지}
+
+  - id: pandemic
+    label: 감염병 유행
+    kind: shock
+    min_news: 3
+    keywords: [감염병 유행, 팬데믹, 확진자 급증, 신종 바이러스, 엠폭스, 조류독감 인체 감염, pandemic, outbreak, new virus,
+               WHO emergency]
+    beneficiaries:
+      KR:
+        - {ticker: "096530", name: 씨젠, role: 진단}
+      US:
+        - {ticker: MRNA, exchange: NAS, name: Moderna, role: 백신}
+        - {ticker: PFE, exchange: NYS, name: Pfizer, role: 백신}
+
+  - id: power_tariff
+    label: 전기요금 인상
+    kind: shock
+    min_news: 2
+    keywords: [전기요금 인상, 전기료 인상, 산업용 전기요금, 요금 정상화]
+    beneficiaries:
+      KR:
+        - {ticker: "015760", name: 한국전력공사, role: 전력}
+
+  - id: won_strength
+    label: 원화 강세·해외여행 수요
+    kind: shock
+    min_news: 3
+    keywords: [원달러 환율 급락, 원화 강세, 환율 하락, 해외여행 수요, 출국자 급증]
+    beneficiaries:
+      KR:
+        - {ticker: "003490", name: 대한항공, role: 항공}
+        - {ticker: "039130", name: 하나투어, role: 여행}
+
+  - id: crypto_policy
+    label: 가상자산 제도화·스테이블코인
+    kind: structural
+    min_news: 3
+    keywords: [스테이블코인, 가상자산 법안, 비트코인 ETF, 원화 스테이블코인, 디지털자산 기본법, stablecoin, crypto bill,
+               bitcoin ETF, GENIUS Act]
+    beneficiaries:
+      KR:
+        - {ticker: "377300", name: 카카오페이, role: 결제}
+        - {ticker: "039490", name: 키움증권, role: 증권}
+      US:
+        - {ticker: COIN, exchange: NAS, name: Coinbase, role: 거래소}
+        - {ticker: HOOD, exchange: NAS, name: Robinhood, role: 증권·가상자산}
+
+  - id: quantum
+    label: 양자컴퓨팅
+    kind: structural
+    min_news: 3
+    keywords: [양자컴퓨터, 양자컴퓨팅, 양자 우위, quantum computing, quantum computer, quantum advantage]
+    beneficiaries:
+      US:
+        - {ticker: IONQ, exchange: NYS, name: IonQ, role: 양자컴퓨팅}

@@ -12,6 +12,8 @@ import { TodayPage } from "./Today";
 import { Ticker } from "../components/Ticker";
 import { useToast } from "../components/Toast";
 import { RunJobButton, useCanRun } from "../components/RunJob";
+import { marketDate } from "../format";
+import { type EventsResp, kindLabel, rolesLine, todayEvents } from "../eventsView";
 
 const NUMERIC = new Set(KEY_COLUMNS.filter((c) => c !== "ticker" && c !== "sector"));
 
@@ -322,11 +324,70 @@ function MarketNews() {
   );
 }
 
+/** 사건 수혜(2026-10-27): 뉴스 키워드로 감지한 오늘의 사건과 수혜 묶음(config/events.yaml). 알림·표시만 —
+ *  매수는 다음 scan 의 scout 가 이 묶음에서 고르고 일반 분석·리스크 게이트를 거친다. */
+function EventWatch() {
+  const { tickOf } = useApp();
+  const [market, setMarket] = useState<"KR" | "US">("KR");
+  const ev = useLoad(() => getJson<EventsResp>(`/api/system/events?market=${market}`), [market, tickOf("control", "news")]);
+  const today = marketDate(new Date().toISOString(), market);
+  const rows = todayEvents(ev.data, today);
+  return (
+    <Section
+      title="사건 감지"
+      aside={
+        <label className="field">
+          <span>시장</span>
+          <select value={market} onChange={(e) => setMarket(e.target.value as "KR" | "US")}>
+            <option>KR</option>
+            <option>US</option>
+          </select>
+        </label>
+      }
+    >
+      <p className="note">
+        최근 48시간 뉴스에서 사건 키워드(<code>config/events.yaml</code>)가 기준 건수를 넘으면 감지해요. 종목은 표에 있는 수혜 묶음에서만 나오고, 매수는 다음 스캔에서
+        발굴 에이전트가 고른 뒤 분석·리스크 게이트를 거쳐요. 단기 사건은 묶음 비중 상한·단기 보유·익절가 필수가 붙어요.
+      </p>
+      {ev.error && <ErrorBox error={ev.error} />}
+      {ev.data && !ev.data.enabled && <p className="note">사건 수혜가 꺼져 있어요(events.yaml enabled: false).</p>}
+      {rows.length ? (
+        <Table dense caption={`${market} 오늘 감지된 사건`}>
+          <thead>
+            <tr>
+              <Th>사건</Th>
+              <Th>종류</Th>
+              <Th num>뉴스</Th>
+              <Th>수혜 묶음</Th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((e) => (
+              <tr key={e.id}>
+                <Td>
+                  {e.label}
+                  {e.news[0] && <div className="note">{e.news[0].title}</div>}
+                </Td>
+                <Td>{kindLabel(e.kind)}</Td>
+                <Td num>{e.hits}</Td>
+                <Td>{rolesLine(e.tickers)}</Td>
+              </tr>
+            ))}
+          </tbody>
+        </Table>
+      ) : (
+        ev.data && <EmptyState title="오늘 감지된 사건이 없어요" hint={`표에 ${ev.data.table.length}개 사건·흐름이 있어요. 뉴스가 기준 건수를 넘으면 여기와 텔레그램에 떠요.`} />
+      )}
+    </Section>
+  );
+}
+
 export function DataPage() {
   return (
     <>
       <TodayPage title="데이터" inputsOnly />
       <MarketNews />
+      <EventWatch />
       <FeatureStore />
       <ManualInputs />
     </>

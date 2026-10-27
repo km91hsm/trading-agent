@@ -1469,6 +1469,9 @@ def submit_discovery(
         cache_names=cache_names,
         market_client=ctx.market_client,
         exclude=exclude,
+        event_watch=list(inputs.get("event_watch") or []),
+        max_event=int(inputs.get("max_event_picks") or 0),
+        max_per_event=int(inputs.get("max_picks_per_event") or 2),
     )
     path = write_checkpoint(d, "_discovery", _wrap(resolved, _call(agent, call_meta)))
     if inputs.get("intraday_round"):  # 장중 발굴(Phase 23)은 회차 사본도 남긴다
@@ -1477,7 +1480,11 @@ def submit_discovery(
             f"_discovery_r{int(inputs['intraday_round'])}",
             _wrap(resolved, _call(agent, call_meta)),
         )
-    merged = discovery.merge(list(inputs.get("quant_candidates") or []), resolved)
+    merged = discovery.merge(
+        list(inputs.get("quant_candidates") or []),
+        resolved,
+        max_event=int(inputs.get("max_event_picks") or 0),
+    )
     logger.info("발굴 저장 %s: %s", market, discovery.line(resolved))
     return {
         "ok": True,
