@@ -1,6 +1,6 @@
 """데몬 ↔ 공시 중요도(Phase 25 단계 6): critical 즉시 재분석·알림 1회, 운영 점검."""
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from conftest import make_account
 from helpers_web import Sent
@@ -78,6 +78,7 @@ def test_health_disclosure_area_critical_for_held(conn, project):
     r = health.check(conn, Settings(markets=["KR"]), [acct], now=NOW)
     assert r["areas"]["disclosure"] == "critical"
     assert any(i["key"] == "disclosure.KR" for i in r["items"])
-    later = datetime(2026, 10, 30, tzinfo=UTC)
+    # received_at 은 실제 적재 시각이라 '며칠 뒤' 도 실제 시각 기준(고정 날짜면 그날이 오면 깨진다)
+    later = datetime.now(UTC) + timedelta(days=health.DISCLOSURE_DAYS + 1)
     r2 = health.check(conn, Settings(markets=["KR"]), [acct], now=later)
     assert r2["areas"]["disclosure"] == "ok"

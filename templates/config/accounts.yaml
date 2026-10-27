@@ -3,3 +3,7 @@ accounts:
   - {id: real-main,  env: real,  cano: "00000000", acnt_prdt_cd: "01", markets: [KR, US], mode: "off"}
 # 실전 자본 상한(선택): 게이트가 쓰는 NAV·가능금액을 시장(통화)별로 이 금액까지로 자른다. 사람이 단계적으로 올린다
 #   예) real-main 줄 끝에 , capital_cap: {KR: 3000000, US: 2000}
+# 같은 명의 계좌 여럿(선택): 한국투자증권은 앱키를 계좌마다 발급한다. 계좌를 한 줄 더 적고 그 계좌 키는
+#   설정 화면 '연결 키'(또는 secrets/.env)의 KIS_<ID>_APP_KEY·_APP_SECRET·_CANO 에 넣는다(real-2 → KIS_REAL_2_).
+#   예) - {id: real-2, env: real, cano: "00000000", acnt_prdt_cd: "01", markets: [KR], mode: "off"}
+#   접두사를 직접 정하려면 , credentials: KIS_ISA_ — 전용 키가 없으면 env 공용 키(KIS_REAL_*)를 쓴다

@@ -12,8 +12,9 @@ from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict
 
+from trader.config import ConfigError
 from trader.control import control
-from trader.web.auth import require_token
+from trader.web.auth import require_direct_local, require_token
 from trader.web.routers._common import deps_of, require_market
 
 router = APIRouter(prefix="/control", tags=["control"], dependencies=[Depends(require_token)])
@@ -186,3 +187,55 @@ def manual_inputs_add(request: Request, body: ManualInputBody) -> dict:
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     return item
+
+
+# --- 연결 키(secrets/.env) -------------------------------------------------------
+# 값은 돌려주지 않고 '설정됨' 여부만. 쓰기·조회 모두 토큰 + 이 PC 직접 접속(tailnet 폰 요청 거부).
+# 실행 중인 데몬·웹은 시작할 때 읽은 키를 쓰므로 바꾼 키는 재시작 뒤에 적용된다
+
+
+class SecretsBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    values: dict[str, str] = {}
+    clear: list[str] = []
+
+
+@router.post("/secrets/status", dependencies=[Depends(require_direct_local)])
+def secrets_status(request: Request) -> dict:
+    from trader import secrets_io
+    from trader.platform import paths
+
+    return secrets_io.status(paths.secrets_path(), deps_of(request).accounts)
+
+
+@router.post("/secrets", dependencies=[Depends(require_direct_local)])
+def secrets_update(request: Request, body: SecretsBody) -> dict:
+    import logging
+
+    from trader import secrets_io
+    from trader.platform import paths
+
+    try:
+        r = secrets_io.update(
+            paths.secrets_path(), deps_of(request).accounts, values=body.values, clear=body.clear
+        )
+    except ConfigError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    logging.getLogger("trader.web").info(
+        "연결 키 변경(웹): 설정 %s · 지움 %s", r["updated"], r["cleared"]
+    )
+    return {**r, "restart_required": bool(r["updated"] or r["cleared"])}
+
+
+@public_router.get("/bootstrap-token")
+def bootstrap_token(request: Request) -> dict:
+    """이 PC 브라우저가 직접 연 같은 출처 화면에만 웹 토큰을 준다(첫 실행에 .env 를 열어 복사하지
+    않게). 다른 사이트의 요청(Sec-Fetch-Site ≠ same-origin)·tailnet 폰 요청은 거부."""
+    require_direct_local(request)
+    if request.headers.get("sec-fetch-site") != "same-origin":
+        raise HTTPException(status_code=403, detail="같은 출처 화면에서만 받을 수 있습니다")
+    token = deps_of(request).token
+    if not token:
+        raise HTTPException(status_code=404, detail="WEB_TOKEN 이 없습니다")
+    return {"token": token}

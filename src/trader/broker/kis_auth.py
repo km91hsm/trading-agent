@@ -1,6 +1,7 @@
 """KIS 접근 토큰 발급·캐시.
 
-- env 별 파일 `state/kis_token_<env>.json` = {access_token, expires_at, failed_at}
+- 앱키 묶음별 파일 `state/kis_token_<name>.json` = {access_token, expires_at, failed_at}
+  (name 은 공용 키면 env, 계좌 전용 키면 `<env>-<접두사>` — 키마다 토큰이 따로라 섞으면 덮어쓴다)
 - 만료 1시간 전부터 갱신을 시도하되, 갱신이 실패해도 아직 유효한 토큰이 있으면 그것을 쓴다.
 - 발급 실패 시각(failed_at)을 파일에 기록해 다른 인스턴스·프로세스도 60초 백오프를 지킨다.
 """
@@ -45,9 +46,14 @@ class KisAuth:
         http: httpx.Client | None = None,
         state: Path | None = None,
         clock: Callable[[], datetime] = _utc_now,
+        name: str | None = None,
     ) -> None:
         quiet_httpx()
         self.env = env
+        self.name = name or env
+        from trader.config import key_fingerprint
+
+        self._fp = key_fingerprint(app_key) if app_key else ""
         self._app_key = app_key
         self._app_secret = app_secret
         self._http = http or httpx.Client(timeout=10)
@@ -60,7 +66,7 @@ class KisAuth:
     @property
     def cache_path(self) -> Path:
         base = self._state if self._state is not None else paths.state_dir()
-        return base / f"kis_token_{self.env}.json"
+        return base / f"kis_token_{self.name}.json"
 
     # --- 캐시 ---------------------------------------------------------------
 
@@ -73,6 +79,8 @@ class KisAuth:
         if not isinstance(data, dict):
             return {}
         out: dict = {}
+        if data.get("key") and data.get("key") != self._fp:
+            return {}  # 다른 앱키로 받은 토큰(키를 바꿨다) — 쓰지 않고 새로 받는다
         try:
             if data.get("access_token") and data.get("expires_at"):
                 out["token"] = str(data["access_token"])
@@ -94,7 +102,7 @@ class KisAuth:
             logger.warning("토큰 캐시 쓰기 실패(%s): %s", self.env, type(e).__name__)
 
     def _cache_payload(self, cache: dict, **updates: object) -> dict:
-        payload: dict = {}
+        payload: dict = {"key": self._fp}
         if cache.get("token"):
             payload["access_token"] = cache["token"]
             payload["expires_at"] = cache["expires_at"].isoformat()
@@ -141,7 +149,9 @@ class KisAuth:
             self._mark_failure(cache, now)
             raise KisApiError("INVALID_JSON", "토큰 응답을 해석할 수 없습니다") from None
         expires_at = now + timedelta(seconds=seconds)
-        self._write_cache({"access_token": token, "expires_at": expires_at.isoformat()})
+        self._write_cache(
+            {"access_token": token, "expires_at": expires_at.isoformat(), "key": self._fp}
+        )
         logger.info("KIS 토큰 발급 (%s)", self.env)
         return token
 

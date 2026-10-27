@@ -14,6 +14,7 @@ import { useApp, useLoad } from "../hooks";
 import { parseWatch } from "../tape";
 import type { Theme } from "../theme";
 import { Ticker } from "../components/Ticker";
+import { SecretsPanel } from "../components/SecretsPanel";
 
 const THEMES: Array<[Theme, string]> = [
   ["light", "라이트"],
@@ -67,7 +68,7 @@ export function SettingsPage() {
       <div className="cols-2">
         <div>
           <Section title="제어 토큰" aside={token ? <Badge kind="ok" value="저장됨" /> : <Badge kind="neutral" value="없음" />}>
-            <p className="note">secrets/.env 의 WEB_TOKEN 값. 이 브라우저(localStorage)에만 저장되고 서버로는 요청 헤더로만 간다.</p>
+            <p className="note">secrets/.env 의 WEB_TOKEN 값. 이 PC 에서 연 화면은 처음 열 때 자동으로 받아 온다(없으면 서버가 만든다). 폰 등 다른 기기에서는 여기에 직접 넣는다. 이 브라우저(localStorage)에만 저장되고 서버로는 요청 헤더로만 간다.</p>
             <form
               className="row"
               onSubmit={(e) => {
@@ -197,6 +198,7 @@ export function SettingsPage() {
           </Section>
         </div>
       </div>
+      <SecretsPanel token={token} />
       <Section title="STATUS.md" aside="`trader status` 가 만든 요약">
         <pre className="status">{status.data?.markdown || "(없음)"}</pre>
       </Section>

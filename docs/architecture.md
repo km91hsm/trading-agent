@@ -145,7 +145,15 @@ CLAUDE.md 의 "아키텍처 핵심 규칙" 에서 옮겨 온 모듈 단위 상�
 
 **KIS 실패는 전부 `KisApiError(msg_cd, msg1, tr_id)`.** KIS 응답이 아닌 실패는 합성 코드 `AUTH/NETWORK/NETWORK_UNKNOWN/HTTP<status>/INVALID_JSON/UNSUPPORTED`(`NETWORK` 는 보내지도 못함, `NETWORK_UNKNOWN` 은 보낸 뒤 응답 없음 — 주문이 살아 있을 수 있어 executor 가 구분한다). KR 분봉 역방향 페이징의 "짧은 페이지" 판단은 빈 시각 행을 버리기 전 원시 행 수로 한다. 토큰은 `state/kis_token_<env>.json` 캐시(만료 1시간 전 갱신, 실패 후 60초 재발급 금지, 실패 기록은 발급 전 스냅샷이 아니라 다시 읽은 파일에 덧붙여 다른 프로세스가 막 쓴 토큰을 지우지 않음). `EGW00201`(초당 한도)은 HTTP 200 뿐 아니라 **HTTP 500 본문**으로도 오므로 상태코드와 무관하게 0.5·1.0·2.0초로 최대 3회 물러나 재시도한다(백필 연속 호출에서 1회로는 종목이 통째로 빠졌다, 실기 2026-10-20). 모의 서버는 2/s 라 한 점검에서 같은 API 를 두 번 부르지 않는다. US 예수금은 `inquire-present-balance`(통화별 행) 로 읽는다. `inquire-psamount` 는 종목코드 필수라 현금 조회에 못 쓴다(실기 확인). 일봉·수급 목록은 **항상 날짜 오름차순**(마지막이 최신). 금액은 `Decimal`. `OrderRequest.exchange` 는 기본값이 없어 KR 도 `None` 을 명시한다.
 
+## 계좌별 키·연결 키 입력(2026-10-27)
+
+**같은 명의의 계좌 여럿.** 한국투자증권은 앱키를 계좌마다 발급하므로 계좌마다 키 묶음을 고른다: `Secrets.kis_creds(account)` 가 계좌 전용 접두사(`accounts.yaml credentials`, 없으면 id 로 정한 `KIS_<ID>_` — real-2 → `KIS_REAL_2_`)에 `APP_KEY` 가 있으면 그 묶음(`APP_KEY·APP_SECRET·CANO·HTS_ID`), 없으면 env 공용(`KIS_PAPER_*`·`KIS_REAL_*`, HTS ID 는 `KIS_HTS_ID`). 계좌 전용 키는 `Secrets` 의 추가 값(`extra="allow"`, `Secrets.get`)이고 환경변수 `KIS_*_<접미사>` 가 덮어쓴다. `cli._client_for(creds)` 가 앱키마다 `KisClient` 하나 — 토큰 캐시 `state/kis_token_<bucket>.json`·교차 프로세스 레이트리미터 버킷이 앱키 단위(`KisCreds.bucket` = `<env>-<앱키 지문 sha256 12자>` — 같은 키를 두 이름으로 넣어도 하나, 키를 바꾸면 새 캐시)라 키끼리 덮어쓰거나 한도를 나눠 먹지 않고, 캐시 파일에도 앱키 지문(`key`)을 남겨 다른 키로 받은 토큰은 읽지 않는다(지문 없는 옛 파일은 그대로 쓴다). 전용 키를 골랐으면 계좌번호도 그 접두사의 `CANO` 만(다른 계좌 공용 번호를 빌리지 않는다). 웹 입력은 `${…}`(dotenv 보간)를 거부한다. 두 계좌가 같은 키 묶음으로 풀리면 `_build_brokers` 가 경고한다(다른 계좌를 그 앱키로 부르면 KIS 가 거부할 수 있다). 시세는 공용 실전 키, 없으면 첫 실전 계좌의 전용 키(`_market_creds`). **체결통보는 (env, HTS ID) 마다 리스너 하나** — 통보는 HTS ID 단위라 같은 명의 계좌 전부를 연결 하나로 받고, 실전은 시세 허브가 쓰지 않는 전용 키가 있으면 그 키로 붙어(`shares_market_session=False`) 앱키 세션 충돌이 없다. 그 HTS ID 의 실전 계좌가 하나라도 off 가 아니면 켠다.
+
+**연결 키 입력(설정 화면).** `secrets_io.catalog` 가 입력할 수 있는 이름(공용 KIS·알림·데이터 + 계좌마다 전용 4칸, `WEB_TOKEN` 제외)을 정하고 `POST /api/control/secrets/status`(이름·묶음·`set` 여부·계좌별 사용 키 — **값은 돌려주지 않는다**, 판정은 실제 로더 `load_secrets`(.env + 환경변수)와 같고 환경변수가 덮는 칸은 `env: true` → 화면 '환경변수 우선')·`POST /api/control/secrets`(`values`·`clear`, 목록 밖 이름·공백·여러 줄·따옴표/# 시작 거부, 바꾸기 전 `.env.bak-<YYYYMMDD_HHMMSS>`, 임시 파일 → 원자 교체, 0600, 백업~교체 전체를 스레드 락 + `.env.lock` 파일 락으로 한 번에 하나 — 동시 저장이 서로 지우지 않게)는 토큰 + `auth.is_direct_local`(루프백 클라이언트 ∧ 루프백 Host ∧ 프록시 헤더 없음 — tailnet 폰 요청 거부). 실행 중인 데몬·웹은 시작 때 읽은 키를 쓰므로 응답 `restart_required` 로 재시작을 안내한다. **웹 토큰 자동**: `_web_deps` 가 `WEB_TOKEN` 이 없으면 `secrets_io.ensure_web_token` 으로 만들어 .env 에 넣고(값은 로그에 없음), `GET /api/control/bootstrap-token` 은 이 PC 직접 접속 ∧ `Sec-Fetch-Site: same-origin`(다른 사이트의 요청은 브라우저가 이 헤더를 위조하지 못한다)일 때만 토큰을 준다 — 프런트 `useAppState` 가 토큰이 없으면 한 번 받아 둔다. 폰은 설정 화면에 직접 넣는다.
+
 ## 미확인
+
+미확인(2026-10-27): 체결통보(H0STCNI0/H0GSCNI0)를 HTS ID 로 구독하면 그 명의의 모든 계좌 체결이 어느 계좌 앱키의 세션으로든 오는지 — 같은 명의 실전 계좌 둘에서 한쪽 키로 붙은 리스너가 다른 계좌 체결 통보도 받는지 실기 확인.
 
 미확인: `KisBroker` 의 US 잔고·예수금은 `OVRS_EXCG_CD=NASD` 고정이라 NYS/AMS 보유분이 같이 조회되는지 실기에서 확인한다.
 

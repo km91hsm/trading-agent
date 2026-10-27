@@ -172,6 +172,21 @@ export function useAppState(): AppState {
     tokenStore.set(t);
     setTokenRaw(t || null);
   };
+  // 이 PC 에서 연 화면이면 토큰을 서버에서 받아 둔다(같은 출처·직접 접속만 서버가 내준다).
+  // 폰·원격 접속은 403 이라 조용히 넘어가고 설정 화면에서 직접 넣는다
+  useEffect(() => {
+    if (token) return;
+    let alive = true;
+    getJson<{ token: string }>("/api/control/bootstrap-token")
+      .then((r) => {
+        if (alive && r.token) setToken(r.token);
+      })
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token]);
   const setTheme = (t: Theme) => {
     themeStore.set(t);
     setThemeRaw(t);

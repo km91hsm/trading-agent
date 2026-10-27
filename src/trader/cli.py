@@ -125,26 +125,61 @@ def main(
 _clients: dict[tuple[config.Env, str], KisClient] = {}
 
 
-def _build_client(secrets: config.Secrets, env: config.Env) -> KisClient:
-    """env 별 KisClient. 같은 프로세스 안에서는 하나만 만들어 레이트리미터·토큰을 공유한다."""
-    key = secrets.KIS_PAPER_APP_KEY if env == "paper" else secrets.KIS_REAL_APP_KEY
-    secret = secrets.KIS_PAPER_APP_SECRET if env == "paper" else secrets.KIS_REAL_APP_SECRET
-    if not key or not secret:
-        raise config.ConfigError(f"{env} 앱키·시크릿이 secrets/.env 에 없습니다")
-    cache_key = (env, key)
+def _build_client(
+    secrets: config.Secrets,
+    env: config.Env,
+    account: config.AccountConfig | None = None,
+) -> KisClient:
+    """앱키 묶음별 KisClient(계좌 전용 키가 있으면 그것, 없으면 env 공용). 같은 프로세스 안에서는
+    키마다 하나만 만들어 레이트리미터·토큰을 공유한다 — KIS 초당 한도·토큰은 앱키 단위다."""
+    creds = secrets.kis_creds(account) if account is not None else secrets.kis_creds(env=env)
+    return _client_for(creds)
+
+
+def _client_for(creds: config.KisCreds) -> KisClient:
+    if not creds.app_key or not creds.app_secret:
+        raise config.ConfigError(
+            f"{creds.env} 앱키·시크릿({creds.prefix}APP_KEY/SECRET)이 secrets/.env 에 없습니다"
+        )
+    cache_key = (creds.env, creds.app_key)
     if cache_key not in _clients:
         from trader.broker.kis_client import RATE_PER_SEC
         from trader.broker.rate_store import SharedRateLimiter
 
-        # 데몬·세션 도구 서브프로세스가 같은 1초 창을 나눠 쓴다(교차 프로세스 한도)
-        limiter = SharedRateLimiter(RATE_PER_SEC[env], paths.state_dir() / "kis_rate.db", env)
-        _clients[cache_key] = KisClient(env, KisAuth(env, key, secret), limiter=limiter)
+        # 데몬·세션 도구 서브프로세스가 같은 1초 창을 나눠 쓴다(교차 프로세스 한도, 앱키별)
+        limiter = SharedRateLimiter(
+            RATE_PER_SEC[creds.env], paths.state_dir() / "kis_rate.db", creds.bucket
+        )
+        auth = KisAuth(creds.env, creds.app_key, creds.app_secret, name=creds.bucket)
+        _clients[cache_key] = KisClient(creds.env, auth, limiter=limiter)
     return _clients[cache_key]
 
 
-def _build_market(secrets: config.Secrets) -> KisMarket:
+def _market_creds(
+    secrets: config.Secrets, accounts: list[config.AccountConfig] | None = None
+) -> config.KisCreds:
+    """시세용 실전 키: 공용 `KIS_REAL_*` 가 있으면 그것, 없으면 첫 실전 계좌의 전용 키."""
+    shared = secrets.kis_creds(env="real")
+    if shared.app_key:
+        return shared
+    if accounts is None:
+        try:
+            accounts = config.load_accounts(secrets=secrets)
+        except config.ConfigError:
+            return shared
+    for a in accounts:
+        if a.env == "real":
+            c = secrets.kis_creds(a)
+            if c.app_key:
+                return c
+    return shared
+
+
+def _build_market(
+    secrets: config.Secrets, accounts: list[config.AccountConfig] | None = None
+) -> KisMarket:
     """시세 클라이언트 (실전 env 전용)."""
-    return KisMarket(_build_client(secrets, "real"))
+    return KisMarket(_client_for(_market_creds(secrets, accounts)))
 
 
 def _session_brokers(accounts: list[config.AccountConfig]) -> dict:
@@ -169,16 +204,26 @@ def _build_brokers(
     secrets: config.Secrets, accounts: list[config.AccountConfig]
 ) -> list[KisBroker]:
     """계좌별 브로커. 앱키가 없는 env 의 계좌는 경고 후 건너뛴다."""
-    clients: dict[str, KisClient] = {}
     brokers: list[KisBroker] = []
+    owners: dict[tuple[str, str], str] = {}  # (env, 접두사) → 계좌 id
     for a in accounts:
-        if a.env not in clients:
-            try:
-                clients[a.env] = _build_client(secrets, a.env)
-            except config.ConfigError as e:
-                logging.getLogger("trader.kis").warning("계좌 %s 건너뜀: %s", a.id, e)
-                continue
-        brokers.append(KisBroker(a, clients[a.env]))
+        creds = secrets.kis_creds(a)
+        other = owners.setdefault((a.env, creds.prefix), a.id)
+        if other != a.id:
+            # KIS 는 앱키를 계좌마다 발급한다 — 같은 키로 다른 계좌를 부르면 거부될 수 있다
+            logging.getLogger("trader.kis").warning(
+                "계좌 %s 가 %s 와 같은 앱키(%s*)를 씁니다 — 계좌 전용 키(%s*)를 넣으세요",
+                a.id,
+                other,
+                creds.prefix,
+                config.account_prefix(a),
+            )
+        try:
+            client = _client_for(creds)
+        except config.ConfigError as e:
+            logging.getLogger("trader.kis").warning("계좌 %s 건너뜀: %s", a.id, e)
+            continue
+        brokers.append(KisBroker(a, client))
     return brokers
 
 
@@ -1013,7 +1058,7 @@ def _daemon_deps(*, dry_run: bool = False):
         # KIS 는 앱키당 웹소켓 세션 하나 — 실전 체결통보가 세션을 쓰는 동안 시세 허브는 비켜선다
         wd = _web_deps(
             hub_blocked=lambda: any(
-                lst.env == "real" and lst.holds_session() for lst in notice_listeners
+                lst.shares_market_session and lst.holds_session() for lst in notice_listeners
             )
         )
         extra = _hosts_for_bind(wd.settings.web.bind)  # 단독 `trader web` 과 같은 규칙
@@ -1049,36 +1094,46 @@ def _daemon_deps(*, dry_run: bool = False):
 
 
 def _notice_listeners(settings, secrets, accounts, conn_factory) -> list:
-    """계좌 env 마다 체결통보 리스너(HTS ID·앱키가 있을 때만). 없으면 빈 목록(정기 동기화만)."""
+    """(env, HTS ID) 마다 체결통보 리스너 하나(HTS ID·앱키가 있을 때만, 없으면 정기 동기화만).
+    통보는 HTS ID 단위라 같은 명의의 계좌 여럿은 연결 하나로 받는다. KIS 는 앱키당 웹소켓 세션
+    하나라, 실전은 시세 허브가 쓰지 않는 계좌 전용 키가 있으면 그 키로 붙는다(충돌 없음)."""
     from trader import daemon as daemon_mod
     from trader.orchestrator.notice import NoticeListener
 
-    hts = (secrets.KIS_HTS_ID or "").strip()
-    if not settings.fill_notice or not hts:
+    if not settings.fill_notice:
         return []
+    groups: dict[tuple[str, str], list] = {}
+    for a in accounts:
+        c = secrets.kis_creds(a)
+        if c.hts_id and c.app_key and c.app_secret:
+            groups.setdefault((a.env, c.hts_id), []).append((a, c))
+    market_key = _market_creds(secrets, accounts).app_key
     out = []
-    for env in sorted({a.env for a in accounts}):
+    for (env, hts), members in sorted(groups.items(), key=lambda kv: kv[0]):
+        # 시세 허브와 겹치지 않는 키를 먼저(같은 키면 허브가 비켜선다)
+        members.sort(key=lambda m: (env == "real" and m[1].app_key == market_key, m[0].id))
+        creds = members[0][1]
         try:
-            auth = _build_client(secrets, env).auth
+            auth = _client_for(creds).auth
         except config.ConfigError as e:
             logging.getLogger("trader.cli").warning("체결통보 생략(%s): %s", env, e)
             continue
-        out.append(
-            NoticeListener(
-                env=env,
-                hts_id=hts,
-                approval=auth.approval_key,
-                invalidate=auth.invalidate_approval,
-                on_notice=daemon_mod.notice_handler(conn_factory),
-                enabled=_notice_enabled(env, accounts, conn_factory),
-            )
+        lst = NoticeListener(
+            env=env,
+            hts_id=hts,
+            approval=auth.approval_key,
+            invalidate=auth.invalidate_approval,
+            on_notice=daemon_mod.notice_handler(conn_factory),
+            enabled=_notice_enabled(env, [m[0] for m in members], conn_factory),
         )
+        lst.shares_market_session = env == "real" and creds.app_key == market_key
+        out.append(lst)
     return out
 
 
 def _notice_enabled(env: str, accounts, conn_factory):
-    """모의는 늘 켬. 실전은 실전 계좌가 실제로 주문을 낼 수 있을 때(유효 모드가 off 아님)만 —
-    실전 앱키의 웹소켓 세션 하나를 화면 시세 허브와 나눠 쓰기 때문이다."""
+    """모의는 늘 켬. 실전은 그 HTS ID 의 실전 계좌가 실제로 주문을 낼 수 있을 때(유효 모드가
+    off 아님)만 — 실전 앱키의 웹소켓 세션을 화면 시세 허브와 나눠 쓸 수 있기 때문이다."""
     if env != "real":
         return lambda: True
     from trader.orchestrator import executor
@@ -1591,12 +1646,23 @@ def _web_deps(log_name: str | None = None, *, hub_blocked=None):
     boot.conn.close()  # 스키마 마이그레이션만 (라우터는 conn_factory 로 각자 연다)
     log = logging.getLogger("trader.web")
     try:
-        market = _build_market(secrets)
+        market = _build_market(secrets, accounts)
     except Exception as e:  # noqa: BLE001 - 시세 없이도 조회 페이지는 뜬다
         log.warning("시세 클라이언트 생성 실패(차트 비활성): %s", e)
         market = None
-    if not secrets.WEB_TOKEN:
-        log.warning("WEB_TOKEN 미설정: 제어 API 비활성(401)")
+    token = secrets.WEB_TOKEN
+    if not token:
+        # 첫 실행: 토큰을 만들어 .env 에 넣는다 — 이 PC 브라우저는 /api/control/bootstrap-token 으로
+        # 받아 가므로 사용자가 .env 를 열어 복사할 일이 없다(값은 로그에 남기지 않는다)
+        from trader import secrets_io
+
+        try:
+            token, made = secrets_io.ensure_web_token(paths.secrets_path())
+            if made:
+                log.info("WEB_TOKEN 을 새로 만들어 secrets/.env 에 저장했습니다")
+        except (OSError, config.ConfigError) as e:
+            log.warning("WEB_TOKEN 미설정(만들기 실패: %s): 제어 API 비활성(401)", type(e).__name__)
+            token = None
     try:
         schedule = config.load_schedule()
     except config.ConfigError as e:  # 예정표만 빠진다
@@ -1608,7 +1674,7 @@ def _web_deps(log_name: str | None = None, *, hub_blocked=None):
         conn_factory=db.connect,
         brokers={b.account.id: b for b in _build_brokers(secrets, accounts)},
         market=market,
-        token=secrets.WEB_TOKEN or None,
+        token=token or None,
         dist=paths.web_dist(),
         notifier=make_notifier(secrets),
         schedule=schedule,
