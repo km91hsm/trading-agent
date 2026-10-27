@@ -563,3 +563,124 @@ def theme_name(theme: str) -> str:
     """'섹터:반도체' → '반도체(섹터)', 'kw:로봇' → '로봇(뉴스 키워드)'."""
     kind, _, name = theme.partition(":")
     return f"{name}({'섹터' if kind == '섹터' else '뉴스 키워드'})" if name else theme
+
+
+# --- 파생 레인(Phase 26) ---------------------------------------------------------------
+
+VEHICLE = {"FUTURES": "선물", "OPTION_BUY": "옵션 매수", "OPTION_SELL": "옵션 매도"}
+DIRECTION = {"LONG": "롱", "SHORT": "숏", "FLAT": "관망"}
+CONTRACT_SIDE = {"LONG": "매수", "SHORT": "매도"}
+FO_INTENT = {
+    "OPEN": "진입",
+    "RESIZE_UP": "증액",
+    "RESIZE_DOWN": "감액",
+    "CLOSE": "청산",
+    "STOP": "손절",
+    "EXPIRY": "만기 청산",
+    "SESSION_CLOSE": "마감 청산",
+    "RISK_REDUCE": "위험 축소",
+}
+
+
+def fo_label(code: str, name: str | None = None) -> str:
+    return f"{name}({code})" if name else code
+
+
+def fo_order(
+    *,
+    account: str,
+    code: str,
+    name: str | None,
+    intent: str,
+    side: str,
+    qty: int,
+    order_type: str,
+    price: Any,
+    status: str,
+    order_no: str | None,
+    leverage: Any = None,
+    stop_pt: Any = None,
+    dry_run: bool = False,
+) -> str:
+    """파생 주문 접수·기록 알림. `status` 는 accepted|dry_run|rejected|failed."""
+    tag = "파생 주문" if not dry_run else f"파생 주문 · {DRY_RUN}"
+    px = "시장가" if order_type == "MARKET" else f"{price}pt 지정가"
+    lines = [
+        f"{FO_INTENT.get(intent, intent)} · {SIDE.get(side, side)} {qty}계약 · {px}",
+        f"상태 {status}" + (f" · 접수번호 {order_no}" if order_no else ""),
+    ]
+    if leverage is not None:
+        lines.append(f"배수 {float(leverage):.2f}")
+    if stop_pt is not None:
+        lines.append(f"손절선 {stop_pt}pt")
+    return render(tag, f"{account} · {fo_label(code, name)}", lines)
+
+
+def fo_reject(*, account: str, code: str, name: str | None, intent: str, reasons: list[str]) -> str:
+    return render(
+        "파생 판정 거부",
+        f"{account} · {fo_label(code, name)}",
+        [f"{FO_INTENT.get(intent, intent)} 거부", *reasons[:5]],
+    )
+
+
+def fo_unknown_order(
+    *, account: str, code: str, name: str | None, side: str, qty: int, err: Any
+) -> str:
+    return render(
+        "파생 주문 상태 미확인",
+        f"{account} · {fo_label(code, name)}",
+        [
+            f"{SIDE.get(side, side)} {qty}계약 — 요청은 나갔지만 응답을 못 받았어요: {err}",
+            "체결 조회로 확정할 때까지 살아 있는 주문으로 봐요. 다시 내지 않아요.",
+        ],
+    )
+
+
+def fo_exit_failed(*, account: str, code: str, name: str | None, qty: int, attempts: int) -> str:
+    return render(
+        "파생 청산 실패",
+        f"{account} · {fo_label(code, name)}",
+        [
+            f"잔량 {qty}계약 — 청산 다리 {attempts}회 재시도 뒤에도 미체결이에요.",
+            "매 틱 다시 시도하고 신규 진입은 막아요. 수동 확인이 필요해요.",
+        ],
+    )
+
+
+def fo_unknown_holding(*, account: str, code: str, side: str, qty: int) -> str:
+    return render(
+        "파생 잔고 출처 불명",
+        f"{account} · {code}",
+        [
+            f"{CONTRACT_SIDE.get(side, side)} {qty}계약 — 원장에 없는 보유예요.",
+            "자동 주문은 내지 않아요. `trader fo adopt` 로 승계하거나 수동으로 정리하세요.",
+        ],
+    )
+
+
+def fo_field_unverified(*, account: str, items: list[str]) -> str:
+    return render(
+        "파생 잔고 미확정",
+        account,
+        [
+            *[f"미확정 행: {s}" for s in items[:5]],
+            "방향·종류를 확정할 수 없어 어떤 자동 주문의 대상도 아니에요. 신규 진입을 막아요.",
+        ],
+    )
+
+
+def fo_recall(*, account: str, code: str, name: str | None, reason: str, cancelled: int) -> str:
+    return render(
+        "파생 진입 회수",
+        f"{account} · {fo_label(code, name)}",
+        [f"사유: {reason}", f"살아 있는 진입 다리 {cancelled}건 취소 요청·확정"],
+    )
+
+
+def fo_settlement(*, account: str, code: str, name: str | None, pnl: Any) -> str:
+    return render(
+        "파생 정산",
+        f"{account} · {fo_label(code, name)}",
+        [f"만기 정산 손익 {money(pnl, 'KR')}"],
+    )
