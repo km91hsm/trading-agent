@@ -818,3 +818,20 @@ def test_max_stop_since_keeps_floor_across_same_day_overwrite_and_ignores_sell_t
     _ingest_decision(conn, date(2026, 10, 10), "30_decision", action="SELL", stop_loss=69950.0)
     assert repo.max_stop_since(conn, "KR", "005930", D) == Decimal("65000")
     assert repo.max_stop_since(conn, "KR", "005930", None) is None
+
+
+def test_realized_pnl_cost_basis_uses_all_fills_but_counts_only_llm_sells(conn):
+    """PR #58 Codex: origin 필터는 손익에 **넣을 매도**에만 — 보유 묶음의 수량·평단은 재호가·
+    리밸런스 체결도 포함해 재구성한다. 재호가 BUY 100 → 손절 SELL 90 은 −10 이고, LLM BUY 100 →
+    리밸런스 전량 매도 → LLM BUY 20 → LLM SELL 30 은 +10 (옛 묶음이 리셋돼야 한다)."""
+    t = "2026-10-08T01:00:00+00:00"
+    _origin_order(conn, origin="reprice", created_at=t, order_no="p1", fill_price=100)
+    _origin_order(conn, origin="stop", side="SELL", created_at=t, order_no="t1", fill_price=90)
+    assert repo.realized_pnl_5d(conn, "paper-main", D) == Decimal("-10")
+    _origin_order(conn, origin="llm", created_at=t, order_no="l1", fill_price=100)
+    _origin_order(
+        conn, origin="rebalance", side="SELL", created_at=t, order_no="r1", fill_price=50
+    )  # 리밸런스 매도 −50 은 LLM 손익이 아니지만 묶음은 비운다
+    _origin_order(conn, origin="llm", created_at=t, order_no="l2", fill_price=20)
+    _origin_order(conn, origin="llm", side="SELL", created_at=t, order_no="l3", fill_price=30)
+    assert repo.realized_pnl_5d(conn, "paper-main", D) == Decimal("0")  # −10 + 10

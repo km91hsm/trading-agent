@@ -780,8 +780,10 @@ def realized_pnl_5d(
 
     창 안에 SELL 체결이 있는 종목만 전체 체결을 시간순으로 걸어 평균가를 갱신한다(보유 0 이면 리셋).
     전 이력 BUY 평균을 쓰면 전량 매도 뒤 재매수한 종목의 손익 부호가 뒤집혀 성향 판정이 틀린다.
-    금액은 Decimal 로만 계산한다. 통화가 섞이지 않게 market 으로 거른다. LLM 결정 주문(llm·stop)의
-    체결만 본다 — 단타 왕복 손실이 다음 날 LLM 한도를 줄이지 않게(2-O8).
+    금액은 Decimal 로만 계산한다. 통화가 섞이지 않게 market 으로 거른다. 손익에 넣는 매도는 LLM
+    결정 주문(llm·stop)의 체결만 — 단타 왕복 손실이 다음 날 LLM 한도를 줄이지 않게(2-O8) — 이되
+    보유 묶음의 수량·평단은 **모든 origin 의 체결**로 재구성한다(재호가 BUY 가 평단이고 리밸런스
+    매도가 묶음을 비운다; PR #58 Codex 리뷰).
     """
     lo, _ = day_bounds(d - timedelta(days=7), market)  # 시장 현지 창(US 는 KST 자정을 넘긴다)
     _, hi = day_bounds(d, market)
@@ -800,9 +802,9 @@ def realized_pnl_5d(
         return Decimal(0)
     marks = ",".join("?" * len(tickers))
     sql = (
-        "SELECT o.ticker, o.side, f.qty, f.price, f.filled_at FROM fills f "
-        "JOIN orders o ON o.id=f.order_id "
-        f"WHERE f.account_id=? AND o.ticker IN ({marks}) AND {origin_sql}"
+        "SELECT o.ticker, o.side, f.qty, f.price, f.filled_at, "
+        f"({origin_sql}) AS llm FROM fills f JOIN orders o ON o.id=f.order_id "
+        f"WHERE f.account_id=? AND o.ticker IN ({marks})"
     )
     args = [account_id, *tickers]
     if market:
@@ -826,7 +828,7 @@ def realized_pnl_5d(
             # (평단 0 으로 치면 매도금액 전체가 이익이 돼 성향이 틀린다)
             continue
         avg = cost.get(t, Decimal(0)) / held
-        if lo <= r["filled_at"] < hi:
+        if r["llm"] and lo <= r["filled_at"] < hi:
             total += (px - avg) * q
         remaining = held - q
         if remaining <= 0:
