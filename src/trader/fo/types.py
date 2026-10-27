@@ -4,9 +4,16 @@
 from __future__ import annotations
 
 import sqlite3
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, field, fields
+from datetime import date, datetime
 from decimal import Decimal
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from trader.broker.fo_master import Contract
+    from trader.broker.models import FoCash, FoOrderable, FoQuote
+    from trader.config import FoCfg
+    from trader.fo.schemas import FoDecision, FoDecisionEnvelope
 
 POSITION_STATUSES = (
     "entering",
@@ -151,3 +158,110 @@ def _coerce(cls, row: sqlite3.Row) -> dict[str, Any]:
                 v = Decimal(0)
         out[f.name] = v
     return out
+
+
+# --- 게이트 입력·출력(스펙 §4) ----------------------------------------------------------
+
+
+@dataclass
+class FoPortfolio:
+    """계좌 상태 묶음: 브로커 잔고(NAV·현금) + 원장(열린 포지션·살아 있는 다리) + 차단 사유 +
+    수단별 검증 플래그."""
+
+    account_id: str
+    nav: Decimal | None
+    cash: FoCash | None
+    positions: list[FoPositionRow] = field(default_factory=list)
+    legs: list[FoLegRow] = field(default_factory=list)
+    blocking: str | None = None
+    halted: bool = False
+    verified: dict[str, bool] = field(default_factory=dict)
+    realized_today: Decimal = Decimal(0)
+
+
+@dataclass
+class GateInput:
+    decision: FoDecision
+    env: FoDecisionEnvelope
+    port: FoPortfolio
+    cfg: FoCfg
+    quote: FoQuote | None
+    underlying: Decimal | None
+    index_asof: datetime | None
+    regime: str
+    view_state: str
+    now: datetime
+    today: date
+    killswitch: bool = False
+    paused: bool = False
+    orderable: FoOrderable | None = None
+    inputs_fresh: bool = True
+    historical: bool = False
+    contract: Contract | None = None
+    days_left: int | None = None
+    position: FoPositionRow | None = None
+
+
+@dataclass
+class Leg:
+    """판정이 만든 주문 다리 하나(진입 또는 축소)."""
+
+    intent: str
+    order_side: str
+    qty: int
+    order_type: str
+    price: Decimal | None
+    planned_loss: Decimal
+    code: str
+    kind: str
+    position_id: int | None = None
+
+
+@dataclass
+class SizeResult:
+    n_target: int
+    n_leg: int
+    planned_loss_leg: Decimal
+    planned_loss_per_contract: Decimal
+    exposure_after: Decimal
+    stress_loss_after: Decimal
+    budget: dict[str, Any]
+    ref_price: Decimal | None
+    reasons: list[str] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
+
+
+@dataclass
+class FoVerdict:
+    approved: bool
+    legs: list[Leg] = field(default_factory=list)
+    leverage_used: float = 0.0
+    exposure_after: Decimal = Decimal(0)
+    stress_loss_after: Decimal = Decimal(0)
+    lifetime_budget: dict[str, Any] = field(default_factory=dict)
+    reasons: list[str] = field(default_factory=list)
+    note: str = ""
+    cross_factor: float = 1.0
+    stop_pt: Decimal | None = None
+    approved_mult: float | None = None
+    premium_stop: Decimal | None = None
+    n_target: int = 0
+    contract_side: str | None = None
+    kind: str | None = None
+    code: str | None = None
+
+    def as_dict(self) -> dict[str, Any]:
+        from dataclasses import asdict
+
+        d = asdict(self)
+        return _plain(d)
+
+
+def _plain(v: Any) -> Any:
+    if isinstance(v, Decimal):
+        return str(v)
+    if isinstance(v, dict):
+        return {k: _plain(x) for k, x in v.items()}
+    if isinstance(v, list):
+        return [_plain(x) for x in v]
+    return v

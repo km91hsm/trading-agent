@@ -36,9 +36,7 @@ def price(kind: FoKind, F: Decimal, K: Decimal, iv: float, days_left: int) -> De
     return Decimal(str(max(v, intrinsic))).quantize(_Q)
 
 
-def reprice(
-    quote: FoQuote, *, index_shift_pct: float, iv_rel: float, days_left: int
-) -> Decimal:
+def reprice(quote: FoQuote, *, index_shift_pct: float, iv_rel: float, days_left: int) -> Decimal:
     """시나리오 가격: 기초지수 × (1 + shift), IV × (1 + iv_rel). 선물은 선형(현재가 기준),
     옵션은 행사가·IV·기초지수가 있어야 한다(없으면 ValueError — 호출자가 신규를 거부).
     `FoQuote.iv` 는 KIS 그대로 **퍼센트**(18.4)이고 Black-76 은 소수(0.184)를 받으므로 여기서

@@ -29,10 +29,29 @@ def test_black76_iv_monotone():
 
 def _q(kind, **kw):
     base = dict(
-        code="x", kind=kind, price=Decimal("5"), bid=None, ask=None, change_pct=0.0, volume=0,
-        open_interest=None, basis=None, upper=None, lower=None, last_trade_date=None,
-        days_left=10, hist_vol=None, iv=20.0, delta=None, gamma=None, theta=None, vega=None,
-        strike=Decimal("350"), underlying=Decimal("350"), underlying_asof=None, quote_asof=None,
+        code="x",
+        kind=kind,
+        price=Decimal("5"),
+        bid=None,
+        ask=None,
+        change_pct=0.0,
+        volume=0,
+        open_interest=None,
+        basis=None,
+        upper=None,
+        lower=None,
+        last_trade_date=None,
+        days_left=10,
+        hist_vol=None,
+        iv=20.0,
+        delta=None,
+        gamma=None,
+        theta=None,
+        vega=None,
+        strike=Decimal("350"),
+        underlying=Decimal("350"),
+        underlying_asof=None,
+        quote_asof=None,
         received_at=datetime(2026, 10, 27, tzinfo=UTC),
     )
     base.update(kw)
