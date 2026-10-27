@@ -72,6 +72,9 @@ class ExecContext:
     holiday_fn: Callable[[date], bool] | None = None  # 보유 거래일 계산용 (KIS 휴장일, 캐시)
     rl_sizer: Any | None = None  # ml.rl.shadow.Sizer (Phase 9, 모의 계좌·BUY/ADD 에만)
     sectors: Any | None = None  # config.SectorMap (섹터 상한). None 이면 첫 사용 때 load_sectors()
+    # False 면 판정만 하고 positions_snapshot·킬스위치 기준·메모리 브레이커를 쓰지 않는다 —
+    # FAKE 세션의 가짜 브로커 잔고가 성과·기준선을 오염시키지 않게(2-O7)
+    record_portfolio: bool = True
 
 
 def cancel_open_buys(
@@ -328,8 +331,10 @@ def build_portfolio(
     now: datetime | None = None,
     killswitch_pct: float = 0.0,
     cancel_buys: bool = False,
+    record: bool = True,
 ) -> rules.Portfolio:
-    """브로커 잔고·현금 + 원장 집계로 Portfolio 를 만들고 positions_snapshot 을 남긴다.
+    """브로커 잔고·현금 + 원장 집계로 Portfolio 를 만들고 positions_snapshot 을 남긴다
+    (`record=False` 면 스냅샷·킬스위치 관측·메모리 브레이커를 건너뛴다 — FAKE 세션, 2-O7).
     now 가 있으면 만료된 승인 요청은 현금 예약에서 뺀다(전체 검토 O17).
     killswitch_pct > 0 이면 실제 NAV 로 누적 손실 킬스위치를 본다(`risk/killswitch`).
     계좌의 `capital_cap`(실전 자본 상한, Stock D-074)이 있으면 게이트가 쓰는 NAV·가능금액을 그
@@ -340,7 +345,7 @@ def build_portfolio(
         repo.upsert_ticker_name(conn, p.market, p.ticker, getattr(p, "name", None), "balance")
         repo.upsert_ticker_exchange(conn, p.market, p.ticker, getattr(p, "exchange", None))
     nav = _nav_of(pos_list, cash)
-    if killswitch_pct > 0:
+    if killswitch_pct > 0 and record:
         from trader.risk import killswitch
 
         killswitch.observe(
@@ -361,27 +366,28 @@ def build_portfolio(
         on_killswitch(conn, broker, account.id, market, today, keep=hedge_tickers)
     prev = repo.latest_nav_before(conn, account.id, today, market=market)
     today_pnl = float(nav / prev - 1) if prev else 0.0
-    if account.env == "paper":
+    if account.env == "paper" and record:
         _update_breaker(conn, account, market, today, nav, memory_settings)
-    repo.snapshot_positions(
-        conn,
-        account_id=account.id,
-        d=today,
-        market=market,
-        nav=nav,
-        cash=cash.total,
-        positions=[
-            {
-                "ticker": p.ticker,
-                "market": p.market,
-                "qty": p.qty,
-                "avg_price": p.avg_price,
-                "current_price": p.current_price,
-                "eval_amount": p.eval_amount,
-            }
-            for p in positions.values()
-        ],
-    )
+    if record:
+        repo.snapshot_positions(
+            conn,
+            account_id=account.id,
+            d=today,
+            market=market,
+            nav=nav,
+            cash=cash.total,
+            positions=[
+                {
+                    "ticker": p.ticker,
+                    "market": p.market,
+                    "qty": p.qty,
+                    "avg_price": p.avg_price,
+                    "current_price": p.current_price,
+                    "eval_amount": p.eval_amount,
+                }
+                for p in positions.values()
+            ],
+        )
     sizing_nav, available = nav, cash.available
     cap = (account.capital_cap or {}).get(market)  # type: ignore[call-overload]
     if cap is not None and nav > cap:
@@ -749,6 +755,7 @@ def _execute_account(
                 hedge_tickers=hedge_tickers,
                 killswitch_pct=ctx.settings.risk.killswitch_drawdown_pct,
                 cancel_buys=not dry_run,
+                record=ctx.record_portfolio,
             )
             portfolio.theme_of = theme_of  # Phase 25: 오늘 상위 테마(없으면 테마 규칙 생략)
             sized = decision

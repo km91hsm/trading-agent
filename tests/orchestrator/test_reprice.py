@@ -191,3 +191,39 @@ def test_candidates_exclude_stop_loss_and_hedge_orders(conn):
     conn.commit()
     assert [r["id"] for r in reprice.candidates(conn, "paper-main", "KR", D)] == [o_buy]
     assert o_sl != o_buy
+
+
+def test_reprice_gate_sees_quote_change_pct_and_trade_block(conn):
+    """전체 검토 2차 2-O5: 재제출 게이트가 재호가 시세의 당일 등락률(급등 추격 금지)·종목상태
+    (거래정지 등)를 본다 — quote_fn 이 `.price`·`.change_pct`·상태 코드를 가진 시세를 주면 price
+    밖의 필드도 쓴다. Decimal 만 주는 호출자는 그대로."""
+    from types import SimpleNamespace as NS
+
+    ctx = _ctx(conn)
+    _order(conn, price="70000")
+    out = reprice.reprice(
+        ctx,
+        market="KR",
+        today=D,
+        cfg=CFG,
+        quote_fn=lambda t, e: NS(price=Decimal("70300"), change_pct=0.12),
+    )
+    r = out["repriced"][0]
+    assert r["to"] == "70300" and r["approved"] is False
+    rc = read_checkpoint(run_dir(D, "KR", "005930"), "42_reprice_paper-main")["data"]
+    assert any("당일 등락률" in s for s in rc["reasons"])
+    # 거래정지 종목 → 매수 거부
+    control.set_flag(conn, reprice.done_key("KR", D), None)
+    conn.execute("DELETE FROM orders")
+    conn.commit()
+    _order(conn, price="70000")
+    out = reprice.reprice(
+        ctx,
+        market="KR",
+        today=D,
+        cfg=CFG,
+        quote_fn=lambda t, e: NS(price=Decimal("70300"), change_pct=0.0, status_code="58"),
+    )
+    assert out["repriced"][0]["approved"] is False
+    rc = read_checkpoint(run_dir(D, "KR", "005930"), "42_reprice_paper-main")["data"]
+    assert any("거래정지" in s for s in rc["reasons"])

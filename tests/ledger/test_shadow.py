@@ -206,3 +206,32 @@ def test_record_and_mature_with_index_table(conn, project):
     assert rets["index_trend"] == 0.0  # 100일 미만 이력 → 현금
     s = shadow.paired_stats(conn, b="index_hold")
     assert s["n"] == 1
+
+
+def test_index_table_drops_incomplete_today_bar(conn):
+    """2-P4: 지수 proxy 종가표도 장중의 오늘 봉을 쓰지 않는다(now 를 주면 완성 봉까지)."""
+    from datetime import UTC, datetime, timedelta
+    from decimal import Decimal
+
+    from trader.broker.fake import FakeMarket
+    from trader.broker.models import Candle
+    from trader.config import HedgeCfg
+
+    d0 = date(2026, 10, 20)
+    cs = [
+        Candle(
+            date=d0 + timedelta(days=i),
+            open=Decimal(1),
+            high=Decimal(1),
+            low=Decimal(1),
+            close=Decimal(100 + i),
+            volume=5,
+        )
+        for i in range(4)  # 10-20 ~ 10-23(금)
+    ]
+    m = FakeMarket(candles={"069500": cs})
+    cfg = HedgeCfg()
+    assert len(shadow.index_table(m, cfg, "KR")) == 4
+    mid = datetime(2026, 10, 23, 1, 0, tzinfo=UTC)  # 10:00 KST 장중
+    assert list(shadow.index_table(m, cfg, "KR", now=mid).index) == [c.date for c in cs[:3]]
+    assert len(shadow.index_table(m, cfg, "KR", now=mid + timedelta(hours=6))) == 4

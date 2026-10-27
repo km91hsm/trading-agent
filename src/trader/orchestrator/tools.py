@@ -852,9 +852,9 @@ def submit_decision(
         trig = repo.latest_trigger_price(ctx.conn, market, ticker, date)
         if trig is not None:
             price = trig
-            change_pct = (
-                None  # 트리거 가격의 등락률은 모른다 — 아침 시세 값으로 추격 판정하지 않는다
-            )
+            # 트리거 가격의 당일 등락률 = 트리거 가격 ÷ 직전 완성 봉 종가 − 1 (2-O6) — None 으로
+            # 두면 장중 급등을 쫓는 BUY 가 추격 금지를 지난다
+            change_pct = _trigger_change_pct(inputs, trig, date)
         elif price is not None:  # 뉴스 재평가(가격 없는 트리거)는 재수집 입력 + 재시세
             price, requote, change_pct = _requote(ctx, inputs, market, ticker, price)
     elif price is not None:
@@ -930,6 +930,7 @@ def _execute_and_record(
 
     결정은 1회, 판정·주문은 계좌마다. 재평가 라운드는 41_/51_ 체크포인트 이름에 들어간다."""
     from trader.orchestrator import executor
+    from trader.orchestrator import session as session_mod
 
     assert ctx.conn is not None
     ectx = executor.ExecContext(
@@ -942,6 +943,7 @@ def _execute_and_record(
         now=ctx.now,
         holiday_fn=ctx.holiday_fn,
         rl_sizer=_load_sizer(ctx.state),
+        record_portfolio=not session_mod.is_fake(),  # 가짜 브로커 잔고는 기록하지 않는다(2-O7)
     )
     # 메모리의 decided_at 은 실행 직전 시각 — 이 라운드의 주문이 그 뒤에 생겨 체결가 채점 창이 된다
     decided_at = _decided_at(ctx.now(), date, market)
@@ -1039,6 +1041,21 @@ def _record_memory(
 
 
 REQUOTE_AFTER_S = 600  # 입력 수집 뒤 이만큼 지났으면 제출 때 현재가를 다시 받는다(Phase 21)
+
+
+def _trigger_change_pct(inputs: dict, price: Decimal, run_date: date) -> float | None:
+    """트리거 가격의 당일 등락률(소수): `00_inputs.technical.daily` 에서 운영일 전 마지막 일봉
+    종가 대비. 직전 종가를 모르면 None — 아침 시세의 등락률로 트리거 가격을 판정하지 않는다
+    (PR #26 리뷰: 아침 +12% 가 장중 되돌린 가격의 재평가를 막지 않게)."""
+    try:
+        rows = inputs["technical"]["daily"]["data"] or []
+        prev = [r for r in rows if str(r.get("date") or "") < run_date.isoformat()]
+        close = Decimal(str(prev[-1]["close"]))
+        if close > 0:
+            return float(price / close - 1)
+    except (KeyError, TypeError, ValueError, IndexError, InvalidOperation, AttributeError):
+        pass
+    return None
 
 
 def _input_change_pct(inputs: dict) -> float | None:

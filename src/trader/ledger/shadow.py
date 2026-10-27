@@ -78,8 +78,11 @@ def index_weights(index: pd.DataFrame, *, day: date) -> dict[str, dict[str, floa
     return {"index_hold": {sym: 1.0}, "index_trend": {sym: 1.0} if trend else {}}
 
 
-def index_table(market_client, hedge_cfg, market: str, *, days: int = 200) -> pd.DataFrame:
-    """지수 proxy 일봉 종가표(KIS). 실패·설정 없음은 빈 표 — 지수 기준선만 빠진다."""
+def index_table(
+    market_client, hedge_cfg, market: str, *, days: int = 200, now: datetime | None = None
+) -> pd.DataFrame:
+    """지수 proxy 일봉 종가표(KIS). 실패·설정 없음은 빈 표 — 지수 기준선만 빠진다. `now` 를 주면
+    완성 봉까지만(장중의 오늘 봉 제외, 2-P4)."""
     inst = (hedge_cfg.index_proxy or {}).get(market) if hedge_cfg is not None else None
     if market_client is None or inst is None:
         return pd.DataFrame()
@@ -92,6 +95,10 @@ def index_table(market_client, hedge_cfg, market: str, *, days: int = 200) -> pd
     except Exception as e:  # noqa: BLE001 - 측정 보조: 실패하면 지수 기준선만 생략
         logger.warning("지수 proxy 일봉 실패 %s %s: %s", market, inst.symbol, e)
         return pd.DataFrame()
+    if now is not None:
+        from trader import market_hours
+
+        candles = market_hours.completed_candles(market, candles, now)
     if not candles:
         return pd.DataFrame()
     return pd.DataFrame(

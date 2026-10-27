@@ -1447,3 +1447,18 @@ def test_summarize_with_debate_turns_uses_debate_even_on_consensus(ctx, project)
     assert r["ok"] and not r.get("skipped_debate")
     s = read_checkpoint(run_dir(D, "KR", "005930"), "25_research_summary")["data"]
     assert "skipped_debate" not in s and isinstance(s["sycophantic"], bool)
+
+
+def test_fake_session_submit_does_not_record_portfolio(ctx, project, monkeypatch):
+    """2-O7: FAKE_CLAUDE=1 제출은 가짜 브로커 잔고를 positions_snapshot 에 남기지 않는다."""
+    from trader.broker.fake import FakeBroker
+    from trader.broker.models import Cash
+
+    monkeypatch.setenv("FAKE_CLAUDE", "1")
+    _ready_for_submit(ctx, project)
+    cash = {"KR": Cash(currency="KRW", available=Decimal("10000000"), total=Decimal("10000000"))}
+    ctx.brokers = {a.id: FakeBroker(a, cash=cash) for a in ctx.accounts}
+    ctx.dry_run = False
+    r = tools.submit_decision(ctx, ticker="005930", market="KR", date=D, payload=ok_decision())
+    assert r["ok"] and r["executions"][0]["approved"]
+    assert ctx.conn.execute("SELECT COUNT(*) AS n FROM positions_snapshot").fetchone()["n"] == 0

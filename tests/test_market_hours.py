@@ -26,3 +26,27 @@ def test_us_early_close_ends_session_at_13_et():
     assert not market_hours.is_open("US", t) and market_hours.session_over("US", t)
     normal = datetime(2026, 11, 25, 18, 30, tzinfo=UTC)
     assert market_hours.is_open("US", normal) and not market_hours.session_over("US", normal)
+
+
+def test_completed_candles_drops_today_bar_until_session_over():
+    """전체 검토 2차 2-P4(L7): 장중의 오늘 봉은 거래량이 있어도 미완성이라 버린다(마감 뒤 포함),
+    미래 날짜·거래량 0 꼬리도 버린다."""
+    from datetime import date
+    from decimal import Decimal
+
+    from trader.broker.models import Candle
+    from trader.market_hours import completed_candles
+
+    def c(d, vol=10):
+        one = Decimal(1)
+        return Candle(date=d, open=one, high=one, low=one, close=one, volume=vol)
+
+    cs = [c(date(2026, 10, 8)), c(date(2026, 10, 9))]
+    assert completed_candles("KR", cs, datetime(2026, 10, 9, 1, 0, tzinfo=UTC)) == cs[:1]  # 10:00
+    assert completed_candles("KR", cs, datetime(2026, 10, 9, 7, 0, tzinfo=UTC)) == cs  # 16:00
+    assert completed_candles("US", cs, datetime(2026, 10, 9, 14, 0, tzinfo=UTC)) == cs[:1]
+    assert completed_candles("US", cs, datetime(2026, 10, 9, 21, 0, tzinfo=UTC)) == cs
+    future = cs + [c(date(2026, 10, 12))]
+    assert completed_candles("KR", future, datetime(2026, 10, 9, 7, 0, tzinfo=UTC)) == cs
+    stub = cs + [c(date(2026, 10, 12), vol=0)]
+    assert completed_candles("KR", stub, datetime(2026, 10, 12, 7, 0, tzinfo=UTC)) == cs

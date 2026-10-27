@@ -1249,3 +1249,18 @@ def test_killswitch_sweep_keeps_hedge_orders(ectx):
         ectx.conn, b, "paper-main", "KR", D, keep=frozenset({"005930"})
     )
     assert (n, left) == (0, []) and b.cancelled == []
+
+
+def test_record_portfolio_false_skips_snapshot_and_killswitch(ectx):
+    """전체 검토 2차 2-O7: FAKE 세션(가짜 브로커 잔고)은 판정만 하고 positions_snapshot·킬스위치
+    기준 NAV 를 건드리지 않는다 — 가짜 NAV 가 성과·킬스위치 기준선을 오염시키지 않게."""
+    ectx.record_portfolio = False
+    r = _run(ectx)
+    assert next(x for x in r if x["account_id"] == "paper-main")["approved"]
+    n = ectx.conn.execute("SELECT COUNT(*) AS n FROM positions_snapshot").fetchone()["n"]
+    ks = ectx.conn.execute("SELECT COUNT(*) AS n FROM control WHERE key LIKE 'killswitch%'")
+    assert n == 0 and ks.fetchone()["n"] == 0
+    ectx.record_portfolio = True
+    _run(ectx)
+    n = ectx.conn.execute("SELECT COUNT(*) AS n FROM positions_snapshot").fetchone()["n"]
+    assert n > 0
