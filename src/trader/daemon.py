@@ -42,6 +42,7 @@ BALANCE_REFRESH_S = 300  # 정규장 잔고 주기 갱신(웹 실시간 — 조�
 TELEGRAM_POLL_S = 30
 QUEUE_JOB_ID = "job_queue"  # 작업 대기열 소비 잡 (jobs.py)
 FAST_QUEUE_JOB_ID = "job_queue_fast"  # 빠른 레인: 재평가·가벼운 잡(heavy 락 밖, 전체 검토 P2)
+INFO_QUEUE_JOB_ID = "job_queue_info"  # 정보 레인: 사용량 확인(빠른 레인을 막지 않게)
 QUEUE_INTERVAL_S = 10
 QUEUED_MAX_AGE = timedelta(hours=6)  # 데몬이 꺼진 동안 쌓인 요청은 만료
 BOOTSTRAP_RETRY_AGE = timedelta(hours=24)  # 피처 스토어 부트스트랩 백필 실패 뒤 재시도 간격
@@ -369,6 +370,7 @@ def build_jobs(schedule: ScheduleConfig, settings: Settings, *, markets: list[st
     jobs.append(Job("telegram_poll", "telegram_poll", interval_s=TELEGRAM_POLL_S))
     jobs.append(Job(QUEUE_JOB_ID, "job_queue", interval_s=QUEUE_INTERVAL_S))
     jobs.append(Job(FAST_QUEUE_JOB_ID, "job_queue_fast", interval_s=QUEUE_INTERVAL_S))
+    jobs.append(Job(INFO_QUEUE_JOB_ID, "job_queue_info", interval_s=QUEUE_INTERVAL_S))
     jobs.append(Job("news_collect", "news_collect", interval_s=schedule.news_collect.interval_s))
     jobs.append(Job("ops_check", "ops_check", interval_s=OPS_CHECK_S))  # 운영 점검(Phase 23 A)
     jobs.append(Job("balance_refresh", "balance_refresh", interval_s=BALANCE_REFRESH_S))
@@ -1512,17 +1514,17 @@ def _scalp_body(deps: DaemonDeps, market: str) -> dict:
         conn.close()
 
 
-def _balance_body(deps: DaemonDeps) -> dict:
-    """정규장인 시장만 계좌 잔고를 다시 읽어 스냅샷 갱신(조회만, 주문 없음) → SSE `positions` 로
-    화면의 순자산·보유·섹터가 새로고침 없이 바뀐다. 가벼운 잡(heavy 밖)."""
+def _balance_body(deps: DaemonDeps, *, force: bool = False) -> dict:
+    """계좌 잔고를 다시 읽어 스냅샷 갱신(조회만, 주문 없음) → SSE `positions` 로 화면의 순자산·
+    보유·섹터가 새로고침 없이 바뀐다. 정규장 시장은 매 틱, 장 밖 시장은 스냅샷이
+    `balance.OFF_HOURS_EVERY` 보다 오래됐을 때만(입출금·이체 반영). force(체결 동기화 직후)면
+    장 밖이어도 바로 읽는다. 가벼운 잡(heavy 밖)."""
     from trader.orchestrator import balance
 
     if deps.stop_event.is_set():  # 일시정지는 거래 중단일 뿐 — 잔고 조회는 계속
         return {"skipped": "종료 중"}
     now = deps.now()
-    markets = balance.open_markets(list(deps.settings.markets), now)
-    if not markets:
-        return {"skipped": "정규장 아님"}
+    open_now = set(balance.open_markets(list(deps.settings.markets), now))
     conn = deps.conn_factory()
     try:
         return {
@@ -1535,29 +1537,45 @@ def _balance_body(deps: DaemonDeps) -> dict:
                 now=now,
                 market_client=deps.market_client,
                 state=deps.state,
-                cancel_buys=not deps.dry_run,
+                only_stale=not force and m not in open_now,
+                stale_after=balance.OFF_HOURS_EVERY,
+                # 킬스위치 미체결 BUY 회수는 장중에만(장 밖엔 거둘 당일 주문이 없다)
+                cancel_buys=not deps.dry_run and m in open_now,
             )
-            for m in markets
+            for m in deps.settings.markets
         }
     finally:
         conn.close()
 
 
-def _usage_probe_body(deps: DaemonDeps) -> dict:
-    """구독 사용률 확인(웹 사용량 블록 실시간). 최근 관측이 있거나 감속 hard 이상이면 건너뛴다."""
-    from trader import usage
-    from trader.orchestrator import quick
+_USAGE_PROBE_LOCK = threading.Lock()  # 정기 잡·대기열 요청이 겹쳐 haiku 를 두 번 부르지 않게
 
+
+def _usage_probe_body(deps: DaemonDeps, *, force: bool = False) -> dict:
+    """구독 사용률 확인(웹 사용량 블록 실시간). 최근 관측이 있거나 감속 hard 이상이면 건너뛴다.
+    force(시스템 현황 '지금 확인')면 최근 관측이 있어도 확인한다(감속은 그대로 본다)."""
     cfg = deps.settings.llm.usage_probe
     if deps.stop_event.is_set() or not cfg.enabled:
         return {"skipped": "종료 중·꺼짐"}
+    if not _USAGE_PROBE_LOCK.acquire(blocking=False):
+        return {"skipped": "다른 확인이 도는 중"}
+    try:
+        return _usage_probe_once(deps, cfg, force=force)
+    finally:
+        _USAGE_PROBE_LOCK.release()
+
+
+def _usage_probe_once(deps: DaemonDeps, cfg, *, force: bool) -> dict:
+    from trader import usage
+    from trader.orchestrator import quick
+
     now = deps.now()
     conn = deps.conn_factory()
     try:
         # 원장(세션·확인)과 대화형 상태줄 파일을 합친 최신 관측 — 둘 중 하나라도 최근이면 쉰다
         obs = usage.latest_observation(conn, now, usage.usage_file(deps.settings.llm.usage_file))
         age = (obs or {}).get("age_s")
-        if age is not None and age < cfg.skip_if_recent_min * 60:
+        if not force and age is not None and age < cfg.skip_if_recent_min * 60:
             return {"skipped": f"최근 관측 {int(age)}초 전"}
         ok, reason = usage.session_allowance(conn, deps.settings, kind="resume", now=now)
         if not ok:
@@ -1741,6 +1759,18 @@ def _paper_review_body(deps: DaemonDeps) -> dict:
     if any(it["terminal"] for it in r["items"]) or r["alerts"]:
         deps.notifier.send(paper_review.message(r))
     return {"items": len(r["items"]), "alerts": len(r["alerts"])}
+
+
+def _fills_then_balance(deps: DaemonDeps) -> dict:
+    """대기열 체결 동기화(체결통보 웹소켓·웹 버튼): 동기화 직후 잔고도 바로 다시 읽어 순자산·보유가
+    몇 초 안에 화면에 반영되게 한다(KIS 웹소켓엔 잔고 스트림이 없어 체결통보가 신호). 잔고 실패는
+    체결 결과를 가리지 않는다."""
+    out = _fills_body(deps)
+    try:
+        out["balance"] = _balance_body(deps, force=True)
+    except Exception as e:  # noqa: BLE001 — 잔고는 보조, 다음 주기 갱신이 다시 읽는다
+        logger.warning("체결 동기화 뒤 잔고 갱신 실패: %s", e)
+    return out
 
 
 def notice_handler(conn_factory: Callable[[], sqlite3.Connection]) -> Callable[[str], bool]:
@@ -2724,6 +2754,8 @@ def job_body(
         return lambda: _queue_tick(deps, heartbeat)
     if job.kind == "job_queue_fast":
         return lambda: _fast_queue_tick(deps, heartbeat)
+    if job.kind == "job_queue_info":
+        return lambda: _info_queue_tick(deps, heartbeat)
     raise ValueError(f"알 수 없는 잡: {job.kind}")
 
 
@@ -2841,7 +2873,9 @@ def queued_job_body(
     if kind == "reflect":
         return lambda: _reflect_body(deps)
     if kind == "fills_sync":
-        return lambda: _fills_body(deps)
+        return lambda: _fills_then_balance(deps)
+    if kind == "usage_probe":
+        return lambda: _usage_probe_body(deps, force=bool(p.get("force")))
     if kind == "news_collect":
         return lambda: _news_body(deps)
     if kind == "reconcile":
@@ -2875,6 +2909,13 @@ def _fast_queue_tick(deps: DaemonDeps, heartbeat: Heartbeat | None) -> dict:
     if deps.stop_event.is_set():
         return {"skipped": "종료 중"}
     return _queue_tick_locked(deps, heartbeat, kinds=jobq.FAST_KINDS)
+
+
+def _info_queue_tick(deps: DaemonDeps, heartbeat: Heartbeat | None) -> dict:
+    """정보 레인: 사용량 확인처럼 주문과 무관하고 오래 걸릴 수 있는 요청만(`jobs.INFO_KINDS`)."""
+    if deps.stop_event.is_set():
+        return {"skipped": "종료 중"}
+    return _queue_tick_locked(deps, heartbeat, kinds=jobq.INFO_KINDS)
 
 
 def _queue_tick_locked(
@@ -3146,6 +3187,13 @@ def run(
                 max_instances=1,
                 coalesce=True,
                 misfire_grace_time=misfire_grace_for(job),
+                # 간격 잡은 기본으로 간격 뒤에야 첫 실행 — 사용량 확인은 기동 직후 한 번(재시작한 뒤
+                # 30분 동안 사용량이 멈춰 보이던 문제, 2026-10-27)
+                **(
+                    {"next_run_time": datetime.now(UTC) + timedelta(seconds=START_SOON_S[job.id])}
+                    if job.id in START_SOON_S
+                    else {}
+                ),
             )
         logger.info("데몬 시작: 잡 %d개, web=%s", len(jobs), web)
         if install_signals:
@@ -3167,6 +3215,8 @@ def run(
             listener.stop()
         lock.release()
 
+
+START_SOON_S = {"usage_probe": 60}  # 기동 뒤 이 초 만에 첫 실행하는 간격 잡
 
 SCAN_MISFIRE_GRACE_S = 3600  # 절전 등으로 늦어도 1시간 안이면 그냥 돈다(하루를 잃는 것보다 낫다)
 DEFAULT_MISFIRE_GRACE_S = 120
@@ -3335,7 +3385,7 @@ def _install_heartbeat_listener(
             # 대기열 틱은 긴 요청을 도는 동안 10초마다 MAX_INSTANCES 가 나므로 놓침이 아니다
             if not (
                 event.code == ev.EVENT_JOB_MAX_INSTANCES
-                and event.job_id in (QUEUE_JOB_ID, FAST_QUEUE_JOB_ID)
+                and event.job_id in (QUEUE_JOB_ID, FAST_QUEUE_JOB_ID, INFO_QUEUE_JOB_ID)
             ):
                 hb.job_missed(event.job_id, datetime.now(UTC))
             job = by_id.get(event.job_id)

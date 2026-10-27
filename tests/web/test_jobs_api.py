@@ -102,3 +102,36 @@ def test_regime_endpoint_and_portfolio_sectors(client, conn):
     assert (
         p["sectors"] and p["sectors"][-1]["sector"] in ("현금", "기타") or p["sectors"][0]["sector"]
     )
+
+
+def test_usage_ensure_fresh_enqueues_probe_only_when_stale(client, deps, conn, monkeypatch):
+    """페이지 접속·새로고침(토큰 없음): 마지막 사용량 관측이 5분보다 오래됐고 데몬이 살아 있으면
+    대기열에 usage_probe 를 넣는다 — 60초에 한 번, 이미 대기 중이면 그대로, 다른 사이트는 403."""
+    from datetime import timedelta
+
+    from trader.web.routers import system as sysr
+
+    deps.settings = deps.settings.model_copy(
+        update={"llm": deps.settings.llm.model_copy(update={"usage_file": None})}
+    )
+    sysr._USAGE_ENSURE_LAST[0] = 0.0
+    _alive(monkeypatch, False)
+    assert client.post("/api/system/usage/ensure-fresh").json() == {"skipped": "데몬 꺼짐"}
+    _alive(monkeypatch, True)
+    r = client.post("/api/system/usage/ensure-fresh").json()
+    assert r["queued"] is True and r["id"]
+    kinds = [x[0] for x in conn.execute("SELECT kind FROM job_requests").fetchall()]
+    assert kinds == ["usage_probe"]
+    assert client.post("/api/system/usage/ensure-fresh").json() == {"throttled": True}
+    sysr._USAGE_ENSURE_LAST[0] = 0.0
+    assert client.post("/api/system/usage/ensure-fresh").json()["already"] is True
+    now = deps.now()
+    conn.execute(
+        "INSERT INTO llm_rate_limits(observed_at, source, five_hour_util, raw_json) "
+        "VALUES (?, 'probe', 0.2, '{}')",
+        ((now - timedelta(minutes=1)).isoformat(),),
+    )
+    conn.commit()
+    assert client.post("/api/system/usage/ensure-fresh").json()["fresh"] is True
+    bad = client.post("/api/system/usage/ensure-fresh", headers={"Sec-Fetch-Site": "cross-site"})
+    assert bad.status_code == 403

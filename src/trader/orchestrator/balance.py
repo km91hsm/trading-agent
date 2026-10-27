@@ -1,8 +1,9 @@
 """잔고 주기 갱신(웹 실시간): 브로커 잔고를 다시 읽어 `positions_snapshot` 을 갱신한다 — 조회만,
 주문 없음.
 
-데몬 `balance_refresh` interval 잡이 정규장 동안 주기적으로, 웹 `POST /api/portfolio/ensure-fresh`
-가 페이지 접속 때 스냅샷이 오래됐으면 부른다. 스냅샷 기록은 판정과 같은
+데몬 `balance_refresh` interval 잡이 정규장 동안 주기적으로(장 밖은 `OFF_HOURS_EVERY` 마다 — 입출금·
+이체는 장 밖에도 일어난다, 2026-10-27), 웹 `POST /api/portfolio/ensure-fresh` 가 페이지 접속 때
+스냅샷이 오래됐으면(장 밖은 `OFF_HOURS_STALE`) 부른다. 스냅샷 기록은 판정과 같은
 `executor.build_portfolio`(시장별 운영일·NAV·메모리 브레이커 포함)를 그대로 쓴다. 새로 나타난
 섹터 미분류 종목은 같은 자리에서 KIS 업종으로 자동 분류한다(관측할 때만, `sector_suggest`).
 """
@@ -26,6 +27,8 @@ from trader.orchestrator import run_store
 logger = logging.getLogger("trader.orchestrator")
 
 STALE_AFTER = timedelta(minutes=2)  # 페이지 접속 때 이보다 오래된 스냅샷만 다시 읽는다
+OFF_HOURS_STALE = timedelta(minutes=10)  # 장 밖 페이지 접속 기준(이체·입출금 반영)
+OFF_HOURS_EVERY = timedelta(minutes=30)  # 장 밖 데몬 주기 갱신 기준
 # 시장별 실행 중 표시: 데몬 잡과 웹 접속 갱신(같은 프로세스)이 같은 시장 잔고를 겹쳐 읽지 않게
 _RUNNING: dict[str, threading.Lock] = {"KR": threading.Lock(), "US": threading.Lock()}
 
@@ -57,6 +60,7 @@ def refresh(
     only_stale: bool = False,
     broker_ctx: Callable[[Any], Any] | None = None,
     cancel_buys: bool = False,
+    stale_after: timedelta = STALE_AFTER,
 ) -> dict:
     """시장 하나의 계좌별 잔고를 다시 읽는다. {refreshed: [id], skipped: [id], errors: {id: 사유},
     sectors: {종목: 섹터}}. 계좌 하나의 실패는 그 계좌만 errors 로. 같은 시장 갱신이 이미 돌고
@@ -78,6 +82,7 @@ def refresh(
             only_stale=only_stale,
             broker_ctx=broker_ctx or (lambda _b: contextlib.nullcontext()),
             cancel_buys=cancel_buys,
+            stale_after=stale_after,
         )
     finally:
         lock.release()
@@ -96,6 +101,7 @@ def _refresh(
     only_stale,
     broker_ctx,
     cancel_buys=False,
+    stale_after=STALE_AFTER,
 ) -> dict:
     from trader.orchestrator.executor import build_portfolio
 
@@ -104,7 +110,7 @@ def _refresh(
     for a in accounts:
         if market not in a.markets or a.id not in brokers:
             continue
-        if only_stale and snapshot_age(conn, a.id, market, now) < STALE_AFTER.total_seconds():
+        if only_stale and snapshot_age(conn, a.id, market, now) < stale_after.total_seconds():
             out["skipped"].append(a.id)
             continue
         try:

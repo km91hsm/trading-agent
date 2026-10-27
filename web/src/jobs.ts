@@ -49,6 +49,7 @@ const KIND_LABEL: Record<string, string> = {
   theme: "테마 열기",
   ops_check: "운영 점검",
   job_queue_fast: "빠른 작업 실행기",
+  job_queue_info: "정보 확인 실행기",
   rebalance: "주간 리밸런스",
   balance_refresh: "잔고 갱신",
   usage_probe: "Claude 사용량 확인",

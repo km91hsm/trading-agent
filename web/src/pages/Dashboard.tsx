@@ -9,7 +9,7 @@ import { Delta, Mark, Num, RowButton, Table, Td, Th } from "../components/Table"
 import { ErrorBox } from "../components/Tables";
 import { Term } from "../components/Term";
 import { fmtDate, fmtMoney, fmtPct, fmtTime, marketDate, minutesLeft } from "../format";
-import { useApp, useEnsureFresh, useLiveQuotes, useLoad, useNow } from "../hooks";
+import { useApp, useEnsureFresh, useEnsureUsageFresh, useLiveQuotes, useLoad, useNow } from "../hooks";
 import { applyQuotes } from "../live";
 import { labelOf } from "../names";
 import { usageChip, type UsageResp } from "../usage";
@@ -113,6 +113,7 @@ export function Dashboard() {
   const calls = useLoad(() => getJson<CallsResp>("/api/calls", { days: "1" }), [tRuns, tUsage]);
   const runs = useLoad(() => getJson<Run[]>("/api/runs", { limit: "30" }), [tRuns]);
   const settings = useLoad(() => getJson<SystemSettings>("/api/system/settings"), [tControl]);
+  useEnsureUsageFresh(); // 상단 사용량 칩도 접속·새로고침 때 바로(5분 넘은 관측만)
   const usage = useLoad(() => getJson<UsageResp>("/api/system/usage"), [tRuns, tUsage, minute]);
   const daemon = useLoad(() => getJson<DaemonStatus>("/api/system/daemon"), [tDaemon, tRuns, minute]);
   const regime = useLoad(() => getJson<RegimeResp>("/api/system/regime"), [tRuns, tControl]);

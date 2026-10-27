@@ -26,6 +26,12 @@ def close_hm(market: str, day: date) -> str:
     return REGULAR[market][1]
 
 
+def has_session(market: str, local_day: date) -> bool:
+    """그 시장 현지 날짜에 정규장이 있는가(주말·US 휴장 아님). KR 휴장일은 KIS 조회 없이는 몰라
+    평일이면 True."""
+    return not _no_session(market, local_day)
+
+
 def _no_session(market: str, local_day: date) -> bool:
     from trader.daemon import us_holidays
 

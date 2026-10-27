@@ -934,7 +934,11 @@ def nav_history(
     """(today 또는 마지막 스냅샷 날짜) − days 이후의 (날짜, NAV) 오름차순 (날짜별 최신 스냅샷).
 
     스냅샷 개수가 아니라 날짜 창이다: 운영이 띄엄띄엄이어도 오래된 값이 섞이지 않는다.
+    **거래일 표본만**: 장 밖 잔고 갱신이 남긴 주말·US 휴장일 날짜는 뺀다 — 데몬을 켜 둔 것만으로
+    거래일 수익률·연율화 지표가 바뀌지 않게(GitHub Codex #55). KR 휴장일(평일)은 남는다.
     """
+    from trader import market_hours
+
     if today is None:  # 스냅샷은 판정마다 종목 수만큼 쌓이므로 전 행을 읽지 않고 창만 SQL 로 자른다
         row = conn.execute(
             "SELECT MAX(date) AS d FROM positions_snapshot WHERE account_id=? AND market=? "
@@ -952,7 +956,11 @@ def nav_history(
         "AND nav IS NOT NULL AND date >= ? GROUP BY date HAVING id = MAX(id) ORDER BY date",
         (account_id, market, lo),
     ).fetchall()
-    return [(r["date"], _dec(r["nav"])) for r in rows]
+    return [
+        (r["date"], _dec(r["nav"]))
+        for r in rows
+        if market_hours.has_session(market, date.fromisoformat(r["date"]))
+    ]
 
 
 def latest_nav_before(

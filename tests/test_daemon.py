@@ -1048,15 +1048,27 @@ def test_lock_os_hold_blocks_second_even_if_pidfile_removed(project):
     b.release()
 
 
-def test_balance_refresh_only_in_regular_hours_and_classifies_new_holdings(conn, project):
-    """웹 실시간: 정규장인 시장만 잔고를 다시 읽어 스냅샷을 갱신하고(조회만), 섹터 맵에 없는
-    보유 종목은 KIS 업종으로 자동 분류해 캐시한다."""
+def test_balance_refresh_every_tick_in_hours_and_off_hours_when_stale(conn, project):
+    """웹 실시간: 정규장 시장은 매 틱, 장 밖은 스냅샷이 30분보다 오래됐을 때만(입출금·이체 반영)
+    잔고를 다시 읽고(조회만), 섹터 맵에 없는 보유 종목은 KIS 업종으로 자동 분류해 캐시한다."""
     from trader.broker.models import Position
     from trader.scan import sector_suggest
 
     closed = datetime(2026, 10, 24, 3, 0, tzinfo=UTC)  # 토요일
     deps = _deps(conn, FakeMarket(industries={"999990": "IT 서비스"}), now=lambda: closed)
-    assert daemon._balance_body(deps) == {"skipped": "정규장 아님"}
+
+    def stamp(at):  # 스냅샷 기록 시각은 벽시계라 테스트 시각에 맞춘다
+        conn.execute("UPDATE positions_snapshot SET created_at=?", (at.isoformat(),))
+        conn.commit()
+
+    assert daemon._balance_body(deps)["KR"]["refreshed"] == ["paper-main"]  # 스냅샷 없음 → 읽음
+    stamp(closed)
+    deps.now = lambda: closed + timedelta(minutes=10)
+    assert daemon._balance_body(deps)["KR"]["skipped"] == ["paper-main"]  # 장 밖 30분 안
+    assert daemon._balance_body(deps, force=True)["KR"]["refreshed"] == ["paper-main"]
+    stamp(closed)
+    deps.now = lambda: closed + timedelta(minutes=45)
+    assert daemon._balance_body(deps)["KR"]["refreshed"] == ["paper-main"]
     open_kr = datetime(2026, 10, 26, 1, 0, tzinfo=UTC)  # 월 10:00 KST
     deps.now = lambda: open_kr
     deps.brokers["paper-main"].positions = [
@@ -1101,6 +1113,59 @@ def test_usage_probe_job_skips_when_recent_observation(conn, monkeypatch):
     assert "최근 관측" in daemon._usage_probe_body(deps)["skipped"] and called == [1]
     jobs = {j.id: j for j in daemon.build_jobs(SCHED, Settings(), markets=["KR"])}
     assert jobs["usage_probe"].interval_s == 30 * 60
+
+
+def test_usage_probe_queue_kind_forces_and_starts_soon_after_boot(project, conn, monkeypatch):
+    """시스템 현황 '지금 확인'·페이지 접속 요청(대기열 usage_probe)은 최근 관측이 있어도 확인하고,
+    데몬 기동 뒤 첫 확인은 간격(30분)이 아니라 1분 뒤다(재시작 뒤 사용량이 멈춰 보이던 문제)."""
+    from trader.config import LlmSettings
+    from trader.orchestrator import quick
+
+    now = datetime(2026, 10, 26, 3, 0, tzinfo=UTC)
+    deps = _deps(conn, FakeMarket(), now=lambda: now)
+    deps.settings = Settings(llm=LlmSettings(usage_file=None))
+    conn.execute(
+        "INSERT INTO llm_rate_limits(observed_at, source, five_hour_util, raw_json) "
+        "VALUES (?, 'session', 0.2, '{}')",
+        ((now - timedelta(minutes=1)).isoformat(),),
+    )
+    conn.commit()
+    called = []
+    monkeypatch.setattr(quick, "probe_usage", lambda *a, **kw: called.append(1) or {"ok": True})
+    assert "최근 관측" in daemon._usage_probe_body(deps)["skipped"]
+    auto = {"kind": "usage_probe", "params": {"force": False}, "source": "web"}
+    assert "최근 관측" in daemon.queued_job_body(deps, auto, print)()["skipped"]  # 실행 때 재검사
+    forced = {"kind": "usage_probe", "params": {"force": True}, "source": "web"}
+    assert daemon.queued_job_body(deps, forced, print)() == {"ok": True} and called == [1]
+    with daemon._USAGE_PROBE_LOCK:  # 다른 확인이 도는 중이면 겹쳐 부르지 않는다
+        assert "도는 중" in daemon._usage_probe_body(deps, force=True)["skipped"]
+    assert called == [1]
+
+    class KwScheduler(FakeScheduler):
+        def add_job(self, fn, trigger, **kw):
+            self.jobs.append((kw.get("id"), trigger, fn))
+            self.kw = {**getattr(self, "kw", {}), kw.get("id"): kw}
+
+    sched = KwScheduler()
+    deps2 = _deps(conn, FakeMarket(), now=lambda: datetime.now(UTC))
+    daemon.run(deps2, web=False, scheduler_factory=lambda: sched)
+    first = sched.kw["usage_probe"]["next_run_time"]
+    assert timedelta(0) < first - datetime.now(UTC) <= timedelta(seconds=61)
+    assert "next_run_time" not in sched.kw["balance_refresh"]
+
+
+def test_queued_fills_sync_refreshes_balance_right_after(conn, project, monkeypatch):
+    """체결통보(웹소켓)·버튼으로 들어온 체결 동기화는 끝나자마자 잔고도 다시 읽는다(장 밖이어도) —
+    KIS 웹소켓엔 잔고 스트림이 없어 체결통보가 신호다. 잔고 실패는 체결 결과를 가리지 않는다."""
+    closed = datetime(2026, 10, 24, 3, 0, tzinfo=UTC)  # 토요일
+    deps = _deps(conn, FakeMarket(), now=lambda: closed)
+    monkeypatch.setattr(daemon, "_fills_body", lambda d: {"synced": 1})
+    daemon._balance_body(deps)  # 방금 스냅샷 — 주기 갱신이면 건너뛸 상태
+    req = {"kind": "fills_sync", "params": {}, "source": "notice:paper"}
+    out = daemon.queued_job_body(deps, req, print)()
+    assert out["synced"] == 1 and out["balance"]["KR"]["refreshed"] == ["paper-main"]
+    monkeypatch.setattr(daemon, "_balance_body", lambda d, force=False: 1 / 0)
+    assert daemon.queued_job_body(deps, req, print)() == {"synced": 1}
 
 
 def test_usage_probe_skips_when_statusline_file_is_recent(conn, monkeypatch, tmp_path):

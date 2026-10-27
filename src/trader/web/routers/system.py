@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import threading
+import time
 from contextlib import closing
 from importlib.metadata import PackageNotFoundError, version
 
@@ -80,6 +82,44 @@ def usage_view(request: Request) -> dict:
         "windows": windows,
         "note": USAGE_NOTE,
     }
+
+
+USAGE_ENSURE_MIN_INTERVAL_S = 60.0  # 페이지 접속 확인 요청 최소 간격(새로고침이 몰려도 haiku 1회)
+_USAGE_ENSURE_LAST = [0.0]
+_USAGE_ENSURE_LOCK = threading.Lock()
+
+
+@router.post("/usage/ensure-fresh")
+def usage_ensure_fresh(request: Request) -> dict:
+    """페이지 접속·새로고침 때(토큰 없음): 최신 관측이 `usage_probe.skip_if_recent_min` 보다
+    오래됐고 데몬이 살아 있으면 대기열에 `usage_probe` 를 넣는다(실행은 데몬, haiku 단발 1회).
+    60초에 한 번만 실제로 넣고, 이미 대기·실행 중이면 그대로 둔다. 결과는 SSE `usage` 로 반영."""
+    from trader import jobs as jobq
+    from trader.web.routers._common import require_same_origin
+    from trader.web.routers.jobs import daemon_alive
+
+    require_same_origin(request)
+    deps = request.app.state.deps
+    cfg = deps.settings.llm.usage_probe
+    if not cfg.enabled:
+        return {"skipped": "꺼짐"}
+    now = deps.now()
+    with closing(deps.conn_factory()) as conn:
+        obs = usage.latest_observation(conn, now, usage.usage_file(deps.settings.llm.usage_file))
+        age = (obs or {}).get("age_s")
+        if age is not None and age < cfg.skip_if_recent_min * 60:
+            return {"fresh": True, "age_s": age}
+        if not daemon_alive(request):
+            return {"skipped": "데몬 꺼짐"}
+        with _USAGE_ENSURE_LOCK:
+            if time.monotonic() - _USAGE_ENSURE_LAST[0] < USAGE_ENSURE_MIN_INTERVAL_S:
+                return {"throttled": True}
+            _USAGE_ENSURE_LAST[0] = time.monotonic()
+        try:
+            rid = jobq.enqueue(conn, "usage_probe", {}, source="web", now=now)
+        except jobq.DuplicateRequest:
+            return {"queued": True, "already": True}
+    return {"queued": True, "id": rid}
 
 
 @router.get("/events")

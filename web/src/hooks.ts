@@ -297,16 +297,16 @@ export function useNow(stepMs = 1000): Date {
   return now;
 }
 
-/** 페이지 접속·탭 복귀 때 잔고 스냅샷을 신선하게: 서버가 정규장이고 2분보다 오래된 계좌만 브로커
- * 잔고를 다시 읽는다(조회만, 시장별 30초 1회). 결과는 SSE `positions` 로 표에 반영되므로 응답은 버린다. */
-export function useEnsureFresh(markets: string[]): void {
-  const key = markets.join(",");
+/** 페이지 접속(새로고침 포함)·탭 복귀 때 주어진 '신선하게' 엔드포인트들을 부른다. 서버가 오래된
+ * 값만 다시 읽고(속도 제한 포함) 결과는 SSE 로 화면에 반영되므로 응답은 버린다. */
+function usePokeOnVisible(urls: string[]): void {
+  const key = urls.join("\n");
   useEffect(() => {
     if (!key) return;
     const run = () => {
-      for (const m of key.split(","))
-        postJson("/api/portfolio/ensure-fresh?market=" + m, null, null).catch(() => {
-          /* 보조 동작 — 실패해도 스냅샷 값이 보인다 */
+      for (const u of key.split("\n"))
+        postJson(u, null, null).catch(() => {
+          /* 보조 동작 — 실패해도 마지막 값이 보인다 */
         });
     };
     run();
@@ -314,6 +314,18 @@ export function useEnsureFresh(markets: string[]): void {
     document.addEventListener("visibilitychange", onVis);
     return () => document.removeEventListener("visibilitychange", onVis);
   }, [key]);
+}
+
+/** 잔고 스냅샷을 신선하게: 오래된 계좌만(정규장 2분·장 밖 10분 — 이체·입출금 반영) 브로커 잔고를
+ * 다시 읽는다(조회만, 시장별 30초 1회). 결과는 SSE `positions`. */
+export function useEnsureFresh(markets: string[]): void {
+  usePokeOnVisible(markets.map((m) => "/api/portfolio/ensure-fresh?market=" + m));
+}
+
+/** Claude 사용량을 신선하게: 마지막 관측이 5분보다 오래됐으면 데몬 대기열에 확인(haiku 단발)을
+ * 넣는다(60초 1회). 결과는 SSE `usage`. */
+export function useEnsureUsageFresh(): void {
+  usePokeOnVisible(["/api/system/usage/ensure-fresh"]);
 }
 
 /** 종목 코드·이름 검색 (Phase 24, /api/names/search). 300ms 디바운스, 빈 질의는 []. 실패는 [] (보조 기능). */
