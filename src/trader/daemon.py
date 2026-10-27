@@ -1976,18 +1976,21 @@ def _news_body(deps: DaemonDeps) -> dict:
 
 
 def _in_market_window(deps: DaemonDeps, market: str) -> bool:
-    """장중 감시 창(schedule monitor). 조기 마감일(US 13:00)이면 창 끝을 마감 시각으로 당긴다."""
+    """장중 감시 창(schedule monitor, 설정 시간대). 조기 마감일(US 13:00 ET)에는 **거래소 시각**으로
+    마감이 지나면 창을 닫는다 — 창 끝을 문자열로 당기면 설정 시간대(KST 등)와 섞이고 시작보다 이른
+    마감에서 창이 뒤집혔다(Codex 리뷰)."""
     from trader import market_hours
 
     ms = deps.schedule.kr if market == "KR" else deps.schedule.us
-    now_local = deps.now().astimezone(ZoneInfo(ms.tz))
-    end = ms.monitor.end
-    close = market_hours.close_hm(market, now_local.date())
-    if close < market_hours.REGULAR[market][1]:
-        if close <= ms.monitor.start:  # 조기 마감이 감시 시작보다 이르면 오늘 창은 비었다(Codex)
-            return False
-        end = min(end, close)
-    return in_window(now_local.time().replace(second=0, microsecond=0), ms.monitor.start, end)
+    now = deps.now()
+    local_mkt = now.astimezone(MARKET_TZ[market])
+    close = market_hours.close_hm(market, local_mkt.date())
+    if close < market_hours.REGULAR[market][1] and local_mkt.strftime("%H:%M") >= close:
+        return False
+    now_local = now.astimezone(ZoneInfo(ms.tz))
+    return in_window(
+        now_local.time().replace(second=0, microsecond=0), ms.monitor.start, ms.monitor.end
+    )
 
 
 def _held_tickers(deps: DaemonDeps, market: str) -> set[str]:

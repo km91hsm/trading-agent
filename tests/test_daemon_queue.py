@@ -603,9 +603,15 @@ def test_catch_up_counts_only_completed_runs_and_today(conn):
     assert "us_scan_analyze" not in out["queued"]
 
 
-def test_early_close_before_monitor_start_is_empty_window(conn):
+def test_early_close_uses_exchange_time(conn):
+    """조기 마감(2026-11-27 13:00 ET)은 거래소 시각으로 — 설정 시간대가 KST 여도 마감 전엔 열리고
+    마감 뒤엔 닫힌다(Codex 리뷰)."""
     deps = _deps(conn, FakeMarket(), now=lambda: datetime(2026, 11, 27, 15, 0, tzinfo=UTC))
     us = deps.schedule.us
-    mon = us.monitor.model_copy(update={"start": "14:00", "end": "16:00"})
-    deps.schedule = deps.schedule.model_copy(update={"us": us.model_copy(update={"monitor": mon})})
-    assert daemon._in_market_window(deps, "US") is False  # 10:00 ET, 조기 마감 13:00 < 시작 14:00
+    mon = us.monitor.model_copy(update={"start": "23:30", "end": "06:00"})
+    deps.schedule = deps.schedule.model_copy(
+        update={"us": us.model_copy(update={"tz": "Asia/Seoul", "monitor": mon})}
+    )
+    assert daemon._in_market_window(deps, "US") is True  # 10:00 ET = 00:00 KST, 마감 전
+    deps.now = lambda: datetime(2026, 11, 27, 19, 0, tzinfo=UTC)  # 14:00 ET, 마감 뒤
+    assert daemon._in_market_window(deps, "US") is False

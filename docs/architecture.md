@@ -171,7 +171,7 @@ CLAUDE.md 의 "아키텍처 핵심 규칙" 에서 옮겨 온 모듈 단위 상�
 - **재시작 따라잡기**(`daemon.catch_up_missed`): 기동 때 cron 잡마다 지난 20시간 안의 마지막 예정 시각을 구해 그 뒤 `runs` 기록이 없으면 놓친 것으로 보고 `on_cron_missed(notify=False)` → 알림은 한 건으로 묶는다. APScheduler 는 새로 등록한 잡의 지난 시각에 MISSED 를 내지 않아 재시작한 날 scan 이 조용히 사라졌다. 하트비트도 직전 파일의 잡 상태(마지막 실행·오류, 실행 중은 제외)를 이어받는다.
 - **`on_cron_missed`**: 시장 잡은 먼저 `should_skip`(일시정지·주말·휴장)이면 알림·등록 없이 끝, scan 은 그 시장 정규장이 끝났으면 알림만. 따라잡기 대상은 `CATCH_UP_KINDS`(scan_analyze·fills_sync·reconcile).
 - **자동 요청 게이트**(`daemon._auto_gate`): 데몬·뉴스가 넣은(`AUTO_SOURCES`) 결정·주문 kind(`TRADING_KINDS`)는 꺼낼 때 일시정지·휴장·`market_hours.session_over`(조기 마감 포함)를 다시 보고 `skipped`. 사람이 누른 요청(web·telegram·cli)은 그대로.
-- **조기 마감**: `market_hours.close_hm`(US 조기 마감일 13:00)·`session_over`, `is_open` 과 장중 창(`_in_market_window` — monitor·단타·뉴스 재분석)이 마감 시각을 당긴다.
+- **조기 마감**: `market_hours.close_hm`(US 조기 마감일 13:00)·`session_over`, `is_open` 과 장중 창(`_in_market_window` — monitor·단타·뉴스 재분석)은 거래소 시각으로 조기 마감이 지나면 닫힌다(설정 창 시간대와 무관).
 - **체결 동기화**: 조회 실패 계좌·시장이 있으면 `_fills_body` 가 최상위 `error`(runs·하트비트·점검에 오류). `fills.stale_open_days` 로 지난 7일 안 살아 있는(접수·부분·응답없음) 주문이 있는 현지 날짜를 다시 조회. 야간 대조는 시작 전에 체결 동기화를 먼저 돈다(US 대조가 07:10 KST 정기 동기화보다 앞서던 순서 의존).
 - **알림 보관함**(`TelegramNotifier(outbox=state/notify_outbox.jsonl)`): 보내지 못한 청크를 파일 잠금 아래 적어 두고 `telegram_poll` 틱이 `flush_outbox`(최대 10건, 첫 실패에서 멈춤, 24시간 지난 것은 버림, 보낸 뒤에야 항목을 지워 재전송 중 종료돼도 남는다 — 드물게 중복).
 - **경보 피로**: 점검 격상은 단계가 나빠졌을 때 + 같은 단계라도 경고 이상 **새 항목 키**(`control.ops_level.keys`)일 때. watchdog 은 데몬 사망·멈춤(`jobs.daemon`·`jobs.stale`)만 1시간 재알림, 데몬이 살아 있으면 새 경고 키에만.
