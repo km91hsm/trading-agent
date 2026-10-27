@@ -17,6 +17,7 @@ import typer
 
 from trader import config
 from trader.broker.accounts import KisBroker
+from trader.broker.fo import KisFoBroker
 from trader.broker.kis_auth import KisAuth
 from trader.broker.kis_client import KisClient
 from trader.broker.kis_market import KisMarket
@@ -39,6 +40,10 @@ app.add_typer(kis_app, name="kis")
 from trader.saveticker.cli import app as saveticker_app  # noqa: E402
 
 app.add_typer(saveticker_app, name="saveticker")
+
+from trader.fo.cli import app as fo_app  # noqa: E402
+
+app.add_typer(fo_app, name="fo")
 
 
 def _force_utf8() -> None:
@@ -66,8 +71,14 @@ def _config_errors(fn):
 
 @dataclass
 class _Boot:
+    """`accounts` 는 현물 계좌만(기존 소비자 전부), `fo_accounts` 는 선물옵션 계좌,
+    `all_accounts` 는 yaml 순서 그대로 전체(control·`kis ping`·STATUS 처럼 계좌를 가리지 않는
+    소비자용, Phase 26)."""
+
     settings: config.Settings | None = None
     accounts: list[config.AccountConfig] | None = None
+    fo_accounts: list[config.AccountConfig] | None = None
+    all_accounts: list[config.AccountConfig] | None = None
     secrets: config.Secrets | None = None
     conn: Any | None = None
 
@@ -89,7 +100,8 @@ def _boot(
     if settings:
         out.settings = config.load_settings()
     if accounts:
-        out.accounts = config.load_accounts()
+        out.all_accounts = config.load_accounts()
+        out.accounts, out.fo_accounts = config.split_accounts(out.all_accounts)
     if secrets:
         out.secrets = config.load_secrets()
     if conn:
@@ -158,7 +170,8 @@ def _client_for(creds: config.KisCreds) -> KisClient:
 def _market_creds(
     secrets: config.Secrets, accounts: list[config.AccountConfig] | None = None
 ) -> config.KisCreds:
-    """시세용 실전 키: 공용 `KIS_REAL_*` 가 있으면 그것, 없으면 첫 실전 계좌의 전용 키."""
+    """시세용 실전 키: 공용 `KIS_REAL_*` 가 있으면 그것, 없으면 첫 실전 **현물** 계좌의 전용 키
+    (파생 계좌 키는 현물 시세 권한이 다를 수 있어 폴백에 쓰지 않는다)."""
     shared = secrets.kis_creds(env="real")
     if shared.app_key:
         return shared
@@ -168,7 +181,7 @@ def _market_creds(
         except config.ConfigError:
             return shared
     for a in accounts:
-        if a.env == "real":
+        if a.env == "real" and a.asset == "stock":
             c = secrets.kis_creds(a)
             if c.app_key:
                 return c
@@ -189,22 +202,50 @@ def _session_brokers(accounts: list[config.AccountConfig]) -> dict:
     if is_fake():
         from decimal import Decimal
 
-        from trader.broker.fake import FakeBroker
-        from trader.broker.models import Cash
+        from trader.broker.fake import FakeBroker, FakeFoBroker
+        from trader.broker.models import Cash, FoBalance, FoCash
 
         cash = {
             "KR": Cash(currency="KRW", available=Decimal("10000000"), total=Decimal("10000000")),
             "US": Cash(currency="USD", available=Decimal("10000"), total=Decimal("10000")),
         }
-        return {a.id: FakeBroker(a, cash=cash) for a in accounts}
+        now = datetime.now(UTC)
+        fo_balance = FoBalance(
+            positions=[],
+            unverified=[],
+            cash=FoCash(
+                deposit=Decimal("10000000"),
+                orderable_cash=Decimal("10000000"),
+                orderable_total=Decimal("10000000"),
+                margin_total=Decimal("0"),
+                add_margin=Decimal("0"),
+                nav=Decimal("10000000"),
+                realized_today=Decimal("0"),
+                unrealized=Decimal("0"),
+                requested_at=now,
+                received_at=now,
+            ),
+        )
+        return {
+            a.id: (
+                FakeFoBroker(a, balance=fo_balance)
+                if a.asset == "fo"
+                else FakeBroker(a, cash=cash)
+            )
+            for a in accounts
+        }
     return {}  # 실제 세션은 tool 서브프로세스가 _tool_ctx 로 자기 브로커를 만든다
 
 
 def _build_brokers(
-    secrets: config.Secrets, accounts: list[config.AccountConfig]
-) -> list[KisBroker]:
-    """계좌별 브로커. 앱키가 없는 env 의 계좌는 경고 후 건너뛴다."""
-    brokers: list[KisBroker] = []
+    secrets: config.Secrets,
+    accounts: list[config.AccountConfig],
+    *,
+    settings: config.Settings | None = None,
+) -> list[KisBroker | KisFoBroker]:
+    """계좌별 브로커. 앱키가 없는 env 의 계좌는 경고 후 건너뛴다. `asset: fo` 계좌는 `KisFoBroker`
+    (상품은 `settings.fo`, 안 넘기면 fo 계좌가 있을 때만 설정을 읽는다)."""
+    brokers: list[KisBroker | KisFoBroker] = []
     owners: dict[tuple[str, str], str] = {}  # (env, 접두사) → 계좌 id
     for a in accounts:
         creds = secrets.kis_creds(a)
@@ -223,7 +264,12 @@ def _build_brokers(
         except config.ConfigError as e:
             logging.getLogger("trader.kis").warning("계좌 %s 건너뜀: %s", a.id, e)
             continue
-        brokers.append(KisBroker(a, client))
+        if a.asset == "fo":
+            if settings is None:
+                settings = config.load_settings()
+            brokers.append(KisFoBroker(a, client, product=settings.fo.product_cfg()))
+        else:
+            brokers.append(KisBroker(a, client))
     return brokers
 
 
@@ -253,9 +299,10 @@ def status() -> None:
 def kis_ping(
     account: str | None = typer.Option(None, "--account", help="특정 계좌 id 만 점검"),
 ) -> None:
-    """KIS 시세(005930·AAPL)·휴장일·계좌별 현금을 점검한다. 실패가 있으면 exit 1."""
+    """KIS 시세(005930·AAPL)·휴장일·계좌별 현금(파생 계좌는 잔고)을 점검한다.
+    실패가 있으면 exit 1."""
     boot = _boot(secrets=True, accounts=True)
-    secrets, accounts = boot.secrets, boot.accounts
+    secrets, accounts = boot.secrets, boot.all_accounts
     if account:
         accounts = [a for a in accounts if a.id == account]
         if not accounts:
@@ -290,6 +337,14 @@ def kis_ping(
         c = b.get_cash(m)  # 모의 2/s 한도를 고려해 한 번만 호출한다
         return f"{c.available} {c.currency}"
 
+    def fo_label(b) -> str:
+        bal = b.get_balance()
+        nav = "없음" if bal.cash.nav is None else f"{bal.cash.nav} KRW"
+        return (
+            f"NAV {nav}, 주문가능 {bal.cash.orderable_cash} KRW, "
+            f"보유 {len(bal.positions)}건, 미확정 {len(bal.unverified)}건"
+        )
+
     brokers = _build_brokers(secrets, accounts)
     built = {b.account.id for b in brokers}
     for a in accounts:
@@ -297,6 +352,9 @@ def kis_ping(
             failures += 1
             typer.echo(f"[실패] {a.id}: {a.env} 앱키·시크릿이 없어 점검하지 못했습니다")
     for broker in brokers:
+        if broker.account.asset == "fo":
+            check(f"{broker.account.id} 파생 잔고", lambda b=broker: fo_label(b))
+            continue
         for m in broker.account.markets:
             check(f"{broker.account.id} {m} 현금", lambda b=broker, m=m: cash_label(b, m))
     typer.echo(f"실패 {failures}건")
@@ -2722,7 +2780,7 @@ def readiness_cmd() -> None:
 
     configure(paths.state_dir())
     settings = config.load_settings()
-    accounts = config.load_accounts()
+    accounts, _fo = config.split_accounts(config.load_accounts())  # 준비도는 현물 계좌만
     conn = db.connect()
     db.init_schema(conn)
     try:

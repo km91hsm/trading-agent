@@ -46,6 +46,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `uv run trader readiness` : 실전 전환 준비도 점검(읽기 전용, 모드 불변). 임계값은 `docs/runbook-live-transition.md` 표
 - `uv run trader scalp backtest --ticker 005930 [--market US --exchange NAS]` / `scalp report [--market] [--days 5]` : 분 단위 단타(Phase 23, 모의 전용·기본 끔) 규칙을 당일 분봉으로 재현 / 상태 파일(`state/scalp/<date>/`)로 승률·사유 집계. 설정 불변·주문 없음
 - `uv run trader watchdog [--quiet]` : 데몬 밖 감시 1회 — 데몬 생존·하트비트·운영 점검을 지금 판정해 주의 이상이면 텔레그램(1시간 재알림, `state/watchdog.json`). `uv run trader install --watchdog [--uninstall|--dry-run]` 이 5분 간격으로 등록(거부 목록은 `install` 과 같다)
+- `uv run trader fo contracts [--product mini|regular] [--today]` / `fo chain [--strikes 4]` / `fo verify --account paper-fo [--vehicle]` : 선물옵션 레인(Phase 26) 조회 전용 — 마스터 월물·행사가 표 / 옵션 체인 시세 / 브로커 계약 검증(보유 행으로 확인된 수단만 `fo_verified` 플래그). `fo order-test --account paper-fo --vehicle …`·`fo close` 는 거부 목록(사용자 실행, 실전 거부)
 - `uv run trader regime show` / `regime backtest --market KR [--days 1000]` : 시장 국면(bull|neutral|bear) 현재값과 헤지 설정 / 지수 proxy 일봉으로 과거 bear 구간 재현(상태 불변, 임계값 확정용)
 - 터미널 대신 **웹 대시보드 잡 표의 '지금 실행'·데이터/ML 페이지 버튼**으로도 scan→analyze·종목 분석·백필·학습·복기·체결 동기화를 돌릴 수 있다(토큰 + 데몬 필요, 아래 '작업 대기열')
 - `uv run trader rl train [--market] [--seeds N]` : RL 사이저 워크포워드×시드 학습·기준선 비교·저장(stdout JSON, **자동 승격 없음**). `rl models`, `rl promote|demote <버전>`(수동), `rl report --account paper-main [--weeks 8]`(모델 요약 + 섀도 실적)

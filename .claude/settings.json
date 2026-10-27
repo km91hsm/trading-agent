@@ -55,7 +55,11 @@
       "Bash(python -m trader monitor*)",
       "Bash(uv run trader monitor*)",
       "Bash(python -m trader install*)",
-      "Bash(uv run trader install*)"
+      "Bash(uv run trader install*)",
+      "Bash(python -m trader fo order-test*)",
+      "Bash(uv run trader fo order-test*)",
+      "Bash(python -m trader fo close*)",
+      "Bash(uv run trader fo close*)"
     ]
   }
 }

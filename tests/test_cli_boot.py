@@ -33,3 +33,45 @@ def test_boot_loads_requested_parts_only(project):
     b2 = cli._boot(settings=True, secrets=True)
     assert b2.settings is not None and b2.secrets is not None and b2.conn is None
     assert (project / "state" / "logs" / "trader.log").exists()  # configure 도 함께
+
+
+def test_boot_three_lists(project):
+    """Phase 26: fo 계좌는 `accounts`(현물)에 없고 `fo_accounts` 에, `all_accounts` 는 순서 유지."""
+    (project / "config" / "accounts.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "accounts": [
+                    {
+                        "id": "paper-main",
+                        "env": "paper",
+                        "cano": "0",
+                        "markets": ["KR"],
+                        "mode": "auto",
+                    },
+                    {
+                        "id": "paper-fo",
+                        "env": "paper",
+                        "cano": "0",
+                        "acnt_prdt_cd": "03",
+                        "markets": ["KR"],
+                        "mode": "auto",
+                        "asset": "fo",
+                    },
+                    {
+                        "id": "real-main",
+                        "env": "real",
+                        "cano": "0",
+                        "markets": ["KR"],
+                        "mode": "off",
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    b = cli._boot(accounts=True)
+    assert [a.id for a in b.accounts] == ["paper-main", "real-main"]
+    assert [a.id for a in b.fo_accounts] == ["paper-fo"]
+    assert [a.id for a in b.all_accounts] == ["paper-main", "paper-fo", "real-main"]
+    b2 = cli._boot(settings=True)
+    assert b2.accounts is None and b2.fo_accounts is None and b2.all_accounts is None
