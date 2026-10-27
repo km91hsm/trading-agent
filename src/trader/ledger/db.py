@@ -435,6 +435,15 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
             )""",
         ],
     ),
+    (
+        # 전체 검토 3차(성능): 웹 시세 장 밖 대체 값(종목별 최신 스냅샷 현재가)이 positions_snapshot
+        # 전체를 훑고 임시 정렬하지 않게
+        25,
+        [
+            "CREATE INDEX IF NOT EXISTS ix_positions_market_ticker_date "
+            "ON positions_snapshot(market, ticker, date)",
+        ],
+    ),
 ]
 
 

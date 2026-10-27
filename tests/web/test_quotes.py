@@ -61,6 +61,37 @@ def test_quotes_closed_session_no_kis_call(project, conn):
     assert "get_price_kr" not in deps.market.calls
 
 
+def test_snapshot_prices_batches_latest_per_ticker(conn):
+    """전체 검토 3차(성능): 종목별 쿼리 대신 한 번에, 종목마다 가장 최근 날짜(같은 날이면 큰 id)."""
+    rows = [
+        ("a", "2026-10-07", "005930", "69000"),
+        ("b", "2026-10-08", "005930", "70500"),
+        ("a", "2026-10-08", "000660", "180000"),
+        ("a", "2026-10-09", "000660", None),  # 현재가 없는 행은 건너뛴다
+    ]
+    for acct, d, t, px in rows:
+        conn.execute(
+            "INSERT INTO positions_snapshot(account_id, market, date, ticker, qty, current_price, "
+            "created_at) VALUES (?, 'KR', ?, ?, 1, ?, 'x')",
+            (acct, d, t, px),
+        )
+    conn.commit()
+    got = quotes_mod._snapshot_prices(conn, "KR", ["005930", "000660", "035420"])
+    assert {t: (v["price"], v["asof"]) for t, v in got.items()} == {
+        "005930": ("70500", "2026-10-08"),
+        "000660": ("180000", "2026-10-08"),
+    }
+    assert quotes_mod._snapshot_prices(conn, "KR", []) == {}
+
+
+def test_quote_cache_drops_old_entries_and_idle_locks():
+    quotes_mod._key_lock(("KR", "OLD"))
+    quotes_mod._remember(("KR", "OLD"), {"price": "1"}, now=0.0)
+    quotes_mod._remember(("KR", "NEW"), {"price": "2"}, now=quotes_mod.KEEP_S + 1)
+    assert set(quotes_mod._cache) == {("KR", "NEW")}
+    assert ("KR", "OLD") not in quotes_mod._key_locks
+
+
 def test_quotes_ttl_cache_dedupes(project, conn):
     c, deps = _client(project, OPEN)
     for _ in range(3):

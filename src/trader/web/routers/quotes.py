@@ -21,6 +21,8 @@ from trader.web.routers._common import deps_of, kis_wait
 router = APIRouter(tags=["quotes"])
 
 QUOTE_TTL_S = 5.0
+# 이보다 오래된 캐시 값은 지운다(장 밖 대체 값은 스냅샷이 맡는다) — 본 종목 수만큼 계속 늘지 않게
+KEEP_S = 600.0
 MAX_TICKERS = 20
 _cache: dict[tuple[str, str], tuple[float, dict]] = {}
 _lock = threading.Lock()
@@ -37,17 +39,33 @@ def _fresh(key: tuple[str, str]) -> tuple[float, dict] | None:
         return _cache.get(key)
 
 
+def _remember(key: tuple[str, str], val: dict, *, now: float | None = None) -> None:
+    """저장하면서 KEEP_S 지난 값과 쓰지 않는 종목 락을 지운다(charts._remember 와 같은 방식)."""
+    t = time.monotonic() if now is None else now
+    with _lock:
+        for k in [k for k, (saved, _) in _cache.items() if t - saved >= KEEP_S]:
+            del _cache[k]
+        _cache[key] = (t, val)
+        for k in [k for k, lk in _key_locks.items() if k not in _cache and not lk.locked()]:
+            del _key_locks[k]
+
+
 def _snapshot_prices(conn, market: str, tickers: list[str]) -> dict[str, dict]:
-    """계좌 무관 최신 스냅샷 현재가(종목별 가장 최근 날짜)."""
+    """계좌 무관 최신 스냅샷 현재가(종목별 가장 최근 날짜). 종목 수만큼 쿼리하지 않고 한 번에 읽는다
+    (원장 v25 `ix_positions_market_ticker_date` 색인)."""
     out: dict[str, dict] = {}
-    for t in tickers:
-        row = conn.execute(
-            "SELECT current_price, date FROM positions_snapshot WHERE market=? AND ticker=? "
-            "AND current_price IS NOT NULL ORDER BY date DESC, id DESC LIMIT 1",
-            (market, t),
-        ).fetchone()
-        if row is not None:
-            out[t] = {"price": row[0], "change_pct": None, "asof": row[1], "stale": True}
+    want = list(dict.fromkeys(tickers))
+    if not want:
+        return out
+    qs = ",".join("?" * len(want))
+    rows = conn.execute(
+        "SELECT ticker, current_price, date FROM positions_snapshot WHERE market=? "
+        f"AND ticker IN ({qs}) AND current_price IS NOT NULL ORDER BY ticker, date DESC, id DESC",
+        (market, *want),
+    ).fetchall()
+    for r in rows:
+        if r[0] not in out:
+            out[r[0]] = {"price": r[1], "change_pct": None, "asof": r[2], "stale": True}
     return out
 
 
@@ -126,8 +144,7 @@ def quotes(request: Request, market: str, tickers: str = "") -> dict:
                     "asof": q.asof.isoformat(),
                     "stale": False,
                 }
-                with _lock:
-                    _cache[key] = (time.monotonic(), val)
+                _remember(key, val)
                 out[t] = val
     else:
         missing = [t for t, _ in items]
