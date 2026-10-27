@@ -8,6 +8,9 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+# Phase 26 파생 결정 스키마의 정본은 `fo/schemas` — 여기서는 프롬프트·체크포인트 매핑용 re-export
+from trader.fo.schemas import FoDecision, FoDecisionEnvelope  # noqa: F401
+
 Signal = Literal["STRONG_BUY", "BUY", "NEUTRAL", "SELL", "STRONG_SELL", "UNKNOWN"]
 Horizon = Literal["short", "mid", "long"]
 AnalystRole = Literal["technical", "fundamental", "news_macro", "sentiment", "quant"]
@@ -298,6 +301,10 @@ _STAGE_PATTERNS: list[tuple[re.Pattern[str], type[BaseModel]]] = [
     (re.compile(r"^30_decision$"), Decision),
     (re.compile(r"^05_quant$"), QuantReport),
     (re.compile(r"^35_calibration$"), CalibrationReport),
+    # Phase 26 파생 레인(시장 단위 `_fo_*`): 애널리스트·토론은 현물 스키마 재사용, 결정은 봉투
+    (re.compile(r"^_fo_analyst_(technical|sentiment|news_macro)$"), AnalystReport),
+    (re.compile(r"^_fo_debate_r\d+_(bull|bear)$"), DebateTurn),
+    (re.compile(r"^_fo_decision(_r\d+_[A-Za-z0-9_-]+)?$"), FoDecisionEnvelope),
 ]
 
 

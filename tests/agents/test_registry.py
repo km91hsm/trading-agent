@@ -95,7 +95,7 @@ def test_agents_json_appends_schema_when_md_lacks_it():
 
 
 def test_common_rules_identical_prefix_across_all_agents():
-    """공통 규칙 6문장은 괄호 보충 전까지 모든 md(13개)에서 같아야 한다."""
+    """공통 규칙 6문장은 괄호 보충 전까지 모든 md(16개)에서 같아야 한다."""
     import re
 
     names = list(
@@ -106,11 +106,12 @@ def test_common_rules_identical_prefix_across_all_agents():
                 *registry.REFLECT_AGENTS,
                 *registry.MARKET_AGENTS,
                 *registry.QUICK_AGENTS,
+                *registry.FO_AGENTS,
                 registry.ORCHESTRATOR,
             ]
         )
     )
-    assert len(names) == 15  # + briefing(아침 브리핑, 2026-10-27)
+    assert len(names) == 16  # + briefing(2026-10-27) + fo-trader(Phase 26)
     canon = None
     for name in names:
         body = load_agent(name, REPO_AGENTS).prompt

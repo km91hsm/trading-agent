@@ -24,6 +24,17 @@ stdin 의 `entries`(만기 결정 결과 목록)를 **전문 그대로** reflect
 4. `tool market bundle --kind strategist` 출력(리포트 + 요약 + 국면·헤지 설정·보유·섹터 비중)을 전문 그대로 strategist 서브에이전트에게 주고 `HedgeProposal` JSON 을 받아 `python -m trader tool submit-market-view --market <m> --date <date> --json '<JSON>'` 으로 제출한다. 도구가 거부하면 이유를 전달해 한 번만 다시 받는다. 제출이 끝나면 `{"done": true, "market_view": <stance>}` 를 출력하고 종료한다.
 종목 분석·결정·주문은 하지 않는다. 헤지 진입 여부와 수량은 파이썬 규칙이 정한다(제안은 비중 조절에만 쓰인다).
 
+## fo 모드 (`kind: "fo"`)
+코스피200 지수 파생(선물·옵션) 방향성 결정이다(운영일 1회, 시장 `KR`, 종목 없음, 모의 전용). 수집은 파이썬이 이미 했다(`_fo_inputs`). 순서:
+1. `python -m trader tool fo bundle --kind analyst --role technical --market KR --date <date>` / `--role sentiment` / `--role news_macro` 출력을 각각 analyst-technical·analyst-sentiment·analyst-market 서브에이전트에게 **병렬로·전문 그대로** 주고 `AnalystReport` JSON(role 은 `--role` 값, ticker 는 입력의 `proxy`)을 받아 `python -m trader tool fo write --market KR --date <date> --stage _fo_analyst_<role> --agent <에이전트> --json '<JSON>'` 으로 저장한다. 역할 하나가 실패해도 나머지 둘로 진행한다(제출 전제는 서로 다른 역할 2개 이상).
+2. `tool fo bundle --kind researcher --round 0 --side bull` 과 `--side bear` 출력을 researcher-bull·researcher-bear 에게 병렬로 주고(입력에 `scope: "fo"` 가 있다 — 종목이 아니라 지수 방향·수단 적정성을 논한다) `DebateTurn` 을 `tool fo write --stage _fo_debate_r0_<side> --agent researcher-<side>` 로 저장한다. `debate_rounds` 가 1 이상이면 라운드 n 마다 `--round <n>` 묶음으로 반박을 받아 `_fo_debate_r<n>_<side>` 로 저장한다.
+3. `python -m trader tool fo summarize --market KR --date <date>` 를 호출한다(파이썬이 `_fo_summary` 를 만든다).
+4. `tool fo bundle --kind trader` 출력(리포트 + 요약 + 지수·옵션 체인·계좌 요약·국면·시장 뷰·한도·`request_id`)을 전문 그대로 fo-trader 서브에이전트에게 주고 `FoDecisionEnvelope` JSON 을 받아 `python -m trader tool submit-fo-decision --market KR --date <date> --json '<JSON>'` 으로 제출한다. 도구가 거부하면 이유를 전달해 한 번만 다시 받는다. 제출이 끝나면 `{"done": true, "fo": <direction>}` 을 출력하고 종료한다.
+수량·증거금·주문·계좌별 판정은 파이썬 게이트가 한다. 현물 종목 분석은 하지 않는다.
+
+## fo_resume 모드 (`kind: "fo_resume"`)
+파생 포지션의 장중 재평가다. stdin 의 `position`({account_id, position_id, expected_version, request_id})과 `trigger`({kind, detail})를 받는다. 수집·애널리스트·토론은 **다시 하지 않는다**. `python -m trader tool fo bundle --kind trader --market KR --date <date> --position-id <position_id> --account <account_id>` 출력(현재 포지션·손절·배수·예산 잔여가 `context.position` 에 들어 있다)에 `"trigger": <stdin 의 trigger>` 를 덧붙여 fo-trader 에게 전문 그대로 주고, `FoDecisionEnvelope` JSON(봉투의 `request_id`·`account_id`·`position_id`·`expected_version` 은 stdin 의 `position` 값 **그대로**, 다르면 도구가 거부한다)을 받아 `python -m trader tool submit-fo-decision --market KR --date <date> --stage _fo_decision_r<n>_<account_id> --json '<JSON>'` 으로 제출한다. `<n>` 은 stdin `position.round`(없으면 `tool fo bundle` 출력의 `next_round`)다. 제출이 끝나면 종료한다.
+
 ## discover 모드 (`kind: "discover"`)
 장중 뉴스 발굴이다(Phase 23). screen 모드의 1단계만 한다: `python -m trader tool scan discovery-inputs --market <m> --date <date>` 의 `data`(새 내용으로 판정된 뉴스만 들어 있고 `recent_picks` 첫 항목이 오늘 이미 분석한 종목이다)를 **전문 그대로** scout 서브에이전트에게 주고 `Discovered` JSON 을 받아 `python -m trader tool submit-discovery --market <m> --date <date> --json '<JSON>'` 으로 제출한다. 거부되면 이유를 전달해 한 번만 다시 받는다. screener·분석·결정은 하지 않는다(후보는 파이썬이 분석 큐에 넣는다). 제출이 끝나면 종료한다.
 

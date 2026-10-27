@@ -41,6 +41,15 @@ MARKET_AGENTS: tuple[str, ...] = (
     "researcher-bear",
     "strategist",
 )
+# Phase 26 파생 세션(kind fo|fo_resume): 기술·수급·거시 애널리스트 재사용 + 토론 + fo-trader
+FO_AGENTS: tuple[str, ...] = (
+    "analyst-technical",
+    "analyst-sentiment",
+    "analyst-market",
+    "researcher-bull",
+    "researcher-bear",
+    "fo-trader",
+)
 
 
 @dataclass
@@ -104,6 +113,7 @@ def schema_model_for(name: str) -> type | None:
         "strategist": schemas.HedgeProposal,
         "scalp-judge": schemas.ScalpVerdict,
         "briefing": schemas.Briefing,
+        "fo-trader": schemas.FoDecisionEnvelope,
     }.get(name)
 
 
@@ -153,6 +163,9 @@ def orchestrator_prompt(settings: Settings, base: Path | None = None) -> str:
         + "\n"
         "- HedgeProposal 스키마(market 모드, strategist 출력): "
         + schemas.json_schema(schemas.HedgeProposal)
+        + "\n"
+        "- FoDecisionEnvelope 스키마(fo·fo_resume 모드, fo-trader 출력): "
+        + schemas.json_schema(schemas.FoDecisionEnvelope)
         + "\n"
     )
     return body + runtime
