@@ -73,17 +73,26 @@ def risk(request: Request, account_id: str | None = None, market: str | None = N
         }
 
 
-def _resolver(deps, market: str):
-    """yaml → 자동 분류 캐시(`sector_suggest.resolver`). 웹 조회 경로는 네트워크를 부르지 않는다."""
-    from trader.scan import sector_suggest
-
+def _load_smap():
     try:
         from trader.config import load_sectors
 
-        smap = load_sectors()
+        return load_sectors()
     except Exception:  # noqa: BLE001 - 섹터 맵은 선택 자료
-        smap = None
-    return sector_suggest.resolver(smap, market, state=deps.state)
+        return None
+
+
+_UNSET = object()
+
+
+def _resolver(deps, market: str, smap=_UNSET):
+    """yaml → 자동 분류 캐시(`sector_suggest.resolver`). 웹 조회 경로는 네트워크를 부르지 않는다.
+    smap 을 주면 그 맵을 쓴다(한 요청에서 sectors.yaml 을 여러 번 읽지 않게)."""
+    from trader.scan import sector_suggest
+
+    return sector_suggest.resolver(
+        _load_smap() if smap is _UNSET else smap, market, state=deps.state
+    )
 
 
 def _sectors(deps, market: str, snap: dict | None) -> list[dict]:
@@ -101,19 +110,14 @@ def _sectors(deps, market: str, snap: dict | None) -> list[dict]:
 def overview(request: Request) -> dict:
     """전체 계좌 합산(Phase 24, 토큰 없음). 시장(통화)별로만 더한다."""
     deps = deps_of(request)
-    try:
-        from trader.config import load_sectors
-
-        smap = load_sectors()
-        sector_of = smap.sector_of
-    except Exception:  # noqa: BLE001 - 섹터 맵은 선택 자료
-        sector_of = None
+    smap = _load_smap()
+    sector_of = smap.sector_of if smap is not None else None
     hedge = deps.settings.hedge
 
     def hedge_tickers(m: str) -> set[str]:
         return set(hedge.tickers(m)) if hedge.enabled else set()
 
-    resolvers = {m: _resolver(deps, m) for m in ("KR", "US")}
+    resolvers = {m: _resolver(deps, m, smap) for m in ("KR", "US")}
     with closing(deps.conn_factory()) as conn:
         return views.account_overview(
             conn,

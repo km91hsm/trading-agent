@@ -1,5 +1,6 @@
 from decimal import Decimal
 
+import pydantic
 import pytest
 import yaml
 
@@ -104,6 +105,24 @@ def test_universe_load(project):
     )
     u = config.load_universe()
     assert u.kr == ["005930"] and u.us[0].exchange == "NAS"
+
+
+def test_universe_and_sectors_memo_by_file_mtime(project):
+    """전체 검토 3차(성능): 같은 파일이면 같은(frozen) 객체, 파일이 바뀌면 다시 읽는다."""
+    import os
+
+    write_yaml(project, "universe.yaml", {"kr": ["005930"], "us": []})
+    a = config.load_universe()
+    assert config.load_universe() is a
+    with pytest.raises(pydantic.ValidationError):
+        a.kr = ["000660"]  # frozen — 나눠 쓰는 객체를 바꾸지 못한다
+    path = project / "config" / "universe.yaml"
+    write_yaml(project, "universe.yaml", {"kr": ["000660"], "us": []})
+    st = path.stat()
+    os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000_000))
+    assert config.load_universe().kr == ["000660"]
+    s1 = config.load_sectors()
+    assert config.load_sectors() is s1
 
 
 def test_universe_bad_exchange(project):
