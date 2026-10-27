@@ -123,3 +123,29 @@ def test_flush_keeps_items_queued_during_send(tmp_path):
     n.flush_outbox()
     text = box.read_text(encoding="utf-8")
     assert "첫 알림" in text and "새 실패 알림" in text
+
+
+def test_outbox_survives_crash_during_flush(tmp_path):
+    """재전송 도중 죽어도(전송 예외) 보관 파일의 항목이 남는다(Codex 리뷰)."""
+    import httpx
+    import pytest
+
+    from trader.notify.telegram import TelegramNotifier
+
+    box = tmp_path / "outbox.jsonl"
+    TelegramNotifier(
+        "T",
+        "C",
+        http=httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(429))),
+        outbox=box,
+    ).send("남아야 할 알림")
+
+    def boom(request):
+        raise KeyboardInterrupt  # 프로세스 종료 흉내
+
+    n = TelegramNotifier(
+        "T", "C", http=httpx.Client(transport=httpx.MockTransport(boom)), outbox=box
+    )
+    with pytest.raises(KeyboardInterrupt):
+        n.flush_outbox()
+    assert "남아야 할 알림" in box.read_text(encoding="utf-8")

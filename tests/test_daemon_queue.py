@@ -558,7 +558,7 @@ def test_fills_failure_is_top_level_error(conn):
     assert "체결 조회 실패" in out["error"] and "paper-main KR" in out["error"]
 
 
-def test_bootstrap_requeues_interrupted_reevaluate_and_alerts(conn):
+def test_bootstrap_alerts_interrupted_reevaluate_without_requeue(conn):
     deps = _deps(conn, FakeMarket(), now=lambda: TUE_0900_KST)
     deps.notifier = _Sent()
     rid = jobq.enqueue(
@@ -572,7 +572,7 @@ def test_bootstrap_requeues_interrupted_reevaluate_and_alerts(conn):
     out = daemon._bootstrap_queue(deps)
     assert out["stale"] == 1
     kinds = [r["kind"] for r in jobq.list_recent(conn) if r["status"] == "queued"]
-    assert kinds == ["reevaluate"]
+    assert kinds == []  # 재평가는 이미 주문을 냈을 수 있어 자동 재등록하지 않고 알리기만
     assert any("작업 중단" in m and f"#{rid}" in m for m in deps.notifier.msgs)
 
 
@@ -601,3 +601,11 @@ def test_catch_up_counts_only_completed_runs_and_today(conn):
     # 09:00 KST 는 뉴욕 월요일 20:00 — 월요일 US scan(08:30 ET)은 그 운영일 안이라 놓친 것,
     # 하지만 장이 끝났으니 따라잡기 등록은 없다
     assert "us_scan_analyze" not in out["queued"]
+
+
+def test_early_close_before_monitor_start_is_empty_window(conn):
+    deps = _deps(conn, FakeMarket(), now=lambda: datetime(2026, 11, 27, 15, 0, tzinfo=UTC))
+    us = deps.schedule.us
+    mon = us.monitor.model_copy(update={"start": "14:00", "end": "16:00"})
+    deps.schedule = deps.schedule.model_copy(update={"us": us.model_copy(update={"monitor": mon})})
+    assert daemon._in_market_window(deps, "US") is False  # 10:00 ET, 조기 마감 13:00 < 시작 14:00

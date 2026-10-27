@@ -173,10 +173,10 @@ CLAUDE.md 의 "아키텍처 핵심 규칙" 에서 옮겨 온 모듈 단위 상�
 - **자동 요청 게이트**(`daemon._auto_gate`): 데몬·뉴스가 넣은(`AUTO_SOURCES`) 결정·주문 kind(`TRADING_KINDS`)는 꺼낼 때 일시정지·휴장·`market_hours.session_over`(조기 마감 포함)를 다시 보고 `skipped`. 사람이 누른 요청(web·telegram·cli)은 그대로.
 - **조기 마감**: `market_hours.close_hm`(US 조기 마감일 13:00)·`session_over`, `is_open` 과 장중 창(`_in_market_window` — monitor·단타·뉴스 재분석)이 마감 시각을 당긴다.
 - **체결 동기화**: 조회 실패 계좌·시장이 있으면 `_fills_body` 가 최상위 `error`(runs·하트비트·점검에 오류). `fills.stale_open_days` 로 지난 7일 안 살아 있는(접수·부분·응답없음) 주문이 있는 현지 날짜를 다시 조회. 야간 대조는 시작 전에 체결 동기화를 먼저 돈다(US 대조가 07:10 KST 정기 동기화보다 앞서던 순서 의존).
-- **알림 보관함**(`TelegramNotifier(outbox=state/notify_outbox.jsonl)`): 보내지 못한 청크를 파일 잠금 아래 적어 두고 `telegram_poll` 틱이 `flush_outbox`(최대 10건, 첫 실패에서 멈춤, 24시간 지난 것은 버림).
+- **알림 보관함**(`TelegramNotifier(outbox=state/notify_outbox.jsonl)`): 보내지 못한 청크를 파일 잠금 아래 적어 두고 `telegram_poll` 틱이 `flush_outbox`(최대 10건, 첫 실패에서 멈춤, 24시간 지난 것은 버림, 보낸 뒤에야 항목을 지워 재전송 중 종료돼도 남는다 — 드물게 중복).
 - **경보 피로**: 점검 격상은 단계가 나빠졌을 때 + 같은 단계라도 경고 이상 **새 항목 키**(`control.ops_level.keys`)일 때. watchdog 은 데몬 사망·멈춤(`jobs.daemon`·`jobs.stale`)만 1시간 재알림, 데몬이 살아 있으면 새 경고 키에만.
 - **대조 미실행 점검**은 설정 시각(`<시장>_reconcile` cron)·US 휴장·그날 대조 잡이 건너뛴 경우를 반영. `jobs.errors` 의 '최근' 은 실제 최근 오류 잡.
-- **재시작으로 끊긴 요청**: 실행 중이던 요청을 알리고, 다시 해도 안전한 것(`RESTART_REQUEUE_KINDS`: 재평가·체결 동기화·대조)은 다시 넣는다. 느린 대기열은 cron 이 heavy 락을 기다리는 동안(`heavy_wanted`) 새 요청을 꺼내지 않는다. 스케줄러 풀 40.
+- **재시작으로 끊긴 요청**: 실행 중이던 요청을 알리고, 다시 해도 결과가 같은 것(`RESTART_REQUEUE_KINDS`: 체결 동기화·대조)만 다시 넣는다(재평가는 이미 결정·주문을 냈을 수 있어 알림만). 느린 대기열은 cron 이 heavy 락을 기다리는 동안(`heavy_wanted`) 새 요청을 꺼내지 않는다. 스케줄러 풀 40.
 
 ## 전체 검토 4차 — 나머지(2026-10-27)
 

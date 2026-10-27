@@ -111,6 +111,8 @@ class TelegramNotifier:
     def _queue(self, chunks: list[str]) -> None:
         if self._outbox is None:
             return
+        import uuid
+
         from trader.platform.filelock import locked
 
         try:
@@ -119,56 +121,61 @@ class TelegramNotifier:
                 with self._outbox.open("a", encoding="utf-8") as f:
                     at = datetime.now(UTC).isoformat()
                     for c in chunks:
-                        f.write(json.dumps({"at": at, "chunk": c}, ensure_ascii=False) + "\n")
+                        row = {"id": uuid.uuid4().hex, "at": at, "chunk": c}
+                        f.write(json.dumps(row, ensure_ascii=False) + "\n")
         except (OSError, TimeoutError) as e:
             logger.warning("알림 보관 실패: %s", type(e).__name__)
 
+    def _read_outbox(self) -> list[dict]:
+        out = []
+        if not self._outbox or not self._outbox.exists():
+            return out
+        for line in self._outbox.read_text(encoding="utf-8").splitlines():
+            try:
+                out.append(json.loads(line))
+            except ValueError:
+                continue
+        return out
+
     def flush_outbox(self, *, now: datetime | None = None) -> dict:
-        """보관된 청크를 오래된 순으로 다시 보낸다(최대 OUTBOX_FLUSH_MAX). 첫 실패에서 멈추고
-        나머지는 둔다. 24시간 넘은 것은 버린다. 데몬 telegram_poll 틱이 부른다."""
+        """보관된 청크를 오래된 순으로 다시 보낸다(최대 OUTBOX_FLUSH_MAX). 첫 실패에서 멈춘다.
+        파일은 보낸 뒤에야 지운다 — 재전송 도중 데몬이 죽어도 남은 항목이 사라지지 않게(적어도 한
+        번 전달, 드물게 중복). 네트워크 전송은 잠금 밖, 24시간 넘은 것은 버린다(Codex 리뷰)."""
         if self._outbox is None or not self._outbox.exists():
             return {"sent": 0, "left": 0}
         from trader.platform.filelock import locked
 
         now = now or datetime.now(UTC)
-        sent = dropped = 0
         lock = self._outbox.with_name(self._outbox.name + ".lock")
-        # 잠금 안에서는 파일을 꺼내 비우기만 하고, 네트워크 전송은 잠금 밖에서 한다 — 느린 재전송이
-        # 잠금을 쥔 동안 다른 실패 알림이 보관되지 못하고 사라지지 않게(Codex 리뷰)
         with locked(lock, timeout=5.0):
-            items = []
-            for line in self._outbox.read_text(encoding="utf-8").splitlines():
-                try:
-                    items.append(json.loads(line))
-                except ValueError:
-                    continue
-            self._outbox.unlink(missing_ok=True)
-        keep: list[dict] = []
-        stop = False
+            items = self._read_outbox()
+        sent_ids: set[str] = set()
+        stale_ids: set[str] = set()
         for it in items:
+            key = str(it.get("id") or it.get("at"))
             try:
                 old = now - datetime.fromisoformat(str(it.get("at"))) > OUTBOX_TTL
             except ValueError:
                 old = True
             if old:
-                dropped += 1
+                stale_ids.add(key)
                 continue
-            if stop or sent >= OUTBOX_FLUSH_MAX:
-                keep.append(it)
-                continue
-            if self._post(str(it.get("chunk") or "")):
-                sent += 1
-            else:
-                stop = True
-                keep.append(it)
-        if keep:  # 남은 것은 앞에(오래된 순서 유지), 그사이 새로 보관된 것은 뒤에
-            with locked(lock, timeout=30.0):
-                newer = self._outbox.read_text(encoding="utf-8") if self._outbox.exists() else ""
+            if len(sent_ids) >= OUTBOX_FLUSH_MAX:
+                break
+            if not self._post(str(it.get("chunk") or "")):
+                break
+            sent_ids.add(key)
+        gone = sent_ids | stale_ids
+        with locked(lock, timeout=30.0):  # 그사이 새로 보관된 항목은 그대로 둔다
+            keep = [k for k in self._read_outbox() if str(k.get("id") or k.get("at")) not in gone]
+            if keep:
                 self._outbox.write_text(
-                    "".join(json.dumps(k, ensure_ascii=False) + "\n" for k in keep) + newer,
+                    "".join(json.dumps(k, ensure_ascii=False) + "\n" for k in keep),
                     encoding="utf-8",
                 )
-        return {"sent": sent, "left": len(keep), "dropped": dropped}
+            else:
+                self._outbox.unlink(missing_ok=True)
+        return {"sent": len(sent_ids), "left": len(keep), "dropped": len(stale_ids)}
 
 
 def make_notifier(secrets: Secrets, *, http: httpx.Client | None = None) -> Notifier:

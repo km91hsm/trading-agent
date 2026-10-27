@@ -1984,6 +1984,8 @@ def _in_market_window(deps: DaemonDeps, market: str) -> bool:
     end = ms.monitor.end
     close = market_hours.close_hm(market, now_local.date())
     if close < market_hours.REGULAR[market][1]:
+        if close <= ms.monitor.start:  # 조기 마감이 감시 시작보다 이르면 오늘 창은 비었다(Codex)
+            return False
         end = min(end, close)
     return in_window(now_local.time().replace(second=0, microsecond=0), ms.monitor.start, end)
 
@@ -2965,7 +2967,9 @@ def _bootstrap_queue(deps: DaemonDeps) -> dict:
     return {"stale": stale, "expired": expired, "queued": queued}
 
 
-RESTART_REQUEUE_KINDS = frozenset({"reevaluate", "fills_sync", "reconcile"})
+# 다시 해도 결과가 같은 것만 자동 재등록. 재평가는 끊긴 시점에 이미 결정·주문을 냈을 수 있어
+# (다음 라운드로 새로 돌면 중복 주문) 알림만 한다(Codex 리뷰)
+RESTART_REQUEUE_KINDS = frozenset({"fills_sync", "reconcile"})
 
 
 # --- 실행 ---------------------------------------------------------------------------
