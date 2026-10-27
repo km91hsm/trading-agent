@@ -75,6 +75,40 @@ def assemble_dist(dist: Path, *, sys_platform: str = sys.platform) -> Path:
     return target
 
 
+# 번들 폴더 = 운용 중인 TRADER_HOME 일 수 있다(Trader.app 의 부모). 빌드가 폴더를 비우기 전에
+# 사용자 데이터를 옆으로 옮겼다가 되돌린다 — 원장·키·설정이 지워지던 문제(전체 검토 2026-10-27)
+USER_DATA = ("config", "secrets", "state", "docs")
+
+
+def stash_user_data(target: Path, stash_root: Path) -> Path | None:
+    """target 안의 사용자 데이터 폴더를 stash_root/<시각> 으로 옮긴다. 없으면 None."""
+    present = [n for n in USER_DATA if (target / n).exists()]
+    if not present:
+        return None
+    from datetime import datetime
+
+    stash = stash_root / f"trader-userdata-{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    stash.mkdir(parents=True)
+    for n in present:
+        shutil.move(str(target / n), str(stash / n))
+    print(f"사용자 데이터 보존: {', '.join(present)} → {stash}", flush=True)
+    return stash
+
+
+def restore_user_data(stash: Path | None, target: Path) -> None:
+    """stash 의 폴더를 target 으로 되돌린다(새 번들에 같은 이름이 있으면 사용자 것이 이긴다)."""
+    if stash is None:
+        return
+    target.mkdir(parents=True, exist_ok=True)
+    for item in sorted(stash.iterdir()):
+        dst = target / item.name
+        if dst.exists():
+            shutil.rmtree(dst) if dst.is_dir() else dst.unlink()
+        shutil.move(str(item), str(dst))
+    stash.rmdir()
+    print(f"사용자 데이터 복원 → {target}", flush=True)
+
+
 def cli_exe(dist_dir: Path) -> Path:
     return dist_dir / ("trader.exe" if sys.platform == "win32" else "trader")
 
@@ -89,6 +123,14 @@ def internal_dir(dist_dir: Path) -> Path:
 def build_bundle() -> Path:
     if not (ROOT / "web" / "dist" / "index.html").exists():
         raise SystemExit("web/dist 가 없습니다. 먼저 웹을 빌드하세요 (npm run build)")
+    stash = stash_user_data(DIST, ROOT / "dist")
+    try:
+        return _build_bundle()
+    finally:  # 빌드가 실패해도 데이터는 원래 자리로
+        restore_user_data(stash, DIST)
+
+
+def _build_bundle() -> Path:
     _run(
         [
             sys.executable,

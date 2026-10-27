@@ -241,6 +241,9 @@ class SessionCancelled(subprocess.TimeoutExpired):
     """종료 요청(stop_event)으로 세션을 중단했다. TimeoutExpired 의 하위라 기존 처리 경로를 탄다."""
 
 
+WIN_NEW_GROUP_NO_WINDOW = 0x00000200 | 0x08000000  # CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW
+
+
 def _signal_group(proc: subprocess.Popen, sig: int) -> None:
     if os.name == "posix":
         try:
@@ -267,10 +270,25 @@ def _drain(proc: subprocess.Popen, timeout: float) -> bool:
 def terminate_group(proc: subprocess.Popen) -> None:
     """SIGTERM → 유예(TERM_GRACE_S) → SIGKILL → 짧은 대기 → 파이프 닫기. 어느 단계도 무한히
     기다리지 않는다(그룹을 벗어난 손자가 파이프를 쥐고 있어도 돌아온다)."""
-    _signal_group(proc, signal.SIGTERM)
-    if _drain(proc, TERM_GRACE_S):
-        return
-    _signal_group(proc, signal.SIGKILL)
+    if os.name != "posix":
+        # Windows: 프로세스 그룹 신호·SIGKILL 이 없다. claude.cmd 면 Popen 이 쥔 것은 cmd.exe 라
+        # terminate 만으로는 node(claude)·`trader tool` 자식이 살아남아 주문을 이어 갈 수 있다 —
+        # 유예 뒤 `taskkill /T /F` 로 트리 전체를 정리한다(전체 검토 2026-10-27)
+        from trader.platform import procs
+
+        try:
+            proc.terminate()
+        except OSError:
+            pass
+        if _drain(proc, TERM_GRACE_S):
+            procs.kill_group(proc.pid)  # 부모가 먼저 끝나도 손자가 남았을 수 있다
+            return
+        procs.kill_group(proc.pid)
+    else:
+        _signal_group(proc, signal.SIGTERM)
+        if _drain(proc, TERM_GRACE_S):
+            return
+        _signal_group(proc, signal.SIGKILL)
     if not _drain(proc, KILL_WAIT_S):
         for stream in (proc.stdin, proc.stdout, proc.stderr):
             try:
@@ -298,6 +316,9 @@ def run_claude(cmd: list[str], **kw: Any) -> subprocess.CompletedProcess:
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         start_new_session=posix,
+        # Windows: 새 프로세스 그룹 + 콘솔 창 없음(창 없는 앱에서 세션마다 콘솔이 뜨고, 그 창을
+        # 닫으면 세션이 강제 종료되던 문제)
+        **({} if posix else {"creationflags": WIN_NEW_GROUP_NO_WINDOW}),
         **kw,
     )
     deadline = None if timeout is None else time.monotonic() + float(timeout)

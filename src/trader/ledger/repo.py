@@ -399,21 +399,27 @@ def has_open_order_or_approval(
 def open_orders_today(
     conn: sqlite3.Connection,
     account_id: str,
-    ticker: str,
+    ticker: str | None,
     side: str,
     d: date,
     *,
     market: str | None = None,
 ) -> list[sqlite3.Row]:
-    """오늘(시장 현지 하루) 같은 계좌·종목·방향의 살아 있고 체결이 끝나지 않은 주문 행
-    (손절 전 취소 대상)."""
+    """오늘(시장 현지 하루) 같은 계좌·종목(None 이면 전 종목)·방향의 살아 있고 체결이 끝나지
+    않은 주문 행(손절 전·결정 반전·킬스위치 취소 대상)."""
     lo, hi = day_bounds(d, market)
+    where, args = "", [account_id, side, lo, hi]
+    if ticker is not None:
+        where, args = " AND ticker=?", [account_id, side, lo, hi, ticker]
+    if market is not None:
+        where += " AND market=?"
+        args.append(market)
     return conn.execute(
-        "SELECT id, order_no, org_no, qty, market, status, order_type, price FROM orders "
-        "WHERE account_id=? AND ticker=? AND side=? "
+        "SELECT id, ticker, order_no, org_no, qty, market, status, order_type, price FROM orders "
+        "WHERE account_id=? AND side=? "
         f"AND status NOT IN ({dead_status_sql()},'filled') "
-        "AND created_at >= ? AND created_at < ? ORDER BY id",
-        (account_id, ticker, side, lo, hi),
+        "AND created_at >= ? AND created_at < ?" + where + " ORDER BY id",
+        args,
     ).fetchall()
 
 
@@ -1009,6 +1015,19 @@ def get_approval(conn: sqlite3.Connection, approval_id: int) -> dict | None:
 def pending_approvals(conn: sqlite3.Connection) -> list[dict]:
     rows = conn.execute("SELECT * FROM approvals WHERE status='pending' ORDER BY id").fetchall()
     return [_approval_row(r) for r in rows]
+
+
+def expire_pending_buys(conn: sqlite3.Connection, account_id: str, ticker: str) -> int:
+    """그 계좌·종목의 pending BUY 승인 요청을 만료로 닫는다(손절 직후 사람이 옛 요청을 승인해 곧바로
+    되사는 것을 막는다, 전체 검토 2026-10-27). 닫은 건수."""
+    cur = conn.execute(
+        "UPDATE approvals SET status='expired', decided_at=? WHERE account_id=? "
+        "AND status='pending' AND json_extract(order_json, '$.ticker')=? "
+        "AND json_extract(order_json, '$.side')='BUY'",
+        (now_iso(), account_id, ticker),
+    )
+    conn.commit()
+    return cur.rowcount
 
 
 def decide_approval(

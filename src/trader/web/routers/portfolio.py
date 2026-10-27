@@ -166,6 +166,11 @@ def ensure_fresh(request: Request, market: str | None = None) -> dict:
     from trader.orchestrator import balance
 
     deps = deps_of(request)
+    # 토큰 없는 쓰기성 호출이라 다른 사이트(no-cors 단순 요청)가 부르지 못하게 같은 출처만 —
+    # 헤더가 없는 비브라우저 호출(테스트·CLI)은 통과(전체 검토 2026-10-27)
+    site = request.headers.get("sec-fetch-site")
+    if site is not None and site not in ("same-origin", "none"):
+        raise HTTPException(status_code=403, detail="같은 출처 화면에서만 부를 수 있습니다")
     m = (market or "").upper()
     if m not in ("KR", "US"):
         raise HTTPException(status_code=400, detail="market 은 KR|US")

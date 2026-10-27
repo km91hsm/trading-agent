@@ -40,9 +40,10 @@ trader/                ← 이 폴더가 TRADER_HOME. 폴더째 다른 PC 로 �
 1. `Trader.app`(macOS) 또는 `TraderApp.exe`(Windows) 를 더블클릭합니다. 메뉴바(작업표시줄)에 ▲ 아이콘이
    뜨고, 처음에는 `config/`·`secrets/.env.example`·`docs/` 가 만들어지며 웹 UI(http://127.0.0.1:8787)가
    열립니다. 키가 없으면 수집·세션은 실패하지만 UI 는 뜹니다.
-   - macOS: 서명이 없어 "확인되지 않은 개발자" 경고가 뜨면 **우클릭 → 열기** 를 한 번 합니다. 그래도
-     "악성 소프트웨어인지 확인할 수 없다" 로 막히면 터미널에서 `xattr -dr com.apple.quarantine trader/`
-     를 한 번 실행합니다(압축 파일의 격리 표시 제거).
+   - macOS: **먼저** 터미널에서 `xattr -dr com.apple.quarantine trader/` 를 한 번 실행합니다(압축
+     파일의 격리 표시 제거). 이 단계를 건너뛰고 '우클릭 → 열기' 만 하면 macOS 가 앱을 읽기 전용 임시
+     경로(App Translocation)에서 돌려 설정·원장을 만들 수 없습니다 — 그때는 앱이 안내 알림을 띄우고
+     `state/logs/startup-error.log`(없으면 홈 폴더)에 남긴 뒤 종료합니다.
    - Windows: SmartScreen 경고에서 **추가 정보 → 실행** 을 한 번 누릅니다.
 2. `secrets/.env.example` 을 `secrets/.env` 로 복사해 키를 넣습니다. 다른 프로젝트의 `.env` 가 있으면
    터미널에서 `trader secrets import --from <그 파일>` 로 이름 매핑 복사(값은 출력되지 않음).

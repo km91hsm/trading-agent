@@ -815,6 +815,31 @@ def test_stop_loss_cancels_same_day_resting_buy(conn):
     )
 
 
+def test_stop_loss_expires_pending_buy_approval(conn):
+    """손절 직후 같은 종목의 pending BUY 승인을 만료로 닫는다(사람이 승인해 곧바로 되사지 않게)."""
+    import json
+
+    pos = _pos()
+    ctx = _ctx(conn, positions=[pos])
+    _decision(conn, action="ADD", stop_loss=65000.0)
+    did = repo.decision_id(conn, D, "KR", "005930")
+    conn.execute(
+        "INSERT INTO approvals(decision_id, account_id, order_json, status, requested_at, "
+        "expires_at) VALUES (?,?,?,?,?,?)",
+        (
+            did,
+            "paper-main",
+            json.dumps({"ticker": "005930", "side": "BUY"}),
+            "pending",
+            NOW.isoformat(),
+            NOW.isoformat(),
+        ),
+    )
+    conn.commit()
+    monitor.monitor_once(ctx, market="KR", today=D)
+    assert conn.execute("SELECT status FROM approvals").fetchone()[0] == "expired"
+
+
 def test_stop_loss_is_monotone_across_holding_decisions(conn):
     """전체 검토 L5: 보유 재분석 HOLD 가 손절가를 비워도 보유 기간 중 이전 손절선(최고값)을 지킨다.
     (평단 70000·현재 63000: 기본 −15% 손절선 59500 은 안 닿지만 이전 결정의 65000 은 닿는다)"""

@@ -73,6 +73,49 @@ class ExecContext:
     sectors: Any | None = None  # config.SectorMap (섹터 상한). None 이면 첫 사용 때 load_sectors()
 
 
+def cancel_open_buys(
+    conn: sqlite3.Connection,
+    broker: Any,
+    account_id: str,
+    market: str,
+    day: date,
+    *,
+    ticker: str | None = None,
+    exchange_of: Callable[[str], str | None] = lambda _t: None,
+) -> tuple[int, list[str]]:
+    """당일(시장 현지) 미체결 BUY 를 취소한다 — 손절 직전, 결정이 매수에서 돌아섰을 때, 킬스위치가
+    켜졌을 때(전체 검토 2026-10-27). (취소 건수, 취소하지 못한 종목들). 응답 없는(번호 없는) 주문·
+    US 거래소를 모르는 주문·KIS 거부는 '못 함' 으로 돌려 호출자가 알린다."""
+    if broker is None:
+        return 0, []
+    done, left = 0, []
+    for r in repo.open_orders_today(conn, account_id, ticker, "BUY", day, market=market):
+        t = str(r["ticker"])
+        ex = exchange_of(t) if market == "US" else None
+        if not r["order_no"] or (market == "US" and not ex):
+            left.append(t)
+            continue
+        try:
+            res = broker.cancel_order(
+                str(r["order_no"]),
+                market=market,
+                org_no=r["org_no"],
+                ticker=t,
+                exchange=ex,
+                qty=int(r["qty"]),
+            )
+        except (KisApiError, ValueError) as e:
+            logger.warning("미체결 BUY 취소 실패 %s %s #%s: %s", account_id, t, r["order_no"], e)
+            left.append(t)
+            continue
+        if res.accepted:
+            repo.set_order_status(conn, int(r["id"]), "cancelled")
+            done += 1
+        else:
+            left.append(t)
+    return done, left
+
+
 def _theme_of(ctx: ExecContext, market: str, d: date) -> Callable[[str], list[str] | None] | None:
     """게이트의 테마 규칙용 종목→오늘 상위 테마(Phase 25, `scan/theme.theme_of_map`). 꺼졌거나
     오늘 결과가 없으면 None. 실패는 경고만(테마 규칙만 빠진다)."""
@@ -228,6 +271,27 @@ def _nav_of(pos_list: list, cash: Any) -> Decimal:
     return cash.total + sum((p.eval_amount for p in pos_list), Decimal(0))
 
 
+def on_killswitch(
+    conn: sqlite3.Connection, broker: Any, account_id: str, market: str, today: date
+) -> tuple[int, list[str]]:
+    """킬스위치가 막 켜졌을 때 그 계좌·시장의 당일 미체결 BUY 를 취소한다. US 거래소는
+    universe.us 에서 찾고, 못 찾거나 실패한 종목은 경고로 남긴다(킬스위치는 특보로 뜬다)."""
+    exchanges: dict[str, str] = {}
+    if market == "US":
+        try:
+            from trader import config as _config
+
+            exchanges = {s.symbol: s.exchange for s in _config.load_universe().us}
+        except Exception as e:  # noqa: BLE001
+            logger.warning("킬스위치 취소: universe 를 읽지 못해 US 거래소 미상: %s", e)
+    n, left = cancel_open_buys(conn, broker, account_id, market, today, exchange_of=exchanges.get)
+    if n or left:
+        logger.warning(
+            "킬스위치: %s %s 당일 미체결 BUY 취소 %d건, 못 함 %s", account_id, market, n, left
+        )
+    return n, left
+
+
 def build_portfolio(
     conn: sqlite3.Connection,
     broker: Any,
@@ -253,7 +317,7 @@ def build_portfolio(
     if killswitch_pct > 0:
         from trader.risk import killswitch
 
-        killswitch.observe(
+        tripped = killswitch.observe(
             conn,
             account_id=account.id,
             market=market,
@@ -261,6 +325,8 @@ def build_portfolio(
             today=today,
             limit_pct=killswitch_pct,
         )
+        if tripped:  # 막 켜졌다 — 이미 거래소에 걸린 당일 BUY 도 거둔다(게이트는 새 주문만 막는다)
+            on_killswitch(conn, broker, account.id, market, today)
     prev = repo.latest_nav_before(conn, account.id, today, market=market)
     today_pnl = float(nav / prev - 1) if prev else 0.0
     if account.env == "paper":
@@ -547,6 +613,35 @@ def execute(
                 ),
             )
             results.append({"account_id": account.id, "error": f"{type(e).__name__}: {e}"})
+    llm_decision = not (
+        is_stop_loss or is_scalp or is_hedge or is_park or is_rebalance or is_reprice
+    )
+    if llm_decision and decision.action not in ("BUY", "ADD") and not dry_run:
+        # 결정이 매수에서 돌아섰다(재평가 SELL·HOLD 등) — 이미 낸 당일 지정가 BUY 가 그 뒤에
+        # 체결되면 매도로 돌아선 종목을 사게 된다. 위험을 줄이는 취소라 일시정지와 무관하게 한다
+        for account in ctx.accounts:
+            if market not in account.markets or account.id in skip_accounts:
+                continue
+            n, left = cancel_open_buys(
+                ctx.conn,
+                ctx.brokers.get(account.id),
+                account.id,
+                market,
+                date,
+                ticker=decision.ticker,
+                exchange_of=lambda _t: exchange,
+            )
+            if n or left:
+                _notify_quietly(
+                    ctx,
+                    messages.open_buys_cancelled(
+                        account=account.id,
+                        label=_label(ctx, market, decision.ticker),
+                        reason=f"결정 {decision.action}",
+                        cancelled=n,
+                        left=left,
+                    ),
+                )
     if bookkeeping_error is not None:
         # 호출자(monitor 의 손절 플래그·submit-decision 의 CRITICAL)가 접수번호로 수동 대조한다
         raise bookkeeping_error
@@ -698,6 +793,7 @@ def _execute_account(
                 decision.ticker,
                 date,
                 is_stop_loss=is_stop_loss,
+                qty=int(verdict.adjusted_qty or 0),
             )
             now = ctx.now()
             if not repo.claim_exec_key(
@@ -815,14 +911,19 @@ def _exec_key(
     d: date,
     *,
     is_stop_loss: bool = False,
+    qty: int = 0,
 ) -> str:
-    """실행 키(검토 O8). 결정 주문은 `결정|계좌|방향|주문단계`, 손절은 `stop|계좌|종목|현지일`
-    (결정과 무관하게 하루 1회 — monitor 의 당일 조건과 같은 단위). 결정 행이 없는 주문(단타·
-    리밸런스)은 `주문단계|계좌|종목|방향|운영일`."""
+    """실행 키(검토 O8). 결정 주문은 `결정|계좌|방향|주문단계`, 손절은 `stop|계좌|종목|현지일|q수량`
+    (결정과 무관하게 하루 단위 — monitor 의 당일 조건과 같은 단위). 결정 행이 없는 주문(단타·
+    리밸런스)은 `주문단계|계좌|종목|방향|운영일`, 단타 청산은 끝에 `|q수량`.
+    손절·단타 청산에 수량을 넣는 것은 일부만 체결된 뒤 남은 수량을 같은 날 다시 낼 수 있게 하기
+    위해서다(전체 검토 2026-10-27: 키가 하루 하나면 체결된 첫 주문이 잔량 손절을 영구히 막았다).
+    같은 수량의 중복은 키가, 살아 있는 SELL 의 중복은 monitor 의 당일 조건이 막는다."""
     if is_stop_loss:
-        return f"stop|{account_id}|{ticker}|{d.isoformat()}"
+        return f"stop|{account_id}|{ticker}|{d.isoformat()}|q{qty}"
     if decision_id is None:
-        return f"{order_stage}|{account_id}|{ticker}|{side}|{d.isoformat()}"
+        key = f"{order_stage}|{account_id}|{ticker}|{side}|{d.isoformat()}"
+        return key + f"|q{qty}" if order_stage.startswith("57_order_scalp_exit") else key
     return f"{decision_id}|{account_id}|{side}|{order_stage}"
 
 
@@ -1192,6 +1293,9 @@ def _approval_recheck(
     from trader.orchestrator.run_store import run_date_for
 
     today = run_date_for(market, ctx.now())
+    ks = killswitch.reason(ctx.conn)
+    if ks:  # 요청 뒤 킬스위치(/kill·누적 손실)가 켜졌다 — 신규 매수 중단을 승인으로 우회하지 않게
+        return f"킬스위치 켜짐({ks}) — 신규 매수 중단", None
     if regime_state(ctx, market) == "bear" and _agent_tilt(ctx, market, today) <= 0:
         return "하락 국면(bear) 전환 — 신규 매수 금지", None
     try:

@@ -107,7 +107,6 @@ def create_app(deps: WebDeps) -> FastAPI:
             "127.0.0.1",
             "localhost",
             "[::1]",
-            "testserver",
             *deps.extra_hosts,
             *sorted(ts_hosts),
         ],

@@ -2886,6 +2886,11 @@ def _start_web(app: Any, host: str, port: int, *, notifier: Any = None) -> threa
             port=port,
             log_level="info",
             access_log=False,
+            # uvicorn 기본 로그 설정은 sys.stdout.isatty() 를 부른다 — 창 없는 Windows 앱은
+            # stdout 이 None 이라 Config 생성에서 죽어 데몬이 통째로 안 떴다(전체 검토 2026-10-27).
+            # 로그는 데몬이 이미 건 파일 핸들러(root)로 간다
+            log_config=None,
+            use_colors=False,
             # X-Forwarded-For 로 접속 주소를 바꾸지 않는다(Tailscale 게이트가 실제 피어를 본다)
             proxy_headers=False,
         )
