@@ -41,7 +41,8 @@ OPS_CHECK_S = 1800  # 운영 점검 주기 (Phase 23 A)
 BALANCE_REFRESH_S = 300  # 정규장 잔고 주기 갱신(웹 실시간 — 조회만)
 TELEGRAM_POLL_S = 30
 QUEUE_JOB_ID = "job_queue"  # 작업 대기열 소비 잡 (jobs.py)
-FAST_QUEUE_JOB_ID = "job_queue_fast"  # 빠른 레인: 재평가·가벼운 잡(heavy 락 밖, 전체 검토 P2)
+FAST_QUEUE_JOB_ID = "job_queue_fast"  # 빠른 레인: 가벼운 잡(heavy 락 밖, 전체 검토 P2)
+REEVAL_QUEUE_JOB_ID = "job_queue_reeval"  # 재평가 레인: 손절 뒤 재평가만(2-P2)
 INFO_QUEUE_JOB_ID = "job_queue_info"  # 정보 레인: 사용량 확인(빠른 레인을 막지 않게)
 QUEUE_INTERVAL_S = 10
 QUEUED_MAX_AGE = timedelta(hours=6)  # 데몬이 꺼진 동안 쌓인 요청은 만료
@@ -370,6 +371,7 @@ def build_jobs(schedule: ScheduleConfig, settings: Settings, *, markets: list[st
     jobs.append(Job("telegram_poll", "telegram_poll", interval_s=TELEGRAM_POLL_S))
     jobs.append(Job(QUEUE_JOB_ID, "job_queue", interval_s=QUEUE_INTERVAL_S))
     jobs.append(Job(FAST_QUEUE_JOB_ID, "job_queue_fast", interval_s=QUEUE_INTERVAL_S))
+    jobs.append(Job(REEVAL_QUEUE_JOB_ID, "job_queue_reeval", interval_s=QUEUE_INTERVAL_S))
     jobs.append(Job(INFO_QUEUE_JOB_ID, "job_queue_info", interval_s=QUEUE_INTERVAL_S))
     jobs.append(Job("news_collect", "news_collect", interval_s=schedule.news_collect.interval_s))
     jobs.append(Job("ops_check", "ops_check", interval_s=OPS_CHECK_S))  # 운영 점검(Phase 23 A)
@@ -516,9 +518,9 @@ class DaemonDeps:
     web_app_factory: Callable[[], Any] | None = None
     dry_run: bool = False
     session_runner: Callable[..., Any] | None = None  # 테스트 주입용 (기본 run_session)
-    snapshot_fn: Callable[[list[str]], int] | None = (
-        None  # reflect 전 피처 스냅샷(시장 목록 → 행 수)
-    )
+    # reflect 전 피처 스냅샷: (시장 목록, extra=[(코드, 시장, 거래소)]) → 행 수. extra 는 유니버스
+    # 밖 열린 창 종목(ledger/open_window, 2-L1)
+    snapshot_fn: Callable[..., int] | None = None
     stop_event: threading.Event = field(default_factory=threading.Event)  # SIGTERM 뒤 세션 중단
     # 피처 스토어 작업: (action: backfill|snapshot|derive, markets, *, progress, **kw) -> 행 수
     features_fn: Callable[..., int] | None = None
@@ -837,7 +839,7 @@ def _analyze_targets(
 
 
 def _proxy_candles(deps: DaemonDeps, market: str, days: int = 260) -> list:
-    from trader.broker.models import drop_incomplete_tail
+    from trader import market_hours
 
     inst = deps.settings.hedge.index_proxy.get(market)  # type: ignore[arg-type]
     if inst is None or deps.market_client is None:
@@ -846,8 +848,9 @@ def _proxy_candles(deps: DaemonDeps, market: str, days: int = 260) -> list:
         got = deps.market_client.get_daily_us(inst.symbol, inst.exchange or "AMS", days=days)
     else:
         got = deps.market_client.get_daily_kr(inst.symbol, days=days)
-    # 개장 전 거래량 0 스텁 봉이 들어가면 20일 수익률·변동성이 오늘의 가짜 종가로 계산된다
-    return drop_incomplete_tail(got)
+    # 개장 전 거래량 0 스텁·장중의 미완성 오늘 봉이 들어가면 20일 수익률·변동성이 오늘의 가짜
+    # 종가로 계산된다 → 완성 봉까지만(2-P4)
+    return market_hours.completed_candles(market, got, deps.now())
 
 
 def _proxy_closes(deps: DaemonDeps, market: str, days: int = 260) -> list:
@@ -1174,11 +1177,12 @@ def _reprice_body(deps: DaemonDeps, market: str) -> dict:
         mc = deps.market_client
 
         def quote(ticker: str, exchange: str | None):
+            # 시세 객체 그대로 — 재제출 게이트가 등락률·종목상태를 본다(2-O5)
             if market == "US":
                 if not exchange:
                     raise ValueError(f"US 거래소 코드 없음: {ticker}")
-                return mc.get_price_us(ticker, exchange).price
-            return mc.get_price_kr(ticker).price
+                return mc.get_price_us(ticker, exchange)
+            return mc.get_price_kr(ticker)
 
         cache = _cache_dir(deps)
         return reprice_mod.reprice(
@@ -1686,15 +1690,22 @@ def _ksd_body(deps: DaemonDeps) -> dict:
 
     if deps.market_client is None or not hasattr(deps.market_client, "ksd_schedule"):
         return {"skipped": "시세 클라이언트 없음"}
+    cfg = deps.settings.event_blackout
     r = blackout.collect(
-        deps.market_client, deps.settings.event_blackout, today=deps.now().astimezone(KST).date()
+        deps.market_client, cfg, today=deps.now().astimezone(KST).date(), now=deps.now()
     )
     conn = deps.conn_factory()
     try:
-        blackout.store(conn, r)
+        data = blackout.store(conn, r)  # 실패한 종류는 지난 일정 유지(2-O9)
     finally:
         conn.close()
-    return {"events": len(r["events"]), "errors": r["errors"]}
+    stale = blackout.stale_kinds(data, cfg, now=deps.now())
+    if stale:
+        logger.warning("권리 일정 수집 오래됨: %s", stale)
+        if cfg.enabled:  # 켜져 있을 때만 알림 — 꺼진 기능의 실패로 매일 알리지 않는다
+            items = [(blackout.LABEL.get(k, k), d) for k, d in sorted(stale.items())]
+            deps.notifier.send(messages.ksd_stale(items))
+    return {"events": len(data["events"]), "errors": r["errors"], "stale": sorted(stale)}
 
 
 def _briefing_body(deps: DaemonDeps) -> dict:
@@ -2409,6 +2420,24 @@ def _discover_body(deps: DaemonDeps, market: str) -> dict:
         conn.close()
 
 
+def _open_window_targets(deps: DaemonDeps) -> list[tuple[str, str, str | None]]:
+    """일일 스냅샷에 더할 유니버스 밖 열린 창 종목(보유·미만기 메모리·미만기 섀도, 2-L1). 실패는
+    경고만(스냅샷은 유니버스로 계속)."""
+    from trader.ledger import open_window
+
+    out: list[tuple[str, str, str | None]] = []
+    try:
+        conn = deps.conn_factory()
+        try:
+            for m in deps.settings.markets:
+                out += open_window.targets(conn, m, deps.universe)
+        finally:
+            conn.close()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("열린 창 종목 수집 실패: %s", e)
+    return out
+
+
 def _reflect_body(deps: DaemonDeps) -> dict:
     """장 마감 후: 만기 결정 결과 채우기 → 반성 대기가 있는 시장만 세션 → 메모리 정리."""
     from trader.memory import outcomes, store
@@ -2417,7 +2446,8 @@ def _reflect_body(deps: DaemonDeps) -> dict:
     features_n: int | None = None
     if deps.snapshot_fn is not None:
         try:
-            features_n = int(deps.snapshot_fn(list(deps.settings.markets)))
+            extra = _open_window_targets(deps)
+            features_n = int(deps.snapshot_fn(list(deps.settings.markets), extra=extra))
         except Exception as e:  # noqa: BLE001 - 스냅샷 실패는 통보하고 반성은 계속
             logger.warning("피처 스냅샷 실패: %s", e)
             deps.notifier.send(
@@ -2438,7 +2468,7 @@ def _reflect_body(deps: DaemonDeps) -> dict:
             from trader.ledger import shadow
 
             index_tables = {
-                m: shadow.index_table(deps.market_client, deps.settings.hedge, m)
+                m: shadow.index_table(deps.market_client, deps.settings.hedge, m, now=deps.now())
                 for m in deps.settings.markets
             }
             shadow_matured = shadow.mature(
@@ -2620,7 +2650,9 @@ def _shadow_record(deps: DaemonDeps, market: str, analyzed: dict | None = None) 
     try:
         conn = deps.conn_factory()
         try:
-            index = shadow.index_table(deps.market_client, deps.settings.hedge, market)
+            index = shadow.index_table(
+                deps.market_client, deps.settings.hedge, market, now=deps.now()
+            )
             shadow.record(conn, market=market, day=today, scan=scan, now=deps.now(), index=index)
         finally:
             conn.close()
@@ -2754,6 +2786,8 @@ def job_body(
         return lambda: _queue_tick(deps, heartbeat)
     if job.kind == "job_queue_fast":
         return lambda: _fast_queue_tick(deps, heartbeat)
+    if job.kind == "job_queue_reeval":
+        return lambda: _reeval_queue_tick(deps, heartbeat)
     if job.kind == "job_queue_info":
         return lambda: _info_queue_tick(deps, heartbeat)
     raise ValueError(f"알 수 없는 잡: {job.kind}")
@@ -2904,11 +2938,19 @@ def _queue_tick(deps: DaemonDeps, heartbeat: Heartbeat | None) -> dict:
 
 
 def _fast_queue_tick(deps: DaemonDeps, heartbeat: Heartbeat | None) -> dict:
-    """빠른 레인(전체 검토 P2): 재평가·체결 동기화·뉴스 수집·대조는 heavy 락을 기다리지 않는다.
-    백필·scan_analyze 가 돌아도 손절 재평가가 같은 틱에 나간다. 큰 잡은 기존 `job_queue` 만."""
+    """빠른 레인(전체 검토 P2): 체결 동기화·뉴스 수집·대조는 heavy 락을 기다리지 않는다.
+    백필·scan_analyze 가 돌아도 같은 틱에 나간다. 큰 잡은 기존 `job_queue` 만."""
     if deps.stop_event.is_set():
         return {"skipped": "종료 중"}
     return _queue_tick_locked(deps, heartbeat, kinds=jobq.FAST_KINDS)
+
+
+def _reeval_queue_tick(deps: DaemonDeps, heartbeat: Heartbeat | None) -> dict:
+    """재평가 레인(2-P2): 손절 뒤 재평가(`jobs.REEVAL_KINDS`)만 — 뉴스 수집·대조가 빠른 레인을
+    잡고 있어도 밀리지 않는다."""
+    if deps.stop_event.is_set():
+        return {"skipped": "종료 중"}
+    return _queue_tick_locked(deps, heartbeat, kinds=jobq.REEVAL_KINDS)
 
 
 def _info_queue_tick(deps: DaemonDeps, heartbeat: Heartbeat | None) -> dict:
@@ -3385,7 +3427,8 @@ def _install_heartbeat_listener(
             # 대기열 틱은 긴 요청을 도는 동안 10초마다 MAX_INSTANCES 가 나므로 놓침이 아니다
             if not (
                 event.code == ev.EVENT_JOB_MAX_INSTANCES
-                and event.job_id in (QUEUE_JOB_ID, FAST_QUEUE_JOB_ID, INFO_QUEUE_JOB_ID)
+                and event.job_id
+                in (QUEUE_JOB_ID, FAST_QUEUE_JOB_ID, REEVAL_QUEUE_JOB_ID, INFO_QUEUE_JOB_ID)
             ):
                 hb.job_missed(event.job_id, datetime.now(UTC))
             job = by_id.get(event.job_id)

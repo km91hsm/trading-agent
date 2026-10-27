@@ -109,3 +109,30 @@ def test_executor_blocks_buy_in_window_when_enabled(conn, project):
             dry_run=True,
         )
         assert any("권리 일정" in r for r in res[0]["reasons"]) is blocked
+
+
+def test_store_keeps_last_success_per_kind_and_reports_stale(conn):
+    """2-O9: 종류별 마지막 성공분을 합친다 — 실패한 종류는 지난 일정·수집 시각 유지, 성공한 종류만
+    교체. `stale_kinds` 는 수집 시각이 STALE_DAYS 넘은 종류(없으면 None 일수)."""
+    from datetime import UTC, datetime, timedelta
+
+    from trader.control import control
+
+    on = BlackoutCfg(enabled=True, kinds=["paidin", "rev_split"])
+    t1 = datetime(2026, 10, 27, 22, 5, tzinfo=UTC)
+    r1 = blackout.collect(Market(), on, today=D, now=t1)
+    blackout.store(conn, r1)
+    r2 = blackout.collect(Market(fail=["rev_split"]), on, today=D, now=t1 + timedelta(days=1))
+    blackout.store(conn, r2)
+    data = control.get_flag(conn, blackout.FLAG)
+    assert sorted(e["kind"] for e in data["events"]) == ["paidin", "rev_split"]
+    assert data["fetched_at"] == {"paidin": r2["at"], "rev_split": r1["at"]}
+    assert blackout.reason(conn, "005930", D, on) is not None
+    assert blackout.stale_kinds(data, on, now=t1 + timedelta(days=3)) == {}
+    assert blackout.stale_kinds(data, on, now=t1 + timedelta(days=4)) == {"rev_split": 4}
+    # 설정에서 빠진 종류의 지난 일정은 버리고, 수집 기록이 없는 종류는 None
+    only = BlackoutCfg(enabled=True, kinds=["paidin"])
+    blackout.store(conn, blackout.collect(Market(), only, today=D, now=t1))
+    data = control.get_flag(conn, blackout.FLAG)
+    assert [e["kind"] for e in data["events"]] == ["paidin"]
+    assert blackout.stale_kinds(data, on, now=t1) == {"rev_split": None}

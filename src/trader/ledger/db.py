@@ -444,6 +444,47 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
             "ON positions_snapshot(market, ticker, date)",
         ],
     ),
+    (
+        # 전체 검토 2차 2-O1·2-O2: 손절선 바닥. 같은 날 재평가(31_decision_r<n>)가 (date, market,
+        # ticker) 행의 json 을 덮어써도 BUY/ADD/HOLD 결정의 손절가 최고값은 이 열에 남는다
+        # (repo.ingest_checkpoint 가 max 로 유지, repo.max_stop_since 가 읽는다). 기존 행은 json 값
+        26,
+        [
+            "ALTER TABLE decisions ADD COLUMN stop_floor REAL",
+            "UPDATE decisions SET stop_floor = CAST(json_extract(json, '$.stop_loss') AS REAL) "
+            "WHERE action IN ('BUY', 'ADD', 'HOLD') AND source != 'hedge' "
+            "AND json_extract(json, '$.stop_loss') IS NOT NULL",
+        ],
+    ),
+    (
+        # 전체 검토 2차 2-L1: 유니버스 밖 종목의 만기. 섀도 행 `partial`(비중 있는 종목 일부가 끝내
+        # 종가 없이 유예 뒤 채워진 행 — paired_stats 제외) + 관측한 US 거래소(잔고·00_inputs)를
+        # 남겨 보유·미만기 창 종목의 일일 스냅샷이 거래소를 알 수 있게(ledger/open_window)
+        27,
+        [
+            "ALTER TABLE shadow_portfolios ADD COLUMN partial INTEGER NOT NULL DEFAULT 0",
+            """CREATE TABLE IF NOT EXISTS ticker_exchanges (
+                market TEXT NOT NULL,
+                ticker TEXT NOT NULL,
+                exchange TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (market, ticker)
+            )""",
+        ],
+    ),
+    (
+        # 전체 검토 2차 2-O3·2-O8: 주문 행의 실행 종류 origin(llm|stop|hedge|scalp|rebalance|
+        # reprice|
+        # park|external, repo.ORIGINS). NULL(옛 행)은 llm 으로 본다. LLM 결정의 주 2회 한도·5일
+        # 실현손익 성향은 llm·stop 만 세고, 재호가 후보는 llm 만. 옛 행은 알 수 있는 것만 채운다
+        28,
+        [
+            "ALTER TABLE orders ADD COLUMN origin TEXT",
+            "UPDATE orders SET origin='external' WHERE mode='external'",
+            "UPDATE orders SET origin='hedge' WHERE origin IS NULL AND decision_id IN "
+            "(SELECT id FROM decisions WHERE source='hedge')",
+        ],
+    ),
 ]
 
 

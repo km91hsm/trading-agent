@@ -20,6 +20,7 @@ import numpy as np
 import pandas as pd
 import pyarrow.parquet as pq
 
+from trader import market_hours
 from trader.broker.models import Candle, InvestorFlow, Market
 from trader.broker.models import drop_incomplete_tail as drop_incomplete_tail  # 정본은 models
 from trader.config import ConfigError, SectorMap, Universe, load_sectors
@@ -555,9 +556,11 @@ def backfill(
     state: Path | None = None,
     progress: Callable[[str], None] = lambda s: None,
     only: list[tuple[str, str | None]] | None = None,
+    now: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> int:
     """유니버스 전 종목의 과거 피처를 재구성해 저장한다. 종목 실패는 로그 후 계속. 반환은 행 수.
-    `only=[(코드, 거래소)]` 면 그 종목만(수정주가 재백필, 시장은 `markets[0]`).
+    `only=[(코드, 거래소)]` 면 그 종목만(수정주가 재백필, 시장은 `markets[0]`). 장중이면 오늘 봉은
+    미완성이라 쓰지 않는다(`market_hours.completed_candles`, 2-P4).
 
     비율은 KR 은 DART(`dart`), US 는 EDGAR(`edgar`) 연도별 값이며 클라이언트가 None 이면 NaN."""
     days = min(years * 252, MAX_DAYS)
@@ -597,6 +600,7 @@ def backfill(
                 if market == "KR"
                 else market_client.get_daily_us(ticker, exchange, days=days)
             )
+            candles = market_hours.completed_candles(market, candles, now())
             if not candles:
                 raise ValueError("일봉 없음")
             fy_years = sorted({_effective_fy(c.date) for c in candles})
@@ -692,10 +696,12 @@ def snapshot(
     progress: Callable[[str], None] = lambda s: None,
     tickers: list[tuple[str, str | None]] | None = None,
     on_adjusted: Callable[[str, list[str]], None] | None = None,
+    extra_targets: list[tuple[str, str, str | None]] | None = None,
 ) -> int:
     """오늘 행(종목당 1행)을 저장한다. 뉴스·커뮤니티 건수는 같은 날 00_inputs 에서 센다.
     `tickers=[(코드, 거래소)]` 를 주면 유니버스 대신 그 종목만(유니버스 밖 발굴 종목의 당일 1회
-    스냅샷, Phase 21) — 시장은 `markets[0]`.
+    스냅샷, Phase 21) — 시장은 `markets[0]`. `extra_targets=[(코드, 시장, 거래소)]` 는 대상에
+    **더한다**(열린 창 종목 — 보유·미만기 창의 유니버스 밖 종목, 2-L1; 겹치면 한 번만).
 
     수정주가 감지(Stock D-034·D-064·D-070): 분할·병합이 나면 KIS 는 과거 일봉을 새 기준으로 다시
     준다. 받은 일봉의 최근 `ADJUST_WINDOW` 봉(마지막 봉 제외)이 저장 종가와 `ADJUST_TOL` 넘게
@@ -710,29 +716,45 @@ def snapshot(
         targets = [(t, markets[0], ex) for t, ex in tickers]
     else:
         targets = _targets(universe, markets)
+    seen = {(t, m) for t, m, _ in targets}
+    for t, m, ex in extra_targets or []:
+        if (t, m) not in seen:
+            targets.append((t, m, ex))  # type: ignore[arg-type]
+            seen.add((t, m))
     stored = _stored_closes(state, {m for _, m, _ in targets}, since=asof.date() - timedelta(400))
     adjusted: dict[str, list[tuple[str, str | None]]] = {}
     for ticker, market, exchange in targets:
         try:
-            candles = (
+            raw = (
                 market_client.get_daily_kr(ticker, days=260)
                 if market == "KR"
                 else market_client.get_daily_us(ticker, exchange, days=260)
             )
-            if not candles:
+            if not raw:
                 raise ValueError("일봉 없음")
+            # 완성 봉만(2-P4·L7): 장중의 오늘 봉은 거래량이 있어도 미완성이라 D−1 까지로 자른다
+            candles = market_hours.completed_candles(market, raw, asof)
+            if not candles:
+                raise ValueError("완성된 일봉 없음")
             if _history_changed(candles, stored.get((market, ticker), {})):
                 adjusted.setdefault(market, []).append((ticker, exchange))
-            if int(candles[-1].volume) <= 0:
-                # 개장 전 스텁 봉: 전날 날짜로 다시 쓰면 어제 행을 오늘 건수로 덮어쓴다 → 건너뜀
-                progress(f"{market} {ticker}: 오늘 봉 미완성(거래량 0), 생략")
+            incomplete = raw[-1].date != candles[-1].date
+            if incomplete and candles[-1].date in stored.get((market, ticker), {}):
+                # 완성 봉 행이 이미 있다(저녁 스냅샷) — 어제 행을 오늘 건수로 덮어쓰지 않는다
+                progress(f"{market} {ticker}: 오늘 봉 미완성, {candles[-1].date} 행 있음, 생략")
                 continue
             flows = market_client.get_investor_kr(ticker, days=20) if market == "KR" else None
+            if incomplete and flows:
+                flows = [f for f in flows if f.date <= candles[-1].date]
             by_year = _ratios_by_year(
                 market, ticker, [_effective_fy(candles[-1].date)], dart=dart, edgar=edgar
             )
             ratios = next(iter(by_year.values()), None) if by_year else None
-            news_count, community_count = counts_from_inputs(ticker, market, asof, state)
+            if incomplete:  # 오늘 수집 건수를 어제 날짜 행에 섞지 않는다(룩어헤드·과거 파일 불변)
+                news_count, community_count = None, None
+                progress(f"{market} {ticker}: 오늘 봉 미완성, {candles[-1].date} 완성 봉 행")
+            else:
+                news_count, community_count = counts_from_inputs(ticker, market, asof, state)
             rows.append(
                 snapshot_row(
                     ticker=ticker,

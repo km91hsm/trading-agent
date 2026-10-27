@@ -29,6 +29,41 @@ def test_control_mode_sets_and_shows(project):
     assert "일시정지" in r.stdout
 
 
+def test_control_exec_key_list_and_release(project):
+    """전체 검토 2차 2-O13: 보낸 뒤 예외로 영구 선점된 실행 키를 CLI 로 보고 푼다(메모 필수)."""
+    from trader.ledger import repo
+
+    _accounts(project)
+    conn = db.connect()
+    db.init_schema(conn)
+    repo.claim_exec_key(conn, "7|paper-main|BUY|50_order", now="t0", stale_before="t0")
+    repo.mark_exec_key_sent(conn, "7|paper-main|BUY|50_order", sent_at="t1")
+    conn.close()
+    runner = CliRunner()
+    r = runner.invoke(app, ["control", "exec-key", "list"])
+    assert r.exit_code == 0 and "7|paper-main|BUY|50_order" in r.stdout and "t1" in r.stdout
+    r = runner.invoke(app, ["control", "exec-key", "release", "7|paper-main|BUY|50_order"])
+    assert r.exit_code == 1  # 메모 없이는 풀지 않는다
+    r = runner.invoke(
+        app,
+        [
+            "control",
+            "exec-key",
+            "release",
+            "7|paper-main|BUY|50_order",
+            "--note",
+            "KIS 주문 없음 확인",
+        ],
+    )
+    assert r.exit_code == 0, r.stdout
+    conn = db.connect()
+    assert repo.list_exec_keys(conn) == []
+    assert control.get_flag(conn, "exec_key_released:7|paper-main|BUY|50_order")["note"]
+    conn.close()
+    r = runner.invoke(app, ["control", "exec-key", "release", "none", "--note", "메모 열 자 이상"])
+    assert r.exit_code == 1
+
+
 def test_control_mode_real_auto_requires_confirm(project):
     _accounts(project)
     runner = CliRunner()

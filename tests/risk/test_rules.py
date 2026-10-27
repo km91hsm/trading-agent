@@ -576,6 +576,19 @@ def test_pending_buys_count_toward_position_limit():
     assert _eval(ok_decision(), _portfolio(positions=held)).approved
 
 
+def test_pending_buy_of_same_ticker_counts_toward_position_cap():
+    """전체 검토 2차 2-O4: 같은 종목의 체결 전 BUY(다른 결정 id — 리밸런스 ADD + 당일 LLM BUY)는
+    종목당 비중 상한의 현재 비중에 들어간다. 미체결 20% + 목표 25% → 남은 5% 만(지정가 71000
+    → 7주). 미체결이 없으면 1회 손실 한도가 먼저 걸려 33주."""
+    p = _portfolio(pending_buys={"005930": Decimal("2000000")})
+    v = _eval(ok_decision(target_weight=0.25), p)
+    assert v.approved and v.adjusted_qty == 7
+    assert _eval(ok_decision(target_weight=0.25), _portfolio()).adjusted_qty == 33
+    # 체결 전 매수만으로 이미 목표 이상이면 0주 거부
+    v = _eval(ok_decision(target_weight=0.15), p)
+    assert not v.approved and any("이미 목표 비중 이상" in r for r in v.reasons)
+
+
 def test_pending_buys_excludes_hedge_and_self_from_count():
     held = {f"T{i}": _pos(f"T{i}", 1, "100000") for i in range(4)}
     p = _portfolio(

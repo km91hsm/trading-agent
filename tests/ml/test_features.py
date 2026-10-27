@@ -438,8 +438,9 @@ def test_history_rows_all_zero_volume_raises_clear_error():
 
 
 def test_snapshot_skips_ticker_whose_today_bar_is_incomplete(project):
-    """개장 전 스냅샷: 오늘 봉이 거래량 0 스텁이면 그 종목은 건너뛴다 (전날 날짜로 다시 써서 어제
-    행을 오늘 수집 건수로 덮어쓰면 안 된다 — 과거 파일 불변·룩어헤드)."""
+    """개장 전 스냅샷: 오늘 봉이 거래량 0 스텁이면 그 종목은 마지막 완성 봉 날짜의 행을 건수 없이
+    쓰고(2-P4 — 발굴·보유 종목의 첫 행), 그 날짜 행이 이미 있으면 건너뛴다(어제 행을 오늘 수집
+    건수로 덮어쓰면 안 된다 — 과거 파일 불변·룩어헤드)."""
     from datetime import timedelta
 
     from helpers_sources import T0
@@ -472,7 +473,22 @@ def test_snapshot_skips_ticker_whose_today_bar_is_incomplete(project):
         now=lambda: T0,
         progress=seen.append,
     )
-    assert n == 1 and any("000660" in s and "미완성" in s for s in seen)
+    assert n == 2 and any("000660" in s and "미완성" in s for s in seen)
+    got = pd.concat(pd.read_parquet(f) for f in (project / "state" / "features").glob("*.parquet"))
+    row = got[got["ticker"] == "000660"].iloc[0]
+    assert pd.Timestamp(row["date"]).date() == FakeMarket().get_daily_kr("000660")[-1].date
+    assert pd.isna(row["news_count"])
+    seen.clear()
+    n = features.snapshot(
+        market_client=StubMarket(),
+        dart=None,
+        universe=Universe(kr=["005930", "000660"]),
+        markets=["KR"],
+        asof=T0,
+        now=lambda: T0,
+        progress=seen.append,
+    )
+    assert n == 1 and any("000660" in s and "생략" in s for s in seen)  # 완성 봉 행이 이미 있다
 
 
 def test_backfill_fills_us_ratios_from_edgar(project):
@@ -648,6 +664,25 @@ def test_snapshot_tickers_override_universe(project):
     assert list(got["ticker"]) == ["247540"]
 
 
+def test_snapshot_extra_targets_are_added_to_universe(project):
+    """전체 검토 2차 2-L1: `extra_targets=[(코드, 시장, 거래소)]` 는 유니버스에 **더한다**(보유·
+    미만기 창의 유니버스 밖 종목도 매일 봉이 쌓이게). 유니버스와 겹치면 한 번만."""
+    from helpers_sources import T0
+
+    n = features.snapshot(
+        market_client=FakeMarket(),
+        dart=FakeDart(),
+        universe=Universe(kr=["005930"]),
+        markets=["KR"],
+        asof=T0,
+        now=lambda: T0,
+        extra_targets=[("247540", "KR", None), ("005930", "KR", None)],
+    )
+    assert n == 2
+    got = pd.read_parquet(next((project / "state" / "features").glob("*.parquet")))
+    assert sorted(got["ticker"]) == ["005930", "247540"]
+
+
 def test_rederive_reports_progress_outside_store_lock(project, monkeypatch):
     """전체 검토 P9: 진행 콜백(데몬은 heavy 락 양보)이 파일 락을 쥔 채 불리지 않는다."""
     import contextlib
@@ -795,3 +830,27 @@ def test_rebackfill_keeps_observed_columns_and_ignores_single_bar(project):
     )
     hit = kept[kept.date == last["date"].date()]
     assert float(hit["flow_foreign_20d"].iloc[0]) == 1234.0
+
+
+def test_snapshot_intraday_uses_previous_completed_bar(project):
+    """2-P4(L7): 장중 스냅샷은 오늘의 미완성 봉(거래량 > 0)으로 오늘 행을 쓰지 않고 D−1 완성
+    봉까지의 행을 남긴다(건수는 비움 — 오늘 건수를 어제 행에 섞지 않음). 그 날짜 행이 이미 있으면
+    생략, 마감 뒤에는 오늘 행."""
+    from datetime import timedelta
+
+    from helpers_sources import T0  # 2026-10-09(금) 15:00 KST — 장중
+
+    cs = make_candles(42, start=date(2026, 8, 13))
+    assert cs[-1].date == date(2026, 10, 9)
+    m = FakeMarket()
+    m._candles = cs
+    kw = dict(dart=FakeDart(), universe=Universe(kr=["005930"]), markets=["KR"])
+    assert features.snapshot(market_client=m, asof=T0, now=lambda: T0, **kw) == 1
+    got = features.read_part(project / "state" / "features" / "2026-10-08.parquet")
+    assert len(got) == 1 and pd.isna(got.iloc[0]["news_count"])
+    assert Decimal(str(got.iloc[0]["close"])) == cs[-2].close
+    assert features.snapshot(market_client=m, asof=T0, now=lambda: T0, **kw) == 0  # 이미 있음
+    t1 = T0 + timedelta(hours=1)  # 16:00 KST 마감 뒤
+    assert features.snapshot(market_client=m, asof=t1, now=lambda: t1, **kw) == 1
+    got = features.read_part(project / "state" / "features" / "2026-10-09.parquet")
+    assert len(got) == 1 and Decimal(str(got.iloc[0]["close"])) == cs[-1].close
