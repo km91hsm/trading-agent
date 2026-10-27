@@ -23,9 +23,12 @@ def get_flag(conn: sqlite3.Connection, key: str, default: Any = None) -> Any:
 
 
 def set_flag(conn: sqlite3.Connection, key: str, value: Any) -> None:
+    """값이 저장된 것과 같으면(JSON 문자열 비교) 쓰지 않는다 — updated_at 이 바뀌지 않아 웹 SSE
+    `control` 지문이 같은 값 다시 쓰기에 반응하지 않는다(전체 검토 3차)."""
     conn.execute(
         "INSERT INTO control(key, value, updated_at) VALUES (?, ?, ?) "
-        "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+        "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at "
+        "WHERE control.value IS NOT excluded.value",
         (key, json.dumps(value), now_iso()),
     )
     conn.commit()

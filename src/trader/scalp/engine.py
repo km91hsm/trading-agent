@@ -65,23 +65,49 @@ class ScalpContext:
     judge: ScalpJudge | None = None  # Phase 25 판정자(scalp.judge 일 때 데몬이 넣는다)
 
 
+JUDGE_TTL_S = 1800.0  # 회수되지 않은 판정 제출을 버리는 시간(초)
+
+
 class ScalpJudge:
     """분 단위 LLM 판정을 틱 밖 스레드에서 돌린다(Phase 25). 틱은 submit 만 하고 다음 틱에 poll —
     판정을 기다리느라 손절·청산 점검이 밀리지 않는다. 데몬 재시작으로 future 가 사라지면 poll 은
     None(= 판정 없음 → 진입 안 함). ask(payload, schema) 는 `quick.ask_json` 을 감싼 함수."""
 
-    def __init__(self, ask: Callable[[dict, type], Any], *, max_workers: int = 2) -> None:
+    def __init__(
+        self,
+        ask: Callable[[dict, type], Any],
+        *,
+        max_workers: int = 2,
+        ttl_s: float = JUDGE_TTL_S,
+        clock: Callable[[], float] | None = None,
+    ) -> None:
+        import time
         from concurrent.futures import ThreadPoolExecutor
 
         self._ask = ask
         self._pool = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="scalp-judge")
         self._futs: dict[str, Any] = {}
+        self._at: dict[str, float] = {}  # 키별 제출 시각(만료 판단)
+        self._ttl = ttl_s
+        self._clock = clock or time.monotonic
+
+    def _expire(self) -> None:
+        """ttl 이 지난 제출은 회수 여부와 무관하게 버린다 — 신호가 났지만 다음 틱에 후보에서 빠진
+        종목(회수되지 않은 키)이 하루 종일 쌓이지 않게(전체 검토 3차). 진행 중이면 취소한다."""
+        now = self._clock()
+        for k in [k for k, at in self._at.items() if now - at >= self._ttl]:
+            f = self._futs.pop(k, None)
+            self._at.pop(k, None)
+            if f is not None and not f.done():
+                f.cancel()
 
     def submit(self, key: str, payload: dict, schema: type) -> None:
+        self._expire()
         f = self._futs.get(key)
         if f is not None and not f.done():
             return
         self._futs[key] = self._pool.submit(self._ask, payload, schema)
+        self._at[key] = self._clock()
 
     def pending(self, key: str) -> bool:
         f = self._futs.get(key)
@@ -95,6 +121,7 @@ class ScalpJudge:
         if not f.done():
             return "pending"
         self._futs.pop(key, None)
+        self._at.pop(key, None)
         try:
             return f.result()
         except Exception as e:  # noqa: BLE001 - 판정 실패는 '판정 없음'
@@ -104,6 +131,7 @@ class ScalpJudge:
     def discard(self, key: str) -> None:
         """포지션이 닫히면 그 포지션의 남은 조언을 버린다(다음 포지션이 옛 결과를 읽지 않게)."""
         f = self._futs.pop(key, None)
+        self._at.pop(key, None)
         if f is not None:
             f.cancel()
 

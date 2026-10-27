@@ -260,6 +260,35 @@ def test_latest_rows_fills_columns_missing_in_old_files(project):
     assert pd.isna(df["sma_5_rel"].iloc[0])
 
 
+def test_latest_rows_columns_and_memo(project, monkeypatch):
+    """전체 검토 3차(성능): columns 면 키 열+그 열만, 같은 입력의 반복 호출은 파일을 다시 읽지
+    않고, 날짜 파일을 새로 쓰면(디렉터리 mtime) 다시 읽는다. 옛 파일에 없는 열은 NaN."""
+    old = _rows("2026-10-01", ["A", "B"]).drop(columns=["vol_z_20"])
+    old.to_parquet(features._features_dir(None) / "2026-10-01.parquet", index=False)
+    reads: list[str] = []
+    real = features.read_part
+
+    def spy(path, *a, **k):
+        reads.append(path.stem)
+        return real(path, *a, **k)
+
+    monkeypatch.setattr(features, "read_part", spy)
+    df = features.latest_rows(None, "KR", tickers=["A", "Z"], columns=["vol_z_20"])
+    assert list(df.columns) == [*features.KEY_COLUMNS, "vol_z_20"]
+    assert list(df["ticker"]) == ["A"] and pd.isna(df["vol_z_20"].iloc[0])
+    n = len(reads)
+    df["close"] = -1.0  # 돌려준 값을 고쳐도 기억된 결과는 그대로
+    again = features.latest_rows(None, "KR", tickers=["A", "Z"], columns=["vol_z_20"])
+    assert len(reads) == n and again["close"].iloc[0] == 100.0
+    features.write_rows(_rows("2026-10-02", ["Z"]))
+    fresh = features.latest_rows(None, "KR", tickers=["A", "Z"], columns=["vol_z_20"])
+    assert len(reads) > n and sorted(fresh["ticker"]) == ["A", "Z"]
+    # latest_rows 와 같은 범위(최근 60개 파일)의 합집합 — 최신 파일만 보지 않는다
+    assert features.known_tickers(None, "KR") == {"A", "B", "Z"}
+    assert features.known_tickers(None, "KR", asof=date(2026, 10, 1)) == {"A", "B"}
+    assert features.known_tickers(None, "US") == set()
+
+
 def test_latest_rows_keeps_feature_dtypes(project):
     features.write_rows(_rows("2026-10-01", ["A", "B"]))
     df = features.latest_rows(None, "KR")

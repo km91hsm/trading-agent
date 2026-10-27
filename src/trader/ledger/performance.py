@@ -63,18 +63,8 @@ def metrics_of(series: list[tuple[str, Decimal]]) -> dict:
 
 
 def _close_table(state: Path | None, market: str, start: date, end: date) -> pd.DataFrame:
-    # 창 안의 날짜 파일만 읽는다 (성과 페이지는 원장 이벤트마다 다시 불린다)
-    df = dataset.load_all(state, market=market, since=start, until=end)
-    if df.empty:
-        return pd.DataFrame()
-    df = df[["date", "ticker", "close"]].copy()
-    df["date"] = pd.to_datetime(df["date"]).dt.date
-    df = df[(df["date"] >= start) & (df["date"] <= end)]
-    if df.empty:
-        return pd.DataFrame()
-    return df.pivot_table(
-        index="date", columns="ticker", values="close", aggfunc="last"
-    ).sort_index()
+    # 창 안의 날짜 파일·close 열만 읽는다 (성과 페이지는 원장 이벤트마다 다시 불린다)
+    return dataset.close_table(state, market, since=start, until=end)
 
 
 def _series_from_growth(growth: pd.Series) -> list[dict]:

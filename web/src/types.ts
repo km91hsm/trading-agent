@@ -121,6 +121,11 @@ export type Decision = {
   confidence: number | null;
   session_id: string | null;
   created_at: string;
+  source?: string | null;
+  /** 결정 행 json 의 손절·익절·근거 앞부분(서버 `views.RATIONALE_MAX` 자, 전체 검토 3차). */
+  stop_loss?: string | number | null;
+  take_profit?: string | number | null;
+  rationale?: string | null;
 };
 
 export type Outcome = {

@@ -100,9 +100,9 @@ def test_mature_reads_only_window_files(conn, project, monkeypatch):
     seen = {}
     real = outcomes.dataset.load_all
 
-    def spy(state=None, *, market=None, since=None, until=None):
-        seen.update(market=market, since=since, until=until)
-        return real(state, market=market, since=since, until=until)
+    def spy(state=None, *, market=None, since=None, until=None, columns=None):
+        seen.update(market=market, since=since, until=until, columns=columns)
+        return real(state, market=market, since=since, until=until, columns=columns)
 
     monkeypatch.setattr(outcomes.dataset, "load_all", spy)
     outcomes.mature(conn, state=None, today=DAYS[10])

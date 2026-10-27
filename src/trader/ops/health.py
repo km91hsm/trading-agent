@@ -458,9 +458,15 @@ def escalate(conn: sqlite3.Connection, result: dict) -> str | None:
     prev_level = str(prev.get("level") or "ok")
     prev_keys = set(prev.get("keys") or [])
     keys = _alert_keys(result)
-    control.set_flag(
-        conn, LEVEL_FLAG, {"level": result["level"], "at": result["at"], "keys": sorted(keys)}
-    )
+    if (
+        result["level"] != prev.get("level")
+        or not prev.get("at")
+        or sorted(keys) != sorted(prev_keys)
+    ):
+        # at = 이 단계가 된 시각. 단계·경고 키가 같으면 다시 쓰지 않는다(control 지문, 검토 3차)
+        control.set_flag(
+            conn, LEVEL_FLAG, {"level": result["level"], "at": result["at"], "keys": sorted(keys)}
+        )
     worse = LEVELS.index(result["level"]) > LEVELS.index(prev_level)
     new = keys - prev_keys
     if not worse and not new:

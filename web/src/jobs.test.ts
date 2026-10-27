@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { canRun, daemonText, jobLabel, jobState, requestLabel, requestRows, runNowRequest, scheduleText, type DaemonStatus, type JobRequest } from "./jobs";
+import { canRun, daemonText, jobLabel, jobState, pollsJobs, requestLabel, requestRows, runNowRequest, scheduleText, type DaemonStatus, type JobRequest } from "./jobs";
 
 const base: DaemonStatus = {
   alive: true, pid: 7, started_at: null, uptime_s: 2 * 3600, heartbeat_pid: 7, pid_mismatch: false,
@@ -63,5 +63,14 @@ describe("jobs", () => {
       ["대기", null, true, "2026-10-24T01:00:00+00:00"],
     ]);
     expect(rows.map((r) => r.priority)).toEqual([false, false, false, true]);
+  });
+});
+
+describe("pollsJobs", () => {
+  it("활성 요청이 있고 SSE 리더 탭일 때만 폴링한다(다른 탭은 중계를 받는다)", () => {
+    expect(pollsJobs(true, true)).toBe(true);
+    expect(pollsJobs(true, false)).toBe(false);
+    expect(pollsJobs(false, true)).toBe(false);
+    expect(pollsJobs(true, false, true)).toBe(true); // 리더에 작업 표가 없어도 보이는 탭은 직접
   });
 });

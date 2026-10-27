@@ -10,13 +10,15 @@ from __future__ import annotations
 
 import logging
 import os
-from collections.abc import Callable
+import threading
+from collections.abc import Callable, Sequence
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pandas as pd
+import pyarrow.parquet as pq
 
 from trader.broker.models import Candle, InvestorFlow, Market
 from trader.broker.models import drop_incomplete_tail as drop_incomplete_tail  # 정본은 models
@@ -97,6 +99,16 @@ def _features_dir(state: Path | None) -> Path:
     d = base / "features"
     d.mkdir(parents=True, exist_ok=True)
     return d
+
+
+def store_mtime(state: Path | None) -> float:
+    """피처 디렉터리 mtime(날짜 파일 추가·교체 때 바뀐다 — 원자 교체도 이름 바꾸기라 갱신). 캐시의
+    무효화 키로 쓴다(성과·위험 카드·최신 행). 디렉터리가 없으면 0. 디렉터리를 만들지 않는다."""
+    base = state if state is not None else paths.state_dir()
+    try:
+        return (base / "features").stat().st_mtime
+    except OSError:
+        return 0.0
 
 
 def has_files(state: Path | None) -> bool:
@@ -210,6 +222,11 @@ def add_sector_relative(df: pd.DataFrame, sectors: SectorMap) -> pd.DataFrame:
     return out
 
 
+_LATEST_MEMO: dict[tuple, pd.DataFrame] = {}
+_LATEST_MEMO_MAX = 64
+_LATEST_LOCK = threading.Lock()
+
+
 def latest_rows(
     state: Path | None,
     market: str | None,
@@ -217,38 +234,97 @@ def latest_rows(
     tickers: list[str] | None = None,
     asof: date | None = None,
     max_files: int = 60,
+    columns: Sequence[str] | None = None,
 ) -> pd.DataFrame:
     """종목별 최신 행. 파일(`<date>.parquet`)을 최신부터 읽되 asof 이후 파일은 건너뛰고,
-    tickers 가 전부 모이면(또는 max_files 에 닿으면) 멈춘다 — parquet 전부를 읽지 않는다."""
+    tickers 가 전부 모이면(또는 max_files 에 닿으면) 멈춘다 — parquet 전부를 읽지 않는다.
+
+    columns 를 주면 그 열 + 키 열(`KEY_COLUMNS`)만 읽고 돌려준다(전체 검토 3차 — 스토어에 없는
+    종목이 섞이면 max_files 개를 다 읽기 때문에 열을 줄이는 효과가 크다). 결과는 (디렉터리 경로·
+    mtime·파일 수·시장·asof·tickers·columns) 로 기억해 같은 입력의 반복 호출은 파일을 다시 읽지
+    않는다 — 날짜 파일을 쓰면 디렉터리 mtime 이 바뀌어 무효가 된다. 돌려주는 DataFrame 은 복사본."""
     fdir = _features_dir(state)
     files = sorted(fdir.glob("*.parquet"), reverse=True) if fdir.exists() else []
     if asof is not None:
         files = [f for f in files if f.stem <= asof.isoformat()]
+    files = files[:max_files]
+    keep = None if columns is None else list(dict.fromkeys([*KEY_COLUMNS, *columns]))
+    memo_key = (
+        str(fdir),
+        store_mtime(state),
+        len(files),
+        files[0].stem if files else "",
+        market,
+        asof,
+        None if tickers is None else tuple(sorted(set(tickers))),
+        None if keep is None else tuple(keep),
+    )
+    with _LATEST_LOCK:
+        hit = _LATEST_MEMO.get(memo_key)
+    if hit is not None:
+        return hit.copy()
+    out = _latest_rows_read(files, market, tickers, keep)
+    with _LATEST_LOCK:
+        if len(_LATEST_MEMO) >= _LATEST_MEMO_MAX:
+            _LATEST_MEMO.pop(next(iter(_LATEST_MEMO)))  # 가장 먼저 넣은 것부터
+        _LATEST_MEMO[memo_key] = out
+    return out.copy()
+
+
+def _latest_rows_read(
+    files: list[Path], market: str | None, tickers: list[str] | None, keep: list[str] | None
+) -> pd.DataFrame:
     want = set(tickers) if tickers else None
     seen: set[str] = set()
     parts: list[pd.DataFrame] = []
-    for f in files[:max_files]:
+    for f in files:
         # 이전 Phase 에 쓰인 파일은 뒤에 추가된 열이 없을 수 있다 → NaN 으로 맞춘다
-        raw = read_part(f)
-        if raw is None:
+        raw = read_part(f, columns=keep)
+        if raw is None or "ticker" not in raw.columns:
+            continue
+        # 행을 먼저 거른 뒤(시장·종목·이미 본 종목) 남은 행만 스키마를 맞춘다 — 파일마다 40여 열
+        # 전체 변환을 하면 스토어에 없는 종목이 섞인 호출(60파일)이 초 단위가 된다
+        if market and "market" in raw.columns:
+            raw = raw[raw["market"].astype(str) == market]
+        tick = raw["ticker"].astype(str)
+        mask = ~tick.isin(seen)
+        if want is not None:
+            mask &= tick.isin(want)
+        raw = raw[mask]
+        if raw.empty:
             continue
         part = _coerce(raw.reindex(columns=list(FEATURE_COLUMNS)))
         if market:
             part = part[part["market"] == market]
-        tick = part["ticker"].astype(str)
-        mask = ~tick.isin(seen)
-        if want is not None:
-            mask &= tick.isin(want)
-        part = part[mask].drop_duplicates(subset="ticker", keep="first")
+        part = part.drop_duplicates(subset="ticker", keep="first")
         if not part.empty:
             parts.append(part)
             seen.update(part["ticker"].astype(str))
         if want is not None and want <= seen:
             break
     if not parts:
-        return pd.DataFrame(columns=FEATURE_COLUMNS)
-    out = pd.concat(parts, ignore_index=True)
-    return _coerce(out.sort_values("ticker").reset_index(drop=True))
+        empty = pd.DataFrame(columns=FEATURE_COLUMNS)
+        return empty if keep is None else empty[keep]
+    out = _coerce(pd.concat(parts, ignore_index=True).sort_values("ticker").reset_index(drop=True))
+    return out if keep is None else out[keep]
+
+
+def known_tickers(
+    state: Path | None, market: str, *, asof: date | None = None, max_files: int = 60
+) -> set[str]:
+    """`latest_rows` 가 보는 범위(asof 이하 최근 max_files 개 파일)에 있는 그 시장 종목
+    (ticker·market 열만 읽는다). 스토어에 없는 종목을 `latest_rows` 에 넘기면 그 범위를 다 읽으므로
+    호출 전에 거를 때 쓴다. 최신 파일만 보면 다른 시장만 담긴 날 그 시장 종목이 빠졌다(Codex)."""
+    fdir = _features_dir(state)
+    files = sorted(fdir.glob("*.parquet"), reverse=True) if fdir.exists() else []
+    if asof is not None:
+        files = [f for f in files if f.stem <= asof.isoformat()]
+    out: set[str] = set()
+    for f in files[:max_files]:
+        raw = read_part(f, columns=["ticker", "market"])
+        if raw is not None:
+            out |= {str(t) for t in raw.loc[raw["market"] == market, "ticker"]}
+    return out
 
 
 def _write_day_file(
@@ -260,14 +336,22 @@ def _write_day_file(
     atomic_replace(tmp, path)
 
 
-def read_part(path: Path, *, strict: bool = False, **kw: Any) -> pd.DataFrame | None:
+def read_part(
+    path: Path, *, strict: bool = False, columns: Sequence[str] | None = None, **kw: Any
+) -> pd.DataFrame | None:
     """날짜 파일 하나를 읽는다. 깨진 파일(쓰기 중 종료 등)은 경고 후 None — 한 파일 때문에 scan 이
     죽지 않는다. 피처 스토어 읽기는 모두 이 함수를 지난다.
     strict=True(쓰기 직전 합치기용)면 **읽기 실패(OSError: 다른 프로세스가 연 파일·권한)는 올린다**
     — None 으로 돌려 '깨진 파일' 로 보고 새 행만으로 덮으면 그날 다른 종목 행이 사라진다(검토 P11).
-    파일 내용이 깨진 경우(파싱 오류)만 None."""
+    파일 내용이 깨진 경우(파싱 오류)만 None.
+    columns 를 주면 파일에 있는 그 열만 읽는다(없는 열은 빠진다 — 호출부가 reindex 로 NaN). 이
+    경로는 pyarrow `ParquetFile` 을 직접 써서 pandas dataset 경로보다 파일당 비용이 작다."""
     try:
-        return pd.read_parquet(path, **kw)
+        if columns is not None and not kw:
+            with pq.ParquetFile(path) as pf:
+                names = set(pf.schema_arrow.names)
+                return pf.read(columns=[c for c in columns if c in names]).to_pandas()
+        return pd.read_parquet(path, columns=columns, **kw)
     except OSError as e:
         if strict:
             raise
@@ -387,7 +471,11 @@ def sector_medians(
 
     반환 {sector, n, median{op_margin, roe, debt_ratio}} — n 은 비율이 하나라도 있는 구성원 수,
     중앙값은 열마다 값 있는 구성원으로."""
-    rows = latest_rows(state, market, tickers=tickers, asof=asof) if tickers else None
+    rows = (
+        latest_rows(state, market, tickers=tickers, asof=asof, columns=list(RATIO_COLUMNS))
+        if tickers
+        else None
+    )
     median: dict[str, float | None] = {}
     n = 0
     dates: dict[str, str] | None = None

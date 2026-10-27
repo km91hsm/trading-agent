@@ -1,9 +1,10 @@
-// 작업 대기열 표: 대기·실행 중 먼저, 그 뒤 최근 종료분. 활성 요청이 있을 때만 3초 폴링 (진행 문구는 SSE 에 없다).
+// 작업 대기열 표: 대기·실행 중 먼저, 그 뒤 최근 종료분. 활성 요청이 있을 때만 리더 탭이 3초 폴링하고
+// 다른 탭에 중계한다 (진행 문구는 SSE 에 없다).
 import { useEffect, useState } from "react";
-import { getJson, postJson } from "../api";
+import { getJson, isEventsLeader, postJson } from "../api";
 import { useApp, useLoad } from "../hooks";
 import { fmtDate, fmtTime } from "../format";
-import { requestRows, type JobsResp, type RequestRowView } from "../jobs";
+import { JOBS_CHANNEL, JOBS_POLL_MS, pollsJobs, requestRows, type JobsResp, type RequestRowView } from "../jobs";
 import { Badge } from "./Badge";
 import { EmptyState } from "./EmptyState";
 import { Table, Td, Th } from "./Table";
@@ -71,13 +72,34 @@ export function JobRequestsTable({ rows, now, onCancel }: { rows: RequestRowView
 export function JobRequestsBlock({ now }: { now: Date }) {
   const { tick, token, events } = useApp();
   const toast = useToast();
-  const [poll, setPoll] = useState(0);
-  const jobs = useLoad(() => getJson<JobsResp>("/api/jobs?limit=20"), [tick, poll]);
-  const active = (events?.jobs_active ?? jobs.data?.active ?? 0) > 0;
+  const jobs = useLoad(() => getJson<JobsResp>("/api/jobs?limit=20"), [tick]);
+  // 진행 문구는 SSE 에 없어 활성 요청이 있는 동안 폴링한다 — 리더 탭만 부르고 응답을 다른 탭에 중계
+  const [relayed, setRelayed] = useState<JobsResp | null>(null);
+  useEffect(() => setRelayed(null), [jobs.data]); // 새로 읽은 값이 오면 그것이 최신
+  const view = relayed ?? jobs.data;
+  const active = (events?.jobs_active ?? view?.active ?? 0) > 0;
   useEffect(() => {
-    if (!active) return;
-    const h = setInterval(() => setPoll((n) => n + 1), 3000);
-    return () => clearInterval(h);
+    let ch: BroadcastChannel | null = null;
+    try {
+      ch = typeof BroadcastChannel !== "undefined" ? new BroadcastChannel(JOBS_CHANNEL) : null;
+    } catch {
+      ch = null;
+    }
+    if (ch) ch.onmessage = (e: MessageEvent) => setRelayed(e.data as JobsResp);
+    if (!active) return () => ch?.close();
+    const h = setInterval(() => {
+      if (!pollsJobs(active, isEventsLeader(), document.visibilityState === "visible")) return;
+      getJson<JobsResp>("/api/jobs?limit=20")
+        .then((d) => {
+          setRelayed(d);
+          ch?.postMessage(d);
+        })
+        .catch(() => undefined);
+    }, JOBS_POLL_MS);
+    return () => {
+      clearInterval(h);
+      ch?.close();
+    };
   }, [active]);
   const cancel = async (id: number) => {
     try {
@@ -88,11 +110,11 @@ export function JobRequestsBlock({ now }: { now: Date }) {
       toast(`실패: ${(e as Error).message}`, "error");
     }
   };
-  if (!jobs.data) return <p className="note">불러오는 중…</p>;
+  if (!view) return <p className="note">불러오는 중…</p>;
   return (
     <>
-      {!jobs.data.alive && jobs.data.active > 0 && <p className="note">데몬이 꺼져 있어요. 켜면 대기 요청을 순서대로 실행해요.</p>}
-      <JobRequestsTable rows={requestRows(jobs.data.requests)} now={now} onCancel={token ? cancel : undefined} />
+      {!view.alive && view.active > 0 && <p className="note">데몬이 꺼져 있어요. 켜면 대기 요청을 순서대로 실행해요.</p>}
+      <JobRequestsTable rows={requestRows(view.requests)} now={now} onCancel={token ? cancel : undefined} />
     </>
   );
 }

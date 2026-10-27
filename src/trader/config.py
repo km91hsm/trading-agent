@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import threading
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Literal
@@ -636,7 +637,8 @@ class UsSymbol(BaseModel):
 
 
 class Universe(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    # frozen: load_universe 가 같은 객체를 여러 호출자에 돌려준다(파일 mtime 메모)
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
     kr: list[str] = Field(default_factory=list)
     us: list[UsSymbol] = Field(default_factory=list)
@@ -650,7 +652,8 @@ class SectorMap(BaseModel):
     피처 스토어 `*_vs_sector`(비율 − 같은 날·시장·섹터 중앙값)와 `00_inputs.fundamental.peer`
     가 쓴다."""
 
-    model_config = ConfigDict(extra="forbid")
+    # frozen: load_sectors 가 같은 객체를 여러 호출자에 돌려준다(파일 mtime 메모)
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
     sectors: list[str] = Field(default_factory=list)
     kr: dict[str, str] = Field(default_factory=dict)
@@ -1159,15 +1162,44 @@ def load_sources(path: Path | None = None) -> SourcesConfig:
     return _validate(SourcesConfig, _read_yaml(p), p.name)
 
 
+_YAML_MEMO: dict[tuple[str, str], tuple[tuple, Any]] = {}
+_YAML_MEMO_LOCK = threading.Lock()
+
+
+def _file_sig(p: Path) -> tuple:
+    """파일 변경 감지 값(mtime_ns·크기). 없으면 ('missing',)."""
+    try:
+        st = p.stat()
+    except OSError:
+        return ("missing",)
+    return (st.st_mtime_ns, st.st_size)
+
+
+def _memo_load(model, p: Path):
+    """yaml → 검증된 모델을 (경로, 모델) 별로 기억한다(전체 검토 3차 — 웹 요청마다 섹터 46ms·
+    유니버스 28ms 를 다시 파싱했다). 파일 mtime·크기가 바뀌면 다시 읽는다. 모델은 frozen 이라
+    여러 호출자가 같은 객체를 나눠 써도 안전하다. 검증 오류는 기억하지 않는다(고치면 바로 반영)."""
+    key = (str(p.resolve()), model.__name__)
+    sig = _file_sig(p)
+    with _YAML_MEMO_LOCK:
+        hit = _YAML_MEMO.get(key)
+        if hit is not None and hit[0] == sig:
+            return hit[1]
+    obj = _validate(model, _read_yaml(p), p.name)
+    with _YAML_MEMO_LOCK:
+        _YAML_MEMO[key] = (sig, obj)
+    return obj
+
+
 def load_universe(path: Path | None = None) -> Universe:
     p = path or paths.config_dir() / "universe.yaml"
-    return _validate(Universe, _read_yaml(p), p.name)
+    return _memo_load(Universe, p)
 
 
 def load_sectors(path: Path | None = None) -> SectorMap:
     """파일이 없으면 빈 맵 (파생 열은 전부 NaN, peer 절은 건너뜀)."""
     p = path or paths.config_dir() / "sectors.yaml"
-    return _validate(SectorMap, _read_yaml(p), p.name)
+    return _memo_load(SectorMap, p)
 
 
 def load_secrets(path: Path | None = None) -> Secrets:

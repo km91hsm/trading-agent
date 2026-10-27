@@ -310,7 +310,16 @@ def compute(
         try:
             from trader.ml import features
 
-            df = features.latest_rows(state, market, tickers=sorted(cand), asof=today)
+            # 스토어에 없는 종목(뉴스 태그·유니버스 밖)이 섞이면 latest_rows 가 60개 파일을 다
+            # 읽는다 → 최근 파일에 있는 종목만, vol_z_20 열만 읽는다(전체 검토 3차)
+            present = sorted(cand & features.known_tickers(state, market, asof=today))
+            df = (
+                features.latest_rows(
+                    state, market, tickers=present, asof=today, columns=["vol_z_20"]
+                )
+                if present
+                else None
+            )
             if "vol_z_20" in getattr(df, "columns", []):
                 for t, v in zip(df["ticker"], df["vol_z_20"], strict=False):
                     try:

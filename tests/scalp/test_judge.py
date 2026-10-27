@@ -16,6 +16,7 @@ class SyncJudge(engine.ScalpJudge):
         self.answer = answer
         self.seen = []
         self._futs = {}
+        self._at = {}
 
     def submit(self, key, payload, schema):
         self.seen.append((key, payload, schema))
@@ -239,3 +240,20 @@ def test_daily_loss_uses_position_weight(conn, project):
     engine.save_state(None, D, "KR", st)
     engine.tick(ctx, market="KR", today=D)
     assert not engine.load_state(None, D, "KR").get("halted")
+
+
+def test_judge_expires_unpolled_submissions():
+    """전체 검토 3차: 회수되지 않은 판정(후보에서 빠진 종목)은 ttl 뒤 버린다."""
+    t = [0.0]
+    j = engine.ScalpJudge(lambda payload, schema: GO, ttl_s=60, clock=lambda: t[0])
+    try:
+        j.submit("entry:a", {}, ScalpVerdict)
+        j._futs["entry:a"].result(timeout=5)
+        t[0] = 61.0
+        j.submit("entry:b", {}, ScalpVerdict)
+        assert "entry:a" not in j._futs and "entry:a" not in j._at
+        assert j.poll("entry:a") is None
+        j._futs["entry:b"].result(timeout=5)
+        assert j.poll("entry:b") == GO and j._at == {}
+    finally:
+        j.shutdown()

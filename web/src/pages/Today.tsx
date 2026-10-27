@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { getJson } from "../api";
 import { Badge } from "../components/Badge";
 import { EmptyState } from "../components/EmptyState";
@@ -14,7 +14,7 @@ import { useApp, useLoad } from "../hooks";
 import { Link } from "react-router-dom";
 import { labelOf } from "../names";
 import { sectionForStage } from "../how";
-import { type NewsJob, newsJobRows, newsJobsHeadline, pickReason, pipelineStages, scanHeadline, type ScalpResp, scalpChip, scalpRows, stageSummary, type ScanSummary, type Stage } from "../pipeline";
+import { isMutableStage, type NewsJob, newsJobRows, newsJobsHeadline, pickReason, pipelineStages, scanHeadline, type ScalpResp, scalpChip, scalpRows, stageFetchPlan, stageSummary, type ScanSummary, type Stage } from "../pipeline";
 import { Table, Td, Th } from "../components/Table";
 import type { Checkpoint, Market } from "../types";
 import { Ticker } from "../components/Ticker";
@@ -257,30 +257,48 @@ export function TodayPage({ title = "오늘의 실행", inputsOnly = false }: { 
   const files = today.data?.tickers[ticker] ?? [];
   const stages = pipelineStages(files);
   const runDate = today.data?.date;
-  // 단계 요약: 선택 종목의 체크포인트를 전부 읽어 한 줄씩 (로컬 서버라 N 요청이 부담 없다)
+  // 단계 요약: 선택 종목의 체크포인트를 읽어 한 줄씩. 다른 종목의 체크포인트 변경(SSE checkpoints)에는
+  // 다시 읽지 않고 **이 종목의 단계 목록이 바뀔 때만**, 그것도 새 파일과 다시 쓰일 수 있는 파일만 받는다
+  // (00_inputs·30_decision 처럼 한 번 쓰는 파일은 한 번만, 전체 검토 3차)
+  const cache = useRef<{ scope: string; files: Map<string, Checkpoint | null> }>({ scope: "", files: new Map() });
+  const scope = `${market}|${runDate ?? ""}|${ticker}`;
+  if (cache.current.scope !== scope) cache.current = { scope, files: new Map() };
   const summaries = useLoad(
-    () =>
-      ticker && runDate && !inputsOnly && files.length
-        ? Promise.all(
-            files.map((f) =>
-              getJson<Checkpoint>("/api/checkpoint", { ticker, market, date: runDate, stage: f })
-                .then((cp) => ({ file: f, data: cp.data }))
-                .catch(() => ({ file: f, data: null })),
-            ),
-          ).then((items) => {
-            const out: Record<string, string> = {};
-            for (const st of pipelineStages(files)) {
-              const mine = items.filter((it) => st.files.includes(it.file) && it.data !== null);
-              out[st.key] = stageSummary(st.key, mine);
-            }
-            return out;
-          })
-        : null,
+    () => {
+      if (!(ticker && runDate && !inputsOnly && files.length)) return null;
+      const box = cache.current;
+      const plan = stageFetchPlan(files, new Set(box.files.keys()));
+      return Promise.all(
+        plan.map((f) =>
+          getJson<Checkpoint>("/api/checkpoint", { ticker, market, date: runDate, stage: f })
+            .then((c) => box.files.set(f, c))
+            // 실패는 캐시에 남기지 않는다 — 다음 갱신에 다시 시도(Codex 리뷰)
+            .catch(() => box.files.delete(f)),
+        ),
+      ).then(() => {
+        const items = files.map((f) => ({ file: f, data: box.files.get(f)?.data ?? null }));
+        const out: Record<string, string> = {};
+        for (const st of pipelineStages(files)) {
+          const mine = items.filter((it) => st.files.includes(it.file) && it.data !== null);
+          out[st.key] = stageSummary(st.key, mine);
+        }
+        return out;
+      });
+    },
+    // tCp: 같은 이름의 파일이 덮어써져도(애널리스트·토론 재작성) 다시 쓰일 수 있는 파일만 다시 받는다
+    // (stageFetchPlan 은 새 파일 + MUTABLE 파일만 고른다, Codex 리뷰)
     [ticker, runDate, market, files.join(), inputsOnly, tCp],
   );
+  // 고른 단계 파일: 요약이 이미 받은 것은 그대로 쓰고, 다시 쓰일 수 있는 파일만 목록이 바뀔 때 다시 받는다
+  const stageMutable = isMutableStage(stage, files);
   const cp = useLoad(
-    () => (ticker && stage && runDate ? getJson<Checkpoint>("/api/checkpoint", { ticker, market, date: runDate, stage }) : null),
-    [ticker, stage, market, runDate, tCp],
+    () => {
+      if (!(ticker && stage && runDate)) return null;
+      const hit = cache.current.files.get(stage);
+      if (hit && !stageMutable) return Promise.resolve(hit);
+      return getJson<Checkpoint>("/api/checkpoint", { ticker, market, date: runDate, stage });
+    },
+    [ticker, stage, market, runDate, stageMutable ? `${files.join()}|${tCp}` : ""],
   );
   const cpData = cp.data?.data as Record<string, unknown> | undefined;
   const tickers = Object.keys(today.data?.tickers ?? {});

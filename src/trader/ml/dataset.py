@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import date
 from pathlib import Path
 from typing import Literal
@@ -20,17 +21,23 @@ TARGET_COLUMNS = ("fwd_return", "fwd_date", "label")
 NON_FEATURE_COLUMNS = ("date", "ticker", "market", "close", "volume", *TARGET_COLUMNS)
 
 
+_ID_COLUMNS = ("date", "ticker", "market")
+
+
 def load_all(
     state: Path | None = None,
     *,
     market: str | None = None,
     since: date | None = None,
     until: date | None = None,
+    columns: Sequence[str] | None = None,
 ) -> pd.DataFrame:
     """parquet 을 합쳐 (ticker, date) 로 정렬. date 는 datetime64.
 
     since/until 을 주면 파일명(`<date>.parquet`)으로 그 창의 파일만 읽는다 (성과·만기 계산처럼
     일부 구간만 필요한 호출이 전체 스토어를 읽지 않도록). 학습은 전체를 읽는다.
+    columns 를 주면 그 열 + 식별 열(date·ticker·market)만 읽는다(전체 검토 3차 — 종가표는 40여 열
+    중 close 하나만 필요하다). 옛 파일에 없는 열은 그 파일 행에서 NaN 이다.
     """
     fdir = features._features_dir(state)
     files = sorted(fdir.glob("*.parquet")) if fdir.exists() else []
@@ -38,18 +45,47 @@ def load_all(
         files = [f for f in files if f.stem >= since.isoformat()]
     if until is not None:
         files = [f for f in files if f.stem <= until.isoformat()]
+    cols = None if columns is None else list(dict.fromkeys([*_ID_COLUMNS, *columns]))
+    empty_cols = features.FEATURE_COLUMNS if cols is None else cols
     if not files:
-        return pd.DataFrame(columns=features.FEATURE_COLUMNS)
-    parts = [p for p in (features.read_part(f) for f in files) if p is not None]
+        return pd.DataFrame(columns=empty_cols)
+    parts = [p for p in (features.read_part(f, columns=cols) for f in files) if p is not None]
     if not parts:
-        return pd.DataFrame(columns=features.FEATURE_COLUMNS)
+        return pd.DataFrame(columns=empty_cols)
     df = pd.concat(parts, ignore_index=True)
+    if cols is not None:
+        df = df.reindex(columns=cols)
     if market:
         df = df[df["market"] == market]
     if df.empty:
         return df.reset_index(drop=True)
     df["date"] = pd.to_datetime(df["date"])
     return df.sort_values(["ticker", "date"]).reset_index(drop=True)
+
+
+def close_table(
+    state: Path | None,
+    market: str,
+    *,
+    since: date | None = None,
+    until: date | None = None,
+) -> pd.DataFrame:
+    """날짜(python date) × 종목 종가표. 창 안의 날짜 파일에서 close 열만 읽는다 — 성과·만기·위험
+    카드가 같이 쓴다(전체 검토 3차). 비면 빈 DataFrame."""
+    df = load_all(state, market=market, since=since, until=until, columns=["close"])
+    if df.empty:
+        return pd.DataFrame()
+    df = df[["date", "ticker", "close"]].copy()
+    df["date"] = pd.to_datetime(df["date"]).dt.date
+    if since is not None:
+        df = df[df["date"] >= since]
+    if until is not None:
+        df = df[df["date"] <= until]
+    if df.empty:
+        return pd.DataFrame()
+    return df.pivot_table(
+        index="date", columns="ticker", values="close", aggfunc="last"
+    ).sort_index()
 
 
 LabelMode = Literal["absolute", "relative_tercile"]

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildTape, marketPhase } from "./tape";
+import { buildTape, marketPhase, rowDetails } from "./tape";
 import type { Approval, Decision, Order, Position, RiskCheck } from "./types";
 
 describe("marketPhase", () => {
@@ -139,5 +139,25 @@ describe("buildTape", () => {
     const old = { ...dec(9, "005380", "KR", "BUY"), date: "2026-10-22" };
     const rows = buildTape({ positions: [], decisions: [old], riskChecks: [], orders: [], approvals: [], watch: [], dates });
     expect(rows).toEqual([]);
+  });
+});
+
+describe("rowDetails", () => {
+  it("결정 목록의 손절·익절·근거를 행 키로 묶고 결정 없는 행은 뺀다", () => {
+    const d = { ...dec(1, "000660", "KR", "BUY"), stop_loss: 61000, take_profit: "72000", rationale: "수주 증가" };
+    const rows = buildTape({
+      positions: [pos("005930", "KR", 30, "2682000")],
+      decisions: [d],
+      riskChecks: [],
+      orders: [],
+      approvals: [],
+      watch: [],
+      dates: { KR: "2026-10-23", US: "2026-10-23" },
+    });
+    const out = rowDetails(rows, [d]);
+    const row = rows.find((r) => r.ticker === "000660")!;
+    expect(out[row.key]).toEqual({ stop_loss: "61000", take_profit: "72000", rationale: "수주 증가" });
+    expect(Object.keys(out)).toEqual([row.key]);
+    expect(rowDetails(rows, [])).toEqual({});
   });
 });

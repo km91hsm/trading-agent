@@ -224,7 +224,9 @@ def _peer_section(ticker: str, market: Market, asof: datetime, now) -> Section:
         stats = features.sector_medians(None, market, sector, tickers=members, asof=day)
         if stats["n"] < features.MIN_SECTOR_PEERS:
             return None
-        mine_rows = features.latest_rows(None, market, tickers=[ticker], asof=day)
+        mine_rows = features.latest_rows(
+            None, market, tickers=[ticker], asof=day, columns=list(features.RATIO_COLUMNS)
+        )
         mine: dict[str, float | None] = dict.fromkeys(features.RATIO_COLUMNS)
         if not mine_rows.empty:
             for col in features.RATIO_COLUMNS:

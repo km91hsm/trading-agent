@@ -111,5 +111,23 @@ export function subscribeEvents(onChange: (snap: EventSnapshot) => void, onStatu
     es.onerror = () => status?.(false);
     return { close: () => es.close() };
   };
-  return createEventsClient(onChange, browserDeps(openSource), onStatus);
+  const deps = browserDeps(openSource);
+  if (deps.channel && deps.storage) eventsLeader = false; // 중계가 있으면 선출될 때까지 리더 아님
+  return createEventsClient(
+    onChange,
+    {
+      ...deps,
+      onLeaderChange: (l) => {
+        eventsLeader = l;
+      },
+    },
+    onStatus,
+  );
+}
+
+// SSE 리더 탭인가(BroadcastChannel 중계가 없으면 탭마다 스스로 연결하므로 늘 참). 리더만 하는 폴링
+// (작업 대기열 진행 문구)을 정하는 데 쓴다 — 탭마다 3초 폴링하지 않게(전체 검토 3차)
+let eventsLeader = true;
+export function isEventsLeader(): boolean {
+  return eventsLeader;
 }

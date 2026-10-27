@@ -351,9 +351,17 @@ def circuit_breaker(
                 reason = f"드로다운 {dd:.1%} ≤ {settings.drawdown_stop_pct:.0%}"
     if reason is None and vix_change is not None and vix_change >= settings.vix_spike_pct:
         reason = f"VIX 급등 {vix_change:+.0%} ≥ {settings.vix_spike_pct:.0%}"
-    if reason:
-        state = {"active": True, "reason": reason, "at": now_iso()}
-        control.set_flag(conn, _breaker_key(market), state)
-        return state
-    control.set_flag(conn, _breaker_key(market), {"active": False, "reason": None, "at": now_iso()})
-    return None
+    # at = 이 상태가 된 시각. 상태(active·reason)가 같으면 앞의 at 을 그대로 둬 같은 값을 다시 쓰지
+    # 않는다(build_portfolio 마다 불려 웹 control 지문을 흔들던 것, 전체 검토 3차)
+    key = _breaker_key(market)
+    prev = control.get_flag(conn, key)
+    active_now = bool(reason)
+    same = (
+        isinstance(prev, dict)
+        and bool(prev.get("active")) == active_now
+        and prev.get("reason") == reason
+        and prev.get("at")
+    )
+    state = {"active": active_now, "reason": reason, "at": prev["at"] if same else now_iso()}
+    control.set_flag(conn, key, state)
+    return state if active_now else None

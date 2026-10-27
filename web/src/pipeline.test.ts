@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { pipelineStages, scalpChip, scalpRows, stageSummary } from "./pipeline";
+import { pipelineStages, scalpChip, scalpRows, stageFetchPlan, stageSummary } from "./pipeline";
 
 describe("pipelineStages", () => {
   it("기본 판 9개를 순서대로, 파일을 묶고 done 을 표시한다", () => {
@@ -150,5 +150,20 @@ describe("scalp 판정자 표시 (Phase 25)", () => {
     };
     expect(scalpChip(r, "KR").text).toBe("켬 · 보유 1 · 청산 0 · 판정 GO 1·NO 2 · 판정 대기 1");
     expect(scalpRows(r, "KR")[0].state).toBe("보유 중 · 판정 GO");
+  });
+});
+
+describe("stageFetchPlan", () => {
+  it("재평가 라운드가 있으면 00_inputs 도 다시 받는다", () => {
+    const files = ["00_inputs", "30_decision", "31_decision_r1"];
+    expect(stageFetchPlan(files, new Set(files))).toEqual(files);
+    expect(stageFetchPlan(["00_inputs", "30_decision"], new Set(["00_inputs", "30_decision"]))).toEqual(["30_decision"]);
+  });
+  it("큰 입력 파일(00_inputs)만 한 번 받고 나머지 작은 단계 파일은 다시 받는다", () => {
+    const files = ["00_inputs", "10_analyst_technical", "25_research_summary", "30_decision", "40_risk_check_paper-main"];
+    expect(stageFetchPlan(files, new Set())).toEqual(files);
+    const loaded = new Set(["00_inputs", "10_analyst_technical", "25_research_summary", "30_decision"]);
+    // 00_inputs 만 한 번 받고 나머지(판정·주문 체크포인트 포함)는 다시 받는다
+    expect(stageFetchPlan(files, loaded)).toEqual(files.filter((f) => f !== "00_inputs"));
   });
 });
