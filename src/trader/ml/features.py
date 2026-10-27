@@ -280,16 +280,23 @@ def _latest_rows_read(
     for f in files:
         # 이전 Phase 에 쓰인 파일은 뒤에 추가된 열이 없을 수 있다 → NaN 으로 맞춘다
         raw = read_part(f, columns=keep)
-        if raw is None:
+        if raw is None or "ticker" not in raw.columns:
+            continue
+        # 행을 먼저 거른 뒤(시장·종목·이미 본 종목) 남은 행만 스키마를 맞춘다 — 파일마다 40여 열
+        # 전체 변환을 하면 스토어에 없는 종목이 섞인 호출(60파일)이 초 단위가 된다
+        if market and "market" in raw.columns:
+            raw = raw[raw["market"].astype(str) == market]
+        tick = raw["ticker"].astype(str)
+        mask = ~tick.isin(seen)
+        if want is not None:
+            mask &= tick.isin(want)
+        raw = raw[mask]
+        if raw.empty:
             continue
         part = _coerce(raw.reindex(columns=list(FEATURE_COLUMNS)))
         if market:
             part = part[part["market"] == market]
-        tick = part["ticker"].astype(str)
-        mask = ~tick.isin(seen)
-        if want is not None:
-            mask &= tick.isin(want)
-        part = part[mask].drop_duplicates(subset="ticker", keep="first")
+        part = part.drop_duplicates(subset="ticker", keep="first")
         if not part.empty:
             parts.append(part)
             seen.update(part["ticker"].astype(str))
