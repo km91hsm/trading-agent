@@ -277,9 +277,7 @@ class FakeFoBroker:
         t = self._now()
         return self.balance.model_copy(
             update={
-                "cash": self.balance.cash.model_copy(
-                    update={"requested_at": t, "received_at": t}
-                )
+                "cash": self.balance.cash.model_copy(update={"requested_at": t, "received_at": t})
             }
         )
 
@@ -323,6 +321,12 @@ class FakeFoBroker:
         if order_no in self.states:
             return self.states[order_no]
         return FoOrderState(
-            order_no=order_no, order_qty=0, filled_qty=0, remaining_qty=0, rejected_qty=0,
-            cancelled_qty=0, terminal=False, state="open",
+            order_no=order_no,
+            order_qty=0,
+            filled_qty=0,
+            remaining_qty=0,
+            rejected_qty=0,
+            cancelled_qty=0,
+            terminal=False,
+            state="open",
         )

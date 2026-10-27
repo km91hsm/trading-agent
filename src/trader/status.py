@@ -95,7 +95,9 @@ def _perf_lines(conn: sqlite3.Connection, accounts: list[AccountConfig]) -> list
     out = []
     for a in accounts:
         for m in a.markets:
-            met = performance.metrics_of(performance.nav_series(conn, a.id, m, days=30))
+            met = performance.metrics_of(
+                performance.nav_series(conn, a.id, m, days=30, asset=getattr(a, "asset", "stock"))
+            )
             if met["days"] == 0:
                 continue
             ret = met["return"]

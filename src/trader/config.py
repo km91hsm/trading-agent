@@ -443,7 +443,6 @@ class MemorySettings(BaseModel):
     top_k: int = 5
 
 
-
 # --- 선물옵션 방향성 레인 (Phase 26) ------------------------------------------------
 
 

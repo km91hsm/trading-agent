@@ -367,16 +367,21 @@ class KisFoBroker:
         orig = next((r for r in rows if str(r.get("odno") or "") == order_no), None)
         if orig is None:
             return FoOrderState(
-                order_no=order_no, order_qty=0, filled_qty=0, remaining_qty=0, rejected_qty=0,
-                cancelled_qty=0, terminal=False, state="open",
+                order_no=order_no,
+                order_qty=0,
+                filled_qty=0,
+                remaining_qty=0,
+                rejected_qty=0,
+                cancelled_qty=0,
+                terminal=False,
+                state="open",
             )
         order_qty = _req_int(orig, "ord_qty", order_no)
         filled = _req_int(orig, "tot_ccld_qty", order_no)
         remaining = _req_int(orig, "qty", order_no)
         rejected = _req_int(orig, "rjct_qty", order_no)
         cancel_rows = [
-            r for r in rows
-            if str(r.get("orgn_odno") or "") == order_no and _is_cancel_row(r)
+            r for r in rows if str(r.get("orgn_odno") or "") == order_no and _is_cancel_row(r)
         ]
         cancelled = 0
         if cancel_rows:

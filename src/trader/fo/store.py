@@ -475,3 +475,41 @@ def record_fill_progress(
         (sign * delta, leg.position_id),
     )
     return delta
+
+
+def apply_fill_economics(
+    conn: sqlite3.Connection,
+    position_id: int,
+    *,
+    entry: bool,
+    inc_price: Decimal,
+    delta: int,
+    multiplier: int,
+    cost_bp: float,
+) -> None:
+    """체결 증분을 포지션 경제값에 반영한다(체결 동기화 전용). 진입은 평균가(`entry_premium`)를
+    수량 가중으로 갱신하고, 축소는 평균가 대비 실현손실을 `realized_loss` 에 더한다(이익은 예산을
+    재충전하지 않으므로 0 으로 자른다). 비용은 체결 명목 × bp/2(왕복 bp 의 한쪽)."""
+    if delta <= 0:
+        return
+    pos = get_position(conn, position_id)
+    if pos is None:
+        return
+    fee = inc_price * delta * multiplier * Decimal(str(cost_bp)) / Decimal(20_000)
+    changes: dict[str, Any] = {"fees": pos.fees + fee}
+    if entry:
+        before = max(pos.qty_held - delta, 0)  # record_fill_progress 가 먼저 더했다
+        if pos.entry_premium is None or before == 0:
+            changes["entry_premium"] = inc_price
+        else:
+            changes["entry_premium"] = (pos.entry_premium * before + inc_price * delta) / (
+                before + delta
+            )
+    elif pos.entry_premium is not None:
+        sign = 1 if pos.contract_side == "LONG" else -1
+        pnl = (inc_price - pos.entry_premium) * sign * delta * multiplier
+        if pnl < 0:
+            changes["realized_loss"] = pos.realized_loss - pnl
+    cur = get_position(conn, position_id)
+    assert cur is not None
+    transition(conn, position_id, expected_version=cur.version, **changes)

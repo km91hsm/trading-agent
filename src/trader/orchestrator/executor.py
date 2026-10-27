@@ -1091,6 +1091,7 @@ def _place(
             created_at=ctx.now().isoformat(),
             amount=Decimal(request.qty) * sizing_price if sizing_price is not None else None,
             org_no=result.org_no,
+            asset="stock",
         )
     except Exception as e:
         if status not in ("accepted", "unknown"):

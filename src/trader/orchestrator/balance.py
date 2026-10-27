@@ -110,6 +110,23 @@ def _refresh(
     for a in accounts:
         if market not in a.markets or a.id not in brokers:
             continue
+        if getattr(a, "asset", "stock") == "fo":  # Phase 26: 파생 계좌는 fo_nav_snapshot
+            from trader.fo import balance as fo_balance
+
+            if (
+                only_stale
+                and fo_balance.snapshot_age(conn, a.id, now) < stale_after.total_seconds()
+            ):
+                out["skipped"].append(a.id)
+                continue
+            try:
+                with broker_ctx(brokers[a.id]):
+                    fo_balance.refresh(conn, brokers[a.id], a, now=lambda: now, cfg=settings.fo)
+                out["refreshed"].append(a.id)
+            except (KisApiError, ValueError) as e:
+                out["errors"][a.id] = f"{type(e).__name__}: {e}"
+                logger.warning("파생 잔고 갱신 실패 %s: %s", a.id, e)
+            continue
         if only_stale and snapshot_age(conn, a.id, market, now) < stale_after.total_seconds():
             out["skipped"].append(a.id)
             continue

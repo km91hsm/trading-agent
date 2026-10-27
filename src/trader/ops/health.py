@@ -67,11 +67,12 @@ def check(
     items += _jobs(conn, now, state, schedule_jobs or [])
     items += _llm(conn, settings, now)
     items += _disclosure(conn, settings, accounts, now)
+    items += _fo(conn, settings, accounts, now)
     areas: dict[str, str] = {}
     for it in items:
         area = it.key.split(".")[0]
         areas[area] = worst([areas.get(area, "ok"), it.level])
-    for area in ("loss", "orders", "reconcile", "jobs", "llm", "disclosure"):
+    for area in ("loss", "orders", "reconcile", "jobs", "llm", "disclosure", "fo"):
         areas.setdefault(area, "ok")
     level = worst([it.level for it in items])
     return {
@@ -167,7 +168,9 @@ def _loss(conn, settings, accounts, now) -> list[Item]:
 def _orders(conn, settings, accounts, now) -> list[Item]:
     out: list[Item] = []
     n_unknown = int(
-        conn.execute("SELECT COUNT(*) FROM orders WHERE status='unknown'").fetchone()[0]
+        conn.execute(
+            "SELECT COUNT(*) FROM orders WHERE status='unknown' AND asset='stock'"
+        ).fetchone()[0]
     )
     if n_unknown:
         out.append(
@@ -181,14 +184,15 @@ def _orders(conn, settings, accounts, now) -> list[Item]:
         )
     # 마감 뒤에도 살아 있는 주문(현지 날짜가 오늘보다 앞선 것)
     stale = 0
-    for m in set(mm for a in accounts for mm in a.markets):
+    stock_accounts = [a for a in accounts if getattr(a, "asset", "stock") == "stock"]
+    for m in set(mm for a in stock_accounts for mm in a.markets):
         d = run_date_for(m, now)
         lo, _ = repo.day_bounds(d, m)
         local_now = now.astimezone(MARKET_TZ[m])
         closed_today = local_now.time() >= MARKET_CLOSE[m]
         bound = lo if not closed_today else repo.day_bounds(d + timedelta(days=1), m)[0]
         row = conn.execute(
-            "SELECT COUNT(*) FROM orders WHERE market=? AND created_at < ? "
+            "SELECT COUNT(*) FROM orders WHERE market=? AND created_at < ? AND asset='stock' "
             f"AND status NOT IN ({dead_status_sql()},'filled','unknown')",
             (m, bound),
         ).fetchone()
@@ -490,3 +494,97 @@ def headline(result: dict | None) -> str:
 
 def today_key(now: datetime) -> date:
     return run_date_for("KR", now)
+
+
+# --- 파생(Phase 26) ----------------------------------------------------------------------
+
+FO_SETTLE_GRACE_DAYS = 1
+
+
+def _fo(conn, settings, accounts, now) -> list[Item]:
+    """파생 레인 점검: unknown·exit_failed 포지션(critical), 정산 대기 1운영일 초과(warning),
+    옵션 매도 최종거래일 D-1 미청산(critical), 파생 마감 뒤 살아 있는 주문(watch)."""
+    from trader.market_hours import fo_close_hm
+
+    out: list[Item] = []
+    fo_accounts = [a for a in accounts if getattr(a, "asset", "stock") == "fo"]
+    if not fo_accounts:
+        return out
+    ids = [a.id for a in fo_accounts]
+    marks = ",".join("?" * len(ids))
+    rows = conn.execute(
+        f"SELECT id, account_id, code, status, vehicle, last_trade_date, closed_at, created_at "
+        f"FROM fo_positions WHERE account_id IN ({marks}) AND status NOT IN ('closed','settled')",
+        ids,
+    ).fetchall()
+    today = run_date_for("KR", now)
+    bad = [r for r in rows if r["status"] in ("unknown", "exit_failed")]
+    if bad:
+        out.append(
+            Item(
+                "fo.position_blocked",
+                "critical",
+                f"파생 포지션 unknown·exit_failed {len(bad)}건 — 사람이 adopt·close 로 정리",
+                link="/fo",
+                count=len(bad),
+                extra={"ids": [int(r["id"]) for r in bad]},
+            )
+        )
+    settling = [
+        r
+        for r in rows
+        if r["status"] == "awaiting_settlement"
+        and r["last_trade_date"]
+        and (today - date.fromisoformat(r["last_trade_date"])).days > FO_SETTLE_GRACE_DAYS
+    ]
+    if settling:
+        out.append(
+            Item(
+                "fo.settlement_overdue",
+                "warning",
+                f"파생 정산 대기 {len(settling)}건이 최종거래일 뒤 "
+                f"{FO_SETTLE_GRACE_DAYS}운영일을 넘김",
+                link="/fo",
+                count=len(settling),
+            )
+        )
+    sell_near = [
+        r
+        for r in rows
+        if r["vehicle"] == "OPTION_SELL"
+        and r["status"] in ("held", "resizing", "entering")
+        and r["last_trade_date"]
+        and (date.fromisoformat(r["last_trade_date"]) - today).days <= 1
+    ]
+    if sell_near:
+        out.append(
+            Item(
+                "fo.option_sell_expiry",
+                "critical",
+                f"옵션 매도 {len(sell_near)}건이 최종거래일 D-1 안인데 미청산",
+                link="/fo",
+                count=len(sell_near),
+            )
+        )
+    local = now.astimezone(MARKET_TZ["KR"])
+    lo, _ = repo.day_bounds(today, "KR")
+    closed = local.strftime("%H:%M") >= fo_close_hm(False)
+    bound = lo if not closed else repo.day_bounds(today + timedelta(days=1), "KR")[0]
+    stale = int(
+        conn.execute(
+            f"SELECT COUNT(*) FROM orders WHERE asset='fo' AND account_id IN ({marks}) "
+            f"AND created_at < ? AND status NOT IN ({dead_status_sql()},'filled')",
+            [*ids, bound],
+        ).fetchone()[0]
+    )
+    if stale:
+        out.append(
+            Item(
+                "fo.orders_stale",
+                "watch",
+                f"파생 마감(15:45) 뒤에도 정리되지 않은 주문 {stale}건 (체결 동기화·대조 확인)",
+                link="/orders",
+                count=stale,
+            )
+        )
+    return out

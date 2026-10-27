@@ -110,7 +110,7 @@ def load_fills(conn: sqlite3.Connection, account_id: str, market: str) -> list[F
     rows = conn.execute(
         "SELECT o.ticker, o.side, f.qty, f.price, f.filled_at FROM fills f "
         "JOIN orders o ON o.id = f.order_id WHERE f.account_id=? AND o.market=? "
-        "ORDER BY f.filled_at, f.id",
+        "AND o.asset='stock' ORDER BY f.filled_at, f.id",  # 파생 체결은 로트 밖(Phase 26)
         (account_id, market),
     ).fetchall()
     return [

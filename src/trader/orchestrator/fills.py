@@ -87,6 +87,7 @@ def _order_id_for(
         message="원장 밖에서 낸 주문(체결 동기화로 생성)",
         mode="external",
         created_at=f.filled_at.isoformat(),
+        asset="stock",
     )
 
 
@@ -211,6 +212,13 @@ def sync_fills(
     d 가 datetime 이면 시장마다 현지 날짜로 조회한다 (US 는 ET: 07:10 KST 동기화는 전날 ET).
     조회가 성공했고 그날 정규장이 끝났으면 체결 없는 accepted·unknown 주문을 expired 로 바꾼다.
     """
+    if getattr(account, "asset", "stock") == "fo":  # Phase 26: 파생 계좌는 다리·계보 단위
+        from trader.config import load_settings
+        from trader.fo import fills as fo_fills
+
+        return fo_fills.sync(
+            conn, broker, account, d, cfg=load_settings().fo, now=now, notifier=notifier
+        )
     inserted = 0
     replaced = 0
     expired = 0

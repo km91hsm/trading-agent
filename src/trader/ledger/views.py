@@ -542,6 +542,18 @@ def list_agent_calls(
 
 
 def account_summary(conn: sqlite3.Connection, account_id: str, today: date) -> dict:
+    asset = repo.account_asset(conn, account_id)
+    if asset == "fo":  # Phase 26: 파생 계좌는 fo_nav_snapshot(KR 만)·승인 없음·성향 없음
+        snap = conn.execute(
+            "SELECT nav FROM fo_nav_snapshot WHERE account_id=? ORDER BY date DESC LIMIT 1",
+            (account_id,),
+        ).fetchone()
+        return {
+            "asset": "fo",
+            "stance_by_market": {},
+            "nav_by_market": {"KR": snap["nav"] if snap else None},
+            "pending_approvals": 0,
+        }
     nav_by_market: dict[str, str | None] = {}
     for m in MARKETS:
         snap = conn.execute(
@@ -555,6 +567,7 @@ def account_summary(conn: sqlite3.Connection, account_id: str, today: date) -> d
         (account_id,),
     ).fetchone()["n"]
     return {
+        "asset": asset,
         "stance_by_market": metrics.stance_by_market(conn, account_id, today, MARKETS),
         "nav_by_market": nav_by_market,
         "pending_approvals": int(pending),

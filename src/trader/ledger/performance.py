@@ -22,9 +22,34 @@ COST_BPS = (0, 10, 20, 30)
 
 
 def nav_series(
-    conn: sqlite3.Connection, account_id: str, market: str, *, days: int = 30
+    conn: sqlite3.Connection, account_id: str, market: str, *, days: int = 30, asset: str = "stock"
 ) -> list[tuple[str, Decimal]]:
+    """계좌·시장의 (날짜, NAV). 파생 계좌(`asset="fo"`, Phase 26)는 `fo_nav_snapshot`(KR 만)."""
+    if asset == "fo":
+        return fo_nav_series(conn, account_id, days=days)
     return repo.nav_history(conn, account_id, market, days=days)
+
+
+def fo_nav_series(
+    conn: sqlite3.Connection, account_id: str, *, days: int = 30
+) -> list[tuple[str, Decimal]]:
+    last = conn.execute(
+        "SELECT MAX(date) AS d FROM fo_nav_snapshot WHERE account_id=? AND nav IS NOT NULL",
+        (account_id,),
+    ).fetchone()["d"]
+    if last is None:
+        return []
+    since = (date.fromisoformat(last) - timedelta(days=days)).isoformat()
+    rows = conn.execute(
+        "SELECT date, nav FROM fo_nav_snapshot WHERE account_id=? AND nav IS NOT NULL AND date > ? "
+        "ORDER BY date",
+        (account_id, since),
+    ).fetchall()
+    return [
+        (r["date"], Decimal(str(r["nav"])))
+        for r in rows
+        if date.fromisoformat(r["date"]).weekday() < 5
+    ]
 
 
 def _returns(values: list[Decimal]) -> list[float]:
@@ -142,18 +167,21 @@ def _traded_amount(rows) -> Decimal:
     return total
 
 
-def _avg_nav(conn, account_id: str, market: str, start: date, end: date) -> Decimal:
+def _avg_nav(
+    conn, account_id: str, market: str, start: date, end: date, *, asset: str = "stock"
+) -> Decimal:
     series = [
         v
-        for d, v in repo.nav_history(conn, account_id, market, days=10_000)
+        for d, v in nav_series(conn, account_id, market, days=10_000, asset=asset)
         if start.isoformat() <= d <= end.isoformat()
     ]
     return sum(series, Decimal(0)) / len(series) if series else Decimal(0)
 
 
-def _traded_and_nav(conn, account_id: str, market: str, start: date, end: date):
+def _traded_and_nav(conn, account_id: str, market: str, start: date, end: date, *, asset="stock"):
+    # 파생 주문 금액은 계약 × 가격 × 승수로 저장돼 있어 같은 합산이 명목 거래대금이다(Phase 26)
     traded = _traded_amount(_orders_between(conn, account_id, market, start, end))
-    return traded, _avg_nav(conn, account_id, market, start, end)
+    return traded, _avg_nav(conn, account_id, market, start, end, asset=asset)
 
 
 def _cost_sensitivity_of(traded: Decimal, nav: Decimal, bps=COST_BPS) -> dict[str, float]:
@@ -192,8 +220,10 @@ def _universe(market: str) -> list[str] | None:
     return list(u.kr) if market == "KR" else [x.symbol for x in u.us]
 
 
-def report(conn, state: Path | None, account_id: str, market: str, *, days: int = 30) -> dict:
-    series = nav_series(conn, account_id, market, days=days)
+def report(
+    conn, state: Path | None, account_id: str, market: str, *, days: int = 30, asset: str = "stock"
+) -> dict:
+    series = nav_series(conn, account_id, market, days=days, asset=asset)
     m = metrics_of(series)
     end = date.fromisoformat(series[-1][0]) if series else date.today()
     start = date.fromisoformat(series[0][0]) if series else end - timedelta(days=days)
@@ -223,7 +253,7 @@ def report(conn, state: Path | None, account_id: str, market: str, *, days: int 
         quant_top = None
     now = datetime.now(UTC)
     traded, avg_nav = (
-        _traded_and_nav(conn, account_id, market, start, end)
+        _traded_and_nav(conn, account_id, market, start, end, asset=asset)
         if series
         else (Decimal(0), Decimal(0))
     )

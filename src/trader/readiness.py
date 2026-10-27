@@ -98,8 +98,8 @@ def check(
     mdds: list[float] = []
     notes: list[str] = []
     for a in accounts:
-        if a.env != "paper":
-            continue
+        if a.env != "paper" or getattr(a, "asset", "stock") != "stock":
+            continue  # 파생 계좌(Phase 26)는 실전 전환 준비도 대상이 아니다
         for m in a.markets:
             series = performance.nav_series(conn, a.id, m, days=30)
             met = performance.metrics_of(series)

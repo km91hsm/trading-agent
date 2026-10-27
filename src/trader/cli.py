@@ -228,9 +228,7 @@ def _session_brokers(accounts: list[config.AccountConfig]) -> dict:
         )
         return {
             a.id: (
-                FakeFoBroker(a, balance=fo_balance)
-                if a.asset == "fo"
-                else FakeBroker(a, cash=cash)
+                FakeFoBroker(a, balance=fo_balance) if a.asset == "fo" else FakeBroker(a, cash=cash)
             )
             for a in accounts
         }

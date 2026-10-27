@@ -1097,3 +1097,9 @@ def ticker_names(conn: sqlite3.Connection, market: str | None = None) -> dict[tu
         sql += " WHERE market=?"
         params = (market,)
     return {(r["market"], r["ticker"]): r["name"] for r in conn.execute(sql, params)}
+
+
+def account_asset(conn: sqlite3.Connection, account_id: str) -> str:
+    """원장 `accounts.asset`(stock|fo, Phase 26). 행이 없으면 stock."""
+    row = conn.execute("SELECT asset FROM accounts WHERE id=?", (account_id,)).fetchone()
+    return str(row["asset"]) if row and row["asset"] else "stock"

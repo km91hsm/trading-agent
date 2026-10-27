@@ -148,6 +148,19 @@ def reconcile_all(
         b = brokers.get(a.id)
         if b is None:
             continue
+        if getattr(a, "asset", "stock") == "fo":  # Phase 26: 파생은 positions.recover 로 대조
+            if market is not None and market != "KR":
+                continue
+            from trader.fo import balance as fo_balance
+
+            try:
+                out[f"{a.id}:KR"] = fo_balance.reconcile(
+                    conn, b, a, today=today_for("KR"), now=now, notifier=notifier
+                )
+            except Exception as e:  # noqa: BLE001 - 한 계좌의 실패가 나머지를 막지 않는다
+                logger.warning("파생 대조 실패 %s: %s", a.id, e)
+                out[f"{a.id}:KR"] = {"error": f"{type(e).__name__}: {e}"}
+            continue
         for m in a.markets:
             if market is not None and m != market:
                 continue
