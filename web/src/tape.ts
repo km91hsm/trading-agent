@@ -186,3 +186,21 @@ export function buildTape(input: TapeInput): TapeRow[] {
     return a.ticker < b.ticker ? -1 : a.ticker > b.ticker ? 1 : 0;
   });
 }
+
+/** 행별 보조 정보(손절·익절·근거). 종목명은 앱 names 맵(`Ticker`)이 맡는다. */
+export type RowDetail = { stop_loss: string | null; take_profit: string | null; rationale: string | null };
+
+const text = (v: unknown): string | null => (v === null || v === undefined || v === "" ? null : String(v));
+
+/** 결정이 있는 행의 보조 정보를 `/api/decisions` 응답에서 바로 만든다 — 체크포인트 파일
+ * (30_decision·00_inputs)을 행마다 받지 않는다(전체 검토 3차). 키는 TapeRow.key. */
+export function rowDetails(rows: TapeRow[], decisions: Decision[]): Record<string, RowDetail> {
+  const byId = new Map(decisions.map((d) => [d.id, d]));
+  const out: Record<string, RowDetail> = {};
+  for (const r of rows) {
+    const d = r.decisionId === null ? undefined : byId.get(r.decisionId);
+    if (!d) continue;
+    out[r.key] = { stop_loss: text(d.stop_loss), take_profit: text(d.take_profit), rationale: text(d.rationale) };
+  }
+  return out;
+}

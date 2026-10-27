@@ -104,6 +104,18 @@ def test_decision_outcomes_joins_checks_and_orders(conn):
     assert out["real-main"]["reasons"] == ["HOLD: 주문 없음"]
     decs = views.list_decisions(conn, days=30)
     assert len(decs) == 1 and decs[0]["ticker"] == "005930" and "json" not in decs[0]
+    want = ok_decision(ticker="005930")
+    # 전체 검토 3차: 대시보드가 체크포인트를 읽지 않게 손절·익절·근거를 목록에 싣는다
+    assert str(decs[0]["stop_loss"]) == str(want["stop_loss"])
+    assert str(decs[0]["take_profit"]) == str(want["take_profit"])
+    assert decs[0]["rationale"] == want["rationale"] and "rationale_cut" not in decs[0]
+
+
+def test_list_decisions_truncates_long_rationale(conn):
+    data = ok_decision(ticker="000660") | {"rationale": "가" * (views.RATIONALE_MAX + 50)}
+    repo.ingest_checkpoint(conn, D, "KR", "000660", "30_decision", {"data": data})
+    (row,) = views.list_decisions(conn, days=30)
+    assert row["rationale"] == "가" * views.RATIONALE_MAX + "…"
 
 
 def test_account_summary_counts_pending(conn):

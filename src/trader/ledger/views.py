@@ -318,6 +318,9 @@ def sector_weights(
     return out
 
 
+RATIONALE_MAX = 400  # 목록에 싣는 결정 근거 글자 수(전체는 결정 상세·체크포인트)
+
+
 def list_decisions(
     conn: sqlite3.Connection,
     *,
@@ -325,16 +328,30 @@ def list_decisions(
     market: str | None = None,
     now: datetime | None = None,
 ) -> list[dict]:
+    """최근 결정 목록. 대시보드 시세표가 체크포인트 파일(00_inputs 100KB+)을 행마다 읽지 않게
+    손절·익절·근거 앞부분(`RATIONALE_MAX` 자)을 결정 행 json 에서 같이 준다(전체 검토 3차)."""
     since = ((now or datetime.now(UTC)).astimezone(KST).date() - timedelta(days=days)).isoformat()
+
+    def field(name: str) -> str:
+        return f"CASE WHEN json_valid(json) THEN json_extract(json, '$.{name}') END"
+
     sql = (
         "SELECT id, date, market, ticker, action, target_weight, confidence, session_id, "
-        "created_at, source FROM decisions WHERE date >= ?"
+        f"created_at, source, {field('stop_loss')} AS stop_loss, "
+        f"{field('take_profit')} AS take_profit, "
+        f"substr({field('rationale')}, 1, {RATIONALE_MAX}) AS rationale, "
+        f"length({field('rationale')}) > {RATIONALE_MAX} AS rationale_cut "
+        "FROM decisions WHERE date >= ?"
     )
     args: list = [since]
     if market:
         sql += " AND market=?"
         args.append(market)
-    return _rows(conn.execute(sql + " ORDER BY date DESC, id DESC", args))
+    rows = _rows(conn.execute(sql + " ORDER BY date DESC, id DESC", args))
+    for r in rows:
+        if r.pop("rationale_cut", None) and r.get("rationale"):
+            r["rationale"] = str(r["rationale"]) + "…"
+    return rows
 
 
 def get_decision(conn: sqlite3.Connection, decision_id: int) -> dict | None:

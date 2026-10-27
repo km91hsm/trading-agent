@@ -23,11 +23,10 @@ import { ThemeHeatBlock } from "../components/ThemeHeatBlock";
 import type { ThemeResp } from "../themeHeat";
 import { mergeAccountRows, mergeHoldings, partialText } from "../overview";
 import { termLabel } from "../glossary";
-import { buildTape, gateFor, type TapeRow } from "../tape";
+import { buildTape, gateFor, rowDetails, type RowDetail, type TapeRow } from "../tape";
 import type {
   Approval,
   CallsResp,
-  Checkpoint,
   Decision,
   Order,
   Overview,
@@ -39,8 +38,6 @@ import type {
 } from "../types";
 import { Ticker } from "../components/Ticker";
 
-/** 행마다 체크포인트에서 읽는 보조 정보 (30_decision 의 손절·익절·근거, 00_inputs 의 종목명). */
-type RowDetail = { name: string | null; stop_loss: string | null; take_profit: string | null; rationale: string | null };
 
 /** 시장별 오늘(운영일): KR 은 KST 날짜, US 는 뉴욕 날짜. */
 function runDates(now: Date): Record<string, string> {
@@ -48,8 +45,6 @@ function runDates(now: Date): Record<string, string> {
     new Intl.DateTimeFormat("en-CA", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit" }).format(now);
   return { KR: f("Asia/Seoul"), US: f("America/New_York") };
 }
-
-const str = (v: unknown): string | null => (v === null || v === undefined || v === "" ? null : String(v));
 
 export function Dashboard() {
   const { accounts, accountId, events, names, tickOf } = useApp();
@@ -180,36 +175,9 @@ export function Dashboard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [pfKR.data, pfUS.data, overview.data, accountId, primaryId, decisions.data, checks.data, orders.data, approvals.data, watch.data, dates, now, liveKR, liveUS],
   );
-  // 행별 보조 정보: 결정이 있는 행만, 30_decision + 00_inputs 두 파일 (로컬 서버라 N 요청이 부담 없다)
-  const decidedKeys = tape.filter((r) => r.decisionId).map((r) => r.key).join();
-  const details = useLoad(
-    () =>
-      decidedKeys
-        ? Promise.all(
-            tape
-              .filter((r) => r.decisionId)
-              .map(async (r) => {
-                const q = { ticker: r.ticker, market: r.market, date: dates[r.market] };
-                const [dec, inp] = await Promise.all([
-                  getJson<Checkpoint>("/api/checkpoint", { ...q, stage: "30_decision" }).catch(() => null),
-                  getJson<Checkpoint>("/api/checkpoint", { ...q, stage: "00_inputs" }).catch(() => null),
-                ]);
-                const d = (dec?.data ?? {}) as Record<string, unknown>;
-                const meta = ((inp?.data as Record<string, unknown> | undefined)?.meta ?? {}) as Record<string, unknown>;
-                const detail: RowDetail = {
-                  name: str(meta.name),
-                  stop_loss: str(d.stop_loss),
-                  take_profit: str(d.take_profit),
-                  rationale: str(d.rationale),
-                };
-                return [r.key, detail] as const;
-              }),
-          ).then((pairs) => Object.fromEntries(pairs) as Record<string, RowDetail>)
-        : null,
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [decidedKeys, dates.KR, dates.US],
-  );
-  const detailOf = (r: TapeRow): RowDetail | undefined => details.data?.[r.key];
+  // 행별 보조 정보(손절·익절·근거)는 결정 목록 응답에 실려 온다 — 체크포인트를 행마다 받지 않는다
+  const details = useMemo(() => rowDetails(tape, decisions.data ?? []), [tape, decisions.data]);
+  const detailOf = (r: TapeRow): RowDetail | undefined => details[r.key];
   const otherGate = (r: TapeRow, acctId: string) => {
     if (!r.decisionId) return null;
     const d = (decisions.data ?? []).find((x) => x.id === r.decisionId);
@@ -394,7 +362,7 @@ export function Dashboard() {
                         <Td>
                           <RowButton expanded={r.key === sel} onClick={() => setSel(r.key === sel ? null : r.key)}>
                             <Mark kind={r.mark} />{" "}
-                            <Ticker market={r.market} ticker={r.ticker} name={dt?.name} />
+                            <Ticker market={r.market} ticker={r.ticker} />
                           </RowButton>
                         </Td>
                         <Td num>
@@ -428,7 +396,7 @@ export function Dashboard() {
             {selRow && (
               <div className="why-box">
                 {selRow.decisionId ? (
-                  details.loading && !details.data ? (
+                  decisions.loading && !decisions.data ? (
                     <span className="muted">근거 불러오는 중…</span>
                   ) : detailOf(selRow) ? (
                     <>
@@ -439,7 +407,7 @@ export function Dashboard() {
                       </span>
                     </>
                   ) : (
-                    <span className="muted">결정 체크포인트 없음</span>
+                    <span className="muted">결정 상세 없음</span>
                   )
                 ) : (
                   <span className="muted">오늘 이 종목의 결정이 없어요. 보유분은 monitor 가 손절선·트리거만 봅니다.</span>
