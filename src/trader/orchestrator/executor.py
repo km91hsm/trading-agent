@@ -135,10 +135,12 @@ def _theme_of(ctx: ExecContext, market: str, d: date) -> Callable[[str], list[st
         except Exception as e:  # noqa: BLE001
             logger.warning("테마 맵 읽기 실패: %s", e)
     try:
+        from trader.config import load_events
         from trader.scan import events
 
-        for t, evs in events.theme_of_map(ctx.conn, market, d).items():
-            merged.setdefault(t, []).extend(evs)
+        if load_events().enabled:  # 끈 뒤에는 그날 기록된 사건도 적용하지 않는다(Codex 리뷰)
+            for t, evs in events.theme_of_map(ctx.conn, market, d).items():
+                merged.setdefault(t, []).extend(evs)
     except Exception as e:  # noqa: BLE001
         logger.warning("사건 묶음 읽기 실패: %s", e)
     return merged.get if merged else None

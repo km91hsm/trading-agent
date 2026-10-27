@@ -166,10 +166,15 @@ def test_shock_event_ticker_gets_theme_safeguard_in_gate(conn, project):
         [{"id": "war_geopolitics", "label": "전쟁", "kind": "shock", "hits": 3, "news": [],
           "tickers": [{"ticker": "012450", "name": "한화에어로스페이스", "role": "방산"}]}],
     )  # fmt: skip
+    (project / "config" / "events.yaml").write_text("enabled: true\n", encoding="utf-8")
     ctx = executor.ExecContext(settings=config.Settings(), accounts=[], conn=conn)
     theme_of = executor._theme_of(ctx, "KR", TODAY)
     assert theme_of is not None and theme_of("012450") == ["사건:전쟁"]
     assert theme_of("005930") is None
+    # 끄면 그날 기록된 사건도 게이트에 적용하지 않는다
+    (project / "config" / "events.yaml").write_text("enabled: false\n", encoding="utf-8")
+    off = executor._theme_of(ctx, "KR", TODAY)
+    assert off is None or off("012450") is None
 
 
 def test_daemon_events_check_alerts_once(conn, project, monkeypatch):
