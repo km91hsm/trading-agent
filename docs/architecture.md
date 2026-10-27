@@ -180,7 +180,7 @@ CLAUDE.md 의 "아키텍처 핵심 규칙" 에서 옮겨 온 모듈 단위 상�
 
 ## 전체 검토 4차 — 나머지(2026-10-27)
 
-- **데몬 생존 판정의 로캘**: macOS `procs.process_start` 는 `/bin/ps` 를 `LC_ALL=C`·`TZ=UTC` 로 부른다 — `lstart` 가 로캘마다 달라 Trader.app(로캘 없음)이 쓴 잠금을 한국어 터미널이 '다른 프로세스' 로 보고 데몬을 꺼짐으로 판정했다. 값에 형식 접두사(`utc:`)를 붙이고, 접두사 없는 예전 잠금(로캘·시간대가 섞인 값)은 pid 생존만 본다.
+- **데몬 생존 판정의 로캘**: macOS `procs.process_start` 는 `/bin/ps` 를 `LC_ALL=C`·`TZ=UTC` 로 부른다 — `lstart` 가 로캘마다 달라 Trader.app(로캘 없음)이 쓴 잠금을 한국어 터미널이 '다른 프로세스' 로 보고 데몬을 꺼짐으로 판정했다. 값에 형식 접두사(`utc:`)를 붙이고, 접두사 없는 예전 잠금(C·한국어 로캘, 현지 시각)은 시각으로 풀어 2초 안이면 같은 프로세스로 본다(못 풀면 다른 프로세스 — 재부팅 뒤 pid 재사용에 막히지 않게).
 - **launchd 재기동**: `KeepAlive` 를 `{SuccessfulExit: false}` + `ThrottleInterval 60` 으로 — `trader daemon` 은 무거운 조립 전에 잠금을 보고 이미 다른 데몬이 돌면 정상 종료(0)한다(잠금 실패·설정 오류로 10초마다 무한 재기동하던 문제).
 - **텔레그램 보낸 사람**: `Update.trusted` — 1:1 채팅이거나 `TELEGRAM_ALLOWED_USERS`(쉼표 id, 설정 화면 '연결 키') 에 있는 사람. 그룹 채팅에서 믿을 수 없는 보낸 사람은 `commands.UNTRUSTED_OK`(status·pause·kill·daily)만, 나머지(승인·재개·모드·실행·관심)는 `[명령 거부]`.
 - **킬스위치 범위**: 자동 발동(누적 손실)은 `control.killswitch.accounts` 에 그 계좌만 더하고(읽기~쓰기 한 쓰기 트랜잭션 — 동시에 들어온 `/kill` 의 전체 차단을 덮지 않게) `killswitch.reason(conn, account_id)` 가 계좌별로 판정(모의 계좌 손실이 실전 매수를 막던 문제). 수동 `/kill`·CLI 는 전 계좌(`accounts: null`). 해제는 그대로 사람만, 전체를 한 번에. 입출금 보정은 하지 않는다(해제 때 기준 NAV 를 다시 잡는다).
