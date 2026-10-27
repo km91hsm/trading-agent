@@ -1131,4 +1131,18 @@ def test_killswitch_on_by_telegram_cancels_on_next_balance_read(ectx):
     killswitch.engage(ectx.conn, reason="/kill", source="telegram")
     b = ectx.brokers["paper-main"]
     executor.build_portfolio(ectx.conn, b, ectx.accounts[0], "KR", D, killswitch_pct=0.15)
+    assert b.cancelled == []  # 조회(cancel_buys 없음)·dry-run 은 브로커 취소를 부르지 않는다
+    executor.build_portfolio(
+        ectx.conn, b, ectx.accounts[0], "KR", D, killswitch_pct=0.15, cancel_buys=True
+    )
     assert b.cancelled == ["FAKE-1"]
+
+
+def test_killswitch_sweep_keeps_hedge_orders(ectx):
+    """보호용 헤지 BUY 는 킬스위치 취소 대상이 아니다(킬스위치 중에도 헤지는 허용)."""
+    _run(ectx)
+    b = ectx.brokers["paper-main"]
+    n, left = executor.on_killswitch(
+        ectx.conn, b, "paper-main", "KR", D, keep=frozenset({"005930"})
+    )
+    assert (n, left) == (0, []) and b.cancelled == []

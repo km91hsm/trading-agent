@@ -82,6 +82,7 @@ def cancel_open_buys(
     *,
     ticker: str | None = None,
     exchange_of: Callable[[str], str | None] = lambda _t: None,
+    keep: frozenset[str] = frozenset(),
 ) -> tuple[int, list[str]]:
     """당일(시장 현지) 미체결 BUY 를 취소한다 — 손절 직전, 결정이 매수에서 돌아섰을 때, 킬스위치가
     켜졌을 때(전체 검토 2026-10-27). (취소 건수, 취소하지 못한 종목들). 응답 없는(번호 없는) 주문·
@@ -91,6 +92,8 @@ def cancel_open_buys(
     done, left = 0, []
     for r in repo.open_orders_today(conn, account_id, ticker, "BUY", day, market=market):
         t = str(r["ticker"])
+        if t in keep:  # 보호용 헤지·현금 운용 ETF
+            continue
         ex = exchange_of(t) if market == "US" else None
         if not r["order_no"] or (market == "US" and not ex):
             left.append(t)
@@ -272,7 +275,13 @@ def _nav_of(pos_list: list, cash: Any) -> Decimal:
 
 
 def on_killswitch(
-    conn: sqlite3.Connection, broker: Any, account_id: str, market: str, today: date
+    conn: sqlite3.Connection,
+    broker: Any,
+    account_id: str,
+    market: str,
+    today: date,
+    *,
+    keep: frozenset[str] = frozenset(),
 ) -> tuple[int, list[str]]:
     """킬스위치가 막 켜졌을 때 그 계좌·시장의 당일 미체결 BUY 를 취소한다. US 거래소는
     universe.us 에서 찾고, 못 찾거나 실패한 종목은 경고로 남긴다(킬스위치는 특보로 뜬다)."""
@@ -284,7 +293,9 @@ def on_killswitch(
             exchanges = {s.symbol: s.exchange for s in _config.load_universe().us}
         except Exception as e:  # noqa: BLE001
             logger.warning("킬스위치 취소: universe 를 읽지 못해 US 거래소 미상: %s", e)
-    n, left = cancel_open_buys(conn, broker, account_id, market, today, exchange_of=exchanges.get)
+    n, left = cancel_open_buys(
+        conn, broker, account_id, market, today, exchange_of=exchanges.get, keep=keep
+    )
     if n or left:
         logger.warning(
             "킬스위치: %s %s 당일 미체결 BUY 취소 %d건, 못 함 %s", account_id, market, n, left
@@ -303,6 +314,7 @@ def build_portfolio(
     hedge_tickers: frozenset[str] = frozenset(),
     now: datetime | None = None,
     killswitch_pct: float = 0.0,
+    cancel_buys: bool = False,
 ) -> rules.Portfolio:
     """브로커 잔고·현금 + 원장 집계로 Portfolio 를 만들고 positions_snapshot 을 남긴다.
     now 가 있으면 만료된 승인 요청은 현금 예약에서 뺀다(전체 검토 O17).
@@ -326,11 +338,13 @@ def build_portfolio(
             limit_pct=killswitch_pct,
         )
     # 킬스위치가 켜져 있으면(자동·/kill·CLI 어느 경로든) 이 계좌·시장의 당일 미체결 BUY 를 거둔다 —
-    # 게이트는 새 주문만 막는다. 잔고를 볼 때마다(monitor 1분) 다시 보므로 실패분도 재시도된다
+    # 게이트는 새 주문만 막는다. 주문을 낼 수 있는 호출(cancel_buys: 실제 실행·데몬 잔고 갱신)만 —
+    # dry-run·웹 조회는 브로커 취소를 부르지 않는다. 보호용 헤지·현금 운용 ETF 는 거두지 않는다
+    # (킬스위치 중에도 헤지는 허용, Codex 리뷰). 잔고를 볼 때마다 다시 보므로 실패분도 재시도된다
     from trader.risk import killswitch as _ks
 
-    if _ks.reason(conn):
-        on_killswitch(conn, broker, account.id, market, today)
+    if cancel_buys and _ks.reason(conn):
+        on_killswitch(conn, broker, account.id, market, today, keep=hedge_tickers)
     prev = repo.latest_nav_before(conn, account.id, today, market=market)
     today_pnl = float(nav / prev - 1) if prev else 0.0
     if account.env == "paper":
@@ -710,6 +724,7 @@ def _execute_account(
                 sector_of=sector_of,
                 hedge_tickers=hedge_tickers,
                 killswitch_pct=ctx.settings.risk.killswitch_drawdown_pct,
+                cancel_buys=not dry_run,
             )
             portfolio.theme_of = theme_of  # Phase 25: 오늘 상위 테마(없으면 테마 규칙 생략)
             sized = decision

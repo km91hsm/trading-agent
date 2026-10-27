@@ -1539,6 +1539,7 @@ def _balance_body(deps: DaemonDeps) -> dict:
                 now=now,
                 market_client=deps.market_client,
                 state=deps.state,
+                cancel_buys=not deps.dry_run,
             )
             for m in markets
         }
