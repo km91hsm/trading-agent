@@ -378,6 +378,57 @@ def test_sse_snapshot_covers_live_screens(conn, project):
     assert sse.snapshot(conn, state, now)["checkpoints"] != s3["checkpoints"]
 
 
+def test_sse_fingerprint_ignores_same_value_rewrites(conn, project):
+    """전체 검토 3차: 값이 같은 다시 쓰기(잔고 재관측·같은 플래그·내부 커서)와 대기열 틱의 하트비트
+    갱신은 지문을 바꾸지 않는다 — 화면이 몇 초마다 다시 읽지 않게."""
+    import json
+    import os
+    import time as _t
+    from datetime import UTC, datetime
+
+    from trader.memory import store
+    from trader.web import sse
+
+    state = project / "state"
+    now = datetime(2026, 10, 26, 3, 0, tzinfo=UTC)
+    snap = dict(
+        account_id="paper-main",
+        d=date(2026, 10, 26),
+        market="KR",
+        nav=Decimal(100),
+        cash=Decimal(50),
+        positions=[{"ticker": "005930", "market": "KR", "qty": 1, "eval_amount": Decimal(50)}],
+    )
+    repo.snapshot_positions(conn, **snap)
+    control.set_flag(conn, "regime:KR", {"state": "bear"})
+    hb = state / "daemon_heartbeat.json"
+    hb.write_text(json.dumps({"pid": 1, "started_at": "s", "updated_at": "u"}), encoding="utf-8")
+    os.utime(hb, (1_800_000_000, 1_800_000_000))  # 분 경계(…:00)
+    s0 = sse.snapshot(conn, state, now)
+    _t.sleep(0.002)
+    repo.snapshot_positions(conn, **snap)  # 같은 값 재관측(created_at 만 바뀜)
+    control.set_flag(conn, "regime:KR", {"state": "bear"})  # 같은 값
+    control.set_flag(conn, "news_trigger_at:KR", now.isoformat())  # 내부 커서
+    os.utime(hb, (1_800_000_030, 1_800_000_030))  # 같은 분 안의 대기열 틱
+    s1 = sse.snapshot(conn, state, now)
+    assert s1["positions"] == s0["positions"]
+    assert s1["control"] == s0["control"]
+    assert s1["daemon"] == s0["daemon"]
+    os.utime(hb, (1_800_000_090, 1_800_000_090))  # 다음 분
+    assert sse.snapshot(conn, state, now)["daemon"] != s0["daemon"]
+    # 메모리 서킷브레이커: 상태가 같으면 at 을 유지해 같은 값으로 남는다
+    from trader.config import MemorySettings
+
+    kw = dict(nav_series=[("d", Decimal(100))], vix_change=None, settings=MemorySettings())
+    store.circuit_breaker(conn, market="KR", **kw)
+    first = control.get_flag(conn, "memory_breaker:KR")
+    s2 = sse.snapshot(conn, state, now)
+    _t.sleep(0.002)
+    store.circuit_breaker(conn, market="KR", **kw)
+    assert control.get_flag(conn, "memory_breaker:KR") == first
+    assert sse.snapshot(conn, state, now)["control"] == s2["control"]
+
+
 def test_shared_snapshot_computes_once_for_many_connections(conn, monkeypatch):
     """탭·연결이 여럿이어도 TTL 안에서는 지문을 한 번만 계산한다(Codex 리뷰: 연결 수 비례 비용)."""
     from trader.web import sse

@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sqlite3
@@ -46,6 +47,46 @@ def _q(conn: sqlite3.Connection, sql: str) -> str:
     except sqlite3.OperationalError:
         return ""
     return ":".join("" if v is None else str(v) for v in tuple(row))
+
+
+# 화면이 읽지 않는 내부 커서 플래그(매 수집마다 시각이 바뀐다) — control 지문에서 뺀다
+CONTROL_CURSOR_LIKE = ("news_trigger_at:%",)
+
+
+def _positions_fp(conn: sqlite3.Connection) -> str:
+    """잔고 지문: 행 수·최대 id + 최근 사흘(가장 늦은 날짜 기준, KR·US 운영일 차이 포함) 행의 값
+    해시. 관측 시각(created_at)은 넣지 않는다."""
+    head = _q(conn, "SELECT COUNT(*), MAX(id) FROM positions_snapshot")
+    try:
+        rows = conn.execute(
+            "SELECT account_id, date, ticker, qty, avg_price, current_price, eval_amount, nav, "
+            "cash FROM positions_snapshot WHERE date >= "
+            "(SELECT date(MAX(date), '-3 day') FROM positions_snapshot) ORDER BY id"
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return head
+    digest = hashlib.sha1(repr([tuple(r) for r in rows]).encode()).hexdigest()[:16]
+    return f"{head}|{digest}"
+
+
+_HB_MEMO: dict = {"key": None, "fp": ""}
+
+
+def _daemon_fp(path: Path) -> str:
+    """데몬 하트비트 지문: 대기열 틱이 2~5초마다 파일을 다시 쓰므로 mtime 을 그대로 쓰면 대시보드가
+    몇 초마다 다시 읽는다 → 분 단위로 내린 갱신 시각 + 데몬 신원(pid·시작·종료). 기동·종료는 바로,
+    잡 상태는 1분 안에 반영된다(전체 검토 3차)."""
+    m = _mtime(path)
+    if not m:
+        return "0"
+    if _HB_MEMO["key"] != (str(path), m):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            data = {}
+        ident = f"{data.get('pid')}:{data.get('started_at')}:{data.get('stopped_at')}"
+        _HB_MEMO.update(key=(str(path), m), fp=ident)
+    return f"{_HB_MEMO['fp']}:{m // 60}"
 
 
 def _mtime(path: Path) -> int:
@@ -106,8 +147,9 @@ def snapshot(conn: sqlite3.Connection, state: Path | None = None, now=None) -> d
             "SELECT COALESCE(MAX(id), 0) AS m FROM job_requests "
             "WHERE status NOT IN ('queued','running')"
         ).fetchone()["m"],
-        # 잔고 스냅샷(데몬 잔고 주기 갱신·판정·새로고침) → 순자산·보유·섹터
-        "positions": _q(conn, "SELECT COUNT(*), MAX(id), MAX(created_at) FROM positions_snapshot"),
+        # 잔고 스냅샷(데몬 잔고 주기 갱신·판정·새로고침) → 순자산·보유·섹터. created_at(마지막 관측
+        # 시각)은 값이 같아도 5분마다 바뀌므로 지문에서 빼고 **값**만 본다(전체 검토 3차)
+        "positions": _positions_fp(conn),
         # 구독 사용률 관측 + 끝난 오케스트레이터 세션(서브에이전트 행·running 은 빼서 폭주 방지)
         "usage": _q(conn, "SELECT COUNT(*), MAX(id) FROM llm_rate_limits")
         + "|"
@@ -118,7 +160,11 @@ def snapshot(conn: sqlite3.Connection, state: Path | None = None, now=None) -> d
         ),
         # control 플래그 전체(국면·시장 뷰·운영 점검·모드·테마 상위 등). 텔레그램 오프셋은 매 폴링
         # 바뀔 수 있어 뺀다
-        "control": _q(conn, "SELECT MAX(updated_at) FROM control WHERE key != 'telegram_offset'"),
+        "control": _q(
+            conn,
+            "SELECT MAX(updated_at) FROM control WHERE key != 'telegram_offset' "
+            f"AND {' AND '.join(f'key NOT LIKE {p!r}' for p in CONTROL_CURSOR_LIKE)}",
+        ),
         "news": _q(conn, "SELECT COUNT(*), MAX(id) FROM news_items"),
         "theme": _q(conn, "SELECT COUNT(*), MAX(id), MAX(observed_at) FROM theme_heat"),
         "market_views": _q(conn, "SELECT COUNT(*), MAX(id), COUNT(matured_at) FROM market_views"),
@@ -138,7 +184,7 @@ def _file_keys(state: Path | None, now) -> dict:
 
     now = now or datetime.now(UTC)
     return {
-        "daemon": _mtime(state / heartbeat.FILE_NAME),
+        "daemon": _daemon_fp(state / heartbeat.FILE_NAME),
         "checkpoints": _runs_mtime(state, now),
     }
 
