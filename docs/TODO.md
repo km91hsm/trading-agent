@@ -473,3 +473,18 @@
 - [x] 페이지 접속·새로고침 때 관측 5분 넘으면 `POST /api/system/usage/ensure-fresh` 가 확인 요청(60초 1회, 같은 출처)
 - [x] 잔고 장 밖 갱신: 데몬 30분·페이지 접속 10분 기준, 체결통보 → 체결 동기화 직후 잔고 즉시
 - [ ] 사용자 확인 대기: Trader.app 재시작 1~2분 뒤 시스템 현황 사용량이 '확인 · 방금' 으로 바뀌는지, 장 밖에 이체 뒤 대시보드 새로고침하면 순자산이 바뀌는지
+
+## Phase 26 선물옵션 방향성 레인 (2026-10-27, 사용자 요청 — `docs/superpowers/plans/2026-10-27-phase26-fo.md`, 스펙 `docs/superpowers/specs/2026-10-27-fo-lane-design.md`)
+- [ ] 단계 1 계좌·브로커·마스터·설정·가격모형 (`feat/phase26-1-fo-broker`): `AccountConfig.asset`·`FoCfg`·`split_accounts`, FO TR 표·모델, `fo_codes`·`fo_master`, `KisFoBroker`(엄격 파서·`get_order_state`)·`FakeFoBroker`, 파생 시세·체인, FO 장 시간·호가단위·Black-76, CLI `_Boot` 세 목록·`fo verify|contracts|chain|order-test`, 거부 목록
+- [ ] 단계 1 Codex·Claude 교차 리뷰 → 수정 → PR(main)
+- [ ] 단계 2 저장 계층·상태기계·게이트·실행·원장 (`feat/phase26-2-store-gate-exec`): 원장 v26, `fo/store`(예약 트랜잭션)·`positions`(복구)·`rules`(대조표·단조)·`sizing`(수명 예산·스트레스·증거금 3겹)·`executor`(진입/축소 분기·회수·청산 절차), 체결·잔고·대조·점검·성과 asset 분기
+- [ ] 단계 2 교차 리뷰 → 수정 → PR
+- [ ] 단계 3 세션·도구·에이전트 (`feat/phase26-3-session`): `fo-trader.md`·orchestrator fo 모드, `FO_AGENTS`, kind `fo|fo_resume`·`usage.RESUME_KINDS`·상한 트랜잭션, `fo/inputs`, `tool fo bundle|write|summarize`·`submit-fo-decision`, `fo session`
+- [ ] 단계 3 교차 리뷰 → 수정 → PR
+- [ ] 단계 4 데몬·모니터·재평가·웹 (`feat/phase26-4-daemon-web`): `fo/triggers`·`engine`(보호선·유지 조건·회수)·`reeval`(CAS), 데몬 잡·큐 kind, `/api/fo/*`·`/fo` 페이지, E2E 수명 시나리오·현물 회귀 스냅샷
+- [ ] 단계 4 교차 리뷰 → 수정 → PR
+- [ ] 단계 5 문서·전체 교차 리뷰 B·체인 ff 머지 (`feat/phase26-5-docs-review`)
+- [ ] 실기 1(사용자 확인 대기, 조회 전용): `uv run trader fo verify --account paper-fo` → 시세·마스터·주문가능·잔고 필드 확인(빈 잔고면 방향·NAV 미검증으로 남음) → 비식별 fixture 로 미확인 항목 확정
+- [ ] 실기 2(사용자 실행, 거부 목록): `uv run trader fo order-test --account paper-fo --vehicle FUTURES` → `OPTION_BUY` → `OPTION_SELL` 1계약 왕복 → 수단별 `fo_verified` 플래그
+- [ ] 실기 3(사용자 확인 대기, 약 $1~2): `fo.enabled: true` 뒤 `FAKE_CLAUDE` 없이 `uv run trader fo session` 1회 → 결정·배수·진입·재평가·청산 로그
+- [ ] 완료 기준: 단계 5 머지 뒤 `uv run pytest`·`ruff`·web 게이트 통과, `FAKE_CLAUDE=1 uv run trader fo session --dry-run`·`fo monitor --once --dry-run` 체크포인트 확인, 현물 기본 동작 회귀 없음(스냅샷 테스트)
