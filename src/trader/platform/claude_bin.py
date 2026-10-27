@@ -12,8 +12,51 @@ class ClaudeNotFound(RuntimeError):
     """claude 실행파일을 찾지 못했을 때 발생."""
 
 
+def _known_locations() -> list[Path]:
+    """PATH 밖의 흔한 설치 위치. Finder·로그인 항목·launchd 로 띄운 앱(Trader.app)은 PATH 가
+    `/usr/bin:/bin:/usr/sbin:/sbin` 뿐이라 공식 설치 스크립트의 `~/.local/bin` 을 못 본다."""
+    home = Path.home()
+    if sys.platform.startswith("win"):
+        appdata = Path(os.environ.get("APPDATA") or home / "AppData" / "Roaming")
+        return [
+            home / ".local" / "bin" / "claude.exe",
+            appdata / "npm" / "claude.cmd",
+            home / ".claude" / "local" / "claude.exe",
+        ]
+    return [
+        home / ".local" / "bin" / "claude",  # 공식 설치 스크립트(네이티브)
+        home / ".claude" / "local" / "claude",  # 예전 로컬 설치
+        Path("/opt/homebrew/bin/claude"),  # Homebrew(Apple Silicon)
+        Path("/usr/local/bin/claude"),  # Homebrew(Intel)·npm 전역
+        home / ".npm-global" / "bin" / "claude",
+        home / ".bun" / "bin" / "claude",
+    ]
+
+
+def _runnable(path: Path) -> bool:
+    """파일이고 (POSIX 는) 실행 권한까지 — 권한 없는 후보에서 멈추지 않고 다음 후보로."""
+    if not path.is_file():
+        return False
+    return sys.platform.startswith("win") or os.access(path, os.X_OK)
+
+
+def child_path(bin_path: Path, base: str | None = None) -> str:
+    """claude 자식 프로세스의 PATH: 최소 PATH(Finder·로그인 항목 앱)에서도 claude 디렉터리와
+    Homebrew·/usr/local 이 보이게 앞뒤로 보탠다(npm 판 claude 는 `#!/usr/bin/env node`)."""
+    base = os.environ.get("PATH", "") if base is None else base
+    parts = [p for p in base.split(os.pathsep) if p]
+    extra = [str(bin_path.parent)]
+    if not sys.platform.startswith("win"):
+        extra += ["/opt/homebrew/bin", "/usr/local/bin"]
+    for d in extra:
+        if d not in parts:
+            parts.append(d)
+    return os.pathsep.join(parts)
+
+
 def find_claude(override: str | None = None) -> Path:
-    """override 경로가 있으면 그것을 쓰고, 없으면 PATH 에서 찾는다 (Windows 는 .cmd/.exe 우선)."""
+    """override 경로가 있으면 그것을 쓰고, 없으면 PATH(Windows 는 .cmd/.exe 우선), 그다음 흔한
+    설치 위치(`_known_locations`)에서 찾는다."""
     if override:
         path = Path(override)
         if not path.exists():
@@ -27,7 +70,10 @@ def find_claude(override: str | None = None) -> Path:
         found = shutil.which(name, mode=os.F_OK)
         if found:
             return Path(found)
+    for path in _known_locations():
+        if _runnable(path):
+            return path
     raise ClaudeNotFound(
-        "PATH 에서 claude 실행파일을 찾을 수 없습니다. Claude Code 를 설치하거나 "
-        "settings.yaml 의 claude_bin 에 경로를 지정하세요."
+        "PATH 와 흔한 설치 위치(~/.local/bin 등)에서 claude 실행파일을 찾을 수 없습니다. "
+        "Claude Code 를 설치하거나 settings.yaml 의 claude_bin 에 경로를 지정하세요."
     )

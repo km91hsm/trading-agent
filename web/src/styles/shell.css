@@ -58,7 +58,8 @@
   color: var(--ink);
   font-weight: 800;
 }
-.clock-kst b {
+.clock-kst b,
+.clock-et b {
   font-size: var(--t-sm);
 }
 .clock-et,

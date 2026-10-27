@@ -119,7 +119,11 @@ def _spawn(
             "--max-budget-usd",
             str(BUDGET_USD),
         ]
-        env = {**os.environ, "CLAUDE_CODE_RETRY_WATCHDOG": "1"}
+        env = {
+            **os.environ,
+            "CLAUDE_CODE_RETRY_WATCHDOG": "1",
+            "PATH": claude_bin_mod.child_path(Path(bin_path)),
+        }
         return (runner or session.run_claude)(
             cmd,
             input=stdin,

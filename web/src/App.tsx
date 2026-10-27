@@ -12,6 +12,7 @@ import { HowItWorksPage } from "./pages/HowItWorks";
 import { MlPage } from "./pages/Ml";
 import { OrdersPage } from "./pages/Orders";
 import { SettingsPage } from "./pages/Settings";
+import { SystemPage } from "./pages/System";
 import { TodayPage } from "./pages/Today";
 
 // lightweight-charts 를 쓰는 두 페이지만 별도 청크로 (첫 로드 번들에서 제외)
@@ -39,6 +40,7 @@ export default function App() {
                 <Route path="/ml" element={<MlPage />} />
                 <Route path="/performance" element={<PerformancePage />} />
                 <Route path="/settings" element={<SettingsPage />} />
+                <Route path="/system" element={<SystemPage />} />
                 <Route path="/how" element={<HowItWorksPage />} />
                 <Route path="*" element={<Dashboard />} />
               </Routes>
