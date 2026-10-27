@@ -361,6 +361,54 @@ def _balance_json(b: FoBalance) -> dict[str, Any]:
     }
 
 
+@app.command("session")
+@_config_errors
+def session_cmd(
+    dry_run: bool = typer.Option(False, "--dry-run", help="판정·기록만(주문 없음)"),
+    asof: str | None = typer.Option(
+        None, "--asof", help="기준 시각 ISO (now − fo.max_input_age_s 보다 과거면 dry-run 강제)"
+    ),
+) -> None:
+    """파생 세션 1회(Phase 26 단계 3): `_fo_inputs` 수집·저장 → fo 세션 → `_fo_decision`.
+    `FAKE_CLAUDE=1` 이면 subprocess 없이 고정 FLAT HOLD. 결과 JSON 한 줄, 세션 실패면 exit 1."""
+    from trader.cli import _boot, _build_brokers, _build_market
+    from trader.fo import session as fo_session
+    from trader.notify.telegram import make_notifier
+
+    boot = _boot(settings=True, accounts=True, secrets=True, conn=True, log_name="fo")
+    settings, conn = boot.settings, boot.conn
+    at = datetime.fromisoformat(asof) if asof else None
+    if at is not None and at.tzinfo is None:
+        at = at.replace(tzinfo=KST)
+    try:
+        fo_accounts = list(boot.fo_accounts or [])
+        brokers = {
+            b.account.id: b for b in _build_brokers(boot.secrets, fo_accounts, settings=settings)
+        }
+        try:
+            market = _build_market(boot.secrets)
+        except Exception as e:  # noqa: BLE001 — 시세 없이도 입력 오류 절로 남기고 세션은 돈다
+            typer.echo(
+                f"경고: 시세 클라이언트 없음({type(e).__name__}) — 입력 절 일부 누락", err=True
+            )
+            market = None
+        try:
+            master = _master(settings)
+        except Exception as e:  # noqa: BLE001
+            typer.echo(f"경고: 마스터 적재 실패({type(e).__name__}) — 빈 목록", err=True)
+            master = []
+        out = fo_session.run(
+            settings, conn, fo_accounts=fo_accounts, brokers=brokers, market_client=market,
+            master=master, date=_today(None), dry_run=dry_run, notifier=make_notifier(boot.secrets),
+            asof=at,
+        )  # fmt: skip
+    finally:
+        conn.close()
+    typer.echo(json.dumps(out, ensure_ascii=False, default=str))
+    if out.get("error"):
+        raise typer.Exit(code=1)
+
+
 @app.command("order-test")
 @_config_errors
 def order_test_cmd(
