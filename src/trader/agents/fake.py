@@ -370,3 +370,77 @@ def run_fake_market(
         raise tools.ToolError(r["error"])
     written.append("_market_view")
     return written
+
+
+def run_fake_fo(
+    ctx: tools.ToolContext,
+    *,
+    date: date,
+    position: dict | None = None,
+    trigger: dict | None = None,
+) -> list[str]:
+    """fo·fo_resume 모드(Phase 26): 애널리스트 3역할(NEUTRAL) → r0 토론 → 요약 → 봉투.
+    아침은 FLAT HOLD(request_id 는 `_fo_inputs` 의 것), 재평가는 stdin 봉투(계좌·포지션·버전·
+    request_id)를 그대로 되돌리는 HOLD — 파이썬 게이트·훅이 어차피 기록·적용을 맡는다."""
+    from trader.orchestrator.run_store import market_dir, read_checkpoint
+
+    d = market_dir(date, tools.FO_MARKET, ctx.state)
+    inputs = (read_checkpoint(d, tools.FO_INPUTS) or {}).get("data") or {}
+    proxy = (inputs.get("meta") or {}).get("proxy") or "KOSPI200"
+    written: list[str] = []
+    for role, agent in (
+        ("technical", "analyst-technical"),
+        ("sentiment", "analyst-sentiment"),
+        ("news_macro", "analyst-market"),
+    ):
+        stage = f"_fo_analyst_{role}"
+        r = tools.fo_write(
+            ctx, date=date, stage=stage, payload=fake_report(proxy, date.isoformat(), role),
+            agent=agent, call_meta=_call(agent),
+        )  # fmt: skip
+        if not r["ok"]:
+            raise tools.ToolError(r["error"])
+        written.append(stage)
+    for side in ("bull", "bear"):
+        stage = f"_fo_debate_r0_{side}"
+        r = tools.fo_write(
+            ctx, date=date, stage=stage, payload=fake_turn(side, 0),
+            agent=f"researcher-{side}", call_meta=_call(f"researcher-{side}"),
+        )  # fmt: skip
+        if not r["ok"]:
+            raise tools.ToolError(r["error"])
+        written.append(stage)
+    r = tools.fo_summarize(ctx, date=date)
+    if not r["ok"]:
+        raise tools.ToolError(r["error"])
+    written.append(tools.FO_SUMMARY)
+    decision = {
+        "intent": "HOLD",
+        "direction": "FLAT",
+        "vehicle": "FUTURES",
+        "target_leverage": 0.0,
+        "confidence": 0.5,
+        "rationale": "FAKE 모드: 기본값 HOLD(FLAT)",
+        "invalidation_conditions": [],
+    }
+    if position:
+        envelope = {
+            "decision": decision,
+            "account_id": position.get("account_id"),
+            "position_id": position.get("position_id"),
+            "expected_version": position.get("expected_version"),
+            "request_id": position.get("request_id"),
+        }
+        stage: str | None = f"_fo_decision_r{position.get('round')}_{position.get('account_id')}"
+    else:
+        request_id = (inputs.get("meta") or {}).get("request_id")
+        envelope = {"decision": decision, "request_id": request_id}
+        stage = None
+    r = tools.submit_fo_decision(
+        ctx, date=date, payload=envelope, stage=stage, agent="fo-trader",
+        call_meta=_call("fo-trader"),
+    )  # fmt: skip
+    if not r["ok"]:
+        raise tools.ToolError(r["error"])
+    written.append(r["stage"])
+    return written

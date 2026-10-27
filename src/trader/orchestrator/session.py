@@ -395,8 +395,11 @@ def run_session(
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
     brokers: dict[str, Any] | None = None,
     notifier: Any = None,
+    fo: Any | None = None,
 ) -> SessionResult:
-    """오케스트레이터 세션 1회. 실패해도 체크포인트는 그대로 남아 재실행 시 이어간다."""
+    """오케스트레이터 세션 1회. 실패해도 체크포인트는 그대로 남아 재실행 시 이어간다.
+    `fo` 는 파생 세션(fo·fo_resume)의 실행 컨텍스트(`fo/executor.FoExecContext`) — FAKE 러너가
+    같은 도구 함수로 쓰고, 실제 세션은 `trader tool` 서브프로세스가 스스로 만든다."""
     if settings.anonymize:
         raise ConfigError("settings.anonymize=true 는 Phase 6 전까지 지원하지 않습니다")
     bin_override = claude_bin
@@ -409,6 +412,7 @@ def run_session(
         brokers=brokers or {},
         notifier=notifier,
         dry_run=spec.dry_run,
+        fo=fo,
     )
     if tools.sessions_today(conn, now()) >= settings.llm.daily_session_cap:
         raise PipelineError(
@@ -446,6 +450,10 @@ def run_session(
             if spec.kind == "market":
                 written += fake.run_fake_market(
                     ctx, market=spec.market, date=spec.date, debate_rounds=settings.debate_rounds
+                )
+            if spec.kind in ("fo", "fo_resume"):
+                written += fake.run_fake_fo(
+                    ctx, date=spec.date, position=spec.position, trigger=spec.trigger
                 )
             for t in spec.tickers:
                 written += fake.run_fake_ticker(
