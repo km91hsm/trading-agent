@@ -21,6 +21,7 @@ from trader.broker import fo_master
 from trader.broker.fo import CONTRACT_VERSION
 from trader.broker.models import FoBalance, FoPosition
 from trader.config import KST
+from trader.fo import executor
 from trader.platform import paths
 
 app = typer.Typer(
@@ -306,11 +307,7 @@ def verify_cmd(
             for v in verified_vehicles(balance):
                 if vehicle is not None and v != vehicle:
                     continue
-                control.set_flag(
-                    conn,
-                    f"fo_verified:{acct.env}:{acct.id}:{settings.fo.product}:{v}",
-                    CONTRACT_VERSION,
-                )
+                control.set_flag(conn, executor.verified_key(settings, acct, v), CONTRACT_VERSION)
                 verified.append(v)
         out["verified"] = verified
         out["errors"] = errors

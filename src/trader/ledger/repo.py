@@ -241,14 +241,16 @@ def insert_order(
     created_at: str | None = None,
     amount: Decimal | None = None,
     org_no: str | None = None,
+    asset: str = "stock",
 ) -> int:
-    """amount 는 가능금액 차감용 주문금액(시장가는 판정 때 현재가 × 수량). 없으면 qty × price."""
+    """amount 는 가능금액 차감용 주문금액(시장가는 판정 때 현재가 × 수량). 없으면 qty × price.
+    `asset` 은 stock|fo(Phase 26, 파생 주문은 계약 × 가격 × 승수 금액에 `decision_id=None`)."""
     if amount is None and price is not None:
         amount = Decimal(qty) * price
     cur = conn.execute(
         "INSERT INTO orders(decision_id, account_id, ticker, market, side, qty, order_type, price, "
-        "status, order_no, message, mode, created_at, amount, org_no) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "status, order_no, message, mode, created_at, amount, org_no, asset) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             decision_id,
             account_id,
@@ -265,6 +267,7 @@ def insert_order(
             created_at or now_iso(),
             str(amount) if amount is not None else None,
             org_no,
+            asset,
         ),
     )
     conn.commit()

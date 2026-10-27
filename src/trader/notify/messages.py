@@ -684,3 +684,15 @@ def fo_settlement(*, account: str, code: str, name: str | None, pnl: Any) -> str
         f"{account} · {fo_label(code, name)}",
         [f"만기 정산 손익 {money(pnl, 'KR')}"],
     )
+
+
+def fo_position_mismatch(
+    *, account: str, code: str, name: str | None, ledger_qty: int, broker_qty: int | None
+) -> str:
+    """원장 포지션과 브로커 잔고가 다르다(브로커가 진실 — 원장을 맞추고 신규를 막는다)."""
+    seen = "잔고에 없음" if broker_qty is None else f"브로커 {broker_qty}계약"
+    return render(
+        "파생 포지션 불일치",
+        f"{account} · {fo_label(code, name)}",
+        [f"원장 {ledger_qty}계약 ≠ {seen}", "unknown 으로 두고 사람이 adopt·close 로 정리"],
+    )

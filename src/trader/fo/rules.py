@@ -185,13 +185,16 @@ def _entry_price(
     return "MARKET", None, max(ref, _ZERO)
 
 
-def _reduce_leg(gi: GateInput, pos: FoPositionRow, intent: str, qty: int) -> Leg:
-    """축소 다리 가격: 선물 시장가, 옵션은 호가 1단 지정가(호가 없으면 시장가)."""
-    q = gi.quote
+def reduce_leg(
+    cfg: FoCfg, quote, pos: FoPositionRow, intent: str, qty: int, *, market: bool = False
+) -> Leg:
+    """축소 다리 가격: 선물 시장가, 옵션은 호가 1단 지정가(호가 없거나 `market=True`(재시도 잔량)면
+    시장가). 실행기(`fo/executor`)의 손절·만기·재시도 다리도 이 함수로 만든다."""
+    q = quote
     side = order_side(pos.contract_side, entry=False)
     order_type, price = "MARKET", None
-    if pos.kind != "FUTURES" and q is not None:
-        table = tick_table_for(gi.cfg.product_cfg(), pos.kind)
+    if pos.kind != "FUTURES" and q is not None and not market:
+        table = tick_table_for(cfg.product_cfg(), pos.kind)
         best = q.bid if side == "SELL" else q.ask
         if best is not None and best > 0:
             order_type, price = "LIMIT", quantize_tick(table, best)
@@ -237,7 +240,7 @@ def evaluate(gi: GateInput) -> FoVerdict:
             return FoVerdict(approved=False, reasons=[*reasons, "청산할 포지션 없음"])
         if pos.status == "unknown":
             return FoVerdict(approved=False, reasons=[*reasons, "unknown 포지션은 사람만 정리"])
-        legs = [_reduce_leg(gi, pos, "CLOSE", pos.qty_held)] if pos.qty_held > 0 else []
+        legs = [reduce_leg(cfg, gi.quote, pos, "CLOSE", pos.qty_held)] if pos.qty_held > 0 else []
         note = "청산" + (" 뒤 새 진입(REPLACE, 다음 틱 이후)" if d.intent == "REPLACE" else "")
         if not legs:
             note += " — 보유 0(살아 있는 진입 다리 회수만)"
@@ -409,7 +412,7 @@ def evaluate(gi: GateInput) -> FoVerdict:
             )
         )
     elif d.intent == "RESIZE" and pos is not None and sr.n_target < held:
-        legs.append(_reduce_leg(gi, pos, "RESIZE_DOWN", held - sr.n_target))
+        legs.append(reduce_leg(cfg, gi.quote, pos, "RESIZE_DOWN", held - sr.n_target))
         notes.append(f"목표 {sr.n_target} < 보유 {held} → 감액 {held - sr.n_target}")
     elif d.intent == "OPEN" and sr.n_leg <= 0:
         base.reasons.append("수량 0")
