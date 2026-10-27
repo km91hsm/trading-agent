@@ -123,14 +123,6 @@ def internal_dir(dist_dir: Path) -> Path:
 def build_bundle() -> Path:
     if not (ROOT / "web" / "dist" / "index.html").exists():
         raise SystemExit("web/dist 가 없습니다. 먼저 웹을 빌드하세요 (npm run build)")
-    stash = stash_user_data(DIST, ROOT / "dist")
-    try:
-        return _build_bundle()
-    finally:  # 빌드가 실패해도 데이터는 원래 자리로
-        restore_user_data(stash, DIST)
-
-
-def _build_bundle() -> Path:
     _run(
         [
             sys.executable,
@@ -252,13 +244,19 @@ def main() -> None:
         return
     if not args.skip_web:
         build_web()
-    exe = build_bundle()
-    result = {"exe": str(exe)}
-    if not args.skip_smoke:
-        result["smoke"] = smoke(exe)
-    name = dist_name(project_version(), sys.platform, platform.machine())
-    result["zip"] = str(make_zip(DIST, name, readme=ROOT / "docs" / "bundle-usage.md"))
-    result["zip_name"] = f"{name}.zip"
+    # 빌드·스모크·압축이 모두 끝날 때까지 사용자 데이터를 밖에 둔다 — 스모크가 기존 secrets 로
+    # 실패하거나 zip 에 원장·키가 들어가지 않게(Codex 리뷰). 실패해도 finally 에서 되돌린다
+    stash = stash_user_data(DIST, ROOT / "dist")
+    try:
+        exe = build_bundle()
+        result = {"exe": str(exe)}
+        if not args.skip_smoke:
+            result["smoke"] = smoke(exe)
+        name = dist_name(project_version(), sys.platform, platform.machine())
+        result["zip"] = str(make_zip(DIST, name, readme=ROOT / "docs" / "bundle-usage.md"))
+        result["zip_name"] = f"{name}.zip"
+    finally:
+        restore_user_data(stash, DIST)
     print(json.dumps(result, ensure_ascii=False, indent=1))
 
 

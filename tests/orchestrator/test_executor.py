@@ -1121,3 +1121,14 @@ def test_killswitch_trip_cancels_open_buys(ectx):
     b = ectx.brokers["paper-main"]
     n, left = executor.on_killswitch(ectx.conn, b, "paper-main", "KR", D)
     assert (n, left) == (1, []) and b.cancelled == ["FAKE-1"]
+
+
+def test_killswitch_on_by_telegram_cancels_on_next_balance_read(ectx):
+    """/kill(자동 발동 아님)으로 켜져도 다음 잔고 읽기에서 당일 미체결 BUY 를 거둔다."""
+    from trader.risk import killswitch
+
+    _run(ectx)
+    killswitch.engage(ectx.conn, reason="/kill", source="telegram")
+    b = ectx.brokers["paper-main"]
+    executor.build_portfolio(ectx.conn, b, ectx.accounts[0], "KR", D, killswitch_pct=0.15)
+    assert b.cancelled == ["FAKE-1"]

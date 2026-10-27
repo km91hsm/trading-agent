@@ -317,7 +317,7 @@ def build_portfolio(
     if killswitch_pct > 0:
         from trader.risk import killswitch
 
-        tripped = killswitch.observe(
+        killswitch.observe(
             conn,
             account_id=account.id,
             market=market,
@@ -325,8 +325,12 @@ def build_portfolio(
             today=today,
             limit_pct=killswitch_pct,
         )
-        if tripped:  # 막 켜졌다 — 이미 거래소에 걸린 당일 BUY 도 거둔다(게이트는 새 주문만 막는다)
-            on_killswitch(conn, broker, account.id, market, today)
+    # 킬스위치가 켜져 있으면(자동·/kill·CLI 어느 경로든) 이 계좌·시장의 당일 미체결 BUY 를 거둔다 —
+    # 게이트는 새 주문만 막는다. 잔고를 볼 때마다(monitor 1분) 다시 보므로 실패분도 재시도된다
+    from trader.risk import killswitch as _ks
+
+    if _ks.reason(conn):
+        on_killswitch(conn, broker, account.id, market, today)
     prev = repo.latest_nav_before(conn, account.id, today, market=market)
     today_pnl = float(nav / prev - 1) if prev else 0.0
     if account.env == "paper":

@@ -276,13 +276,8 @@ def terminate_group(proc: subprocess.Popen) -> None:
         # 유예 뒤 `taskkill /T /F` 로 트리 전체를 정리한다(전체 검토 2026-10-27)
         from trader.platform import procs
 
-        try:
-            proc.terminate()
-        except OSError:
-            pass
-        if _drain(proc, TERM_GRACE_S):
-            procs.kill_group(proc.pid)  # 부모가 먼저 끝나도 손자가 남았을 수 있다
-            return
+        # 부모(cmd.exe/claude)가 살아 있을 때 트리째 끝낸다 — 부모를 먼저 끝내면 taskkill /T 가
+        # 자식 트리를 못 찾는다(Codex 리뷰). Windows 콘솔 프로세스엔 정중한 종료 신호도 없다
         procs.kill_group(proc.pid)
     else:
         _signal_group(proc, signal.SIGTERM)

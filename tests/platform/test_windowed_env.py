@@ -58,10 +58,8 @@ def test_windows_terminate_kills_whole_tree(monkeypatch):
     monkeypatch.setattr(session, "KILL_WAIT_S", 0)
     p = _Proc(finishes=False)
     session.terminate_group(p)  # 예전엔 signal.SIGKILL(윈도우에 없음)에서 AttributeError
-    assert p.terminated and killed == [4242]
-    q = _Proc(finishes=True)
-    session.terminate_group(q)
-    assert killed == [4242, 4242]  # 부모가 끝나도 남은 손자를 정리
+    # 부모를 먼저 끝내지 않고(그러면 taskkill /T 가 트리를 못 찾는다) 트리째 한 번에
+    assert not p.terminated and killed == [4242]
 
 
 def test_translocated_path_detected():
