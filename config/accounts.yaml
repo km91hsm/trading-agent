@@ -1,3 +1,4 @@
 accounts:
   - {id: paper-main, env: paper, cano: "00000000", acnt_prdt_cd: "01", markets: [KR, US], mode: auto}
+  - {id: paper-fo,   env: paper, cano: "00000000", acnt_prdt_cd: "03", markets: [KR], mode: auto, asset: fo}  # 모의 선물옵션(Phase 26) — cano 는 KIS_PAPER_FO_CANO 또는 KIS_PAPER_CANO
   - {id: real-main,  env: real,  cano: "00000000", acnt_prdt_cd: "01", markets: [KR, US], mode: "off"}
