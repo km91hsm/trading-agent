@@ -154,6 +154,11 @@ describe("scalp 판정자 표시 (Phase 25)", () => {
 });
 
 describe("stageFetchPlan", () => {
+  it("재평가 라운드가 있으면 00_inputs 도 다시 받는다", () => {
+    const files = ["00_inputs", "30_decision", "31_decision_r1"];
+    expect(stageFetchPlan(files, new Set(files))).toEqual(["00_inputs"]);
+    expect(stageFetchPlan(["00_inputs", "30_decision"], new Set(["00_inputs", "30_decision"]))).toEqual([]);
+  });
   it("읽은 불변 파일(00_inputs·30_decision)은 다시 받지 않고 새 파일·다시 쓰일 수 있는 파일만", () => {
     const files = ["00_inputs", "10_analyst_technical", "25_research_summary", "30_decision", "40_risk_check_paper-main"];
     expect(stageFetchPlan(files, new Set())).toEqual(files);

@@ -14,7 +14,7 @@ import { useApp, useLoad } from "../hooks";
 import { Link } from "react-router-dom";
 import { labelOf } from "../names";
 import { sectionForStage } from "../how";
-import { MUTABLE_STAGE, type NewsJob, newsJobRows, newsJobsHeadline, pickReason, pipelineStages, scanHeadline, type ScalpResp, scalpChip, scalpRows, stageFetchPlan, stageSummary, type ScanSummary, type Stage } from "../pipeline";
+import { isMutableStage, type NewsJob, newsJobRows, newsJobsHeadline, pickReason, pipelineStages, scanHeadline, type ScalpResp, scalpChip, scalpRows, stageFetchPlan, stageSummary, type ScanSummary, type Stage } from "../pipeline";
 import { Table, Td, Th } from "../components/Table";
 import type { Checkpoint, Market } from "../types";
 import { Ticker } from "../components/Ticker";
@@ -289,7 +289,7 @@ export function TodayPage({ title = "오늘의 실행", inputsOnly = false }: { 
     [ticker, runDate, market, files.join(), inputsOnly, tCp],
   );
   // 고른 단계 파일: 요약이 이미 받은 것은 그대로 쓰고, 다시 쓰일 수 있는 파일만 목록이 바뀔 때 다시 받는다
-  const stageMutable = MUTABLE_STAGE.test(stage);
+  const stageMutable = isMutableStage(stage, files);
   const cp = useLoad(
     () => {
       if (!(ticker && stage && runDate)) return null;

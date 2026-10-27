@@ -283,7 +283,8 @@ def test_latest_rows_columns_and_memo(project, monkeypatch):
     features.write_rows(_rows("2026-10-02", ["Z"]))
     fresh = features.latest_rows(None, "KR", tickers=["A", "Z"], columns=["vol_z_20"])
     assert len(reads) > n and sorted(fresh["ticker"]) == ["A", "Z"]
-    assert features.known_tickers(None, "KR") == {"Z"}
+    # latest_rows 와 같은 범위(최근 60개 파일)의 합집합 — 최신 파일만 보지 않는다
+    assert features.known_tickers(None, "KR") == {"A", "B", "Z"}
     assert features.known_tickers(None, "KR", asof=date(2026, 10, 1)) == {"A", "B"}
     assert features.known_tickers(None, "US") == set()
 

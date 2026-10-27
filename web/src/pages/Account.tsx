@@ -24,7 +24,8 @@ export function AccountPage() {
   const { accountId, accounts, token, tick, tickOf, connected } = useApp();
   // 전역 tick 대신 이 화면이 읽는 키만 본다(전체 검토 3차). SSE 가 끊긴 동안은 생존 폴링 tick 으로
   const tLive = connected ? 0 : tick;
-  const tPortfolio = tickOf("positions", "orders", "approvals", "approvals_pending") + tLive;
+  // decisions: 보유 표의 손절·익절·목표 비중은 최근 결정에서 붙는다(views.attach_plans, Codex 리뷰)
+  const tPortfolio = tickOf("positions", "orders", "approvals", "approvals_pending", "decisions") + tLive;
   const tPerf = tickOf("positions", "orders") + tLive;
   const tRisk = tickOf("positions") + tLive;
   const toast = useToast();

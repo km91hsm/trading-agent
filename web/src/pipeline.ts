@@ -56,9 +56,16 @@ export function pipelineStages(files: string[]): Stage[] {
  * (00_inputs·30_decision·게이트·주문 등)는 한 번 쓰면 그대로라 한 번 읽은 것은 다시 받지 않는다. */
 export const MUTABLE_STAGE = /^(10_analyst_|20_debate_|25_research_summary)/;
 
+/** 이 종목에서 f 가 다시 쓰일 수 있나: MUTABLE_STAGE 이거나, 재평가 라운드(31_decision_r*)가 있으면
+ * 00_inputs 도(뉴스·가격 재평가가 입력을 다시 수집해 덮어쓴다, Codex 리뷰). */
+export function isMutableStage(f: string, files: string[]): boolean {
+  if (MUTABLE_STAGE.test(f)) return true;
+  return f === "00_inputs" && files.some((x) => x.startsWith("31_decision_r"));
+}
+
 /** 종목 단계 목록이 바뀌었을 때 받을 파일: 아직 안 읽은 것 + 다시 쓰일 수 있는 것(전체 검토 3차). */
 export function stageFetchPlan(files: string[], loaded: ReadonlySet<string>): string[] {
-  return files.filter((f) => !loaded.has(f) || MUTABLE_STAGE.test(f));
+  return files.filter((f) => !loaded.has(f) || isMutableStage(f, files));
 }
 
 type Rec = Record<string, unknown>;
