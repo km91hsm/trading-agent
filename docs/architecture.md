@@ -163,7 +163,7 @@ CLAUDE.md 의 "아키텍처 핵심 규칙" 에서 옮겨 온 모듈 단위 상�
 - **손절·단타 청산 실행 키에 수량**(`stop|계좌|종목|일|q수량`, `57_order_scalp_exit…|q수량`): 일부만 체결된 뒤 잔량을 같은 날 다시 낼 수 있게(키가 하루 하나면 체결된 첫 주문이 잔량 손절을 막았다).
 - **리밸런스 dry-run** 은 운영일 완료 표시를 남기지 않는다.
 - **웹**: 운영 Host 허용 목록·`is_direct_local` 에서 `testserver` 제거(DNS 리바인딩으로 bootstrap-token 을 얻는 경로) — 테스트는 `helpers_web.make_deps(extra_hosts=["testserver"])`. 토큰 없는 `POST /api/portfolio/ensure-fresh` 는 `Sec-Fetch-Site` 가 있으면 same-origin/none 만.
-- **빌드**: `packaging/build.py` 가 `dist/trader` 의 `config·secrets·state·docs` 를 빌드 전에 옆(`dist/trader-userdata-<시각>`)으로 옮겼다가 스모크·zip 까지 끝난 뒤(실패해도) 되돌린다 — zip 에 키·원장이 들어가지 않게 — 번들 폴더가 운용 TRADER_HOME 이라 원장이 지워지던 문제.
+- **빌드**: `packaging/build.py` 는 PyInstaller 출력을 `build/dist-stage` 에 두고 `dist/trader` 의 **번들 항목만**(`BUNDLE_ENTRIES`: Trader.app·trader 링크·TraderApp·_internal·README) 바꾼다 — `config·secrets·state·docs`(`USER_DATA`)는 옮기지도 지우지도 않아 실행 중인 Trader.app 의 데몬이 같은 폴더를 써도 안전하다(처음엔 사용자 데이터를 옆으로 옮겼다 되돌렸는데, 앱이 도는 동안 빌드하면 데몬의 로그 쓰기로 폴더 삭제가 실패해 앱 파일만 지워진 채 남았다). zip 은 USER_DATA 를 빼고 묶는다 — 번들 폴더가 운용 TRADER_HOME 이라 원장이 지워지던 문제.
 - **창 없는 앱·Windows**: 데몬 uvicorn `log_config=None`(stdout None 에서 `isatty()` 로 Config 가 죽어 Windows TraderApp 이 안 떴다), 진입점 `_ensure_streams`(None → devnull), 시작 실패는 `state/logs/startup-error.log` + OS 알림(`platform/notify_os`), macOS App Translocation 경로면 안내 후 종료. 세션 정리는 Windows 에서 부모가 살아 있을 때 곧바로 `procs.kill_group`(taskkill /T /F, claude.cmd → node → `trader tool` 트리 — 부모를 먼저 끝내면 트리를 못 찾는다) + Popen `CREATE_NEW_PROCESS_GROUP|CREATE_NO_WINDOW`.
 
 ## 전체 검토 2차 — 프로세스(2026-10-27)
