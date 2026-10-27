@@ -82,6 +82,43 @@ def usage_view(request: Request) -> dict:
     }
 
 
+@router.get("/events")
+def events_status(request: Request, market: str = "KR") -> dict:
+    """사건 수혜(2026-10-27): 오늘 감지된 사건(데몬 뉴스 수집·scan 이 남긴
+    `control.events:<시장>`)과 표의 사건 목록. 토큰 없음. 감지된 것이 없으면 events []."""
+    from trader.config import load_events
+    from trader.control import control
+    from trader.scan import events
+
+    if market not in ("KR", "US"):
+        raise HTTPException(status_code=400, detail="market 은 KR|US")
+    deps = request.app.state.deps
+    try:
+        cfg = load_events()
+        table = [
+            {
+                "id": e.id,
+                "label": e.label,
+                "kind": e.kind,
+                "n": len(e.beneficiaries.get(market, [])),
+            }
+            for e in cfg.events
+            if e.beneficiaries.get(market)
+        ]
+        enabled = cfg.enabled
+    except Exception:  # noqa: BLE001 - 표 오류는 화면에 '표 없음'
+        table, enabled = [], False
+    with closing(deps.conn_factory()) as conn:
+        st = control.get_flag(conn, f"{events.FLAG}:{market}") or {}
+    return {
+        "enabled": enabled,
+        "market": market,
+        "date": st.get("date"),
+        "events": st.get("events") or [],
+        "table": table,
+    }
+
+
 @router.get("/theme")
 def theme_status(request: Request, market: str = "KR") -> dict:
     """오늘 테마 열기 결과(Phase 25, 데몬 <시장>_theme). 토큰 없음. 결과가 없으면 themes []."""

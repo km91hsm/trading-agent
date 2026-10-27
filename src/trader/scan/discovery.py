@@ -190,6 +190,7 @@ def build_inputs(
             for c in quant_candidates[:30]
         ],
         "max_listed": MAX_LISTED,
+        **_event_watch(conn, market, today, asof),
     }
     write_checkpoint(d, "_discovery_inputs", {"schema_version": 1, "data": data, "call": None})
     if rnd is not None:
@@ -284,9 +285,20 @@ def resolve(
     market_client: Any | None = None,
     exclude: set[str] | None = None,
     max_listed: int = MAX_LISTED,
+    event_watch: list[dict] | None = None,
+    max_event: int = 0,
+    max_per_event: int = 2,
 ) -> dict:
     """scout 출력(Discovered)을 파이썬이 확정한다 — 유니버스 종목은 코드 일치(이름으로도 찾음),
-    밖이면 캐시 역색인으로 코드를 찾고 시세로 거래소를 확인한다. 못 찾으면 `unresolved`."""
+    밖이면 캐시 역색인으로 코드를 찾고 시세로 거래소를 확인한다. 못 찾으면 `unresolved`.
+    tier=event(사건 수혜)는 입력 `event_watch` 의 종목만 받고(표가 코드의 출처) 거래소는 표 값,
+    사건마다 max_per_event·합계 max_event 까지. 유니버스 종목이면 tier 는 universe 로 두고
+    `event_id` 만 붙인다."""
+    from trader.scan import events as events_mod
+
+    ev_idx = events_mod.watch_index(event_watch or [])
+    event_n = 0
+    per_event: dict[str, int] = {}
     uni_codes = set(universe.kr) if market == "KR" else {u.symbol for u in universe.us}
     uni_exch = {u.symbol: u.exchange for u in universe.us} if market == "US" else {}
     uni_by_name = {
@@ -306,6 +318,50 @@ def resolve(
         key = normalize(name)
         code: str | None = None
         tier = "universe"
+        event = None
+        if c.get("tier") == "event":
+            event = ev_idx.get(ticker or "")
+            if event is None:
+                unresolved.append(
+                    {"name": name, "ticker": ticker, "reason": "사건 수혜 표(event_watch)에 없음"}
+                )
+                continue
+            if per_event.get(event["event_id"], 0) >= max_per_event:
+                unresolved.append(
+                    {"name": name, "ticker": ticker, "reason": f"사건당 상한 {max_per_event}"}
+                )
+                continue
+        if event is not None and ticker not in uni_codes:
+            code = ticker
+            if code in excl or code in seen:
+                unresolved.append({"name": name, "ticker": code, "reason": "제외·중복"})
+                continue
+            if event_n >= max_event:
+                unresolved.append(
+                    {"name": name, "ticker": code, "reason": f"사건 후보 상한 {max_event}"}
+                )
+                continue
+            exchange = event.get("exchange") if market == "US" else None
+            if market == "KR" and not _check_kr(market_client, code):
+                unresolved.append({"name": name, "ticker": code, "reason": "KIS 시세 없음"})
+                continue
+            event_n += 1
+            per_event[event["event_id"]] = per_event.get(event["event_id"], 0) + 1
+            seen.add(code)
+            out.append(
+                {
+                    "ticker": code,
+                    "name": name or event.get("name") or "",
+                    "market": market,
+                    "exchange": exchange,
+                    "tier": "event",
+                    "event_id": event["event_id"],
+                    "catalyst": str(c.get("catalyst") or "")[:200],
+                    "confidence": float(c.get("confidence") or 0),
+                    "source_ids": list(c.get("source_ids") or []),
+                }
+            )
+            continue
         if ticker and ticker in uni_codes:
             code = ticker
         elif key and key in uni_by_name:
@@ -348,6 +404,8 @@ def resolve(
                 continue
             listed_n += 1
         seen.add(code)
+        if event is not None:
+            per_event[event["event_id"]] = per_event.get(event["event_id"], 0) + 1
         out.append(
             {
                 "ticker": code,
@@ -355,6 +413,7 @@ def resolve(
                 "market": market,
                 "exchange": exchange,
                 "tier": tier,
+                **({"event_id": event["event_id"]} if event is not None else {}),
                 "catalyst": str(c.get("catalyst") or "")[:200],
                 "confidence": float(c.get("confidence") or 0),
                 "source_ids": list(c.get("source_ids") or []),
@@ -368,10 +427,15 @@ def resolve(
 
 
 def merge(
-    quant_candidates: list[dict], discovered: dict, *, max_listed: int = MAX_LISTED
+    quant_candidates: list[dict],
+    discovered: dict,
+    *,
+    max_listed: int = MAX_LISTED,
+    max_event: int = 8,
 ) -> list[dict]:
     """screener 입력 순서: ① 유니버스∧발굴(정량 점수순) ② 유니버스 밖 발굴(≤max_listed, 확신순,
-    score None) ③ 나머지 정량 후보. 발굴 후보에는 `discovery: {tier, catalyst, confidence}`."""
+    score None) ②' 사건 수혜(유니버스 밖, ≤max_event) ③ 나머지 정량 후보. 발굴 후보에는
+    `discovery: {tier, catalyst, confidence}`."""
     disc = {c["ticker"]: c for c in discovered.get("candidates") or []}
     by_ticker = {c["ticker"]: dict(c) for c in quant_candidates}
     first: list[dict] = []
@@ -400,7 +464,40 @@ def merge(
         }
         for d in listed[:max_listed]
     ]
-    return [*first, *second, *rest]
+    evs = [d for d in disc.values() if d.get("tier") == "event" and d["ticker"] not in by_ticker]
+    evs.sort(key=lambda d: -float(d.get("confidence") or 0))
+    third = [
+        {
+            "ticker": d["ticker"],
+            "exchange": d.get("exchange"),
+            "score": None,
+            "reasons": [f"사건 수혜: {d.get('catalyst', '')}"[:200]],
+            "discovery": {k: d.get(k) for k in ("tier", "catalyst", "confidence", "event_id")},
+        }
+        for d in evs[:max_event]
+    ]
+    return [*first, *second, *third, *rest]
+
+
+def _event_watch(conn, market: str, today, asof) -> dict:
+    """사건 수혜(2026-10-27): 지금 감지된 사건과 그 수혜 묶음(`config/events.yaml`). 꺼졌거나 표가
+    없으면 빈 목록. 감지 결과는 `control.events:<시장>` 에도 남긴다(웹·게이트)."""
+    from trader.config import load_events
+    from trader.scan import events
+
+    try:
+        cfg = load_events()
+    except Exception as e:  # noqa: BLE001 - 표 오류는 사건 발굴만 빠진다
+        logger.warning("events.yaml 을 읽지 못해 사건 발굴 생략: %s", e)
+        return {"event_watch": [], "max_event_picks": 0, "max_picks_per_event": 0}
+    found = events.detect(conn, cfg, market=market, asof=asof) if conn is not None else []
+    if conn is not None and cfg.enabled:
+        events.record(conn, market, today, found)
+    return {
+        "event_watch": found,
+        "max_event_picks": cfg.max_event_picks if cfg.enabled else 0,
+        "max_picks_per_event": cfg.max_picks_per_event,
+    }
 
 
 def _theme_heat(conn, settings, market: str, today) -> list[dict]:

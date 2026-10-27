@@ -1961,6 +1961,11 @@ def _news_body(deps: DaemonDeps) -> dict:
             except Exception as e:  # noqa: BLE001 - 공시 실패가 뉴스 수집을 막지 않는다
                 logger.warning("공시 처리 실패 %s: %s", market, e)
                 out[f"disclosure:{market}"] = {"error": f"{type(e).__name__}: {e}"}
+        for market in deps.settings.markets:  # 사건 수혜(2026-10-27): 감지 → 기록·첫 감지 알림
+            try:
+                out[f"events:{market}"] = _events_check(deps, conn, market)
+            except Exception as e:  # noqa: BLE001 - 사건 감지 실패가 뉴스 수집을 막지 않는다
+                logger.warning("사건 감지 실패 %s: %s", market, e)
         out["pruned"] = news_store.prune(
             conn, before=deps.now() - timedelta(days=cfg.store_retention_days)
         )
@@ -1973,6 +1978,29 @@ def _news_body(deps: DaemonDeps) -> dict:
     finally:
         conn.close()
     return out
+
+
+def _events_check(deps: DaemonDeps, conn: sqlite3.Connection, market: str) -> dict:
+    """뉴스 저장소로 사건을 감지해 `control.events:<시장>` 에 남기고, 오늘 처음 감지된 사건은
+    `[사건 감지]` 알림 1건. 매수는 하지 않는다 — 다음 scan 의 scout 가 수혜 묶음에서 고르고,
+    일반 분석·리스크 게이트를 거친다."""
+    from trader.config import load_events
+    from trader.orchestrator.run_store import run_date_for
+    from trader.scan import events
+
+    cfg = load_events()
+    if not cfg.enabled:
+        return {"skipped": "events.enabled=false"}
+    today = run_date_for(market, deps.now())
+    found = events.detect(conn, cfg, market=market, asof=deps.now())
+    events.record(conn, market, today, found)
+    fresh = events.new_for_alert(conn, market, today, found)
+    for ev in fresh:
+        try:
+            deps.notifier.send(messages.event_detected(market=market, event=ev))
+        except Exception:  # noqa: BLE001
+            logger.debug("사건 감지 알림 실패", exc_info=True)
+    return {"detected": [e["id"] for e in found], "alerted": [e["id"] for e in fresh]}
 
 
 def _in_market_window(deps: DaemonDeps, market: str) -> bool:

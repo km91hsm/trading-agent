@@ -337,6 +337,23 @@ def approval_tampered(*, approval_id: int, account: str, label: str) -> str:
 # --- 손절·재평가·재호가 --------------------------------------------------------------------
 
 
+def event_detected(*, market: str, event: dict) -> str:
+    """사건 수혜(2026-10-27): 오늘 처음 감지된 사건 — 알림만, 매수는 다음 scan 의 분석·게이트."""
+    kind = "단기 사건" if event.get("kind") == "shock" else "구조적 흐름"
+    tickers = ", ".join(
+        f"{t.get('name')}({t.get('role')})" for t in (event.get("tickers") or [])[:6]
+    )
+    return render(
+        "사건 감지",
+        f"{market} · {event.get('label')} ({kind}, 뉴스 {event.get('hits')}건)",
+        [
+            *[f"· {n.get('title')}" for n in (event.get("news") or [])[:3]],
+            f"수혜 후보: {tickers}" if tickers else "",
+            "다음 scan 에서 scout 가 이 묶음 안에서 고르고, 분석·리스크 게이트를 거쳐요",
+        ],
+    )
+
+
 def open_buys_cancelled(
     *, account: str, label: str, reason: str, cancelled: int, left: list[str]
 ) -> str:

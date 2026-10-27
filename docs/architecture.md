@@ -185,6 +185,16 @@ CLAUDE.md 의 "아키텍처 핵심 규칙" 에서 옮겨 온 모듈 단위 상�
 - **텔레그램 보낸 사람**: `Update.trusted` — 1:1 채팅이거나 `TELEGRAM_ALLOWED_USERS`(쉼표 id, 설정 화면 '연결 키') 에 있는 사람. 그룹 채팅에서 믿을 수 없는 보낸 사람은 `commands.UNTRUSTED_OK`(status·pause·kill·daily)만, 나머지(승인·재개·모드·실행·관심)는 `[명령 거부]`.
 - **킬스위치 범위**: 자동 발동(누적 손실)은 `control.killswitch.accounts` 에 그 계좌만 더하고(읽기~쓰기 한 쓰기 트랜잭션 — 동시에 들어온 `/kill` 의 전체 차단을 덮지 않게) `killswitch.reason(conn, account_id)` 가 계좌별로 판정(모의 계좌 손실이 실전 매수를 막던 문제). 수동 `/kill`·CLI 는 전 계좌(`accounts: null`). 해제는 그대로 사람만, 전체를 한 번에. 입출금 보정은 하지 않는다(해제 때 기준 NAV 를 다시 잡는다).
 
+## 사건 수혜(2026-10-27)
+
+전쟁·유가 급등·AI 메모리 부족처럼 **사건 → 수혜 업종** 연상으로 종목을 찾는다. 원칙: 감지는 파이썬, 종목은 표, LLM 은 표 안에서 고르기만, 매수는 일반 분석·게이트.
+
+- **표** `config/events.yaml`(templates 사본, `config.EventsConfig`·`load_events`): 사건 31종(단기 shock — 전쟁·지정학, 유가 급등·급락, 해상 운송 차질, 금융 불안(안전자산), 원화 약세·강세, 남북 긴장, 사이버 공격, 금리 인하, 미국 관세, 중국 부양·관광 재개, 구리 급등, 감염병, 전기요금 / 구조적 structural — AI 메모리 부족·AI 투자·AI 전력 수요, 조선, 방산 수출, 고금리, 밸류업, 전후 재건, 2차전지, 비만치료제, 로봇, 우주, 수소, 가상자산, 양자컴퓨팅)마다 `keywords`·`min_news`·시장별 `beneficiaries[{ticker, name, role, exchange}]`. 종목 코드·거래소는 DART 고유번호 표·KIS 시세로 확인했고 바꾸면 `trader events check` 로 다시 확인한다(실패 1건이라도 exit 1).
+- **감지** `scan/events.detect`: 뉴스 저장소 최근 `lookback_hours`(48) 제목·요약에 키워드가 `min_news` 건 이상이면 감지(대소문자 무시, 그 시장 수혜 종목이 있는 사건만). 데몬 `news_collect`(30분) 끝 `_events_check` 가 `control.events:<시장>`(오늘 날짜)에 남기고 오늘 처음 감지된 사건은 `[사건 감지]` 알림 1회(`events_alerted:<시장>:<운영일>`). 매수는 하지 않는다.
+- **발굴** `discovery.build_inputs` 가 `event_watch`(감지 사건 + 수혜 묶음)·`max_event_picks`(4)·`max_picks_per_event`(2) 를 scout 입력에 싣고, scout 규칙 7(사건 수혜 예외) — 사건이 실제 진행 중일 때만, 표의 `tickers` 에서 역할이 맞는 종목을 `tier: "event"` 로. 표에 없는 반복 사건은 `notes` 에 '새 사건 후보'. `discovery.resolve` 가 event 종목이 표에 있는지·사건당·합계 상한을 검증(유니버스 종목이면 tier universe 에 `event_id`), `merge` 가 유니버스 밖 사건 후보를 ②' 자리에(score None, `discovery.event_id`). screener·애널리스트·토론·트레이더·리스크 게이트는 그대로.
+- **안전장치** `executor._theme_of` 가 테마 열기 맵에 오늘 감지된 **shock** 사건 수혜 종목 → `'사건:<label>'` 을 합친다 — 같은 사건 묶음 비중 ≤ `max_theme_pct`(20%)·`horizon_days` ≤ 10·익절가 필수(테마 안전장치와 같은 규칙, 헤지·손절·단타 면제). structural 은 일반 규칙만. 급등 추격 금지(+10%)는 그대로.
+- **화면·CLI**: 데이터 화면 '사건 감지'(`/api/system/events?market=`, 오늘 감지 사건·역할별 수혜 묶음), `trader events show --market`(지금 감지, 기록 없음), `trader events check`.
+
 ## 미확인
 
 미확인(2026-10-27): 체결통보(H0STCNI0/H0GSCNI0)를 HTS ID 로 구독하면 그 명의의 모든 계좌 체결이 어느 계좌 앱키의 세션으로든 오는지 — 같은 명의 실전 계좌 둘에서 한쪽 키로 붙은 리스너가 다른 계좌 체결 통보도 받는지 실기 확인.

@@ -120,18 +120,28 @@ def cancel_open_buys(
 
 
 def _theme_of(ctx: ExecContext, market: str, d: date) -> Callable[[str], list[str] | None] | None:
-    """게이트의 테마 규칙용 종목→오늘 상위 테마(Phase 25, `scan/theme.theme_of_map`). 꺼졌거나
-    오늘 결과가 없으면 None. 실패는 경고만(테마 규칙만 빠진다)."""
-    if not ctx.settings.theme.enabled:
-        return None
-    try:
-        from trader.scan import theme
+    """게이트의 테마 규칙용 종목→오늘 상위 테마(Phase 25, `scan/theme.theme_of_map`) + 오늘 감지된
+    shock 사건의 수혜 묶음('사건:<label>', `scan/events.theme_of_map` — 같은 사건 묶음 비중 상한·
+    단기 보유·익절 필수, 2026-10-27). 둘 다 없으면 None. 실패는 경고만(그 규칙만 빠진다)."""
+    merged: dict[str, list[str]] = {}
+    if ctx.settings.theme.enabled:
+        try:
+            from trader.scan import theme
 
-        m = theme.theme_of_map(ctx.conn, market, d, ctx.settings.theme.top_n)
+            for t, ths in (
+                theme.theme_of_map(ctx.conn, market, d, ctx.settings.theme.top_n) or {}
+            ).items():
+                merged.setdefault(t, []).extend(ths)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("테마 맵 읽기 실패: %s", e)
+    try:
+        from trader.scan import events
+
+        for t, evs in events.theme_of_map(ctx.conn, market, d).items():
+            merged.setdefault(t, []).extend(evs)
     except Exception as e:  # noqa: BLE001
-        logger.warning("테마 맵 읽기 실패: %s", e)
-        return None
-    return m.get if m else None
+        logger.warning("사건 묶음 읽기 실패: %s", e)
+    return merged.get if merged else None
 
 
 def _sector_of(ctx: ExecContext, market: str) -> Callable[[str], str | None] | None:
