@@ -98,17 +98,19 @@ def candidates(
     ref_index: Decimal | None,
     ref_iv: float | None,
     take_profit_pt: Decimal | None,
-    invalidation_conditions: list[str] | None,
+    invalidation_rules: list[dict] | None,
 ) -> list[Trigger]:
     """순수 판정. 빈도 제한 없이 지금 성립하는 트리거를 `PRIORITY` 순으로."""
-    from trader.orchestrator.monitor import parse_price_conditions
+    from trader.orchestrator.monitor import rule_hit
 
     out: list[Trigger] = []
     idx = underlying
     if idx is not None:
-        for op, px in parse_price_conditions(invalidation_conditions or []):
-            if (op == "<" and idx < px) or (op == ">=" and idx >= px):
-                out.append(Trigger("invalidation", {"condition": f"{op} {px}"}, idx))
+        for rule in invalidation_rules or []:
+            if rule_hit(rule, idx, None):  # 지수 레벨(price) 만 — close 는 None(판정 불가)
+                out.append(Trigger(
+                    "invalidation", {"condition": f"지수 {rule.get('op')} {rule.get('value')}"}, idx
+                ))  # fmt: skip
                 break
         if ref_index is not None and ref_index > 0:
             move = idx / ref_index - 1
@@ -177,7 +179,7 @@ def check(
     ref_index: Decimal | None = None,
     ref_iv: float | None = None,
     take_profit_pt: Decimal | None = None,
-    invalidation_conditions: list[str] | None = None,
+    invalidation_rules: list[dict] | None = None,
 ) -> Trigger | None:
     """빈도 제한을 통과한 가장 우선인 트리거 하나(나머지는 `detail.bundled` 로 묶음).
     없으면 None."""
@@ -203,7 +205,7 @@ def check(
         position=position, underlying=underlying, iv=iv, cfg=cfg, profile=profile, now=now,
         today=today, novel_news=novel_news, opinion_day=opinion_day, ref_index=ref_index,
         ref_iv=ref_iv, take_profit_pt=take_profit_pt,
-        invalidation_conditions=invalidation_conditions,
+        invalidation_rules=invalidation_rules,
     )  # fmt: skip
     allowed: list[Trigger] = []
     for t in cands:

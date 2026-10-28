@@ -4,9 +4,10 @@ re-export 해 프롬프트에 붙인다. 용어(§0): `direction` 은 시장 방
 
 from __future__ import annotations
 
+import math
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from trader.broker.models import ContractSide, FoKind
 
@@ -15,6 +16,25 @@ Direction = Literal["LONG", "SHORT", "FLAT"]
 Vehicle = Literal["FUTURES", "OPTION_BUY", "OPTION_SELL"]
 StrikeRule = Literal["ATM", "OTM1", "OTM2", "ITM1"]
 ENTRY_DECISIONS = ("OPEN", "RESIZE", "REPLACE")
+
+
+class FoInvalidationRule(BaseModel):
+    """장중 모니터가 검사하는 파생 무효화 조건 — 현물 `InvalidationRule`(L16) 의 `price` 형식과
+    같고 값은 **기초지수(코스피200) 레벨**. 모니터가 지수 완성 일봉을 들고 있지 않아 `close` 는
+    없다. 판정은 `orchestrator.monitor.rule_hit` 하나(현물과 같은 함수)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    metric: Literal["price"] = "price"
+    op: Literal["<", "<=", ">", ">="]
+    value: float = Field(gt=0)
+
+    @field_validator("value")
+    @classmethod
+    def _finite(cls, v: float) -> float:
+        if not math.isfinite(v):
+            raise ValueError("value 는 유한한 양수여야 합니다")
+        return v
 
 
 class FoDecision(BaseModel):
@@ -38,7 +58,8 @@ class FoDecision(BaseModel):
     horizon_days: int = Field(default=5, ge=1, le=120)
     confidence: float = Field(default=0.5, ge=0, le=1)
     rationale: str = Field(default="", max_length=500)
-    invalidation_conditions: list[str] = Field(default_factory=list)
+    invalidation_conditions: list[str] = Field(default_factory=list)  # 설명용(자동으로 읽지 않음)
+    invalidation_rules: list[FoInvalidationRule] = Field(default_factory=list, max_length=5)
     vs_spot: str | None = None
 
     @model_validator(mode="after")

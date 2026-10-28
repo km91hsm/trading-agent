@@ -5,6 +5,8 @@ from __future__ import annotations
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
+import pytest
+
 from fo._gate import cfg, position
 from trader.config import KST, HorizonProfile
 from trader.fo import triggers
@@ -60,7 +62,7 @@ def test_periodic_bucket_and_daily_cap(conn):
 
 def test_priority_bundles_one(conn):
     t = _check(conn, now=at(10, 0), underlying=Decimal("365"), novel_news=2,
-               invalidation_conditions=["지수 360 이상이면 무효"])  # fmt: skip
+               invalidation_rules=[{"metric": "price", "op": ">=", "value": 360}])  # fmt: skip
     assert t.kind == "invalidation"
     assert t.detail["bundled"][:2] == ["move", "news"]
 
@@ -135,3 +137,15 @@ def test_take_profit_near_by_direction_and_iv_spike(conn):
     opt = position(kind="CALL", vehicle="OPTION_BUY", id=3, code="205W11350")
     spike = _check(conn, now=at(10, 0), c=c, pos=opt, iv=26.0, ref_iv=18.0)
     assert spike.kind == "iv_spike"
+
+
+def test_invalidation_rules_price_only_and_text_ignored(conn):
+    """현물 L16 과 같이 문장은 읽지 않고 구조화 규칙(지수 레벨)만 본다."""
+    from trader.fo.schemas import FoDecision
+
+    t = _check(conn, now=at(10, 0), underlying=Decimal("355"),
+               invalidation_rules=[{"metric": "price", "op": "<", "value": 356}])  # fmt: skip
+    assert t.kind == "invalidation" and "지수 < 356" in t.detail["condition"]
+    with pytest.raises(ValueError):
+        rule = {"metric": "close", "op": "<", "value": 350, "days": 2}
+        FoDecision(intent="HOLD", direction="LONG", vehicle="FUTURES", invalidation_rules=[rule])

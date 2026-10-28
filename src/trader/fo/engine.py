@@ -328,7 +328,7 @@ def _decision_ref(conn: sqlite3.Connection, pos: FoPositionRow) -> dict[str, Any
     idx = row["index_at_decision"]
     return {
         "ref_index": Decimal(str(idx)) if idx not in (None, "") else None,
-        "invalidation": list(dec.get("invalidation_conditions") or []),
+        "invalidation": list(dec.get("invalidation_rules") or []),
         "horizon_days": dec.get("horizon_days"),
     }
 
@@ -633,7 +633,7 @@ def _trigger_for(ctx: FoExecContext, pos: FoPositionRow, q: FoQuote | None, *,
         ctx.conn, position=pos, underlying=underlying, iv=iv, cfg=cfg, profile=profile, now=now,
         today=today, novel_news=_novel_news(ctx.conn, now, cfg.reeval.interval_min),
         opinion_day=opinion, ref_index=ref.get("ref_index"), ref_iv=ref_iv,
-        take_profit_pt=pos.tp_pt, invalidation_conditions=ref.get("invalidation"),
+        take_profit_pt=pos.tp_pt, invalidation_rules=ref.get("invalidation"),
     )  # fmt: skip
 
 
