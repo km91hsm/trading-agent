@@ -147,4 +147,4 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - 금액은 `Decimal`. pydantic 모델은 `extra="forbid"` (yaml 키를 추가하면 모델도 같이 바꾼다).
 - 사용자 대면 메시지·로그·docstring 은 한국어. 로거 이름은 `trader.<계층>`, httpx 로그 억제는 `logging_setup.quiet_httpx` 하나.
 - TDD: 실패 테스트 먼저. 테스트는 `tmp_path` 만 쓰고 네트워크는 `respx` 로 막는다. Phase 마다 커밋하고 `docs/TODO.md` 를 갱신한다.
-- 커밋 트레일러: `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`
+- 커밋 트레일러: `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`
