@@ -1796,6 +1796,7 @@ def _web_deps(log_name: str | None = None, *, hub_blocked=None):
     return WebDeps(
         settings=settings,
         accounts=accounts,
+        fo_accounts=list(boot.fo_accounts or []),
         conn_factory=db.connect,
         brokers={b.account.id: b for b in _build_brokers(secrets, accounts)},
         market=market,

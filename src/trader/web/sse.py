@@ -40,6 +40,14 @@ def _fingerprint(conn: sqlite3.Connection, table: str, *, status: bool = False) 
     return fp
 
 
+def _fingerprint_safe(conn: sqlite3.Connection, table: str) -> str:
+    """`_fingerprint(status=True)` 인데 테이블이 없으면(옛 원장) 빈 문자열."""
+    try:
+        return _fingerprint(conn, table, status=True)
+    except sqlite3.OperationalError:
+        return ""
+
+
 def _q(conn: sqlite3.Connection, sql: str) -> str:
     """지문용 한 줄 집계(행 하나의 값들을 ':' 로 잇는다). 테이블이 없으면(옛 원장) 빈 문자열."""
     try:
@@ -170,6 +178,16 @@ def snapshot(conn: sqlite3.Connection, state: Path | None = None, now=None) -> d
         "market_views": _q(conn, "SELECT COUNT(*), MAX(id), COUNT(matured_at) FROM market_views"),
         "shadow": _q(conn, "SELECT COUNT(*), COUNT(fwd_ret) FROM shadow_portfolios"),
         "memory": _q(conn, "SELECT COUNT(*), COUNT(outcome_at) FROM memory_entries"),
+        # 파생 레인(Phase 26): 포지션 버전 합(모든 CAS 갱신)·다리 상태·체결 수량·결정·NAV 값
+        "fo": _q(conn, "SELECT COUNT(*), SUM(version), MAX(id) FROM fo_positions")
+        + "|"
+        + _fingerprint_safe(conn, "fo_order_legs")
+        + "|"
+        + _q(conn, "SELECT COUNT(*), SUM(filled_qty) FROM fo_order_legs")
+        + "|"
+        + _q(conn, "SELECT COUNT(*), MAX(id) FROM fo_decisions")
+        + "|"
+        + _q(conn, "SELECT COUNT(*), MAX(date), SUM(CAST(nav AS REAL)) FROM fo_nav_snapshot"),
         **_file_keys(state, now),
     }
 

@@ -122,7 +122,7 @@ def overview(request: Request) -> dict:
     with closing(deps.conn_factory()) as conn:
         return views.account_overview(
             conn,
-            list(deps.accounts),
+            [a for a in deps.accounts if a.asset != "fo"],  # 파생은 합산 제외(통화·의미가 다름)
             sector_of=sector_of,
             hedge_tickers=hedge_tickers,
             sector_resolvers=resolvers,

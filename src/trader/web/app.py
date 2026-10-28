@@ -42,9 +42,16 @@ class WebDeps:
     extra_hosts: list[str] = field(default_factory=list)  # --host 로 다른 바인드를 쓸 때
     schedule: Any | None = None  # ScheduleConfig: /api/system/daemon 의 잡 예정표 (없으면 빈 목록)
     quote_hub: Any | None = None  # 국내 실시간 시세 허브(web/live_quotes.QuoteHub), 없으면 REST 만
+    # Phase 26: `accounts` 는 현물만(현물 화면·`account()` 조회), 파생 계좌는 따로 — `/api/fo/*` 와
+    # 계좌 목록(`all_accounts`, asset 꼬리표)만 본다
+    fo_accounts: list[AccountConfig] = field(default_factory=list)
 
     def account(self, account_id: str) -> AccountConfig | None:
         return next((a for a in self.accounts if a.id == account_id), None)
+
+    @property
+    def all_accounts(self) -> list[AccountConfig]:
+        return [*self.accounts, *self.fo_accounts]
 
 
 def create_app(deps: WebDeps) -> FastAPI:
@@ -54,6 +61,7 @@ def create_app(deps: WebDeps) -> FastAPI:
         charts,
         control,
         features,
+        fo,
         jobs,
         ml,
         names,
@@ -126,6 +134,7 @@ def create_app(deps: WebDeps) -> FastAPI:
         news.router,
         performance.router,
         rl.router,
+        fo.router,
         control.public_router,
         control.router,
         jobs.public_router,

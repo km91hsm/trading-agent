@@ -19,7 +19,7 @@ def list_accounts(request: Request) -> list[dict]:
     today = today_kst(request)
     out = []
     with closing(deps.conn_factory()) as conn:
-        for a in deps.accounts:
+        for a in deps.all_accounts:
             mode, note = effective_mode(conn, a)  # 실전 auto 는 확인 기록 없으면 off 로 강등
             out.append(
                 {
@@ -30,6 +30,7 @@ def list_accounts(request: Request) -> list[dict]:
                     "mode_note": note,
                     "yaml_mode": a.mode,
                     **views.account_summary(conn, a.id, today),
+                    "asset": a.asset,  # 설정이 출처(원장 accounts.asset 은 사본)
                 }
             )
     return out
