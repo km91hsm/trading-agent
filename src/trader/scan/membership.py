@@ -55,8 +55,8 @@ def of(
             else:
                 observed["theme"] = heat.get("observed_at")
                 status["theme"] = _time_ok(observed["theme"], asof)
-                if status["theme"] == "ok":
-                    for t, ths in theme.theme_of_map(conn, market, d, theme_top_n).items():
+                if status["theme"] == "ok":  # 검증한 그 기록에서 뽑는다(다시 읽지 않음)
+                    for t, ths in theme.members_of(heat, theme_top_n).items():
                         merged.setdefault(t, []).extend(ths)
         except Exception as e:  # noqa: BLE001 - 그 규칙만 빠진다
             logger.warning("테마 맵 읽기 실패: %s", e)
@@ -69,8 +69,8 @@ def of(
             else:
                 observed["events"] = st.get("observed_at")
                 status["events"] = _time_ok(observed["events"], asof)
-                if status["events"] == "ok":
-                    for t, evs in events.theme_of_map(conn, market, d).items():
+                if status["events"] == "ok":  # 검증한 그 기록에서 뽑는다(다시 읽지 않음)
+                    for t, evs in events.shock_members(st.get("events") or []).items():
                         merged.setdefault(t, []).extend(evs)
         except Exception as e:  # noqa: BLE001
             logger.warning("사건 묶음 읽기 실패: %s", e)

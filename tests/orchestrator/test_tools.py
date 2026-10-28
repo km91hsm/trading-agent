@@ -1583,3 +1583,16 @@ def test_trader_bundle_holding_context_shows_min_hold(ctx, project):
     b = tools.checkpoint_bundle(ctx, ticker="005930", market="KR", date=D, kind="trader")["data"]
     h = b["context"]["holding"]["paper-main"]
     assert h["held_trading_days"] == 0 and h["min_hold_days"] == 3 and h["sell_allowed"] is False
+
+
+def test_existing_calibration_checkpoint_not_injected_when_switch_off(ctx, project):
+    """PR #65 Codex: 이미 있는 35_calibration(전에 켜져 있었거나 옛 실행)도 스위치가 꺼져 있으면
+    트레이더 입력에 넣지 않는다 — 생성 앞뿐 아니라 소비 지점에서도 막는다."""
+    from trader.orchestrator.run_store import checkpoint_payload, write_checkpoint
+
+    _realistic_reports_and_turns(ctx, project)
+    d = run_dir(D, "KR", "005930")
+    write_checkpoint(d, "35_calibration", checkpoint_payload({"active": True, "roles": {}}, None))
+    assert tools.ensure_calibration(ctx, ticker="005930", market="KR", date=D) is None
+    b = tools.checkpoint_bundle(ctx, ticker="005930", market="KR", date=D, kind="trader")["data"]
+    assert b["context"]["calibration"] is None

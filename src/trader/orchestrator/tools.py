@@ -147,7 +147,7 @@ def trader_context(
         "portfolio": _portfolio_context(ctx, market),
         "quant": quant,
         **_memory_context(ctx, inputs, market),
-        "calibration": calibration,
+        "calibration": calibration if calibration_injected() else None,
         "regime": _regime_context(ctx, market),
         "market_view": _market_view_context(ctx, market),
     }
@@ -236,6 +236,19 @@ def _memory_context(ctx: ToolContext, inputs: dict, market: Market) -> dict:
     return {"memory": entries, "memory_status": {"warmup": r["warmup"], "breaker": r["breaker"]}}
 
 
+def calibration_injected() -> bool:
+    """`ml.yaml calibration.enabled ∧ inject`(결정 14번). 트레이더 입력에 보정을 넣는 모든
+    지점(생성·기존 체크포인트 소비)이 이것을 본다 — 스위치를 끄면 전에 만든 35_calibration 도
+    들어가지 않는다."""
+    try:
+        from trader.config import load_ml
+
+        cfg = load_ml().models.calibration
+        return bool(cfg.enabled and cfg.inject)
+    except Exception:  # noqa: BLE001 - 설정을 못 읽으면 넣지 않는다
+        return False
+
+
 def ensure_calibration(ctx: ToolContext, *, ticker: str, market: Market, date: date) -> dict | None:
     """결과 엔트리가 min_decisions(60) 이상이고 `calibration.inject` 가 켜졌을 때만
     35_calibration 을 쓴다(있으면 그대로)."""
@@ -247,13 +260,13 @@ def ensure_calibration(ctx: ToolContext, *, ticker: str, market: Market, date: d
     if ctx.conn is None:
         return None
     d = _dir(ctx, ticker, market, date)
+    if not calibration_injected():  # 주입은 L12 개선 뒤 사람이 켠다(결정 14번) — 기존 것도
+        return None
     existing = read_checkpoint(d, "35_calibration")
     if existing is not None:
         return existing.get("data")
     try:
         cfg = load_ml().models.calibration
-        if not cfg.enabled or not cfg.inject:  # 주입은 L12 개선 뒤 사람이 켠다(결정 14번)
-            return None
         row = quant_report.latest_row(ticker, market, ctx.state, asof=date)
         qv = vec.situation_vector(row, market) if row else None
         report = cal.build_calibration(
