@@ -71,6 +71,6 @@ def test_skips_non_executable_candidate(monkeypatch, tmp_path):
 def test_child_path_adds_claude_dir_and_brew(tmp_path):
     import os
 
-    p = claude_bin.child_path(tmp_path / "bin" / "claude", "/usr/bin:/bin")
+    p = claude_bin.child_path(tmp_path / "bin" / "claude", os.pathsep.join(["/usr/bin", "/bin"]))
     parts = p.split(os.pathsep)
     assert parts[:2] == ["/usr/bin", "/bin"] and str(tmp_path / "bin") in parts

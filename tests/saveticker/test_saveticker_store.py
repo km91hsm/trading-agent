@@ -29,9 +29,11 @@ def test_revision_dedup_survives_restart_and_exports(tmp_path):
         ]
         == 1
     )
-    rows = [json.loads(s) for s in (root / "2026-10-25" / "news.jsonl").read_text().splitlines()]
+    text = (root / "2026-10-25" / "news.jsonl").read_text(encoding="utf-8")
+    rows = [json.loads(s) for s in text.splitlines()]
     assert [r["item"]["body"] for r in rows] == ["처음", "정정"]
-    assert json.loads((root / "latest" / "news_all.json").read_text())["items"][0]["body"] == "정정"
+    latest = json.loads((root / "latest" / "news_all.json").read_text(encoding="utf-8"))
+    assert latest["items"][0]["body"] == "정정"
 
 
 def test_failed_capture_keeps_previous_success_and_marks_status(tmp_path):
@@ -44,7 +46,7 @@ def test_failed_capture_keeps_previous_success_and_marks_status(tmp_path):
             [], status="auth_required", reason="login_required", when="2026-10-25T00:01:00+00:00"
         )
     )
-    latest = json.loads((tmp_path / "latest" / "news_all.json").read_text())
+    latest = json.loads((tmp_path / "latest" / "news_all.json").read_text(encoding="utf-8"))
     assert len(latest["items"]) == 1
     status = store.status()["streams"]["news_all"]
     assert status["status"] == "auth_required"
@@ -140,7 +142,7 @@ def test_empty_partial_does_not_replace_last_useful_snapshot(tmp_path):
     store.save(
         capture([], status="partial", reason="empty_or_unavailable", when="2026-10-25T00:01:00Z")
     )
-    latest = json.loads((tmp_path / "latest" / "news_all.json").read_text())
+    latest = json.loads((tmp_path / "latest" / "news_all.json").read_text(encoding="utf-8"))
     assert latest["items"][0]["title"] == "기존 기사"
     assert store.status()["streams"]["news_all"]["last_success_at"] == "2026-10-25T00:00:00+00:00"
 
@@ -175,7 +177,7 @@ def test_interrupted_jsonl_export_recovers_from_sqlite(tmp_path):
     with p.open("a") as f:
         f.write('{"interrupted')
     store.save(capture([{"id": "b", "title": "다음 기사"}], when="2026-10-25T00:01:00Z"))
-    rows = [json.loads(line) for line in p.read_text().splitlines()]
+    rows = [json.loads(line) for line in p.read_text(encoding="utf-8").splitlines()]
     assert [r["item"]["title"] for r in rows] == ["첫 기사", "다음 기사"]
 
 
@@ -250,7 +252,8 @@ def test_stream_labels_survive_export_and_query(tmp_path):
     store = Store(tmp_path)
     c = capture([{"id": "a", "title": "기사"}], view={"source": "로이터", "category": "분석"})
     store.save(c)
-    row = json.loads((tmp_path / "2026-10-25" / "news.jsonl").read_text().splitlines()[0])
+    text = (tmp_path / "2026-10-25" / "news.jsonl").read_text(encoding="utf-8")
+    row = json.loads(text.splitlines()[0])
     assert row["view"]["source"] == "로이터"
     assert store.status()["streams"]["news_all"]["view"]["category"] == "분석"
 
@@ -277,10 +280,8 @@ def test_store_upgrades_existing_probe_database_without_dropping_history(tmp_pat
         )
     store = Store(tmp_path)
     store.save(capture([{"id": "new", "title": "새 기사"}]))
-    assert (
-        json.loads((tmp_path / "2026-10-24" / "news.jsonl").read_text())["item"]["title"]
-        == "이전 기사"
-    )
+    old = (tmp_path / "2026-10-24" / "news.jsonl").read_text(encoding="utf-8")
+    assert json.loads(old)["item"]["title"] == "이전 기사"
     assert len(store.query(asof=datetime(2026, 10, 25, 0, 1, tzinfo=UTC))) == 2
 
 
