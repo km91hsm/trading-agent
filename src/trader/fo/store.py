@@ -234,6 +234,17 @@ def claim_leg(conn: sqlite3.Connection, leg_id: int, *, sent_at: str | None = No
     return cur.rowcount == 1
 
 
+def cancel_prepared(conn: sqlite3.Connection, leg_id: int) -> bool:
+    """회수: **아직 `prepared` 일 때만** cancelled 로 바꾼다(조건부 UPDATE, rowcount 1 이 성공).
+    전송기가 그사이 `claim_leg` 로 sending 을 선점했으면 False — 호출자는 그 다리를 pending 으로
+    본다(GitHub 리뷰 G2-2)."""
+    cur = conn.execute(
+        "UPDATE fo_order_legs SET status = 'cancelled' WHERE id = ? AND status = 'prepared'",
+        (leg_id,),
+    )
+    return cur.rowcount == 1
+
+
 def release_if_empty(conn: sqlite3.Connection, position_id: int, note: str) -> bool:
     """보유 0·살아 있는 다리 0 인 `entering` 포지션을 닫아 자리를 비운다(진입 거부·취소·만료·회수
     뒤). 닫았으면 True. 호출자 트랜잭션 안에서 부른다."""
@@ -534,10 +545,14 @@ def apply_fill_economics(
     delta: int,
     multiplier: int,
     cost_bp: float,
+    accounted_qty: int | None = None,
 ) -> None:
     """체결 증분을 포지션 경제값에 반영한다(체결 동기화 전용). 진입은 평균가(`entry_premium`)를
     수량 가중으로 갱신하고, 축소는 평균가 대비 실현손실을 `realized_loss` 에 더한다(이익은 예산을
-    재충전하지 않으므로 0 으로 자른다). 비용은 체결 명목 × bp/2(왕복 bp 의 한쪽)."""
+    재충전하지 않으므로 0 으로 자른다). 비용은 체결 명목 × bp/2(왕복 bp 의 한쪽). `inc_price` 는
+    **포인트**(통화 금액이 아님). `accounted_qty` 는 지금 평균가에 반영된 수량 — 복구가 수량만 먼저
+    올린 다른 다리의 체결이 가중에 섞이지 않게 호출자(fo/fills)가 센다(G2-4); 없으면 `qty_held −
+    delta`."""
     if delta <= 0:
         return
     pos = get_position(conn, position_id)
@@ -546,7 +561,10 @@ def apply_fill_economics(
     fee = inc_price * delta * multiplier * Decimal(str(cost_bp)) / Decimal(20_000)
     changes: dict[str, Any] = {"fees": pos.fees + fee}
     if entry:
-        before = max(pos.qty_held - delta, 0)  # record_fill_progress 가 먼저 더했다
+        if accounted_qty is not None:
+            before = max(accounted_qty, 0)
+        else:
+            before = max(pos.qty_held - delta, 0)  # record_fill_progress 가 먼저 더했다
         if pos.entry_premium is None or before == 0:
             changes["entry_premium"] = inc_price
         else:
