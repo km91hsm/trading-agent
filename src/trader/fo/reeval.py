@@ -163,7 +163,7 @@ def apply(ctx: FoExecContext, env: FoDecisionEnvelope, *, round_n: int) -> dict[
         out = executor.run_leg(ctx, account, close_env, round=round_n, source="reeval")
         return {"applied": "REPLACE", "results": out, "replace_pending": d.direction != "FLAT"}
     out = executor.run_leg(ctx, account, env, round=round_n, source="reeval")
-    mode, _ = executor.effective_mode(conn, account)
+    mode, _ = executor.fo_mode(conn, account)
     hold = executor._record_only(ctx, mode, control.is_paused(conn))
     if d.intent == "HOLD" and d.take_profit_pt is not None and hold is None:
         cur = store.get_position(conn, pos.id)

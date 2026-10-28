@@ -302,6 +302,14 @@ def _notify(ctx: FoExecContext, text: str) -> None:
         log.warning("알림 전송 실패: %s", type(e).__name__)
 
 
+def fo_mode(conn: sqlite3.Connection, account: AccountConfig) -> tuple[str, str | None]:
+    """파생 계좌의 실효 모드. **실전 파생 계좌는 항상 off**(Phase 26 범위 밖 — 축소·회수·청산도
+    주문을 내지 않는다, PR #64 리뷰). 그 외는 현물과 같은 `effective_mode`."""
+    if account.env != "paper":
+        return "off", "실전 파생 계좌는 Phase 26 범위 밖(주문 없음)"
+    return effective_mode(conn, account)
+
+
 def _record_only(ctx: FoExecContext, mode: str, paused: bool) -> str | None:
     """주문·취소를 내지 않는 사유(없으면 None)."""
     if ctx.dry_run:
@@ -606,7 +614,7 @@ def run_leg(
         )
         _ckpt(ctx, today, rc_stage, {"skipped": why, "request_id": env.request_id})
         return [{"skipped": why}]
-    mode, demoted = effective_mode(conn, account)
+    mode, demoted = fo_mode(conn, account)
     paused = control.is_paused(conn)
     hold = _record_only(ctx, mode, paused)
 
@@ -854,7 +862,7 @@ def recall_entries(
     legs = [x for x in store.live_legs(conn, position_id=position_id) if is_entry(x.intent)]
     if not legs:
         return rr
-    mode, _ = effective_mode(conn, account)
+    mode, _ = fo_mode(conn, account)
     hold = _record_only(ctx, mode, control.is_paused(conn))
     if hold is not None:
         rr.pending = len(legs)
@@ -992,7 +1000,7 @@ def reduce(
     conn, cfg = ctx.conn, ctx.settings.fo
     _, today = _today(ctx)
     stage = stage or f"_fo_order_{account.id}_{intent.lower()}_{pos.id}"
-    mode, _ = effective_mode(conn, account)
+    mode, _ = fo_mode(conn, account)
     hold = _record_only(ctx, mode, control.is_paused(conn))
     if hold is not None:
         r = {"position_id": pos.id, "intent": intent, "status": "recorded", "record_only": hold,
@@ -1142,7 +1150,7 @@ def continue_reduce(
     if cur is None:
         return {"position_id": pos.id, "status": "missing"}
     leg = store.get_leg(conn, cur.active_reduce_leg_id) if cur.active_reduce_leg_id else None
-    mode, _ = effective_mode(conn, account)
+    mode, _ = fo_mode(conn, account)
     hold = _record_only(ctx, mode, control.is_paused(conn))
     if leg is None or not leg.live:
         if hold is not None:

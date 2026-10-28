@@ -2925,6 +2925,24 @@ def _fo_session_body(deps: DaemonDeps) -> dict:
     }  # fmt: skip
 
 
+def _release_fo_trigger(deps: DaemonDeps, p: dict, why: str) -> None:
+    """게이트(일시정지·휴장·장 밖)로 건너뛰는 파생 재평가의 트리거를 '실패:' 로 닫는다 — 미처리로
+    남기면 그날 그 계약의 새 트리거가 전부 막힌다(PR #64 리뷰). '실패:' 는 빈도에 세지 않는다."""
+    from trader.ledger import repo
+
+    tid = p.get("trigger_id")
+    if not tid:
+        return
+    conn = deps.conn_factory()
+    try:
+        trig = repo.get_trigger(conn, int(tid))
+        if trig is not None and not trig.get("handled_at"):
+            repo.mark_trigger_handled(conn, int(tid), f"실패: {why}"[:200],
+                                      handled_at=deps.now().isoformat())  # fmt: skip
+    finally:
+        conn.close()
+
+
 def _fo_reevaluate_request(deps: DaemonDeps, p: dict) -> dict:
     """대기열 `fo_reevaluate`: 트리거 처리 여부·포지션 버전을 다시 보고 `fo_resume` 세션 1회."""
     from trader.fo import reeval
@@ -3071,6 +3089,8 @@ def queued_job_body(
     kind, p = req["kind"], req["params"]
     why = _auto_gate(deps, dict(req))
     if why:
+        if kind == "fo_reevaluate":
+            _release_fo_trigger(deps, p, why)
         return lambda: {"skipped": why}
     if kind == "scan_analyze":
         return lambda: _scan_analyze_body(deps, p["market"])

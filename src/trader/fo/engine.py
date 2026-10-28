@@ -34,6 +34,7 @@ from trader.config import KST, AccountConfig, FoCfg
 from trader.control import control
 from trader.fo import balance as fo_balance
 from trader.fo import executor, positions, reeval, rules, sizing, store, triggers
+from trader.fo import fills as fo_fills
 from trader.fo.executor import FoExecContext
 from trader.fo.schemas import FoDecisionEnvelope
 from trader.fo.types import FoPositionRow, is_entry
@@ -68,7 +69,7 @@ def _enqueue(ctx: FoExecContext, params: dict[str, Any]) -> Any:
 
 def _hold(ctx: FoExecContext, account: AccountConfig) -> str | None:
     """이 계좌에서 주문이 나가지 않는 사유(paused·off·dry_run…, `executor._record_only`)."""
-    mode, _ = executor.effective_mode(ctx.conn, account)
+    mode, _ = executor.fo_mode(ctx.conn, account)
     return executor._record_only(ctx, mode, control.is_paused(ctx.conn))
 
 
@@ -123,6 +124,10 @@ def exit_reason(
         if (long_ and index <= pos.stop_pt) or (not long_ and index >= pos.stop_pt):
             return "STOP", f"기초지수 {index} 손절선 {pos.stop_pt} 도달"
     price = quote.price if quote is not None and quote.price and quote.price > 0 else None
+    # 가격 손절은 시장 시각이 신선한 시세로만(오래된 체결가로 청산하지 않게, PR #64 리뷰)
+    asof = quote.quote_asof if quote is not None else None
+    if price is not None and (asof is None or (now - asof).total_seconds() > cfg.max_quote_age_s):
+        price = None
     if pos.kind == "FUTURES" and price is not None and pos.stop_fut is not None:
         if (long_ and price <= pos.stop_fut) or (not long_ and price >= pos.stop_fut):
             return "STOP", f"선물 {price} 손절가 {pos.stop_fut} 도달"
@@ -308,7 +313,7 @@ def _decision_ref(conn: sqlite3.Connection, pos: FoPositionRow) -> dict[str, Any
     """이 포지션의 최근 결정(재평가 라운드 우선, 없으면 그날 아침 결정)의 기준 지수·무효화 조건."""
     row = conn.execute(
         "SELECT index_at_decision, data FROM fo_decisions WHERE position_id = ? "
-        "ORDER BY round DESC, id DESC LIMIT 1",
+        "ORDER BY date DESC, round DESC, id DESC LIMIT 1",  # 라운드는 날마다 다시 1부터
         (pos.id,),
     ).fetchone()
     if row is None and pos.decision_date:
@@ -419,7 +424,13 @@ def _tick_account(
             bal = broker.get_balance()
         except Exception as e:  # noqa: BLE001 — 잔고 실패: 신규 보류, 축소는 원장 잔량으로
             res["errors"].append(f"balance: {type(e).__name__}: {e}")
-    # ① 복구·동기화
+    # ① 체결 동기화 → 복구. 접수된(accepted) 진입 다리의 체결은 복구가 다루지 않으므로 매 틱
+    # 체결 조회로 수량을 반영한다(정기 동기화를 기다리면 체결된 보유가 보호선 밖에 남는다, PR #64)
+    if broker is not None:
+        try:
+            fo_fills.sync(conn, broker, a, today, cfg=cfg, now=ctx.now, notifier=ctx.notifier)
+        except Exception as e:  # noqa: BLE001 — 동기화 실패는 다음 틱에 다시
+            res["errors"].append(f"fills: {type(e).__name__}: {e}")
     if bal is not None and broker is not None:
         rep = positions.recover(
             conn, account_id=a.id, balance=bal, order_state_of=broker.get_order_state,
@@ -454,7 +465,8 @@ def _tick_account(
         if hit is None:
             continue
         intent, why = hit
-        _discard_pending_triggers(ctx, pos, why, now)
+        if hold is None:  # 기록만이면 청산이 안 나가므로 대기 재평가를 버리지 않는다
+            _discard_pending_triggers(ctx, pos, why, now)
         _notify_once(ctx, a.id, f"exit:{pos.id}:{intent}",
                      messages.fo_exit(account=a.id, code=pos.code,
                                       name=executor._name_of(ctx, pos.code), intent=intent,

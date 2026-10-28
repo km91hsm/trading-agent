@@ -183,3 +183,16 @@ base `1bd0172` → (단계 2 GitHub 리뷰 반영 뒤) `c7bf51e`, head `94e4e3f`
 확인함(리뷰어 공통): 지수 보호선의 시간·신선도 조건, 옵션 손절의 저장선 단독 발동, 옵션 매도 +1운영일, `hold_overnight=false` 마감 시각, 스트레스 15:00 확정, 진입 다리만 회수, halted 날짜, 보류 진입 실행 전 플래그 삭제·cutoff 폐기, 늦은 재평가 CAS·REPLACE 다음 틱, 현물·파생 계좌 목록 분리와 소비자별 전달, 파생 시계 게이트, order-test 실전 거부·통과 수단만 플래그, 거부 목록, 웹 계좌 검증·합산 분리·SSE 지문, 합성 fixture·비밀정보 없음.
 
 단계 4 결론: **보완 뒤 진행** — P0 7·P1 8·P2 4 반영(S4-19 는 설계 유지로 문서화). `uv run ruff check`·`uv run pytest`·web typecheck/vitest/build 통과 뒤 PR(`--base feat/phase26-3-session`).
+
+### GitHub Codex PR 리뷰 (G4-1~6, PR #64 head `269da3e`)
+
+| # | 심각도 | 위치 | 문제 | 조치 |
+|---|---|---|---|---|
+| G4-1 | P1 | `fo/engine._tick_account` ① | 접수(accepted)된 진입 다리의 체결은 복구가 다루지 않아, 정기 체결 동기화(16:10·07:10)까지 실제 보유가 보호선·유지 조건 밖 | 매 틱 복구 전에 `fo.fills.sync`(같은 날 계보 누적 교체, 멱등). `test_accepted_entry_fill_synced_each_tick` |
+| G4-2 | P2 | `engine` 보호선 발동 | 기록만 모드(dry_run 등)에서도 대기 재평가 트리거를 '폐기:' 로 닫음 | 주문이 나가는 모드일 때만 폐기. `test_record_only_exit_keeps_pending_trigger` |
+| G4-3 | P2 | `daemon.queued_job_body` | 게이트(일시정지·휴장·장 밖)로 건너뛴 `fo_reevaluate` 의 트리거가 미처리로 남아 그날 새 트리거가 전부 막힘 | `_release_fo_trigger` 가 '실패: <사유>' 로 닫는다(빈도에 세지 않아 다시 뜬다). `test_skipped_queued_reevaluation_releases_trigger` |
+| G4-4 | P1 | `engine.tick`·`executor.reduce` | 실전 파생 계좌(LIVE 확인 auto)도 엔진 보호선·유지 축소로 주문 가능 — `run_leg` 의 paper 전용 가드를 우회 | 근본에서: `executor.fo_mode` 가 **실전 파생 계좌는 항상 off** → reduce·recall·continue_reduce·run_leg·엔진 `_hold` 가 모두 기록만. `test_real_fo_account_never_orders_from_monitor` |
+| G4-5 | P2 | `engine.exit_reason` | 오래된 시세의 선물가·프리미엄으로 손절 발동 가능 | 가격 손절은 `quote_asof` 가 `max_quote_age_s` 안일 때만(시간 기반 청산은 그대로). `test_stale_quote_does_not_trigger_price_stop` |
+| G4-6 | P2 | `engine._decision_ref` | 라운드가 날마다 1부터라 어제 r5 가 오늘 r1 보다 앞서 기준 지수·무효화 조건이 낡음 | `ORDER BY date DESC, round DESC, id DESC`. `test_decision_ref_prefers_latest_date_over_round` |
+
+체인 병합 메모(2026-10-28): main 에 전체 검토 2차(#58·#59·#62)가 먼저 들어와 원장 v26~v29 를 썼으므로, 파생 마이그레이션을 v26 → **v30**, 다리 `request_id` 를 v27 → **v31** 로 옮겼다(둘 다 아직 운영 원장에 적용된 적 없음). main 의 `orders.origin` 에 파생 주문은 `fo`(체결 동기화의 원장 밖 주문은 `external`), 파생 재평가는 main 의 재평가 레인(`jobs.REEVAL_KINDS`), 텔레그램 `/fo` 는 조회라 미확인 발신자 허용 목록(main 은 조회만 허용으로 좁힘)에 둔다.
