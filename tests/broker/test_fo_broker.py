@@ -32,7 +32,7 @@ def _broker(client, now=lambda: T0):
 
 
 def test_contract_version_and_account_checks(paper_client):
-    assert CONTRACT_VERSION == 1
+    assert CONTRACT_VERSION == 2
     with pytest.raises(ValueError, match="asset"):
         KisFoBroker(make_account("paper-main", "paper", "auto"), paper_client, product=MINI)
     with pytest.raises(ValueError, match="env"):

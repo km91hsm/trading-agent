@@ -169,3 +169,54 @@ def test_of_product_and_option_front_public(contracts):
     assert fo_master.option_front(
         contracts, MINI, today=date(2030, 1, 1), roll_days=2, last_trade_date_of=lambda c: None
     ) == (None, [])
+
+
+# KRX 영문 단축코드 체계(실기 1, 2026-10-28): 선물 A01/A05, 콜 B01/B05, 풋 C01/C05,
+# 위클리 B09·C09·BAF·CAF.
+# 월물구분 칸은 순번이고 만기월(YYYYMM)은 종목명에 있다. 아래 행은 구조만 본뜬 합성 데이터다.
+NEW_ROWS = "\n".join(
+    [
+        "B|A05611|KR4A056B0006|미니F 202611| |00000.00|1|2001|KOSPI200",
+        "B|A05612|KR4A056C0005|미니F 202612| |00000.00|2|2001|KOSPI200",
+        "1|A01612|KR4A016C0004|F 202612| |00000.00|1|2001|KOSPI200",
+        "D|B05611945|KR4B056B9451|미니C 202611   945.0|2|00945.00| |2001|KOSPI200",
+        "E|C05611945|KR4C056B9459|미니P 202611   945.0|3|00945.00| |2001|KOSPI200",
+        "5|B01612C10|KR4B016CC100|C 202612 1,010.0|3|01010.00| |2001|KOSPI200",
+        "L|B09FJW945|KR4B09FJ9455|위클리C 2610W5   945.0|2|00945.00| |2001|KOSPI200",
+        "N|CAFC4W945|KR4CAFC49450|위클리M P 2611W1   945.0|2|00945.00| |2001|KOSPI200",
+        "7|A04611|KR4A046B0009|변동성F 202611| |00000.00|1|0503|VKOSPI",
+    ]
+).encode("cp949")
+
+
+def test_parse_krx_alpha_codes_and_expiry_from_name():
+    cs = {c.code: c for c in fo_master.parse(NEW_ROWS)}
+    assert "A04611" not in cs  # 변동성 선물은 대상 아님
+    f = cs["A05611"]
+    assert f.kind == "FUTURES" and f.expiry_ym == "202611" and not f.weekly
+    assert cs["A01612"].expiry_ym == "202612"
+    c = cs["B05611945"]
+    assert c.kind == "CALL" and c.strike == Decimal("945.0") and c.expiry_ym == "202611"
+    p = cs["C05611945"]
+    assert p.kind == "PUT" and p.expiry_ym == "202611"
+    assert cs["B01612C10"].strike == Decimal("1010.00")
+    assert cs["B09FJW945"].weekly and cs["CAFC4W945"].weekly
+    assert cs["B09FJW945"].expiry_ym is None
+
+
+def test_front_month_and_kind_with_krx_alpha_codes():
+    cs = fo_master.parse(NEW_ROWS)
+    f = fo_master.front_month(
+        cs, MINI, "FUTURES", today=date(2026, 10, 28), roll_days=2,
+        last_trade_date_of=lambda c: None,
+    )  # fmt: skip
+    assert f is not None and f.code == "A05611"  # 정규(A01)는 미니 상품에 섞이지 않는다
+    ym, chain = fo_master.option_front(
+        cs, MINI, today=date(2026, 10, 28), roll_days=2, last_trade_date_of=lambda c: None
+    )
+    assert ym == "202611" and {c.code for c in chain} == {"B05611945", "C05611945"}
+    assert fo_codes.kind_of("A05611", MINI) == "FUTURES"
+    assert fo_codes.kind_of("B05611945", MINI) == "CALL"
+    assert fo_codes.kind_of("C05611945", MINI) == "PUT"
+    assert fo_codes.kind_of("A01612", MINI) is None
+    assert fo_codes.kind_of("105W11", MINI) == "FUTURES"  # 옛 숫자 코드도 계속 읽는다

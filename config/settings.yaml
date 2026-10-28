@@ -209,5 +209,5 @@ fo:
   night_session: false      # 모의 야간 TR 없음
   costs_bp: {futures: 0.3, option: 1.5}   # 계약 명목 대비 왕복 비용(bp)
   products:
-    mini:    {futures_prefix: "105", call_prefix: "205", put_prefix: "305", multiplier: 50000,  futures_tick: "0.02", option_ticks: [["3", "0.01"], ["10", "0.02"], ["inf", "0.05"]], name: 미니코스피200}
-    regular: {futures_prefix: "101", call_prefix: "201", put_prefix: "301", multiplier: 250000, futures_tick: "0.05", option_ticks: [["10", "0.01"], ["inf", "0.05"]], name: 코스피200}
+    mini:    {futures_prefix: ["A05", "105"], call_prefix: ["B05", "205"], put_prefix: ["C05", "305"], multiplier: 50000,  futures_tick: "0.02", option_ticks: [["3", "0.01"], ["10", "0.02"], ["inf", "0.05"]], name: 미니코스피200}
+    regular: {futures_prefix: ["A01", "101"], call_prefix: ["B01", "201"], put_prefix: ["C01", "301"], multiplier: 250000, futures_tick: "0.05", option_ticks: [["10", "0.01"], ["inf", "0.05"]], name: 코스피200}

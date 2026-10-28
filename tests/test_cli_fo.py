@@ -122,7 +122,7 @@ def test_build_brokers_asset_dispatch(project, monkeypatch):
     brokers = cli._build_brokers(secrets, accounts, settings=config.load_settings())
     assert [type(b) for b in brokers] == [KisBroker, KisFoBroker]
     assert brokers[1].account.id == "paper-fo"
-    assert brokers[1].product.futures_prefix == "105"  # 기본 상품 mini
+    assert brokers[1].product.futures_prefix[0] == "A05"  # 기본 상품 mini
 
 
 def _fakes(balance: FoBalance | None = None, *, market_fail=()):
