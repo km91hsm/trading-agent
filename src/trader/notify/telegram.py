@@ -98,19 +98,21 @@ class TelegramNotifier:
         return True
 
     def send(self, text: str, *, escape: bool = True) -> bool:
-        """4,000자 단위로 나눠 보낸다(기본 HTML 이스케이프). 실패는 False + 경고 + outbox."""
+        """4,000자 단위로 나눠 보낸다(기본 HTML 이스케이프). 전송 실패분은 outbox 에 보관하고
+        보관에 성공했으면 True(재전송은 `flush_outbox` 몫 — 호출부가 다시 보내면 중복, 2-T1),
+        보관함이 없거나 보관도 실패하면 False + 경고."""
         if not text or not text.strip():
             return True
         chunks = _chunks(text, MAX_LEN, escape=escape)
         for i, chunk in enumerate(chunks):
             if not self._post(chunk):
-                self._queue(chunks[i:])
-                return False
+                return self._queue(chunks[i:])
         return True
 
-    def _queue(self, chunks: list[str]) -> None:
+    def _queue(self, chunks: list[str]) -> bool:
+        """보관 성공이면 True."""
         if self._outbox is None:
-            return
+            return False
         import uuid
 
         from trader.platform.filelock import locked
@@ -125,6 +127,8 @@ class TelegramNotifier:
                         f.write(json.dumps(row, ensure_ascii=False) + "\n")
         except (OSError, TimeoutError) as e:
             logger.warning("알림 보관 실패: %s", type(e).__name__)
+            return False
+        return True
 
     def _read_outbox(self) -> list[dict]:
         out = []
@@ -272,7 +276,8 @@ class TelegramReceiver:
             if self._allowed:
                 trusted = sender in self._allowed
             else:
-                trusted = chat_obj.get("type", "private") == "private"
+                # 종류가 빠진 응답은 1:1 로 간주하지 않는다(Codex 보완 — 보수적 기본값)
+                trusted = chat_obj.get("type") == "private"
             out.append(
                 Update(update_id=uid, text=text, chat_id=chat, sender_id=sender, trusted=trusted)
             )

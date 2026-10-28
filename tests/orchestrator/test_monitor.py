@@ -870,3 +870,35 @@ def test_stop_loss_is_monotone_across_holding_decisions(conn):
     ctx = _ctx(conn, positions=[_pos(cur="63000")], price="63000")
     out = monitor.monitor_once(ctx, market="KR", today=D)
     assert out["stop_loss_orders"] == 1
+
+
+def test_stop_loss_floor_survives_same_day_reevaluation(conn):
+    """전체 검토 2차 2-O1: 매수 당일 BUY(손절 65000) 뒤 오후 재평가 `31_decision_r1` HOLD 가
+    손절가를 비워도(같은 (date, market, ticker) 행을 덮어쓴다) 아침 손절선이 살아 있어야 한다.
+    held_since 가 오늘이라 이전 날짜 행이 없다 — 평단 70000·현재 63000: 기본 −15% 는 안 닿는다."""
+    first = Decision(**ok_decision(stop_loss=65000.0))
+    did = repo.ingest_checkpoint(
+        conn, D, "KR", "005930", "30_decision", {"data": first.model_dump()}
+    )
+    repo.insert_order(
+        conn,
+        decision_id=did,
+        account_id="paper-main",
+        ticker="005930",
+        market="KR",
+        side="BUY",
+        qty=10,
+        order_type="LIMIT",
+        price=Decimal("70000"),
+        status="filled",
+        order_no="F1",
+        message=None,
+        mode="auto",
+        created_at=NOW.isoformat(),
+    )
+    later = Decision(**ok_decision(action="HOLD", target_weight=0.0, stop_loss=None))
+    repo.ingest_checkpoint(conn, D, "KR", "005930", "31_decision_r1", {"data": later.model_dump()})
+    assert repo.get_decision(conn, did)["action"] == "HOLD"  # 행은 덮였다
+    ctx = _ctx(conn, positions=[_pos(cur="63000")], price="63000")
+    out = monitor.monitor_once(ctx, market="KR", today=D)
+    assert out["stop_loss_orders"] == 1

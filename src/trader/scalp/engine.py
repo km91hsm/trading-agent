@@ -305,7 +305,7 @@ def _send_digest(
     except Exception:  # noqa: BLE001 - 알림 실패가 단타 상태를 바꾸지 않는다
         logger.warning("단타 묶음 알림 실패", exc_info=True)
         sent = False
-    if sent is False:  # 텔레그램은 실패를 False 로 돌려준다 — 묶음을 남겨 다음 틱에 다시
+    if sent is False:  # 보관함 없는 notifier 만 실패를 False 로(2-T1) — 묶음을 남겨 다음 틱에 다시
         return False
     st["outbox"] = []
     st["digest_at"] = now.isoformat()

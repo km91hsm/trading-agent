@@ -89,3 +89,25 @@ def test_group_chat_sender_trust(monkeypatch):
     ok = TelegramReceiver("T", "-100", http=http, allowed_users={"7"}).poll()[0]
     assert ok.trusted and ok.sender_id == "7"
     assert TelegramReceiver("T", "-100", http=http, allowed_users={"8"}).poll()[0].trusted is False
+
+
+def test_chat_without_type_is_not_trusted(monkeypatch):
+    """2-T2 보완: 허용 목록이 없을 때 신뢰는 1:1 채팅(type=private)만 — 종류가 빠지면 믿지
+    않는다."""
+    import httpx
+
+    from trader.notify.telegram import TelegramReceiver
+
+    body = {
+        "ok": True,
+        "result": [
+            {"update_id": 1, "message": {"chat": {"id": 5}, "from": {"id": 7}, "text": "/pause"}},
+            {
+                "update_id": 2,
+                "message": {"chat": {"id": 5, "type": "private"}, "from": {"id": 7}, "text": "/x"},
+            },
+        ],
+    }
+    http = httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(200, json=body)))
+    got = TelegramReceiver("T", "5", http=http).poll()
+    assert [u.trusted for u in got] == [False, True]

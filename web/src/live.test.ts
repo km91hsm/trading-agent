@@ -69,6 +69,13 @@ describe("폴링 주기·표기", () => {
     expect(nextDelay({ session: "closed", asof: "", quotes: {} })).toBe(CLOSED_RECHECK_MS);
     expect(nextDelay(null)).toBe(CLOSED_RECHECK_MS);
     expect(liveLabel({ session: "closed", asof: "", quotes: {} }, 0)).toBe("장 밖 · 마지막 잔고 기준");
+    // 2-P13: 허브 양보 사유
+    expect(liveLabel({ session: "open", asof: "", quotes: {}, hub_yield: "fills_listener" }, 2)).toBe(
+      "실시간 2종목 · 10초마다 (실전 체결통보가 앱키 사용 중)",
+    );
+    expect(liveLabel({ session: "open", asof: "", quotes: {}, hub_yield: "appkey_in_use" }, 2)).toBe(
+      "실시간 2종목 · 10초마다 (다른 연결이 앱키 사용 중)",
+    );
     expect(liveLabel({ session: "open", asof: "", quotes: {} }, 2)).toBe("실시간 2종목 · 10초마다");
   });
 });
@@ -106,5 +113,23 @@ describe("시세 나눠 받기", () => {
     expect(m.session).toBe("open");
     expect(m.stream).toBe(false);
     expect(Object.keys(m.quotes).sort()).toEqual(["A", "B"]);
+  });
+});
+
+
+describe("degradeQuotes (2-W1)", () => {
+  it("요청 실패·TTL 초과면 모든 시세를 stale 로 내리고 표 머리에 지연을 적는다", async () => {
+    const { degradeQuotes } = await import("./live");
+    const r = degradeQuotes({
+      session: "open",
+      asof: "2026-10-28T00:10:00+00:00",
+      quotes: { "005930": { price: "100", change_pct: 0, asof: "x", stale: false } },
+      stream: true,
+    });
+    expect(r.quotes["005930"].stale).toBe(true);
+    expect(r.degraded).toBe(true);
+    expect(applyQuotes([pos("005930", 1, "90", "90")], r.quotes).liveCount).toBe(0);
+    expect(liveLabel(r, 0)).toContain("지연");
+    expect(liveLabel(r, 0)).toContain("09:10"); // KST 표기
   });
 });

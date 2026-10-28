@@ -1,4 +1,4 @@
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 from conftest import make_account
@@ -83,7 +83,7 @@ def test_external_fill_creates_order_row(conn):
     assert r["inserted"] == 1
     o = conn.execute("SELECT * FROM orders WHERE order_no='ZZZ'").fetchone()
     assert o["mode"] == "external" and o["decision_id"] is None and o["status"] == "filled"
-    assert o["side"] == "SELL" and o["ticker"] == "000660"
+    assert o["side"] == "SELL" and o["ticker"] == "000660" and o["origin"] == "external"
     assert repo.held_since(conn, "paper-main") == {}  # 매도 체결은 보유 시작이 아니다
 
 
@@ -329,3 +329,20 @@ def test_stale_open_days_lists_past_live_orders(conn):
     _order_with(conn, status="unknown", order_no="C", created_at="2026-10-09T01:00:00+00:00")
     days = fills_mod.stale_open_days(conn, "paper-main", "KR", D)
     assert days == [date(2026, 10, 7)]  # 오늘(10-09)·체결 완료는 제외
+
+
+def test_stale_open_days_has_no_lookback_limit_but_caps_per_run(conn):
+    """전체 검토 2차 2-O11: 8일 넘게 꺼져 있던 뒤의 살아 있는 주문도 다시 조회한다(범위 제한 없음).
+    실행당 조회 날짜는 오래된 순 `STALE_QUERY_CAP` 개까지 — 나머지는 그 주문이 정리된 뒤
+    다음 실행."""
+    for i in range(fills_mod.STALE_QUERY_CAP + 2):
+        day = date(2026, 8, 1) + timedelta(days=i)
+        _order_with(
+            conn,
+            status="accepted",
+            order_no=f"A{i}",
+            created_at=f"{day.isoformat()}T01:00:00+00:00",
+        )
+    days = fills_mod.stale_open_days(conn, "paper-main", "KR", D)
+    assert len(days) == fills_mod.STALE_QUERY_CAP and days[0] == date(2026, 8, 1)
+    assert days == sorted(days)

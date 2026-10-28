@@ -80,6 +80,17 @@ def test_llm_alpha_needs_enough_pairs_and_positive_ci(project, conn):
     assert item()["ok"] is False
 
 
+def test_llm_alpha_note_with_few_pairs_has_no_interval(project, conn):
+    """2-L2 회귀: 쌍이 1~9개면 신뢰구간이 None — 숫자 포맷에서 예외가 나면 안 된다."""
+    accounts = [make_account("paper-main", "paper", "auto")]
+    _shadow_pairs(conn, [0.01] * 3)
+    r = readiness.check(
+        conn, accounts=accounts, settings=Settings(), state=project / "state", today=TODAY
+    )
+    it = next(i for i in r["items"] if i["key"] == "llm_alpha")
+    assert it["ok"] is False and "3쌍" in it["note"] and "구간 없음" in it["note"]
+
+
 def test_readiness_items_and_thresholds(project, conn):
     accounts = [
         make_account("paper-main", "paper", "auto"),

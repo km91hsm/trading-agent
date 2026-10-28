@@ -156,3 +156,20 @@ def test_ensure_fresh_rejects_cross_site(project, deps):
     c = _client(deps)
     r = c.post("/api/portfolio/ensure-fresh?market=KR", headers={"Sec-Fetch-Site": "cross-site"})
     assert r.status_code == 403
+
+
+def test_direct_local_accepts_bare_ipv6_host():
+    """2-W8: Host `[::1]`(포트 없음)도 루프백이다 — `rsplit(":")` 이 `:` 로 만들어 거부하던 것."""
+    from starlette.requests import Request
+
+    from trader.web.auth import is_direct_local
+
+    def req(host: str, client: str = "::1") -> Request:
+        return Request(
+            {"type": "http", "headers": [(b"host", host.encode())], "client": (client, 1)}
+        )
+
+    assert is_direct_local(req("[::1]"))
+    assert is_direct_local(req("[::1]:8787"))
+    assert is_direct_local(req("localhost:8787", "127.0.0.1"))
+    assert not is_direct_local(req("mymac.tail1234.ts.net", "127.0.0.1"))

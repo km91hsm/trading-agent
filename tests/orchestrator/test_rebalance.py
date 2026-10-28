@@ -153,6 +153,23 @@ def test_rebalance_runs_once_per_day(ctx, conn):
     ) == {"skipped": "오늘 이미 실행"}
 
 
+def test_rebalance_skips_while_paused_without_marking_done(ctx, conn):
+    """전체 검토 2차 2-O15: 일시정지 중엔 판정도 플래그도 남기지 않는다 — 재개 뒤 같은 주의
+    리밸런스가 조용히 사라지지 않게(reprice·cash_park 와 같은 순서)."""
+    _seed(conn)
+    control.set_flag(conn, "paused", True)
+    out = rebalance.run(
+        ctx, market="KR", today=D, dry_run=False, quote_fn=lambda t: Decimal("100000")
+    )
+    assert out == {"skipped": "일시정지"}
+    assert control.get_flag(conn, rebalance.done_key("KR", D)) is None
+    assert ctx.brokers["paper-main"].orders == []
+    control.set_flag(conn, "paused", False)
+    assert "legs" in rebalance.run(
+        ctx, market="KR", today=D, dry_run=False, quote_fn=lambda t: Decimal("100000")
+    )
+
+
 def test_rebalance_skips_open_order_today(ctx, conn):
     _seed(conn)
     conn.execute(

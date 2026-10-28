@@ -35,8 +35,6 @@ def process_start(pid: int) -> str | None:
             fields = stat[stat.rindex(")") + 2 :].split()
             return fields[19]
         if sys.platform == "darwin":
-            import subprocess
-
             # 로캘·시간대를 고정한다 — `lstart` 는 LANG 에 따라 '화 10/27 …' 과 'Tue Oct 27 …'
             # 처럼 달라, Trader.app(로캘 없음)이 쓴 잠금을 한국어 터미널이 '다른 프로세스' 로 보고
             # 데몬을 꺼짐으로 판정했다(전체 검토 2026-10-27). 절대경로는 최소 PATH 대비
@@ -78,7 +76,8 @@ def process_start(pid: int) -> str | None:
                 return str((creation.dwHighDateTime << 32) | creation.dwLowDateTime)
             finally:
                 k32.CloseHandle(handle)
-    except (OSError, ValueError, IndexError):
+    except (OSError, ValueError, IndexError, subprocess.TimeoutExpired):
+        # TimeoutExpired: `ps` 가 멈춘 경우(2-P5) — 생존 판정은 pid 만으로 이어 간다
         return None
     return None
 

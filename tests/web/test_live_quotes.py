@@ -361,3 +361,28 @@ def test_appkey_in_use_drops_with_backoff():
     assert c1.closed and invalidated == []
     hub.step()
     assert len(made) == 1  # 백오프 중
+
+
+def test_status_reports_yield_reason():
+    """2-P13: 허브가 붙지 않는 이유를 상태로 — 실전 체결통보가 앱키 세션을 쓰는 중(fills_listener),
+    다른 연결이 앱키를 쥐고 있어 백오프 중(appkey_in_use)."""
+    blocked = [True]
+    hub, clock, made, _ = make_hub(conns=[FakeConn(), FakeConn()])
+    hub.blocked = lambda: blocked[0]
+    assert hub.status()["yield"] == "fills_listener"
+    blocked[0] = False
+    assert hub.status()["yield"] is None
+    c1 = FakeConn()
+    hub2, clock2, _, _ = make_hub(conns=[c1, FakeConn()])
+    hub2.request(["005930"])
+    hub2.step()
+    c1.inbox.append(
+        json.dumps(
+            {
+                "header": {"tr_id": "H0STCNT0", "tr_key": "005930"},
+                "body": {"rt_cd": "1", "msg1": "ALREADY IN USE appkey"},
+            }
+        )
+    )
+    hub2.step()
+    assert hub2.status()["yield"] == "appkey_in_use"

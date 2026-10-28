@@ -432,7 +432,8 @@ def test_claim_next_filters_kinds(conn):
     assert jobq.claim_next(conn, now=NOW, kinds=jobq.FAST_KINDS) is None
     assert jobq.claim_next(conn, now=NOW, kinds=frozenset()) is None
     assert jobq.claim_next(conn, now=NOW)["kind"] == "ml_train"
-    assert "reevaluate" in jobq.FAST_KINDS and "features_backfill" not in jobq.FAST_KINDS
+    assert "reevaluate" in jobq.REEVAL_KINDS and "reevaluate" not in jobq.FAST_KINDS
+    assert "features_backfill" not in jobq.FAST_KINDS | jobq.REEVAL_KINDS
 
 
 def test_heavy_wanted_counts_waiting_crons():
@@ -455,9 +456,11 @@ def test_main_queue_does_not_take_fast_kinds(project, conn):
     deps = _deps(conn, FakeMarket(), now=lambda: NOW)
     jobq.enqueue(conn, "fills_sync", {}, source="web", now=NOW)
     assert daemon._queue_tick(deps, None) == {"skipped": "대기 없음"}
-    assert jobq.SLOW_KINDS.isdisjoint(jobq.FAST_KINDS)
-    assert jobq.INFO_KINDS.isdisjoint(jobq.SLOW_KINDS | jobq.FAST_KINDS)
-    assert jobq.SLOW_KINDS | jobq.FAST_KINDS | jobq.INFO_KINDS == frozenset(jobq.KINDS)
+    lanes = [jobq.SLOW_KINDS, jobq.FAST_KINDS, jobq.INFO_KINDS, jobq.REEVAL_KINDS]
+    for i, a in enumerate(lanes):
+        for b in lanes[i + 1 :]:
+            assert a.isdisjoint(b)
+    assert frozenset().union(*lanes) == frozenset(jobq.KINDS)
 
 
 def test_usage_probe_runs_on_info_lane_not_fast_lane(project, conn, monkeypatch):
@@ -632,3 +635,43 @@ def test_early_close_uses_exchange_time(conn):
     assert daemon._in_market_window(deps, "US") is True  # 10:00 ET = 00:00 KST, 마감 전
     deps.now = lambda: datetime(2026, 11, 27, 19, 0, tzinfo=UTC)  # 14:00 ET, 마감 뒤
     assert daemon._in_market_window(deps, "US") is False
+
+
+def test_reevaluate_lane_is_separate_from_light_jobs(project, conn, monkeypatch):
+    """전체 검토 2차 2-P2: 재평가는 전용 레인(`job_queue_reeval`) — 뉴스 수집·대조가 빠른 레인을
+    잡고 있어도 손절 뒤 재평가가 그 뒤로 밀리지 않는다."""
+    deps = _deps(conn, FakeMarket(), now=lambda: NOW)
+    ran = []
+    monkeypatch.setattr(
+        daemon, "queued_job_body", lambda d, req, prog: lambda: ran.append(req["kind"]) or {}
+    )
+    jobq.enqueue(conn, "news_collect", {}, source="web", now=NOW)
+    p = {"market": "KR", "ticker": "005930", "trigger_id": 1}
+    rid = jobq.enqueue(conn, "reevaluate", p, source="monitor", now=NOW)
+    assert daemon._reeval_queue_tick(deps, None) == {"request": rid, "kind": "reevaluate"}
+    assert daemon._reeval_queue_tick(deps, None) == {"skipped": "대기 없음"}
+    assert daemon._fast_queue_tick(deps, None)["kind"] == "news_collect"
+    assert ran == ["reevaluate", "news_collect"]
+    ids = {j.id for j in daemon.build_jobs(SCHED, Settings(), markets=["KR"])}
+    assert {daemon.REEVAL_QUEUE_JOB_ID, daemon.FAST_QUEUE_JOB_ID} <= ids
+
+
+def test_missed_idempotent_cron_jobs_catch_up(conn, monkeypatch):
+    """2-P3: 놓친 reflect 는 대기열로, ledger_backup·universe_members 는 바로 실행해 따라잡는다.
+    멱등 cron 잡(reflect·백업·유니버스 기록·권리 일정·모의 점검·학습)은 misfire grace 가 몇 시간."""
+    deps = _deps(conn, FakeMarket(), now=lambda: TUE_0900_KST)
+    jobs = daemon.build_jobs(SCHED, Settings(), markets=["KR"])
+    reflect = next(j for j in jobs if j.kind == "reflect")
+    assert daemon.misfire_grace_for(reflect) == daemon.IDEMPOTENT_MISFIRE_GRACE_S
+    assert daemon.misfire_grace_for(next(j for j in jobs if j.kind == "ledger_backup")) == (
+        daemon.IDEMPOTENT_MISFIRE_GRACE_S
+    )
+    out = daemon.on_cron_missed(deps, reflect, notify=False)
+    assert out["queued"] is True and jobq.list_recent(conn)[0]["kind"] == "reflect"
+    ran: list[str] = []
+    monkeypatch.setattr(daemon, "_backup_body", lambda d: ran.append("backup") or {})
+    monkeypatch.setattr(daemon, "_universe_members_body", lambda d: ran.append("members") or {})
+    for kind in ("ledger_backup", "universe_members"):
+        out = daemon.on_cron_missed(deps, next(j for j in jobs if j.kind == kind), notify=False)
+        assert out["ran"] is True
+    assert ran == ["backup", "members"]
