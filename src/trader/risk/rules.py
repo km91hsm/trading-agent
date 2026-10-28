@@ -228,10 +228,13 @@ def evaluate(
             )
             weight = lim.max_position_pct
         # target_weight 는 주문 뒤의 총 비중이다 (ADD 도 TRIM 과 같은 의미). 매수금액은 그 증분.
+        # 같은 종목의 체결 전 BUY·승인 대기(다른 결정 id — 리밸런스 ADD + 당일 LLM BUY)도 현재
+        # 비중에 넣는다 — 둘의 합이 종목당 상한을 넘지 않게(2-O4)
         target_value = Decimal(str(weight)) * nav
-        current_value = held.eval_amount if held else Decimal(0)
+        pending_same = portfolio.pending_buys.get(ticker, Decimal(0))
+        current_value = (held.eval_amount if held else Decimal(0)) + pending_same
         buy_value = target_value - current_value
-        if held is not None and buy_value <= 0:
+        if (held is not None or pending_same > 0) and buy_value <= 0:
             buy_value = Decimal(0)
             rejected.append(
                 f"이미 목표 비중 이상 보유 (현재 {float(current_value / nav) if nav else 0:.2f} ≥ "

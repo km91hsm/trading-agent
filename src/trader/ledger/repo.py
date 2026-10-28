@@ -18,6 +18,12 @@ from trader.ledger.db import now_iso
 
 _ANALYST_RE = re.compile(r"^10_analyst_([a-z_]+)$")
 _DECISION_RE = re.compile(r"^(30_decision|31_decision_r\d+)$")
+# 손절선 바닥(decisions.stop_floor)에 들어가는 결정 action — SELL/TRIM 은 제외(2-O2)
+STOP_FLOOR_ACTIONS = ("BUY", "ADD", "HOLD")
+# 주문 행의 실행 종류 `orders.origin`(2-O3·2-O8). NULL(옛 행)은 llm. LLM 결정의 주 2회 한도·5일
+# 실현손익 성향은 llm·stop 만 센다 — 단타·리밸런스·재호가·헤지가 LLM 결정의 한도를 먹지 않게
+ORIGINS = ("llm", "stop", "hedge", "scalp", "rebalance", "reprice", "park", "external")
+LLM_ORIGIN_SQL = "COALESCE(origin, 'llm') IN ('llm', 'stop')"
 
 # 살아 있지 않은 주문 상태 (중복 방지·당일 매수·주문금액·보유 폴백·차트 마커가 모두 이 목록을 쓴다).
 # expired 는 체결 동기화가 마감 뒤 체결 없는 accepted·unknown 주문에 붙인다 (`fills.sync_fills`).
@@ -120,12 +126,25 @@ def ingest_checkpoint(
             ).fetchone()["id"]
         )
     if _DECISION_RE.match(stage):
+        # 손절선 바닥(stop_floor): 같은 날 재평가가 json 을 덮어써도 BUY/ADD/HOLD 손절가의 최고값은
+        # 남긴다(2-O1). SELL/TRIM 의 손절가는 바닥에 넣지 않는다 — 거부된 매도 재평가가 현재가 바로
+        # 아래 값을 적어 보유 묶음 내내 바닥이 되는 것을 막는다(2-O2)
+        floor = (
+            float(data["stop_loss"])
+            if data.get("action") in STOP_FLOOR_ACTIONS and data.get("stop_loss") is not None
+            else None
+        )
         conn.execute(
             "INSERT INTO decisions(date, market, ticker, action, target_weight, confidence, "
-            "session_id, json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "session_id, json, created_at, stop_floor, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(date, market, ticker) DO UPDATE SET action=excluded.action, "
             "target_weight=excluded.target_weight, confidence=excluded.confidence, "
-            "session_id=excluded.session_id, json=excluded.json",
+            "session_id=excluded.session_id, json=excluded.json, "
+            "stop_floor=CASE WHEN decisions.stop_floor IS NULL THEN excluded.stop_floor "
+            "WHEN excluded.stop_floor IS NULL THEN decisions.stop_floor "
+            "ELSE MAX(decisions.stop_floor, excluded.stop_floor) END, "
+            "updated_at=excluded.updated_at",
             (
                 d.isoformat(),
                 market,
@@ -135,6 +154,8 @@ def ingest_checkpoint(
                 data.get("confidence"),
                 call.get("session_id"),
                 js,
+                created,
+                floor,
                 created,
             ),
         )
@@ -149,10 +170,11 @@ def insert_hedge_decision(
     """파이썬이 만든 헤지 결정 행(source='hedge'). 같은 날·종목이면 갱신. 메모리·분포 제외."""
     conn.execute(
         "INSERT INTO decisions(date, market, ticker, action, target_weight, confidence, "
-        "session_id, json, created_at, source) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, 'hedge') "
+        "session_id, json, created_at, source, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, 'hedge', ?) "
         "ON CONFLICT(date, market, ticker) DO UPDATE SET action=excluded.action, "
         "target_weight=excluded.target_weight, confidence=excluded.confidence, "
-        "json=excluded.json, source='hedge'",
+        "json=excluded.json, source='hedge', updated_at=excluded.updated_at",
         (
             d.isoformat(),
             market,
@@ -162,12 +184,21 @@ def insert_hedge_decision(
             data.get("confidence"),
             json.dumps(data, ensure_ascii=False, default=str),
             now_iso(),
+            now_iso(),
         ),
     )
     conn.commit()
     did = decision_id(conn, d, market, ticker)
     assert did is not None
     return did
+
+
+def set_skipped_debate(conn: sqlite3.Connection, decision_id: int, skipped: bool) -> None:
+    """결정 행에 토론 생략 여부(합의 L17)를 남긴다(2-L23). 재평가도 같은 행."""
+    conn.execute(
+        "UPDATE decisions SET skipped_debate=? WHERE id=?", (int(bool(skipped)), decision_id)
+    )
+    conn.commit()
 
 
 def _hydrate_decision(row: sqlite3.Row) -> dict:
@@ -241,14 +272,18 @@ def insert_order(
     created_at: str | None = None,
     amount: Decimal | None = None,
     org_no: str | None = None,
+    origin: str | None = None,
 ) -> int:
-    """amount 는 가능금액 차감용 주문금액(시장가는 판정 때 현재가 × 수량). 없으면 qty × price."""
+    """amount 는 가능금액 차감용 주문금액(시장가는 판정 때 현재가 × 수량). 없으면 qty × price.
+    origin 은 실행 종류(`ORIGINS`, 2-O3·2-O8) — None 은 옛 행이라 llm 으로 읽힌다."""
+    if origin is not None and origin not in ORIGINS:
+        raise ValueError(f"알 수 없는 주문 origin: {origin}")
     if amount is None and price is not None:
         amount = Decimal(qty) * price
     cur = conn.execute(
         "INSERT INTO orders(decision_id, account_id, ticker, market, side, qty, order_type, price, "
-        "status, order_no, message, mode, created_at, amount, org_no) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "status, order_no, message, mode, created_at, amount, org_no, origin) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             decision_id,
             account_id,
@@ -265,6 +300,7 @@ def insert_order(
             created_at or now_iso(),
             str(amount) if amount is not None else None,
             org_no,
+            origin,
         ),
     )
     conn.commit()
@@ -534,15 +570,16 @@ def latest_decision(conn: sqlite3.Connection, market: str, ticker: str) -> dict 
 def max_stop_since(
     conn: sqlite3.Connection, market: str, ticker: str, since: date | None
 ) -> Decimal | None:
-    """보유 묶음 시작일(since) 이후 그 종목 결정들의 손절선 중 최고값(헤지 결정 제외). 손절선은
-    올리기만 한다 — 보유 재분석의 HOLD 가 손절가를 비우거나 낮춰도 이전 손절선을 지킨다(검토 L5).
-    since 가 없으면 None."""
+    """보유 묶음 시작일(since) 이후 그 종목 결정들의 손절선 바닥(`stop_floor`) 중 최고값(헤지 결정
+    제외). 손절선은 올리기만 한다 — 보유 재분석의 HOLD 가 손절가를 비우거나 낮춰도 이전 손절선을
+    지킨다(검토 L5). 같은 날 재평가가 행을 덮어써도 바닥은 `ingest_checkpoint` 가 max 로 남기고
+    (2-O1), SELL/TRIM 의 손절가는 바닥에 들어가지 않는다(2-O2). since 가 없으면 None."""
     if since is None:
         return None
     row = conn.execute(
-        "SELECT MAX(CAST(json_extract(json, '$.stop_loss') AS REAL)) AS s FROM decisions "
+        "SELECT MAX(stop_floor) AS s FROM decisions "
         "WHERE market=? AND ticker=? AND source != 'hedge' AND date >= ? "
-        "AND json_extract(json, '$.stop_loss') IS NOT NULL",
+        "AND stop_floor IS NOT NULL",
         (market, ticker, since.isoformat()),
     ).fetchone()
     return Decimal(str(row["s"])) if row is not None and row["s"] is not None else None
@@ -627,6 +664,19 @@ def release_exec_key(conn: sqlite3.Connection, key: str) -> None:
     """브로커가 거부·실패한 주문(KIS 에 주문 없음)·주문 전 예외의 키를 지운다(재시도 허용)."""
     conn.execute("DELETE FROM exec_keys WHERE key=?", (key,))
     conn.commit()
+
+
+def list_exec_keys(conn: sqlite3.Connection) -> list[dict]:
+    """남아 있는 실행 키 전부(오래된 순). `sent_at` 이 있고 `order_id` 가 없는 키는 보낸 뒤
+    기록 전에
+    끊긴 것 — 사람이 KIS 주문 유무를 확인하고 `trader control exec-key release` 로 푼다(2-O13)."""
+    return [
+        dict(r)
+        for r in conn.execute(
+            "SELECT key, created_at, order_id, approval_id, sent_at FROM exec_keys "
+            "ORDER BY created_at, key"
+        ).fetchall()
+    ]
 
 
 def _buy_amounts_today(
@@ -718,13 +768,14 @@ def today_order_amount(
 def trades_this_week(
     conn: sqlite3.Connection, account_id: str, d: date, market: str | None = None
 ) -> dict[str, int]:
-    """운영일 d 가 속한 주(월요일 ~ d, 시장 현지 하루 경계)의 종목별 살아 있는 주문 수."""
+    """운영일 d 가 속한 주(월요일 ~ d, 시장 현지 하루 경계)의 종목별 살아 있는 주문 수.
+    LLM 결정 주문(llm·stop)만 — 단타·리밸런스·재호가·헤지는 세지 않는다(2-O8)."""
     monday = d - timedelta(days=d.weekday())
     lo, _ = day_bounds(monday, market)
     _, hi = day_bounds(d, market)
     sql = (
         "SELECT ticker, COUNT(*) AS n FROM orders WHERE account_id=? "
-        f"AND status NOT IN ({dead_status_sql()}) "
+        f"AND status NOT IN ({dead_status_sql()}) AND {LLM_ORIGIN_SQL} "
         "AND created_at >= ? AND created_at < ?"
     )
     args: list = [account_id, lo, hi]
@@ -742,13 +793,18 @@ def realized_pnl_5d(
 
     창 안에 SELL 체결이 있는 종목만 전체 체결을 시간순으로 걸어 평균가를 갱신한다(보유 0 이면 리셋).
     전 이력 BUY 평균을 쓰면 전량 매도 뒤 재매수한 종목의 손익 부호가 뒤집혀 성향 판정이 틀린다.
-    금액은 Decimal 로만 계산한다. 통화가 섞이지 않게 market 으로 거른다.
+    금액은 Decimal 로만 계산한다. 통화가 섞이지 않게 market 으로 거른다. 손익에 넣는 매도는 LLM
+    결정 주문(llm·stop)의 체결만 — 단타 왕복 손실이 다음 날 LLM 한도를 줄이지 않게(2-O8) — 이되
+    보유 묶음의 수량·평단은 **모든 origin 의 체결**로 재구성한다(재호가 BUY 가 평단이고 리밸런스
+    매도가 묶음을 비운다; PR #58 Codex 리뷰).
     """
     lo, _ = day_bounds(d - timedelta(days=7), market)  # 시장 현지 창(US 는 KST 자정을 넘긴다)
     _, hi = day_bounds(d, market)
+    origin_sql = LLM_ORIGIN_SQL.replace("origin", "o.origin", 1)
     sql = (
         "SELECT DISTINCT o.ticker FROM fills f JOIN orders o ON o.id=f.order_id "
-        "WHERE f.account_id=? AND o.side='SELL' AND f.filled_at >= ? AND f.filled_at < ?"
+        f"WHERE f.account_id=? AND o.side='SELL' AND {origin_sql} "
+        "AND f.filled_at >= ? AND f.filled_at < ?"
     )
     args: list = [account_id, lo, hi]
     if market:
@@ -759,8 +815,8 @@ def realized_pnl_5d(
         return Decimal(0)
     marks = ",".join("?" * len(tickers))
     sql = (
-        "SELECT o.ticker, o.side, f.qty, f.price, f.filled_at FROM fills f "
-        "JOIN orders o ON o.id=f.order_id "
+        "SELECT o.ticker, o.side, f.qty, f.price, f.filled_at, "
+        f"({origin_sql}) AS llm FROM fills f JOIN orders o ON o.id=f.order_id "
         f"WHERE f.account_id=? AND o.ticker IN ({marks})"
     )
     args = [account_id, *tickers]
@@ -785,7 +841,7 @@ def realized_pnl_5d(
             # (평단 0 으로 치면 매도금액 전체가 이익이 돼 성향이 틀린다)
             continue
         avg = cost.get(t, Decimal(0)) / held
-        if lo <= r["filled_at"] < hi:
+        if r["llm"] and lo <= r["filled_at"] < hi:
             total += (px - avg) * q
         remaining = held - q
         if remaining <= 0:
@@ -1085,6 +1141,48 @@ def upsert_ticker_name(
     )
     conn.commit()
     return True
+
+
+def upsert_ticker_exchange(
+    conn: sqlite3.Connection, market: str, ticker: str, exchange: str | None
+) -> bool:
+    """관측한 US 거래소 코드(잔고 `ovrs_excg_cd`·00_inputs `meta.exchange`)를 남긴다(2-L1) —
+    유니버스 밖 보유·미만기 창 종목의 일일 피처 스냅샷이 거래소를 알 수 있게. KR·빈 값은 무시,
+    같은 값이면 쓰기 없음. 썼으면 True."""
+    clean = (exchange or "").strip()
+    if market != "US" or not clean:
+        return False
+    cur = conn.execute(
+        "INSERT INTO ticker_exchanges(market, ticker, exchange, updated_at) VALUES (?, ?, ?, ?) "
+        "ON CONFLICT(market, ticker) DO UPDATE SET exchange=excluded.exchange, "
+        "updated_at=excluded.updated_at WHERE exchange IS NOT excluded.exchange",
+        (market, ticker, clean, now_iso()),
+    )
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def ticker_exchanges(conn: sqlite3.Connection, market: str) -> dict[str, str]:
+    """시장의 관측 거래소 {ticker: exchange}."""
+    return {
+        r["ticker"]: r["exchange"]
+        for r in conn.execute(
+            "SELECT ticker, exchange FROM ticker_exchanges WHERE market=?", (market,)
+        )
+    }
+
+
+def held_tickers_latest(conn: sqlite3.Connection, market: str) -> set[str]:
+    """계좌마다 가장 최근 잔고 스냅샷에서 수량 > 0 인 종목(현금 자리 제외)의 합집합 — 열린 창
+    종목(2-L1) 의 보유 부분."""
+    rows = conn.execute(
+        "SELECT DISTINCT p.ticker FROM positions_snapshot p JOIN ("
+        "SELECT account_id, MAX(date) AS d FROM positions_snapshot WHERE market=? "
+        "GROUP BY account_id) l ON l.account_id = p.account_id AND l.d = p.date "
+        "WHERE p.market=? AND p.qty > 0 AND p.ticker NOT LIKE '\\_CASH%' ESCAPE '\\'",
+        (market, market),
+    ).fetchall()
+    return {str(r["ticker"]) for r in rows}
 
 
 def ticker_names(conn: sqlite3.Connection, market: str | None = None) -> dict[tuple[str, str], str]:

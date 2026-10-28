@@ -443,7 +443,6 @@ class MemorySettings(BaseModel):
     top_k: int = 5
 
 
-
 # --- 선물옵션 방향성 레인 (Phase 26) ------------------------------------------------
 
 
@@ -926,6 +925,8 @@ class Secrets(BaseModel):
     NAVER_CLIENT_SECRET: str | None = None
     FRED_API_KEY: str | None = None
     ECOS_API_KEY: str | None = None
+    # SEC EDGAR User-Agent(이름 + 연락 이메일, 2-W13 — 공개 저장소의 sources.yaml 에 두지 않는다)
+    EDGAR_USER_AGENT: str | None = None
     WEB_TOKEN: str | None = None
     REDDIT_CLIENT_ID: str | None = None
     REDDIT_CLIENT_SECRET: str | None = None
@@ -1429,6 +1430,9 @@ class EventDef(BaseModel):
     kind: Literal["shock", "structural"] = "shock"
     min_news: int = Field(default=3, ge=1)
     keywords: list[str] = Field(min_length=1)
+    # 제외 패턴(2-L10): 한글 키워드는 부분 문자열이라 `전쟁` 이 무역전쟁·반도체전쟁에 걸린다 —
+    # 이 패턴이 든 뉴스는 세지 않는다
+    exclude: list[str] = Field(default_factory=list)
     beneficiaries: dict[Market, list[EventTicker]] = Field(default_factory=dict)
 
     @model_validator(mode="after")

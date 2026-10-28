@@ -563,3 +563,12 @@ def theme_name(theme: str) -> str:
     """'섹터:반도체' → '반도체(섹터)', 'kw:로봇' → '로봇(뉴스 키워드)'."""
     kind, _, name = theme.partition(":")
     return f"{name}({'섹터' if kind == '섹터' else '뉴스 키워드'})" if name else theme
+
+
+def ksd_stale(items: list[tuple[str, int | None]]) -> str:
+    """권리 일정(예탁원) 종류별 수집이 STALE_DAYS 넘게 실패(2-O9) — 지난 일정으로 판정 중."""
+    lines = [
+        f"{label}: {days}일째 실패" if days else f"{label}: 수집 기록 없음" for label, days in items
+    ]
+    tail = "지난 일정으로 블랙아웃을 판정하고 있어요"
+    return render("권리 일정 수집 실패", "KR", [*lines, tail])

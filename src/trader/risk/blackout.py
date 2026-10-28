@@ -18,6 +18,7 @@ logger = logging.getLogger("trader.risk")
 
 FLAG = "ksd_events:KR"
 AHEAD_DAYS = 30
+STALE_DAYS = 3  # 종류별 마지막 성공 수집이 이보다 오래되면 '오래됨'(알림, 2-O9)
 LABEL = {
     "paidin": "유상증자",
     "bonus": "무상증자",
@@ -26,8 +27,11 @@ LABEL = {
 }
 
 
-def collect(market_client: Any, cfg: BlackoutCfg, *, today: date) -> dict:
-    """종류별 [today − after_days, today + AHEAD_DAYS] 기준일 일정. 종류 하나의 실패는 건너뛴다."""
+def collect(
+    market_client: Any, cfg: BlackoutCfg, *, today: date, now: datetime | None = None
+) -> dict:
+    """종류별 [today − after_days, today + AHEAD_DAYS] 기준일 일정. 종류 하나의 실패는 건너뛴다
+    (`errors[kind]`). `kinds` 는 시도한 종류 — `store` 가 종류별로 합칠 때 쓴다."""
     events: list[dict] = []
     errors: dict[str, str] = {}
     lo, hi = today - timedelta(days=cfg.after_days), today + timedelta(days=AHEAD_DAYS)
@@ -37,11 +41,54 @@ def collect(market_client: Any, cfg: BlackoutCfg, *, today: date) -> dict:
         except Exception as e:  # noqa: BLE001 - 미확인 TR: 실패해도 다른 종류·매매는 간다
             errors[kind] = f"{type(e).__name__}: {e}"
             logger.warning("예탁원 일정 수집 실패 %s: %s", kind, e)
-    return {"at": datetime.now(UTC).isoformat(), "events": events, "errors": errors}
+    return {
+        "at": (now or datetime.now(UTC)).isoformat(),
+        "kinds": list(cfg.kinds),
+        "events": events,
+        "errors": errors,
+    }
 
 
-def store(conn: sqlite3.Connection, result: dict) -> None:
-    control.set_flag(conn, FLAG, result)
+def store(conn: sqlite3.Connection, result: dict) -> dict:
+    """종류별 마지막 성공분을 합쳐 저장한다(2-O9): 이번에 실패한 종류는 지난 일정·수집 시각을
+    유지하고 성공한 종류만 교체, 설정에서 빠진 종류는 버린다 — 한 종류의 TR 실패가 빈 일정으로
+    블랙아웃을 조용히 끄지 않게. `fetched_at[kind]` 가 종류별 마지막 성공 시각."""
+    prev = control.get_flag(conn, FLAG) or {}
+    kinds = list(result.get("kinds") or [])
+    failed = {k for k in (result.get("errors") or {}) if k in kinds}
+    events = [e for e in result.get("events") or [] if e.get("kind") not in failed]
+    events += [e for e in prev.get("events") or [] if e.get("kind") in failed]
+    prev_at = prev.get("fetched_at") or {}
+    fetched = {k: (prev_at.get(k) if k in failed else result.get("at")) for k in kinds}
+    data = {
+        "at": result.get("at"),
+        "kinds": kinds,
+        "events": events,
+        "errors": dict(result.get("errors") or {}),
+        "fetched_at": {k: v for k, v in fetched.items() if v},
+    }
+    control.set_flag(conn, FLAG, data)
+    return data
+
+
+def stale_kinds(data: dict | None, cfg: BlackoutCfg, *, now: datetime) -> dict[str, int | None]:
+    """설정 종류 중 마지막 성공 수집이 STALE_DAYS 넘게 지난 것 → {종류: 지난 일수}. 수집 기록이
+    없는 종류는 None."""
+    out: dict[str, int | None] = {}
+    fetched = (data or {}).get("fetched_at") or {}
+    for kind in cfg.kinds:
+        iso = fetched.get(kind)
+        if not iso:
+            out[kind] = None
+            continue
+        try:
+            days = (now - datetime.fromisoformat(str(iso))).days
+        except (TypeError, ValueError):
+            out[kind] = None
+            continue
+        if days > STALE_DAYS:
+            out[kind] = days
+    return out
 
 
 def reason(conn: sqlite3.Connection, ticker: str, today: date, cfg: BlackoutCfg) -> str | None:

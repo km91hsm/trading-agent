@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Sequence
 from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
 
@@ -18,6 +19,67 @@ from trader.control import control
 
 FLAG = "killswitch"
 MIN_NOTE = 10  # 해제 메모 최소 글자 수(원인을 적게 한다)
+# 입출금 의심(2-O16): 직전 관측 대비 NAV 변화 중 보유 종목 가격 변화로 설명되지 않는 잔차가 직전 NAV
+# 의 이 비율 이상이면 기록한다. 장중 새로 산 종목의 손익(최대 비중 25% × 하루 변동)이 잔차에 섞여도
+# 넘지 않게 5%. 기준은 자동으로 바꾸지 않는다 — 잔차는 추정이고, 해제·재설정은 사람만.
+FLOW_SUSPECT_PCT = Decimal("0.05")
+
+
+def _obs_key(account_id: str, market: str) -> str:
+    return f"killswitch_obs:{account_id}:{market}"
+
+
+def _flow_key(account_id: str, market: str) -> str:
+    return f"killswitch_flow:{account_id}:{market}"
+
+
+def flow_suspicion(conn: sqlite3.Connection, account_id: str, market: str) -> dict | None:
+    """마지막 입출금 의심 기록(없으면 None). 운영 점검 loss 영역이 읽는다."""
+    return control.get_flag(conn, _flow_key(account_id, market)) or None
+
+
+def _check_flow(
+    conn: sqlite3.Connection,
+    account_id: str,
+    market: str,
+    nav: Decimal,
+    positions: Sequence[tuple[str, int, Decimal]],
+    today: date,
+) -> None:
+    """직전 관측(NAV·종목별 수량·가격)과 비교해 설명되지 않는 NAV 변화를 기록한다.
+
+    설명되는 변화 = 직전에도 지금도 보유한 종목의 `직전 수량 × 가격 변화`. 매수·매도는 현금과 평가를
+    맞바꿀 뿐 NAV 를 크게 바꾸지 않는다(새로 산 종목의 체결가 대비 변동만 잔차에 섞인다)."""
+    now_px = {t: (int(q), Decimal(str(p))) for t, q, p in positions}
+    prev = control.get_flag(conn, _obs_key(account_id, market)) or {}
+    prev_nav = _dec(prev.get("nav"))
+    if prev_nav is not None:
+        explained = Decimal(0)
+        for t, (q0, p0) in (prev.get("px") or {}).items():
+            if t in now_px:
+                explained += Decimal(int(q0)) * (now_px[t][1] - Decimal(str(p0)))
+        residual = (nav - prev_nav) - explained
+        if abs(residual) >= FLOW_SUSPECT_PCT * prev_nav:
+            control.set_flag(
+                conn,
+                _flow_key(account_id, market),
+                {
+                    "date": today.isoformat(),
+                    "residual": str(residual),
+                    "prev_nav": str(prev_nav),
+                    "nav": str(nav),
+                    "at": datetime.now(UTC).isoformat(),
+                },
+            )
+    control.set_flag(
+        conn,
+        _obs_key(account_id, market),
+        {
+            "nav": str(nav),
+            "date": today.isoformat(),
+            "px": {t: [q, str(p)] for t, (q, p) in now_px.items()},
+        },
+    )
 
 
 def _base_key(account_id: str, market: str) -> str:
@@ -112,10 +174,15 @@ def observe(
     nav: Decimal,
     today: date,
     limit_pct: float,
+    positions: Sequence[tuple[str, int, Decimal]] | None = None,
 ) -> bool:
-    """잔고를 볼 때마다 부른다. 이번에 새로 켰으면 True(알림은 호출부·운영 점검이 한다)."""
+    """잔고를 볼 때마다 부른다. 이번에 새로 켰으면 True(알림은 호출부·운영 점검이 한다).
+
+    `positions`((종목, 수량, 현재가))가 오면 입출금 의심도 함께 본다(2-O16, 기록만)."""
     if limit_pct <= 0 or nav <= 0:
         return False
+    if positions is not None:
+        _check_flow(conn, account_id, market, nav, positions, today)
     base = _baseline(conn, account_id, market, nav)  # 켜져 있어도 기준은 처음에 한 번 남긴다
     if base is None or reason(conn, account_id):  # 이 계좌는 이미 막혀 있다
         return False
@@ -135,7 +202,8 @@ def observe(
 
 
 def release(conn: sqlite3.Connection, *, note: str) -> None:
-    """사람만 부른다. 원인 메모가 필요하고, 모든 계좌·시장의 기준을 최근 NAV 로 다시 잡는다."""
+    """사람만 부른다. 원인 메모가 필요하고, 모든 계좌·시장의 기준을 최근 NAV 로 다시 잡는다
+    (입출금 의심 기록도 지운다 — 기준이 새 NAV 라 더 이상 해당 없음)."""
     if len(note.strip()) < MIN_NOTE:
         raise ValueError(f"해제 메모는 {MIN_NOTE}자 이상 원인을 적어야 합니다")
     rows = conn.execute(
@@ -146,6 +214,7 @@ def release(conn: sqlite3.Connection, *, note: str) -> None:
     now = datetime.now(UTC).isoformat()
     for acct, market, nav in rows:
         control.set_flag(conn, _base_key(acct, market), {"nav": str(nav), "at": now})
+    conn.execute("DELETE FROM control WHERE key LIKE 'killswitch\\_flow:%' ESCAPE '\\'")
     prev = state(conn)
     control.set_flag(
         conn,

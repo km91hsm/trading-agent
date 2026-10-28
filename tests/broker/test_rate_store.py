@@ -71,3 +71,26 @@ def test_connection_reused_per_thread(tmp_path, monkeypatch):
     t.start()
     t.join()
     assert len(made) == 2 and made[0] != made[1]
+
+
+def test_disabled_is_reported_and_retried(tmp_path):
+    """2-P8: 파일을 못 열어 프로세스 안 리미터로 내려가면 상태로 드러내고(운영 점검), 일정 시간 뒤
+    다시 열어 본다 — 조용히 영구히 교차 프로세스 제한이 꺼지지 않게."""
+    from trader.broker import rate_store
+
+    clock = {"t": 1000.0}
+    bad = tmp_path / "dir"
+    bad.mkdir()  # 디렉터리라 sqlite 가 열 수 없다
+    lim = rate_store.SharedRateLimiter(
+        100, bad, "real", clock=lambda: clock["t"], sleep=lambda s: None
+    )
+    lim.acquire()
+    got = [d for d in rate_store.disabled_status() if d["env"] == "real" and d["path"] == str(bad)]
+    assert got and got[0]["error"]
+    bad.rmdir()  # 이제 열 수 있다
+    lim.acquire()  # 재시도 간격 전 — 아직 프로세스 안
+    assert lim._disabled
+    clock["t"] += rate_store.RETRY_S + 1
+    lim.acquire()
+    assert not lim._disabled
+    assert not [d for d in rate_store.disabled_status() if d["path"] == str(bad)]

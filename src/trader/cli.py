@@ -510,16 +510,36 @@ def _build_dart(secrets: config.Secrets):
     return DartClient(secrets.DART_API_KEY, cache) if secrets.DART_API_KEY else None
 
 
+EDGAR_PLACEHOLDER = "@example.com"  # templates/config/sources.yaml 의 자리표시자
+_edgar_warned = False
+
+
 def _build_edgar(cfg: config.SourcesConfig | None = None):
     """EDGAR 클라이언트 (수집·US 비율 피처 공용).
 
-    `sources.yaml` edgar.enabled 가 꺼져 있으면 None."""
+    `sources.yaml` edgar.enabled 가 꺼져 있으면 None. User-Agent 는 Secrets `EDGAR_USER_AGENT` 가
+    yaml 보다 우선이고(2-W13 — 공개 저장소에 개인 이메일을 두지 않는다), 자리표시자만 있으면 SEC 에
+    보내지 않고 None(경고 1회) — SEC 는 연락처 없는 User-Agent 를 막는다."""
+    global _edgar_warned
     from trader.sources.edgar import EdgarClient
 
     cfg = cfg if cfg is not None else config.load_sources()
     if not cfg.edgar.enabled:
         return None
-    return EdgarClient(cfg.edgar.user_agent, paths.state_dir() / "cache")
+    try:
+        secret = config.load_secrets().EDGAR_USER_AGENT
+    except config.ConfigError:
+        secret = None
+    ua = (secret or cfg.edgar.user_agent or "").strip()
+    if not ua or EDGAR_PLACEHOLDER in ua:
+        if not _edgar_warned:
+            _edgar_warned = True
+            logging.getLogger("trader.sources").warning(
+                "EDGAR User-Agent 미설정 — EDGAR 수집을 끕니다 "
+                "(설정 화면 '연결 키' 또는 secrets/.env 의 EDGAR_USER_AGENT)"
+            )
+        return None
+    return EdgarClient(ua, paths.state_dir() / "cache")
 
 
 def _run_features(action: str, market: str | None, **kwargs) -> None:
@@ -1074,7 +1094,10 @@ def _daemon_snapshot_fn(secrets: config.Secrets, universe, market_client, notifi
         if notifier is not None:
             notifier.send(messages.adjusted_prices(market, tickers))
 
-    return lambda markets: features_fn("snapshot", markets, on_adjusted=on_adjusted)
+    # extra = 유니버스 밖 열린 창 종목 [(코드, 시장, 거래소)] (daemon._open_window_targets, 2-L1)
+    return lambda markets, extra=None: features_fn(
+        "snapshot", markets, on_adjusted=on_adjusted, extra_targets=extra
+    )
 
 
 @app.command("daemon")
@@ -1683,6 +1706,47 @@ def control_killswitch(
             raise typer.Exit(code=1)
         r = killswitch.reason(conn)
         typer.echo(f"킬스위치: {'켜짐 — ' + r if r else '꺼짐'}")
+    finally:
+        conn.close()
+
+
+@control_app.command("exec-key")
+@_config_errors
+def control_exec_key(
+    action: str = typer.Argument(..., help="list | release"),
+    key: str = typer.Argument("", help="release 할 실행 키(`trader control exec-key list` 의 key)"),
+    note: str = typer.Option("", "--note", help="release 때 확인 메모(10자 이상, KIS 주문 유무)"),
+) -> None:
+    """실행 키(원장 exec_keys, 검토 O8) 조회·해제. 보낸 뒤(sent_at) 기록 전에 예외로 끊긴 키는 영구
+    선점이라 같은 결정·계좌·방향의 주문이 다시 나가지 않는다 — KIS 에 주문이 없음을 확인한 뒤
+    release 로 푼다(전체 검토 2차 2-O13). 해제 기록은 control `exec_key_released:<key>`."""
+    import json
+
+    from trader.control import control
+    from trader.ledger import repo
+
+    conn, _ = _control_conn()
+    try:
+        if action == "list":
+            rows = repo.list_exec_keys(conn)
+            typer.echo(json.dumps(rows, ensure_ascii=False, indent=1) if rows else "실행 키 없음")
+            return
+        if action != "release":
+            typer.echo("오류: list | release", err=True)
+            raise typer.Exit(code=1)
+        if len(note.strip()) < 10:
+            typer.echo("오류: --note 에 확인 메모(10자 이상)가 필요합니다", err=True)
+            raise typer.Exit(code=1)
+        if not any(r["key"] == key for r in repo.list_exec_keys(conn)):
+            typer.echo(f"오류: 실행 키 없음: {key}", err=True)
+            raise typer.Exit(code=1)
+        repo.release_exec_key(conn, key)
+        control.set_flag(
+            conn,
+            f"exec_key_released:{key}",
+            {"note": note.strip(), "at": datetime.now(UTC).isoformat()},
+        )
+        typer.echo(f"실행 키 해제: {key}")
     finally:
         conn.close()
 
@@ -2770,6 +2834,63 @@ def regime_backtest(
         "bear_spans": spans,
         "transitions": len(spans),
     }
+    typer.echo(json.dumps(out, ensure_ascii=False, default=str))
+
+
+screen_app = typer.Typer(
+    help="정량 스크린 과거 검증(10-26 검토 L15): 피처 스토어만 읽는 리포트", no_args_is_help=True
+)
+app.add_typer(screen_app, name="screen")
+
+
+@screen_app.command("backtest")
+@_config_errors
+def screen_backtest(
+    market: str = typer.Option("KR", "--market", help="KR|US"),
+    days: int = typer.Option(1100, "--days", min=30, help="최근 N일 피처 파일"),
+    top: int = typer.Option(5, "--top", min=1, max=30, help="바구니 종목 수"),
+    horizon: int = typer.Option(5, "--horizon", min=1, max=60, help="보유 거래일"),
+) -> None:
+    """`roc_10` 상위 N·실제 scan 점수 상위 N·필터 통과 1/N 을 다음 거래일 진입, horizon 거래일
+    보유, 같은 왕복비용으로 비교한다(겹치지 않는 창). 읽기 전용 — 설정·주문 불변."""
+    import json
+    from datetime import timedelta
+
+    from trader.ledger import db
+    from trader.ml import dataset, universe_pit
+    from trader.risk import costs
+    from trader.scan import backtest
+
+    if market not in ("KR", "US"):
+        raise config.ConfigError(f"시장은 KR 또는 US: {market}")
+    state = paths.state_dir()
+    since = date.today() - timedelta(days=days)
+    df = dataset.load_all(
+        state,
+        market=market,
+        since=since,
+        columns=["close", "volume", "roc_10", "high_52w_pos", "atr_14"],
+    )
+    conn = db.connect()
+    try:
+        db.init_schema(conn)
+        # 시점 유니버스는 신호일 선택에만 — 가격표는 걸러지지 않은 df(PR #62 Codex)
+        eligible, pit = universe_pit.apply(df, conn, config.load_ml().train.pit)
+    finally:
+        conn.close()
+    out = backtest.run(
+        df,
+        market=market,
+        top_n=top,
+        horizon=horizon,
+        cost_bp=costs.round_trip_bp(market),
+        select=eligible,
+    )
+    out["pit"] = pit
+    out["note"] = (
+        "survivorship: 피처 스토어는 오늘 유니버스로 백필 — pit.recorded_since 이전 구간은 "
+        "생존 편향이 남는다(편출·상장폐지 종목 없음)"
+    )
     typer.echo(json.dumps(out, ensure_ascii=False, default=str))
 
 

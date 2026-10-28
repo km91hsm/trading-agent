@@ -151,10 +151,16 @@ def _tercile_labels(out: pd.DataFrame) -> pd.Series:
 
 
 def feature_columns(df: pd.DataFrame) -> list[str]:
-    """수치 피처 열만 (식별자·원가격·거래량·타깃 제외). 타깃이 섞이면 ValueError."""
+    """수치 피처 열만 (식별자·원가격·거래량·타깃 제외). 타깃이 섞이면 ValueError.
+
+    수급·뉴스·커뮤니티 건수 열(`features.FLOW_COLUMNS`·`COUNT_COLUMNS`)은 백필에 없어 과거 구간이
+    전부 NaN 이고 최근 스냅샷에만 값이 있다 — 학습하면 "값이 있음" 자체가 최근 날짜를 알리는
+    누출이 된다(10-26 검토 L6). 학습·튜닝 열에서 뺀다. 이미 승격된 모델은 재학습 전까지 저장된
+    열을 쓴다."""
+    skip = set(NON_FEATURE_COLUMNS) | set(features.COUNT_COLUMNS) | set(features.FLOW_COLUMNS)
     cols = []
     for c in df.columns:
-        if c in NON_FEATURE_COLUMNS:
+        if c in skip:
             continue
         if pd.api.types.is_numeric_dtype(df[c]) and df[c].notna().any():
             cols.append(c)  # 전부 NaN 인 열(아직 채우지 않은 피처)은 제외

@@ -85,6 +85,7 @@ def test_api_performance_shadow_pairs(client, conn):
     r = client.get("/api/performance/shadow?market=KR").json()
     assert r["pairs"]["candidates_1n"]["n"] == 1
     assert abs(r["pairs"]["candidates_1n"]["mean_diff"] - 0.02) < 1e-9
+    assert r["pairs"]["candidates_1n"]["ci_low"] is None  # 2-L2: 쌍 1개는 구간 없음
     assert abs(r["pairs"]["quant_topn"]["mean_diff"] - 0.01) < 1e-9
     assert r["recent"][0] == {
         "date": "2026-10-01",

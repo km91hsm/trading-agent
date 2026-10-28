@@ -220,9 +220,14 @@ def test_telegram_daily_without_snapshot(conn):
     assert sent.msgs[-1].startswith("[일일 리포트]") and "스냅샷" in sent.msgs[-1]
 
 
-def test_untrusted_sender_cannot_approve_but_can_pause(conn):
+def test_untrusted_sender_can_only_read(conn):
+    """2-T2: 그룹 채팅(허용 목록 없음)·허용 목록 밖 구성원은 조회(/status·/daily)만 —
+    /pause·/kill 도 거부한다(킬스위치 해제는 CLI 로만 되므로 구성원 한 명의 실수가 매매
+    중단으로 이어졌다)."""
+    from trader.control import control
     from trader.notify.commands import poll_once
     from trader.notify.telegram import Update
+    from trader.risk import killswitch
 
     sent = Sent()
     cctx = _ctx(conn, sent)
@@ -236,9 +241,25 @@ def test_untrusted_sender_cannot_approve_but_can_pause(conn):
         def poll(self, offset=None):
             return [Update(update_id=1, text=self.text, chat_id="-100", trusted=False)]
 
-    poll_once(cctx, R("/resume"))
-    assert any("명령 거부" in m for m in sent.msgs)
-    poll_once(cctx, R("/pause"))
-    from trader.control import control
+    for cmd in ("/resume", "/pause", "/kill"):
+        poll_once(cctx, R(cmd))
+        assert sent.msgs[-1].startswith("[명령 거부]"), cmd
+    assert not control.is_paused(cctx.conn)
+    assert killswitch.reason(cctx.conn) is None
+    poll_once(cctx, R("/status"))
+    assert not sent.msgs[-1].startswith("[명령 거부]")
 
-    assert control.is_paused(cctx.conn)
+
+def test_unknown_command_help_at_most_once_per_minute(conn):
+    """2-T2: 모르는 /xxx 마다 도움말을 보내지 않는다 — 분당 1회."""
+    from datetime import UTC, datetime, timedelta
+
+    sent = Sent()
+    ctx = _ctx(conn, sent)
+    t = [datetime(2026, 10, 28, 1, 0, tzinfo=UTC)]
+    ctx.now = lambda: t[0]
+    commands.poll_once(ctx, Recv(["/aprove 1", "/foo"]))
+    assert sum(m.startswith("[명령 안내]") for m in sent.msgs) == 1
+    t[0] += timedelta(seconds=61)
+    commands.poll_once(ctx, Recv(["/bar"]))
+    assert sum(m.startswith("[명령 안내]") for m in sent.msgs) == 2

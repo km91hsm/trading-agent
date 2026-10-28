@@ -6,7 +6,8 @@
 체크포인트는 `42_reprice_<acct>`·`52_order_reprice_<acct>` 다. 취소된 원 주문은 dead 라 중복
 가드에 걸리지 않는다. 원 지정가 대비 `max_chase_pct` 넘게 불리한(BUY 는 더 높은, SELL 은 더
 낮은) 현재가면 재제출하지 않고 알림만. dry_run·`off` 계좌·unknown(번호 없음)·외부 주문은
-건너뛴다."""
+건너뛴다. `quote_fn` 이 시세 객체(`.price`·`.change_pct`·종목상태)를 주면 재제출 게이트가
+당일 등락률(급등 추격 금지)·매매 제한을 본다(2-O5) — Decimal 만 주면 가격만."""
 
 from __future__ import annotations
 
@@ -23,6 +24,7 @@ from trader.control import control
 from trader.ledger import repo
 from trader.notify import messages
 from trader.orchestrator import executor
+from trader.risk import tradability
 
 logger = logging.getLogger("trader.reprice")
 
@@ -36,7 +38,9 @@ def candidates(conn, account_id: str, market: str, today: date) -> list[dict]:
 
     손절 SELL(결정은 며칠 전 BUY)·헤지(결정 source='hedge')는 재호가가 "최신 결정 + 일반 게이트"
     로 재제출하면 손절이 사라지거나(BUY 로 재실행) bear 에서 헤지가 거부되므로 뺀다 — 주문 방향이
-    결정 행동(BUY/ADD→BUY, SELL/TRIM→SELL)과 같고 일반(LLM) 결정일 때만(전체 검토 O2)."""
+    결정 행동(BUY/ADD→BUY, SELL/TRIM→SELL)과 같고 일반(LLM) 결정일 때만(전체 검토 O2). 주문 행의
+    origin 이 llm(또는 옛 행 NULL)인 것만 — 최신 결정이 SELL/TRIM 인 날의 US 손절 지정가 SELL 은
+    방향이 같아도 손절(origin='stop')이라 뺀다(2-O3)."""
     lo, hi = repo.day_bounds(today, market)
     rows = conn.execute(
         "SELECT o.id, o.decision_id, o.ticker, o.side, o.qty, o.price, o.order_no, o.org_no, "
@@ -44,7 +48,8 @@ def candidates(conn, account_id: str, market: str, today: date) -> list[dict]:
         "FROM orders o JOIN decisions d ON d.id = o.decision_id "
         "WHERE o.account_id=? AND o.market=? AND o.status='accepted' "
         "AND o.order_type='LIMIT' AND o.order_no IS NOT NULL "
-        "AND o.mode != 'external' AND o.created_at >= ? AND o.created_at < ? "
+        "AND o.mode != 'external' AND COALESCE(o.origin, 'llm') = 'llm' "
+        "AND o.created_at >= ? AND o.created_at < ? "
         "AND d.source != 'hedge' "
         "AND ((o.side='BUY' AND d.action IN ('BUY','ADD')) "
         "OR (o.side='SELL' AND d.action IN ('SELL','TRIM'))) ORDER BY o.id",
@@ -67,7 +72,7 @@ def reprice(
     market: str,
     today: date,
     cfg: RepriceCfg,
-    quote_fn: Callable[[str, str | None], Decimal],
+    quote_fn: Callable[[str, str | None], Any],
     exchanges: dict[str, str] | None = None,
     dry_run: bool = False,
     label: Callable[[str], str] | None = None,
@@ -95,8 +100,9 @@ def reprice(
             exchange = (exchanges or {}).get(ticker)
             limit = Decimal(str(row["price"]))
             try:
-                quote = Decimal(str(quote_fn(ticker, exchange)))
-            except (KisApiError, ValueError) as e:
+                q = quote_fn(ticker, exchange)
+                quote = Decimal(str(getattr(q, "price", q)))
+            except (KisApiError, ValueError, ArithmeticError) as e:
                 out["skipped"].append({"order_id": row["id"], "why": f"시세 실패: {e}"})
                 continue
             if quote <= 0:
@@ -155,6 +161,8 @@ def reprice(
                 skip_accounts=frozenset(a.id for a in ctx.accounts if a.id != account.id),
                 extra_note=f"재호가 {limit}→{quote} (원 주문 #{row['id']} 취소)",
                 is_reprice=True,
+                change_pct=getattr(q, "change_pct", None),
+                trade_block=tradability.block_reason(q) if row["side"] == "BUY" else None,
             )
             r0 = results[0] if results else {}
             out["repriced"].append(

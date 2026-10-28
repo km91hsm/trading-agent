@@ -184,3 +184,14 @@ def test_relative_tercile_rejects_rows_without_market():
         dataset.make_labels(df, horizon_days=5, up=0.02, down=-0.02, mode="relative_tercile")
     # absolute 모드는 market 을 쓰지 않으므로 그대로
     dataset.make_labels(df, horizon_days=5, up=0.02, down=-0.02, mode="absolute")
+
+
+def test_feature_columns_excludes_non_backfillable_count_and_flow():
+    """L6: 백필에 없는 수급·뉴스·커뮤니티 건수 열은 최근 행에 값이 있어도 학습 열이 아니다."""
+    df = synthetic_features(2, 30, signal=False)
+    for c in features.FLOW_COLUMNS + features.COUNT_COLUMNS:
+        df[c] = float("nan")
+        df.loc[df.index[-3:], c] = 1.0  # 최근 스냅샷만 값이 있다
+    cols = dataset.feature_columns(df)
+    assert not set(features.FLOW_COLUMNS + features.COUNT_COLUMNS) & set(cols)
+    assert "roc_10" in cols

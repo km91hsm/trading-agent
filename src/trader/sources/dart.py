@@ -61,6 +61,10 @@ def fiscal_year_for(asof: date) -> int:
     return asof.year - 1 if asof.month >= 4 else asof.year - 2
 
 
+# 시장 전체 공시 목록을 하루에 받는 최대 쪽수(100건/쪽). 분기 말 피크(1,000~1,500건)를 덮는다(2-L11)
+MAX_LIST_PAGES = 15
+
+
 class DartClient:
     def __init__(
         self,
@@ -276,10 +280,11 @@ class DartClient:
         items.sort(key=lambda i: i["rcept_dt"], reverse=True)
         return items
 
-    def market_disclosures(self, day: date, *, pages: int = 3) -> list[dict]:
+    def market_disclosures(self, day: date, *, pages: int = MAX_LIST_PAGES) -> list[dict]:
         """그날(KST) 시장 전체 공시 목록(Phase 25 공시 중요도) — `list.json` 을 회사 지정 없이
-        page_count 100 으로 최대 pages 쪽. 행은 DART 원본 필드(stock_code·corp_name·report_nm·
-        rcept_no·rcept_dt)."""
+        page_count 100 으로 total_page 까지(최대 pages 쪽; 분기 말 1,000건 넘는 날도 보유 종목
+        공시가 잘리지 않게, 2-L11). 행은 DART 원본 필드(stock_code·corp_name·report_nm·rcept_no·
+        rcept_dt)."""
         out: list[dict] = []
         ymd = day.strftime("%Y%m%d")
         for page in range(1, pages + 1):

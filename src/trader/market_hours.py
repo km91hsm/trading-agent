@@ -5,7 +5,8 @@ US 휴장은 `daemon.us_holidays`(NYSE 규칙)를 쓰고, KR 휴장은 KIS 조�
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
+from typing import Any
 
 from trader.config import MARKET_TZ
 
@@ -65,6 +66,17 @@ def session_over(market: str, now: datetime) -> bool:
         return True
     hm = local.strftime("%H:%M")
     return hm >= close_hm(market, local.date())
+
+
+def completed_candles(market: str, candles: list[Any], now: datetime) -> list[Any]:
+    """완성된 일봉만(전체 검토 2차 2-P4·L7): 현지 오늘 봉은 정규장이 끝났을 때만 남기고(장중엔
+    거래량이 있어도 미완성), 미래 날짜 봉과 거래량 0 꼬리(개장 전 스텁)는 버린다. 피처 스냅샷·백필·
+    국면 proxy·지수 종가표가 이 함수 하나를 쓴다."""
+    from trader.broker.models import drop_incomplete_tail
+
+    local_day = now.astimezone(MARKET_TZ[market]).date()
+    last_ok = local_day if session_over(market, now) else local_day - timedelta(days=1)
+    return drop_incomplete_tail([c for c in candles if c.date <= last_ok])
 
 
 # --- 국내 파생(Phase 26) ------------------------------------------------------------

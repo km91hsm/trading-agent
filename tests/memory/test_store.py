@@ -149,12 +149,45 @@ def test_promote_on_big_return_and_lesson(conn):
         store.get_entry(conn, big)["tier"] == "mid"
         and store.get_entry(conn, small)["tier"] == "short"
     )
+    # L13: lesson 하나로는 승격하지 않는다 — 같은 상황의 서로 다른 결정 3건 이상이 lesson 을 낼 때만
     store.set_reflection(
         conn, small, {"decision_review": {"verdict": "BAD"}, "lesson": "과열 구간 매수 금지"}
     )
-    assert store.get_entry(conn, small)["tier"] == "mid"
+    assert store.get_entry(conn, small)["tier"] == "short"
     store.set_reflection(conn, big, {"lesson": "추세 추종 유효"})
-    assert store.get_entry(conn, big)["tier"] == "long"  # mid → long
+    assert store.get_entry(conn, big)["tier"] == "mid"  # 큰 수익 승격만, lesson 승격 없음
+    third = _entry(conn, 3, realized=0.01)
+    store.set_reflection(conn, third, {"lesson": "추세 추종 유효"})
+    assert store.get_entry(conn, third)["tier"] == "mid"  # 같은 상황 결정 3건째 → 승격
+    store.set_reflection(conn, third, {"lesson": "추세 추종 유효"})  # 다시 저장해도
+    assert store.get_entry(conn, third)["tier"] == "mid"  # 한 번만 승격
+
+
+def test_lesson_promotion_counts_distinct_similar_decisions_only(conn):
+    """L13: 같은 결정의 재평가 라운드나 다른 상황(코사인 낮음)·다른 시장은 세지 않는다."""
+    far = [0.5, -0.5] * 6
+    a = _entry(conn, 1)
+    b = _entry(conn, 2, vec=far)  # 다른 상황
+    store.set_reflection(conn, a, {"lesson": "x"})
+    store.set_reflection(conn, b, {"lesson": "x"})
+    r1 = store.record_decision(
+        conn,
+        decision_id=1,
+        ticker="T001",
+        market="KR",
+        account_id="paper-main",
+        decided_at=(NOW - timedelta(days=9)).isoformat(),
+        decision={"action": "HOLD", "confidence": 0.5},
+        row={"roc_10": 1.0},
+        horizon_days=5,
+        vector=VEC,
+        round_no=1,
+    )  # 같은 결정의 재평가 라운드
+    store.fill_outcome(
+        conn, r1, realized_return=0.0, alpha=0.0, outcome_at=(NOW - timedelta(days=1)).isoformat()
+    )
+    store.set_reflection(conn, r1, {"lesson": "x"})
+    assert store.get_entry(conn, r1)["tier"] == "short"  # 결정 1 하나 + 결정 2(다른 상황) = 1건
 
 
 def test_prune_old_low_importance_short(conn):

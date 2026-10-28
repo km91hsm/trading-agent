@@ -87,6 +87,7 @@ class QuoteHub:
         self._key = ""
         self._attempt = 0
         self._retry_at = 0.0
+        self._in_use = False  # 마지막 끊김이 'ALREADY IN USE appkey' 였다(상태 표시용)
         self._last_request = 0.0
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
@@ -139,8 +140,19 @@ class QuoteHub:
         return self._lease([(kis_ws.TR_BOOK, ticker)]).get((kis_ws.TR_BOOK, ticker))
 
     def status(self) -> dict:
+        """연결 상태 + 붙지 않는 이유(`yield`, 2-P13): 같은 프로세스의 실전 체결통보가 앱키 세션을
+        쓰는 중이면 `fills_listener`, 다른 연결이 앱키를 쥐고 있어 백오프 중이면 `appkey_in_use`."""
+        reason = None
+        if self.blocked():
+            reason = "fills_listener"
+        elif self._in_use and self._clock() < self._retry_at:
+            reason = "appkey_in_use"
         with self._lock:
-            return {"connected": self._conn is not None, "subscribed": len(self._subs)}
+            return {
+                "connected": self._conn is not None,
+                "subscribed": len(self._subs),
+                "yield": reason,
+            }
 
     def stop(self) -> None:
         """웹 앱 종료 때. 연결은 그것을 연 허브 스레드가 닫는다(종료 신호를 보고 finally 에서)."""
@@ -277,6 +289,7 @@ class QuoteHub:
             if kis_ws.is_appkey_in_use(msg):
                 logger.warning("실시간 시세: 앱키 세션 사용 중(다른 연결) — 잠시 뒤 다시")
                 self._drop(backoff=True)
+                self._in_use = True
                 return False
             if "already" in low or not key:
                 return True
@@ -311,6 +324,7 @@ class QuoteHub:
 
     def _drop(self, *, backoff: bool) -> None:
         self._disconnect()
+        self._in_use = False
         if backoff:
             self._attempt += 1
             self._retry_at = self._clock() + min(2 ** (self._attempt - 1), MAX_BACKOFF_S)

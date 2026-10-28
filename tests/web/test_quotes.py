@@ -163,7 +163,9 @@ class FakeHub:
         return {t: v for t, v in self.ticks.items() if t in tickers}
 
     def status(self):
-        return {"connected": self.connected, "subscribed": len(self.ticks)}
+        return {"connected": self.connected, "subscribed": len(self.ticks), "yield": self.yielded}
+
+    yielded = None
 
 
 def test_quotes_kr_uses_ws_hub_first(project, conn):
@@ -222,3 +224,15 @@ def test_indices_and_book_routes(project, conn):
         "asof": CLOSED.isoformat(),
         "indices": {},
     }
+
+
+def test_quotes_reports_hub_yield_reason(project, conn):
+    """2-P13: 허브가 양보 중이면 응답에 사유를 실어 화면이 '10초마다' 의 이유를 보인다."""
+    c, deps = _client(project, OPEN)
+    deps.quote_hub = FakeHub({}, connected=False)
+    deps.quote_hub.yielded = "fills_listener"
+    r = c.get("/api/quotes", params={"market": "KR", "tickers": "005930"}).json()
+    assert r["stream"] is False and r["hub_yield"] == "fills_listener"
+    assert (
+        c.get("/api/quotes", params={"market": "US", "tickers": "AAPL"}).json()["hub_yield"] is None
+    )
