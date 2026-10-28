@@ -413,7 +413,8 @@ Claude 리뷰어 4 + Codex 2 교차검증 결과 중 비주문 항목. 표의 �
 - **정량 스크린 검증(L15).** `trader screen backtest`(`scan/backtest.run`, 순수 함수)가 피처 스토어로
   `roc_10` 상위 N·실제 `quant.score` 상위 N·필터 통과 1/N 을 다음 거래일 종가 진입·horizon 거래일 보유·같은
   왕복비용·겹치지 않는 창으로 비교한다(가격 없는 종목은 채우지 않고 `missing`). 시점 유니버스
-  (`universe_pit.apply`) 기록 이전 구간의 생존 편향을 `note`·`pit` 로 함께 보인다. 읽기 전용.
+  (`universe_pit.apply`)는 신호일 선택에만 쓰고 진입·청산 가격은 걸러지지 않은 표로 본다(보유 중 편출된
+  종목도 실제 청산가로). 기록 이전 구간의 생존 편향을 `note`·`pit` 로 함께 보인다. 읽기 전용.
 
 ## 전체 검토 2차 교차검증 보완 — 묶음 1 즉시 비주문 (2026-10-28, `docs/reviews/2026-10-27-full-review-2.md` §6)
 - **알림 보관함과 호출부 재시도(2-T1).** `TelegramNotifier.send` 는 전송 실패분을 outbox 에 보관하는 데 성공하면 **True** 를 돌려준다 — 재전송 책임은 `flush_outbox`(telegram_poll 틱) 하나이고, 호출부(단타 묶음 `_send_digest`·watchdog)가 False 를 보고 스스로 다시 보내는 것은 보관함이 없는 notifier 뿐이다. 예전엔 보관하고도 False 라 같은 알림이 두 번 갔다.

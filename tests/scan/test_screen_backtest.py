@@ -98,3 +98,18 @@ def test_cli_screen_backtest_reads_feature_store(project):
     out = json.loads(r.stdout.strip().splitlines()[-1])
     assert out["cost_bp"] == 30 and out["summary"]["momentum"]["windows"] >= 1
     assert "pit" in out and "survivorship" in out["note"]
+
+
+def test_pit_filter_limits_selection_but_keeps_exit_prices():
+    """PR #62 Codex: 시점 유니버스 필터는 신호일 선택에만 — 보유 중 유니버스를 벗어난 종목도 실제
+    청산 가격으로 평가해야 한다(가격 행을 지우면 비중이 남은 종목으로 재분배돼 수익이 바뀐다)."""
+    df, days = _frame()
+    # T5(최상위 모멘텀)는 첫 신호일 뒤 편출 — 선택용 행에서는 그 뒤가 빠지지만 가격은 남아 있다
+    select = df[~((df["ticker"] == "T5") & (df["date"] > pd.Timestamp(days[0])))]
+    full = backtest.run(df, market="KR", top_n=2, horizon=5, cost_bp=0, select=select)
+    cut = backtest.run(select, market="KR", top_n=2, horizon=5, cost_bp=0)
+    w_full, w_cut = full["windows"][0], cut["windows"][0]
+    assert w_full["missing"] == 0  # T5 의 청산가를 그대로 쓴다
+    assert w_cut["missing"] >= 1  # 옛 방식: 가격 행이 지워져 빠졌다
+    # 두 번째 창의 신호일에는 T5 가 선택 후보가 아니다
+    assert full["windows"][1]["n_universe"] < full["windows"][0]["n_universe"]

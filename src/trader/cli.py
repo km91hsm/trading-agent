@@ -2812,11 +2812,17 @@ def screen_backtest(
     conn = db.connect()
     try:
         db.init_schema(conn)
-        df, pit = universe_pit.apply(df, conn, config.load_ml().train.pit)
+        # 시점 유니버스는 신호일 선택에만 — 가격표는 걸러지지 않은 df(PR #62 Codex)
+        eligible, pit = universe_pit.apply(df, conn, config.load_ml().train.pit)
     finally:
         conn.close()
     out = backtest.run(
-        df, market=market, top_n=top, horizon=horizon, cost_bp=costs.round_trip_bp(market)
+        df,
+        market=market,
+        top_n=top,
+        horizon=horizon,
+        cost_bp=costs.round_trip_bp(market),
+        select=eligible,
     )
     out["pit"] = pit
     out["note"] = (

@@ -67,8 +67,13 @@ def run(
     top_n: int = 5,
     horizon: int = 5,
     cost_bp: float,
+    select: pd.DataFrame | None = None,
 ) -> dict:
-    """df: 피처 행(date·ticker·close·volume·roc_10·high_52w_pos·atr_14). 순수 함수."""
+    """df: 피처 행(date·ticker·close·volume·roc_10·high_52w_pos·atr_14). 순수 함수.
+
+    `select` 는 신호일 종목 선택에 쓸 행(시점 유니버스로 거른 것). 진입·청산 가격은 걸러지지 않은
+    `df` 로 본다 — 보유 중 유니버스를 벗어난 종목의 가격 행을 지우면 그 비중이 남은 종목으로
+    재분배돼 과거 수익이 바뀐다(PR #62 Codex)."""
     out: dict = {
         "market": market,
         "top_n": top_n,
@@ -84,12 +89,14 @@ def run(
     d = df.copy()
     d["date"] = pd.to_datetime(d["date"])
     closes = d.pivot_table(index="date", columns="ticker", values="close", aggfunc="last")
+    sel = d if select is None else select.copy()
+    sel["date"] = pd.to_datetime(sel["date"])
     dates = list(closes.index)
     cost = float(cost_bp) / 10_000
     vals: dict[str, list[float]] = {k: [] for k in STRATEGIES}
     for i in range(0, len(dates) - horizon - 1, horizon):
         signal, entry, exit_ = dates[i], dates[i + 1], dates[i + 1 + horizon]
-        rows = d[d["date"] == signal]
+        rows = sel[sel["date"] == signal]
         ranked = quant.score(rows, top=len(rows))  # 필터·결측 제외를 scan 과 같이
         if ranked.empty:
             continue
