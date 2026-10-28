@@ -542,13 +542,15 @@ def _send_entry(
     mode: str,
     today: date,
     carry_used: Decimal = Decimal(0),
+    underlying: Decimal | None = None,
 ) -> dict[str, Any]:
     d, cfg = env.decision, ctx.settings.fo
     per_contract = (leg.planned_loss / leg.qty) if leg.qty else Decimal(0)
     stop_fut = None
     if leg.kind == "FUTURES" and verdict.stop_pt is not None and quote is not None:
         stop_fut = sizing.stop_fut_of(
-            verdict.stop_pt, sizing.basis_of(quote, None) or Decimal(0), d.direction,
+            # 사이징과 같은 기초지수로 베이시스를 구한다(시세에 기초지수가 없어도 — PR #66 리뷰)
+            verdict.stop_pt, sizing.basis_of(quote, underlying) or Decimal(0), d.direction,
             Decimal(str(cfg.slippage_pt)),
         )  # fmt: skip
     nav_at_open = pos.nav_at_open if pos is not None else port.nav
@@ -878,6 +880,7 @@ def run_leg(
                     quote=fi.quote,
                     round=round,
                     carry_used=carry_used if pos is None else Decimal(0),
+                    underlying=fi.underlying,
                     stage=od_stage,
                     mode=mode,
                     today=today,
@@ -1256,7 +1259,7 @@ def _apply_position_fills(
     for leg in store.legs_of(ctx.conn, pos.id):
         if leg.order_no is None or leg.order_no not in by_no:
             continue
-        at = leg.accepted_at or leg.sent_at or leg.created_at
+        at = leg.sent_at or leg.accepted_at or leg.created_at
         if at < lo or at >= hi:
             continue
         filled = by_no[leg.order_no]

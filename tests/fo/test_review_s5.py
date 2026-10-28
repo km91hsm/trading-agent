@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 
@@ -18,6 +18,7 @@ from fo.test_executor import (
     balance,
     decision,
     env,
+    holding,
     make_ctx,
     state,
 )
@@ -329,3 +330,49 @@ def test_unstarted_session_release_not_counted_in_daily_cap(conn):
                            profile=prof, now=at(10, 6), today=TODAY,
                            ref_index=Decimal("350"))  # fmt: skip
     assert again is not None  # 세션이 뜨지 않은 해제는 하루 상한(1)에 세지 않는다
+
+
+# --- PR #66 GitHub 리뷰(G5-1~3) ----------------------------------------------------------------
+
+
+def test_persisted_stop_fut_uses_same_basis_as_sizing(conn):
+    from fo._gate import quote as fquote
+    from trader.broker.fake import FakeMarket
+
+    q = fquote(price="355", basis=None, underlying=None)
+    market = FakeMarket(fo_quotes={"105W11": q}, kospi200=(Decimal("350"), T0))
+    ctx = make_ctx(conn, market=market)
+    executor.run_leg(ctx, account(), env(decision(entry_price=355.0)))
+    pos = store.open_positions(conn, ACCT)[0]
+    assert pos.stop_fut == Decimal("349.9")  # 345 + (355 − 350) − 0.1
+
+
+def test_leg_day_prefers_original_send_time():
+    from trader.fo.types import FoLegRow
+
+    leg = FoLegRow(id=1, position_id=1, account_id=ACCT, intent="OPEN", round=0, attempt=1,
+                   status="accepted", order_id=None, order_no="1", qty=1, filled_qty=0,
+                   price=None, order_type="LIMIT", sent_at="2026-10-26T01:30:00+00:00",
+                   accepted_at="2026-10-27T01:30:00+00:00",
+                   created_at="2026-10-26T01:30:00+00:00")  # fmt: skip
+    assert positions.leg_day(leg) == date(2026, 10, 26)
+
+
+def test_recover_cancelled_prepared_resize_keeps_intent(conn):
+    ctx = make_ctx(conn, max_contracts=10)
+    pos = _held_position(conn, ctx, qty=3, qty_target=1)
+    with store.tx(conn):
+        lid = store.insert_leg(conn, position_id=pos.id, account_id=ACCT, intent="RESIZE_DOWN",
+                               round=0, attempt=1, qty=2, price=None,
+                               order_type="MARKET")  # fmt: skip
+        store.transition(conn, pos.id, expected_version=pos.version, status="resizing",
+                         active_reduce_leg_id=lid)  # fmt: skip
+    old = (datetime.now().astimezone() - timedelta(minutes=10)).isoformat()
+    conn.execute("UPDATE fo_order_legs SET created_at = ? WHERE id = ?", (old, lid))
+    conn.commit()
+    positions.recover(conn, account_id=ACCT, balance=balance([holding(qty=3)]),
+                      order_state_of=lambda *a: None, fills_of=lambda d: [], today=TODAY,
+                      now=T0)  # fmt: skip
+    assert store.get_leg(conn, lid).status == "cancelled"
+    out = executor.continue_reduce(ctx, account(), store.get_position(conn, pos.id))
+    assert out["intent"] == "RESIZE_DOWN" and ctx.brokers[ACCT].orders[-1].qty == 2

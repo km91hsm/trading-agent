@@ -46,10 +46,11 @@ def in_send_grace(leg: FoLegRow, now: datetime) -> bool:
 
 
 def leg_day(leg: FoLegRow) -> date:
-    """다리의 거래일(KST) — 접수·전송·생성 시각 순. KIS 주문번호·체결 조회는 날짜 단위다."""
+    """다리의 거래일(KST) — 전송·접수·생성 시각 순. KIS 주문번호·체결 조회는 날짜 단위다."""
     from trader.config import KST
 
-    at = leg.accepted_at or leg.sent_at or leg.created_at
+    # 원래 전송 시각 우선 — 복구가 나중에 채운 접수 시각으로 거래일이 바뀌지 않게(PR #66 리뷰)
+    at = leg.sent_at or leg.accepted_at or leg.created_at
     return datetime.fromisoformat(at).astimezone(KST).date()
 
 
@@ -102,8 +103,8 @@ def _confirm_leg(
             r["order_no"]
             for r in conn.execute(
                 "SELECT order_no FROM fo_order_legs WHERE order_no IS NOT NULL AND account_id = ? "
-                "AND COALESCE(accepted_at, sent_at, created_at) >= ? "
-                "AND COALESCE(accepted_at, sent_at, created_at) < ?",
+                "AND COALESCE(sent_at, accepted_at, created_at) >= ? "
+                "AND COALESCE(sent_at, accepted_at, created_at) < ?",
                 (leg.account_id, lo, hi),
             )
         }
@@ -180,11 +181,8 @@ def recover(
                 continue
             if is_entry(leg.intent):
                 store.release_if_empty(conn, leg.position_id, f"복구: 전송 전 예약 {leg.id} 취소")
-            else:
-                pos0 = store.get_position(conn, leg.position_id)
-                if pos0 is not None and pos0.active_reduce_leg_id == leg.id:
-                    store.transition(conn, pos0.id, expected_version=pos0.version,
-                                     active_reduce_leg_id=None)  # fmt: skip
+            # 축소 다리는 활성 연결을 **남긴다** — `continue_reduce` 가 끝난 다리의 의도·라운드로
+            # 다시 낸다(감액이 전량 청산이 되거나 목표 전에 held 로 돌아가지 않게, PR #66 리뷰)
         rep.legs_fixed += 1
     # ① 미확정 다리(다리마다 **자기 거래일**로 조회 — 어제 다리를 오늘 주문에 묶지 않는다, A4)
     for leg in store.live_legs(conn, account_id=account_id):

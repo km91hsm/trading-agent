@@ -64,7 +64,7 @@ def _lineages(fills: list[FoFill]) -> dict[str, dict[str, Any]]:
     return out
 
 
-_LEG_AT = "COALESCE(accepted_at, sent_at, created_at)"
+_LEG_AT = "COALESCE(sent_at, accepted_at, created_at)"
 
 
 def _leg_for(
@@ -93,7 +93,7 @@ def _leg_for(
     for leg in store.live_legs(conn, account_id=account_id):
         if leg.status not in ("sending", "unknown") or leg.order_no is not None:
             continue
-        at = leg.accepted_at or leg.sent_at or leg.created_at
+        at = leg.sent_at or leg.accepted_at or leg.created_at
         if at < lo or at >= hi:
             continue
         pos = store.get_position(conn, leg.position_id)
@@ -327,7 +327,7 @@ def expire_legs(conn: sqlite3.Connection, account_id: str, day: date) -> int:
     n = 0
     with store.tx(conn):
         for leg in store.live_legs(conn, account_id=account_id):
-            at = leg.accepted_at or leg.sent_at or leg.created_at
+            at = leg.sent_at or leg.accepted_at or leg.created_at
             if leg.status != "accepted" or at < lo or at >= hi:
                 continue
             store.set_leg(conn, leg.id, status="expired")
