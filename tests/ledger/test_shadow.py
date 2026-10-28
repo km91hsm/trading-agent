@@ -135,7 +135,7 @@ def _seed_matured(conn, diffs: list[float]):
         for strat, ret in (("llm", 0.01 + dlt), ("candidates_1n", 0.01)):
             conn.execute(
                 "INSERT INTO shadow_portfolios(market, date, strategy, weights_json, created_at, "
-                "fwd_ret, matured_at) VALUES ('KR', ?, ?, ?, ?, ?, ?)",
+                "fwd_ret, matured_at, def_version) VALUES ('KR', ?, ?, ?, ?, ?, ?, 2)",
                 (day, strat, '{"A": 1.0}', day, ret, day),
             )
     conn.commit()
@@ -270,7 +270,7 @@ def test_cash_days_are_excluded_from_selection_pairs_and_reported_separately(con
         ):
             conn.execute(
                 "INSERT INTO shadow_portfolios(market, date, strategy, weights_json, created_at, "
-                "fwd_ret, matured_at) VALUES ('KR', ?, ?, ?, ?, ?, ?)",
+                "fwd_ret, matured_at, def_version) VALUES ('KR', ?, ?, ?, ?, ?, ?, 2)",
                 (day, strat, w, day, ret, day),
             )
     conn.commit()
@@ -278,3 +278,26 @@ def test_cash_days_are_excluded_from_selection_pairs_and_reported_separately(con
     assert s["n"] == 1 and abs(s["mean_diff"] - 0.01) < 1e-9
     ce = shadow.cash_effect(conn, market="KR")
     assert ce["n"] == 2 and abs(ce["mean"] - 0.025) < 1e-9
+
+
+def test_legacy_llm_rows_are_excluded_from_revised_selection_stats(conn):
+    """PR #63 Codex: 공통 후보 정의 전에 만기된 옛 `llm` 행(후보 밖 매수 포함)은 새 통계에 넣지
+    않는다 — 정의 버전(`def_version`)이 현재보다 낮으면 선택 효과·현금 효과 모두에서 뺀다."""
+    for strat, ret in (("llm", 0.05), ("candidates_1n", 0.01)):
+        conn.execute(
+            "INSERT INTO shadow_portfolios(market, date, strategy, weights_json, created_at, "
+            "fwd_ret, matured_at) VALUES ('KR', '2026-01-02', ?, '{\"Z\": 1.0}', 'x', ?, 'x')",
+            (strat, ret),
+        )
+    conn.commit()
+    assert shadow.paired_stats(conn)["n"] == 0  # 옛 정의(버전 없음)
+    _decision(conn, "B", "BUY", 0.2)
+    shadow.record(conn, market="KR", day=DAYS[0], scan=SCAN, top_n=2)
+    vers = {
+        r["strategy"]: r["def_version"]
+        for r in conn.execute(
+            "SELECT strategy, def_version FROM shadow_portfolios WHERE date=?",
+            (DAYS[0].isoformat(),),
+        )
+    }
+    assert set(vers.values()) == {shadow.DEF_VERSION}

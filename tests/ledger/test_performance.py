@@ -190,3 +190,15 @@ def test_report_quant_benchmark_uses_recorded_shadow_not_current_model(conn, pro
     # DAYS[1] 종가에 들어가 → DAYS[2] +10%, DAYS[4] +10%. 진입 편도 비용 15bp(왕복 30bp 의 절반)
     assert q["return"] == pytest.approx(0.9985 * 1.10 * 1.10 - 1, abs=1e-6)
     assert q["series"][0]["time"] == DAYS[1].isoformat()
+
+
+def test_shadow_quant_benchmark_holds_drifted_weights_between_records(conn, project):
+    """PR #63 Codex: 기록 사이에는 바구니를 그대로 들고(비중이 가격 따라 표류) 새 기록이 올 때만
+    표류한 비중에서 목표로 리밸런스한다 — 매일 목표 비중으로 되돌리면 숨은 리밸런스 수익·비용이
+    생긴다.
+    50/50 에 A 100→200→100, B 그대로면 들고 있기만 한 바구니는 0%(진입 편도 비용만)."""
+    _store({"A": [100, 200, 100] + [100] * 22, "B": [100] * 25})
+    _navs(conn, [100, 100, 100])
+    _shadow_quant(conn, DAYS[0], {"A": 0.5, "B": 0.5})
+    q = performance.shadow_quant_benchmark(conn, None, "KR", DAYS[0], DAYS[2], cost_bp=30)
+    assert q["return"] == pytest.approx(0.9985 - 1, abs=1e-9)

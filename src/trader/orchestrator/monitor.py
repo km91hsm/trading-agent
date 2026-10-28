@@ -55,9 +55,10 @@ _OPS = {
 }
 
 
-def rule_hit(rule: dict, quote: Decimal, closes: list[Decimal] | None) -> bool | None:
-    """구조화 무효화 조건 하나(L16). True/False, 판정할 수 없으면(종가 부족) None.
-    `closes` 는 완성 일봉 종가(오래된 → 최근, 오늘 장중 봉 제외)."""
+def rule_hit(rule: dict, quote: Decimal, closes: list[Decimal | None] | None) -> bool | None:
+    """구조화 무효화 조건 하나(L16). True/False, 판정할 수 없으면(종가 부족·빠진 거래일) None.
+    `closes` 는 거래일 순서대로 정렬된 완성 일봉 종가(오래된 → 최근, 오늘 장중 봉 제외, 그 종목만
+    빠진 날은 None — PR #63 Codex: 빠진 날을 지우면 연속이 아닌 종가가 연속처럼 보인다)."""
     op = _OPS.get(str(rule.get("op")))
     try:
         value = Decimal(str(rule.get("value")))
@@ -71,7 +72,10 @@ def rule_hit(rule: dict, quote: Decimal, closes: list[Decimal] | None) -> bool |
         days = int(rule.get("days") or 1)
         if not closes or len(closes) < days:
             return None
-        return all(op(c, value) for c in closes[-days:])
+        window = closes[-days:]
+        if any(c is None for c in window):
+            return None
+        return all(op(c, value) for c in window)
     return None
 
 
@@ -93,7 +97,7 @@ def check_position(
     stop_loss_pct: float,
     now: datetime,
     move_pct: Decimal | None = None,
-    closes: list[Decimal] | None = None,
+    closes: list[Decimal | None] | None = None,
 ) -> list[Signal]:
     """순수 함수. 손절이면 손절 신호만, 아니면 take_profit → move_7pct → invalidation 순.
     `move_pct` 는 보유기간 프로필의 급등락 임계(Phase 23 T, 없으면 7%). `closes` 는 `close`
@@ -240,7 +244,7 @@ _CLOSES: dict[tuple[str, str], object] = {}  # (시장, 운영일) → 완성 �
 
 def _closes_if_needed(
     ctx: MonitorContext, market: str, ticker: str, today: date, dec: dict | None
-) -> list[Decimal] | None:
+) -> list[Decimal | None] | None:
     """`close` 무효화 조건이 있는 결정만 피처 스토어 종가(오늘 전 완성 봉)를 읽는다(L16)."""
     rules = (dec or {}).get("invalidation_rules") or []
     if not any(r.get("metric") == "close" for r in rules):
@@ -263,8 +267,9 @@ def _closes_if_needed(
         _CLOSES[key] = table
     if getattr(table, "empty", True) or ticker not in table.columns:
         return None
-    col = table[ticker].dropna()
-    return [Decimal(str(v)) for v in col.tolist()]
+    # 거래일(표의 모든 날짜) 정렬을 지킨다 — 그 종목만 빠진 날·오래된 마지막 값은 None
+    col = table[ticker].sort_index()
+    return [None if v is None or v != v else Decimal(str(v)) for v in col.tolist()]  # NaN != NaN
 
 
 def monitor_once(ctx: MonitorContext, *, market: str, today: date) -> dict:

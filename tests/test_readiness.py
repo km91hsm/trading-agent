@@ -55,7 +55,7 @@ def _shadow_pairs(conn, diffs, start=date(2026, 9, 1), market="KR"):
         for strat, ret in (("llm", 0.01 + dlt), ("candidates_1n", 0.01)):
             conn.execute(
                 "INSERT INTO shadow_portfolios(market, date, strategy, weights_json, created_at, "
-                "fwd_ret, matured_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "fwd_ret, matured_at, def_version) VALUES (?, ?, ?, ?, ?, ?, ?, 2)",
                 (market, day, strat, '{"A": 1.0}', day, ret, day),
             )
     conn.commit()

@@ -941,3 +941,30 @@ def test_stop_loss_floor_survives_same_day_reevaluation(conn):
     ctx = _ctx(conn, positions=[_pos(cur="63000")], price="63000")
     out = monitor.monitor_once(ctx, market="KR", today=D)
     assert out["stop_loss_orders"] == 1
+
+
+def test_close_rule_keeps_session_alignment_and_skips_on_missing_session(monkeypatch, project):
+    """PR #63 Codex: 빠진 거래일을 지우면 연속이 아닌 종가가 연속처럼 보인다 — 거래일 정렬을 지키고
+    필요한 종가 중 하나라도 없으면(빠진 날·오래된 마지막 값) 미판정."""
+    from datetime import date as _d
+    from types import SimpleNamespace
+
+    import pandas as pd
+
+    from trader.ml import dataset
+
+    days = [_d(2026, 10, 20), _d(2026, 10, 21), _d(2026, 10, 22), _d(2026, 10, 23)]
+    table = pd.DataFrame(
+        {"005930": [90.0, float("nan"), 90.0, 90.0], "000660": [1.0, 1.0, 1.0, 1.0]},
+        index=pd.Index(days, name="date"),
+    )
+    monkeypatch.setattr(dataset, "close_table", lambda *a, **k: table)
+    monitor._CLOSES.clear()
+    ctx = SimpleNamespace(state=project / "state")
+    rule = {"metric": "close", "op": "<", "value": 100, "days": 3}
+    dec = {"invalidation_rules": [rule]}
+    closes = monitor._closes_if_needed(ctx, "KR", "005930", _d(2026, 10, 24), dec)
+    assert closes[-3] is None and len(closes) == 4  # 빠진 날 자리가 남아 있다
+    assert monitor.rule_hit(rule, Decimal("90"), closes) is None
+    two = {"metric": "close", "op": "<", "value": 100, "days": 2}
+    assert monitor.rule_hit(two, Decimal("90"), closes) is True

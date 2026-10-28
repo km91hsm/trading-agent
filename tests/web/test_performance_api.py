@@ -78,7 +78,8 @@ def test_api_performance_shadow_pairs(client, conn):
     for strat, ret in (("llm", 0.03), ("candidates_1n", 0.01), ("quant_topn", 0.02)):
         conn.execute(
             "INSERT INTO shadow_portfolios(market, date, strategy, weights_json, created_at, "
-            "fwd_ret, matured_at) VALUES ('KR', '2026-10-01', ?, ?, 'x', ?, 'x')",
+            "fwd_ret, matured_at, def_version) "
+            "VALUES ('KR', '2026-10-01', ?, ?, 'x', ?, 'x', 2)",
             (strat, '{"A": 1.0}', ret),
         )
     conn.commit()

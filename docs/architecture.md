@@ -386,6 +386,9 @@ Claude 리뷰어 4 + Codex 2 교차검증 결과 중 비주문 항목. 표의 �
   `llm_all` 은 정보용(발굴 효과 = `llm_all − llm`). `paired_stats(a=llm*)` 는 LLM 이 현금(`{}`)인 날을
   빼고, `cash_effect` 가 그날들의 `0 − 후보 1/N` 을 따로 잰다(웹 `/api/performance/shadow.cash_effect`).
   readiness `llm_alpha` 는 실전 계좌가 거래하는(없으면 모의 계좌의) **시장마다** 20쌍 ∧ 하한 > 0.
+  행마다 비중 정의 버전(원장 v31 `shadow_portfolios.def_version`, 현재 `shadow.DEF_VERSION` 2)을 남기고
+  LLM 선택·현금 효과 통계는 현재 버전 행만 센다 — 공통 후보 정의 전에 만기된 옛 `llm` 행(후보 밖 매수
+  포함)이 섞이지 않게(PR #63 Codex).
 - **post_fill_return·실현손익(2-L8, 원장 v30).** 옛 `realized_pnl_pct`(체결가 → 만기 종가 수익의 부호
   반영)는 `memory_entries.post_fill_return` 으로 옮겼다(v30 이 기존 값을 옮기고 비운다). 새
   `realized_pnl_pct` 는 SELL/TRIM 라운드 매도 체결(`fills.id`)을 그 계좌·종목 전체 체결의 FIFO 원가
@@ -398,11 +401,13 @@ Claude 리뷰어 4 + Codex 2 교차검증 결과 중 비주문 항목. 표의 �
   `uncertainty` — 뒤 둘은 `convergence_review` 플래그만. 약세 리서처의 BULLISH 금지를 풀었다.
 - **퀀트 기준선(L14).** 성과 페이지 `benchmarks.quant` 는 현재 승격 모델을 과거 창에 소급 적용하지 않고
   기록된 섀도 `quant_topn`(당시 정량 스크린)을 따른다(`performance.shadow_quant_benchmark`: 운영일 d 의
-  바구니를 d 종가에 사서 다음 기록까지, 교체 때 `0.5 × Σ|Δw| × 왕복비용`). 첫 기록 전은 없음. ML 랭커
+  바구니를 d 종가에 사서 다음 기록까지 그대로 들고 — 비중은 가격 따라 표류 — 새 기록 때만 표류 비중에서
+  목표로 리밸런스하며 `0.5 × Σ|Δw| × 왕복비용`, PR #63 Codex). 첫 기록 전은 없음. ML 랭커
   자체의 기록·고정 홀드아웃은 후속.
 - **무효화 조건 구조화(L16).** `Decision.invalidation_rules`(최대 5): `{metric: price|close, op: <|<=|>|>=,
   value > 0 유한, days 1~20}` — `days ≥ 2` 는 close 만. monitor `check_position(closes=)` 는 이것만 읽고
-  (`rule_hit`), close 조건은 피처 스토어 완성 일봉 종가(오늘 전, 운영일당 한 번 읽음)로 연속 일수를 본다.
+  (`rule_hit`), close 조건은 피처 스토어 완성 일봉 종가(오늘 전, 운영일당 한 번 읽음)로 연속 일수를 본다
+  — 거래일 정렬을 지켜 그 종목만 빠진 날·오래된 마지막 값이 창에 있으면 미판정(PR #63 Codex).
   문자열 `invalidation_conditions` 는 설명용이라 자동으로 읽지 않는다(옛 파서가 US $100 미만을 버리고 '3일
   연속' 을 즉시 조건으로 읽었다).
 

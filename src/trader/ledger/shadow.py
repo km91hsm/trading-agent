@@ -36,6 +36,9 @@ logger = logging.getLogger("trader.ledger")
 
 STRATEGIES = ("candidates_1n", "quant_topn", "llm", "llm_all", "index_hold", "index_trend")
 LLM_STRATEGIES = ("llm", "llm_all")
+# 비중 정의 버전(원장 v31 `def_version`). 2 = 공통 후보 안 LLM 매수(2-L4). 이보다 낮은(NULL 포함)
+# 만기 행은 LLM 선택·현금 효과 통계에서 뺀다 — 옛 llm 은 후보 밖 매수까지 담았다(PR #63 Codex)
+DEF_VERSION = 2
 INDEX_STRATEGIES = ("index_hold", "index_trend")
 TREND_MA = 100
 DEFAULT_TOP_N = 3
@@ -156,11 +159,18 @@ def record(
         plans.update(index_weights(index, day=day))
     for strategy, weights in plans.items():
         cur = conn.execute(
-            "INSERT INTO shadow_portfolios(market, date, strategy, weights_json, created_at) "
-            "VALUES (?, ?, ?, ?, ?) ON CONFLICT(market, date, strategy) DO UPDATE SET "
-            "weights_json=excluded.weights_json, created_at=excluded.created_at "
-            "WHERE shadow_portfolios.fwd_ret IS NULL",
-            (market, day.isoformat(), strategy, json.dumps(weights, sort_keys=True), created),
+            "INSERT INTO shadow_portfolios(market, date, strategy, weights_json, created_at, "
+            "def_version) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(market, date, strategy) DO UPDATE "
+            "SET weights_json=excluded.weights_json, created_at=excluded.created_at, "
+            "def_version=excluded.def_version WHERE shadow_portfolios.fwd_ret IS NULL",
+            (
+                market,
+                day.isoformat(),
+                strategy,
+                json.dumps(weights, sort_keys=True),
+                created,
+                DEF_VERSION,
+            ),
         )
         n += cur.rowcount
     conn.commit()
@@ -293,7 +303,8 @@ def cash_effect(conn: sqlite3.Connection, *, market: str | None = None) -> dict:
         "SELECT 0 - y.fwd_ret AS d FROM shadow_portfolios x JOIN shadow_portfolios y "
         "ON x.market = y.market AND x.date = y.date WHERE x.strategy='llm' "
         "AND y.strategy='candidates_1n' AND x.weights_json = '{}' AND y.fwd_ret IS NOT NULL "
-        "AND x.fwd_ret IS NOT NULL AND y.partial = 0"
+        "AND x.fwd_ret IS NOT NULL AND y.partial = 0 "
+        f"AND COALESCE(x.def_version, 0) >= {DEF_VERSION}"
     )
     args: list = []
     if market:
@@ -335,7 +346,7 @@ def paired_stats(
         "AND x.partial = 0 AND y.partial = 0"
     )
     if a in LLM_STRATEGIES:
-        sql += " AND x.weights_json != '{}'"
+        sql += f" AND x.weights_json != '{{}}' AND COALESCE(x.def_version, 0) >= {DEF_VERSION}"
     order = " ORDER BY x.market, x.date"
     args: list = [a, b]
     if market:

@@ -123,8 +123,10 @@ def shadow_quant_benchmark(
     conn, state: Path | None, market: str, start: date, end: date, *, cost_bp: float
 ) -> dict | None:
     """기록된 섀도 `quant_topn` 바구니를 따른 기준선(L14). 운영일 d 의 바구니를 d 종가에 사서 다음
-    기록까지 들고, 바구니가 바뀌면 바뀐 비중만큼 왕복비용(`0.5 × Σ|Δw| × 왕복`)을 뺀다. 첫 기록 전은
-    없음(N/A) — 기록이 없으면 None. {return, series, source, since}."""
+    기록까지 **그대로 들고**(비중은 가격 따라 표류), 새 기록이 오면 표류한 비중에서 목표로
+    리밸런스하며 바뀐 비중만큼 왕복비용(`0.5 × Σ|Δw| × 왕복`)을 뺀다(PR #63 Codex — 매일 목표
+    비중으로 되돌리면 숨은 리밸런스 수익과 그 비용이 빠졌다). 종가가 없는 날 그 종목은 수익 0 으로
+    본다. 첫 기록 전은 없음(N/A) — 기록이 없으면 None. {return, series, source, since}."""
     import json as _json
 
     rows = conn.execute(
@@ -145,26 +147,31 @@ def shadow_quant_benchmark(
     if len(days) < 2:
         return None
     cost = float(cost_bp) / 10_000
-    held: dict[str, float] = {}
+    held: dict[str, float] = {}  # 표류한 비중(합 ≤ 1, 나머지는 현금)
+    applied: date | None = None
     growth = 1.0
     points = [(days[0], 1.0)]
     for prev, cur in zip(days, days[1:], strict=False):
-        todays = [w for d, w in baskets if d <= prev]
-        target = todays[-1] if todays else {}
-        turnover = 0.5 * sum(
-            abs(target.get(t, 0.0) - held.get(t, 0.0)) for t in set(target) | set(held)
-        )
-        held = dict(target)
-        ret = 0.0
-        wsum = 0.0
-        for t, w in held.items():
+        recs = [(d, w) for d, w in baskets if d <= prev]
+        if recs and recs[-1][0] != applied:  # 새 기록이 왔을 때만 리밸런스
+            applied, target = recs[-1][0], recs[-1][1]
+            turnover = 0.5 * sum(
+                abs(target.get(t, 0.0) - held.get(t, 0.0)) for t in set(target) | set(held)
+            )
+            growth *= 1 - turnover * cost
+            held = dict(target)
+        rets: dict[str, float] = {}
+        for t in held:
+            r = 0.0
             if t in table.columns:
                 p0, p1 = table.at[prev, t], table.at[cur, t]
                 if pd.notna(p0) and pd.notna(p1) and p0 > 0:
-                    ret += w * (float(p1) / float(p0) - 1)
-                    wsum += w
-        ret = ret / wsum if wsum > 0 else 0.0
-        growth *= (1 - turnover * cost) * (1 + ret)
+                    r = float(p1) / float(p0) - 1
+            rets[t] = r
+        port = sum(w * rets[t] for t, w in held.items())
+        growth *= 1 + port
+        if 1 + port > 0:
+            held = {t: w * (1 + rets[t]) / (1 + port) for t, w in held.items()}
         points.append((cur, growth))
     return {
         "return": round(growth - 1, 6),
