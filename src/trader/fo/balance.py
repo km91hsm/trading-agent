@@ -41,8 +41,10 @@ def refresh(
     *,
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
     cfg: FoCfg,
+    balance: Any | None = None,
 ) -> dict:
-    bal = broker.get_balance()
+    """`balance` 를 주면(같은 틱에 이미 읽은 잔고) 다시 조회하지 않는다."""
+    bal = balance if balance is not None else broker.get_balance()
     t = now()
     today = t.astimezone(KST).date().isoformat()
     multiplier = cfg.product_cfg().multiplier

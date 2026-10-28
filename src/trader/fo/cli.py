@@ -552,7 +552,7 @@ def adopt_cmd(
             raise config.ConfigError("앱키가 없어 파생 브로커를 만들지 못했습니다")
         ok = positions.adopt(
             boot.conn, position_id=position, side=side, kind=kind, qty=qty,
-            stop_pt=Decimal(str(stop_pt)), balance=broker.get_balance(),
+            stop_pt=Decimal(str(stop_pt)), balance=broker.get_balance(), account_id=acct.id,
         )  # fmt: skip
         boot.conn.commit()
     finally:

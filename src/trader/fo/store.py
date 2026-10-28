@@ -181,14 +181,18 @@ def insert_leg(
     qty: int,
     price: Decimal | None,
     order_type: str,
+    request_id: str | None = None,
 ) -> int:
-    """`prepared` 다리 삽입. 실행 키 충돌은 `sqlite3.IntegrityError` 그대로."""
+    """`prepared` 다리 삽입. 실행 키 충돌은 `sqlite3.IntegrityError` 그대로. `request_id` 는 이
+    다리를 만든 결정 봉투(원장 v27, 제출 재개 판정의 근거)."""
     if qty <= 0:
         raise ValueError("다리 수량은 1 이상")
     cur = conn.execute(
         "INSERT INTO fo_order_legs(position_id, account_id, intent, round, attempt, status, qty, "
-        "price, order_type, created_at) VALUES (?, ?, ?, ?, ?, 'prepared', ?, ?, ?, ?)",
-        (position_id, account_id, intent, round, attempt, qty, _s(price), order_type, now_iso()),
+        "price, order_type, created_at, request_id) "
+        "VALUES (?, ?, ?, ?, ?, 'prepared', ?, ?, ?, ?, ?)",
+        (position_id, account_id, intent, round, attempt, qty, _s(price), order_type, now_iso(),
+         request_id),
     )
     return int(cur.lastrowid)
 
@@ -303,6 +307,7 @@ class ReservePlan:
     new_position: dict[str, Any] | None = None
     new_status: str | None = None
     planned_loss_per_contract: Decimal = Decimal(0)
+    request_id: str | None = None  # 다리를 만든 결정 봉투(제출 재개 판정)
     planned_loss_existing: Decimal | None = None
     budget_limit: Decimal | None = None
     position_changes: dict[str, Any] = field(default_factory=dict)
@@ -414,6 +419,7 @@ def reserve(
         qty=plan.qty,
         price=plan.price,
         order_type=plan.order_type,
+        request_id=plan.request_id,
     )
     if is_reduce(plan.intent):
         if not transition(conn, position_id, expected_version=version, active_reduce_leg_id=leg_id):

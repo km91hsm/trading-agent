@@ -26,7 +26,9 @@ KINDS_ONCE = ("invalidation", "move", "take_profit", "news", "iv_spike")
 PRIORITY = ("invalidation", "move", "take_profit", "news", "iv_spike", "periodic", "expiry")
 EXPIRY_OPINION_AT = time(9, 5)
 SESSION_OPEN = time(8, 45)  # 파생 정규장 시작 — periodic 버킷의 기준
-_OK = "(session_id IS NULL OR session_id NOT LIKE '실패:%')"
+# 실제로 재평가가 끝난 처리만 센다 — 기동 실패('실패:')·세션 없이 버린 것('폐기:')은 빼서 다음
+# 간격에 다시 시도한다(단계 4 리뷰)
+_OK = "(session_id IS NULL OR (session_id NOT LIKE '실패:%' AND session_id NOT LIKE '폐기:%'))"
 
 
 @dataclass(frozen=True)
@@ -134,11 +136,14 @@ def _bucket_bounds(now: datetime, cfg: FoCfg) -> tuple[str, str]:
     return lo.astimezone(now.tzinfo).isoformat(), hi.astimezone(now.tzinfo).isoformat()
 
 
-def _fo_rows(conn: sqlite3.Connection, code: str, lo: str, hi: str, extra: str = "", *args):
+def _fo_rows(
+    conn: sqlite3.Connection, account_id: str, code: str, lo: str, hi: str, extra: str = "", *args
+):
+    """이 계좌·계약의 `fo:*` 트리거(같은 계약을 가진 다른 계좌의 빈도와 섞지 않는다)."""
     return conn.execute(
-        "SELECT kind, handled_at, session_id FROM triggers WHERE market = ? AND ticker = ? "
-        f"AND kind LIKE 'fo:%' AND created_at >= ? AND created_at < ? {extra}",
-        (MARKET, code, lo, hi, *args),
+        "SELECT kind, handled_at, session_id FROM triggers WHERE market = ? AND account_id = ? "
+        f"AND ticker = ? AND kind LIKE 'fo:%' AND created_at >= ? AND created_at < ? {extra}",
+        (MARKET, account_id, code, lo, hi, *args),
     ).fetchall()
 
 
@@ -161,11 +166,11 @@ def check(
 ) -> Trigger | None:
     """빈도 제한을 통과한 가장 우선인 트리거 하나(나머지는 `detail.bundled` 로 묶음).
     없으면 None."""
-    code = position.code
+    code, acct = position.code, position.account_id
     lo, hi = repo.day_bounds(today, MARKET)
-    if _fo_rows(conn, code, lo, hi, "AND handled_at IS NULL"):
+    if _fo_rows(conn, acct, code, lo, hi, "AND handled_at IS NULL"):
         return None  # 대기 중인 재평가가 있다
-    done = _fo_rows(conn, code, lo, hi, f"AND handled_at IS NOT NULL AND {_OK}")
+    done = _fo_rows(conn, acct, code, lo, hi, f"AND handled_at IS NOT NULL AND {_OK}")
     if len(done) >= cfg.reeval.max_per_day:
         return None
     last = max((r["handled_at"] for r in done), default=None)
@@ -190,7 +195,7 @@ def check(
             if done_kinds.count(lk) >= cfg.reeval.periodic_max_per_day:
                 continue
             b_lo, b_hi = _bucket_bounds(now, cfg)
-            if _fo_rows(conn, code, b_lo, b_hi, "AND kind = ? AND handled_at IS NOT NULL "
+            if _fo_rows(conn, acct, code, b_lo, b_hi, "AND kind = ? AND handled_at IS NOT NULL "
                         f"AND {_OK}", lk):  # fmt: skip
                 continue
         allowed.append(t)

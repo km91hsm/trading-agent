@@ -151,6 +151,7 @@ class FoLegRow:
     sent_at: str | None
     accepted_at: str | None
     created_at: str
+    request_id: str | None = None
 
     @property
     def remaining(self) -> int:

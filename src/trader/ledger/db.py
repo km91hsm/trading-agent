@@ -510,6 +510,16 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
             )""",
         ],
     ),
+    (
+        # Phase 26 단계 4 리뷰: 주문 다리 ↔ 결정 봉투(request_id) 연결 — 제출 재개가 '이 결정의
+        # 다리가 이미 있는가' 를 시각 추정 없이 판정한다
+        27,
+        [
+            "ALTER TABLE fo_order_legs ADD COLUMN request_id TEXT",
+            "CREATE INDEX IF NOT EXISTS ix_fo_legs_request "
+            "ON fo_order_legs(account_id, request_id)",
+        ],
+    ),
 ]
 
 

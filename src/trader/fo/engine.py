@@ -19,6 +19,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import sqlite3
@@ -59,10 +60,34 @@ def _enqueue(ctx: FoExecContext, params: dict[str, Any]) -> Any:
     try:
         return jobs.enqueue(ctx.conn, "fo_reevaluate", params, source="daemon")
     except jobs.DuplicateRequest:
-        return None
-    except Exception as e:  # noqa: BLE001 — 요청 실패는 트리거 처리 실패로 남기고 감시는 계속
+        return True  # 이미 대기·실행 중
+    except Exception as e:  # noqa: BLE001 — 요청 실패: 호출자가 트리거를 '실패:' 로 닫는다
         log.warning("파생 재평가 대기열 등록 실패: %s", e)
+        return False
+
+
+def _hold(ctx: FoExecContext, account: AccountConfig) -> str | None:
+    """이 계좌에서 주문이 나가지 않는 사유(paused·off·dry_run…, `executor._record_only`)."""
+    mode, _ = executor.effective_mode(ctx.conn, account)
+    return executor._record_only(ctx, mode, control.is_paused(ctx.conn))
+
+
+def _holiday_fn(ctx: FoExecContext) -> Callable[[date], bool] | None:
+    """시세 클라이언트의 KIS 휴장일(`is_holiday`)을 틱 안에서 캐시한다. 조회 실패는 개장으로."""
+    fn = getattr(ctx.market_client, "is_holiday", None)
+    if fn is None:
         return None
+    cache: dict[date, bool] = {}
+
+    def is_holiday(d: date) -> bool:
+        if d not in cache:
+            try:
+                cache[d] = bool(fn(d))
+            except Exception:  # noqa: BLE001
+                cache[d] = False
+        return cache[d]
+
+    return is_holiday
 
 
 def _notify_once(ctx: FoExecContext, account_id: str, key: str, text: str, today: date) -> None:
@@ -127,15 +152,6 @@ def exit_reason(
 # --- 유지 조건 ---------------------------------------------------------------------------
 
 
-def _held_row(bal: FoBalance | None, pos: FoPositionRow):
-    if bal is None:
-        return None
-    return next(
-        (p for p in bal.positions if p.code == pos.code and p.contract_side == pos.contract_side),
-        None,
-    )
-
-
 def _notional(pos: FoPositionRow, q: FoQuote | None, index: Decimal | None, mult: int) -> Decimal:
     """계약 1개 델타 명목 |δ| × 기초지수 × 승수. 모르면 0(검사 생략)."""
     base = index if index is not None else (q.underlying if q is not None else None)
@@ -180,6 +196,19 @@ def maintain(
 
     ordered = sorted(held, key=lambda p: REDUCE_ORDER.index(p.vehicle))
     first = ordered[0]
+    # 살아 있는 진입 다리의 남은 수량 — 체결되면 보유가 된다(노출·예산·스트레스에 합산, 위반이면
+    # `_risk_reduce` 가 먼저 회수한다)
+    pending = {
+        p.id: sum(x.remaining for x in store.live_legs(ctx.conn, position_id=p.id)
+                  if is_entry(x.intent))
+        for p in held
+    }  # fmt: skip
+
+    def eff(p: FoPositionRow) -> int:
+        return p.qty_held + pending[p.id]
+
+    def minus_one(p: FoPositionRow) -> int:
+        return p.qty_held if pending[p.id] else p.qty_held - 1  # 미체결이 있으면 회수부터
     # 실제 노출 배수: 국면 cap 0·대조 0 은 신규 금지 사유이지 보유를 0 으로 만들지 않는다
     regime = ctx.regime_of()
     view = rules.view_state_of(
@@ -195,15 +224,16 @@ def maintain(
                                 sell_against_regime=cfg.option.sell_against_regime)  # fmt: skip
         lim = Decimal(str(min(cap, cfg.max_leverage) * (cf if cf > 0 else 1.0)))
         n_max = int((nav * lim) // per)
-        if pos.qty_held > n_max:
-            want(pos, n_max, f"노출 배수 {per * pos.qty_held / nav:.2f} > 한도 {lim:.2f}")
+        if eff(pos) > n_max:
+            want(pos, min(n_max, pos.qty_held),
+                 f"노출 배수 {per * eff(pos) / nav:.2f} > 한도 {lim:.2f}")  # fmt: skip
     if bal.cash.add_margin and bal.cash.add_margin > 0:
-        want(first, first.qty_held - 1, f"추가증거금 {bal.cash.add_margin}")
+        want(first, minus_one(first), f"추가증거금 {bal.cash.add_margin}")
     buf = nav * Decimal(str(cfg.margin_buffer_pct))
     if bal.cash.orderable_cash is not None and bal.cash.orderable_cash < buf:
-        want(first, first.qty_held - 1, f"주문가능현금 {bal.cash.orderable_cash} < 버퍼 {buf}")
+        want(first, minus_one(first), f"주문가능현금 {bal.cash.orderable_cash} < 버퍼 {buf}")
     for pos in held:  # 수명 예산(보유분 계획 손실 + 실현 손실 + 비용)
-        row = _held_row(bal, pos)
+        row = executor.broker_row(bal, pos)
         ref = pos.entry_premium if pos.kind != "FUTURES" else (row.avg_price if row else None)
         if ref is None or pos.nav_at_open is None:
             continue
@@ -216,9 +246,9 @@ def maintain(
             continue
         b = sizing.lifetime_budget(pos, nav_at_open=pos.nav_at_open, r=cfg.risk_per_trade_pct,
                                    held_loss=per_loss * pos.qty_held,
-                                   pending_loss=Decimal(0))  # fmt: skip
+                                   pending_loss=per_loss * pending[pos.id])  # fmt: skip
         if not b["ok"]:
-            want(pos, pos.qty_held - 1, f"수명 예산 {b['used'] + b['planned']} > {b['limit']}")
+            want(pos, minus_one(pos), f"수명 예산 {b['used'] + b['planned']} > {b['limit']}")
     if cfg.hold_overnight:  # 스윙 유지 조건: 시나리오 최악 손실
         items = []
         for pos in held:
@@ -227,14 +257,14 @@ def maintain(
             if q is None or dl is None:
                 continue
             sign = 1 if pos.contract_side == "LONG" else -1
-            items.append(sizing.StressItem(quote=q, signed_qty=sign * pos.qty_held, days_left=dl))
+            items.append(sizing.StressItem(quote=q, signed_qty=sign * eff(pos), days_left=dl))
         if items:
             loss = sizing.stress_loss(items, cfg=cfg.stress, multiplier=mult)
             limit = nav * Decimal(str(cfg.overnight_risk_pct))
             if loss > limit:
                 why = f"스트레스 최악 손실 {loss:.0f} > {limit:.0f}"
                 if now.astimezone(KST).time() >= STRESS_CONFIRM_AT:
-                    want(first, first.qty_held - 1, why)
+                    want(first, minus_one(first), why)
                 else:
                     warnings.append(why)
     out = [(p, targets[p.id][0], "; ".join(targets[p.id][1])) for p in ordered if p.id in targets]
@@ -265,9 +295,9 @@ def _index(ctx: FoExecContext, now: datetime) -> tuple[Decimal | None, bool]:
 
 def _discard_pending_triggers(ctx: FoExecContext, pos: FoPositionRow, why: str, now: datetime):
     rows = ctx.conn.execute(
-        "SELECT id FROM triggers WHERE market = 'KR' AND ticker = ? AND kind LIKE 'fo:%' "
-        "AND handled_at IS NULL",
-        (pos.code,),
+        "SELECT id FROM triggers WHERE market = 'KR' AND account_id = ? AND ticker = ? "
+        "AND kind LIKE 'fo:%' AND handled_at IS NULL",
+        (pos.account_id, pos.code),
     ).fetchall()
     for r in rows:
         repo.mark_trigger_handled(ctx.conn, r["id"], f"폐기: {why}"[:200],
@@ -305,7 +335,8 @@ def _decision_ref(conn: sqlite3.Connection, pos: FoPositionRow) -> dict[str, Any
 def _novel_news(conn: sqlite3.Connection, now: datetime, minutes: int) -> int:
     since = (now - timedelta(minutes=minutes)).isoformat()
     row = conn.execute(
-        "SELECT COUNT(*) FROM news_items WHERE market = 'KR' AND novel = 1 AND received_at >= ?",
+        "SELECT COUNT(*) FROM news_items WHERE market = 'KR' AND novel = 1 AND received_at >= ? "
+        "AND (tickers_json IS NULL OR tickers_json IN ('', '[]'))",  # 종목 태그 없는 시장·거시 뉴스
         (since,),
     ).fetchone()
     return int(row[0]) if row else 0
@@ -317,7 +348,7 @@ def _settle(ctx: FoExecContext, account: AccountConfig, pos: FoPositionRow, bal:
     적은 실현 손실 기준). 잔고에 남아 있으면 그대로 두고 운영 점검이 지연을 알린다."""
     if bal is None or not pos.last_trade_date or today <= date.fromisoformat(pos.last_trade_date):
         return None
-    if _held_row(bal, pos) is not None:
+    if executor.broker_row(bal, pos) is not None:
         return None
     with store.tx(ctx.conn):
         store.transition(ctx.conn, pos.id, expected_version=pos.version, status="settled",
@@ -344,6 +375,7 @@ def tick(
     holiday_fn: Callable[[date], bool] | None = None,
 ) -> dict[str, Any]:
     now, today = executor._today(ctx)
+    holiday_fn = holiday_fn or _holiday_fn(ctx)
     index, index_fresh = _index(ctx, now)
     out: dict[str, Any] = {"date": today.isoformat(), "index": str(index) if index else None,
                            "index_fresh": index_fresh, "accounts": {}}  # fmt: skip
@@ -378,6 +410,7 @@ def _tick_account(
                            "halted": False, "recalled": [], "triggers": [], "entries": [],
                            "snapshot": False, "errors": []}  # fmt: skip
     broker = ctx.brokers.get(a.id)
+    hold = _hold(ctx, a)  # 주문이 나가지 않는 모드면 상태를 소비·변경하는 단계는 건너뛴다
     bal: FoBalance | None = None
     if broker is None:
         res["errors"].append("broker 없음")
@@ -396,13 +429,14 @@ def _tick_account(
         res["recovered"] = {"unknown": rep.unknown, "settling": rep.settling,
                             "legs_fixed": rep.legs_fixed, "deferred": rep.deferred}  # fmt: skip
         for msg in rep.alerts:
-            _notify_once(ctx, a.id, f"recover:{hash(msg)}", msg, today)
+            key = hashlib.sha1(msg.encode()).hexdigest()[:12]  # 프로세스마다 같은 키
+            _notify_once(ctx, a.id, f"recover:{key}", msg, today)
     for pos in store.open_positions(conn, a.id):
         if pos.status in ("closing", "resizing", "exit_failed") or pos.active_reduce_leg_id:
             res["reduced"].append(executor.continue_reduce(ctx, a, pos))
         elif pos.status == "entering" and not store.live_legs(conn, position_id=pos.id):
             executor.finalize(ctx, pos)
-        elif pos.status == "awaiting_settlement":
+        elif pos.status == "awaiting_settlement" and not ctx.dry_run:
             s = _settle(ctx, a, pos, bal, today)
             if s:
                 res["reduced"].append(s)
@@ -429,7 +463,8 @@ def _tick_account(
         res["exits"].append({"position_id": pos.id, "intent": intent, "reason": why, **r})
     # ③ 유지 조건
     held = [p for p in store.open_positions(conn, a.id)
-            if p.status == "held" and p.qty_held > 0 and not p.active_reduce_leg_id]  # fmt: skip
+            if p.status in ("held", "entering") and p.qty_held > 0
+            and not p.active_reduce_leg_id]  # fmt: skip
     if bal is not None and held:
         for p in held:
             if p.id not in quotes:
@@ -440,13 +475,24 @@ def _tick_account(
             _notify_once(ctx, a.id, "maintain-warning",
                          messages.fo_maintain_warning(account=a.id, reasons=warns), today)
         for pos, target, why in acts:
-            res["maintain"].append(_risk_reduce(ctx, a, pos, target, why, today, now))
+            res["maintain"].append(_risk_reduce(ctx, a, pos, target, why, today, now, hold))
     # ④ 일일 손실·진입 회수
     halted_key = executor.halted_key(a.id)
     if bal is not None and bal.cash.nav:
-        pnl = bal.cash.realized_today + bal.cash.unrealized
+        # 평가손익은 진입 이후 누적이라 오늘 첫 관측값을 기준으로 뺀다(오늘 변화분만, 리뷰 C3)
+        base_key = f"fo_day_open:{a.id}"
+        base = control.get_flag(conn, base_key)
+        if not isinstance(base, dict) or base.get("date") != today.isoformat():
+            base = {"date": today.isoformat(), "unrealized": str(bal.cash.unrealized)}
+            control.set_flag(conn, base_key, base)
+        pnl = bal.cash.realized_today + bal.cash.unrealized - Decimal(base["unrealized"])
         limit = bal.cash.nav * Decimal(str(cfg.daily_loss_stop_pct))
-        if pnl <= -limit and control.get_flag(conn, halted_key) != today.isoformat():
+        res["daily_pnl"] = str(pnl)
+        if (
+            pnl <= -limit
+            and not ctx.dry_run
+            and control.get_flag(conn, halted_key) != today.isoformat()
+        ):
             control.set_flag(conn, halted_key, today.isoformat())
             executor._notify(ctx, messages.fo_halted(account=a.id, loss=pnl, limit=limit))
     halted = control.get_flag(conn, halted_key) == today.isoformat()
@@ -454,8 +500,8 @@ def _tick_account(
     recall_why = _recall_reason(ctx, a, now=now, halted=halted)
     if recall_why:
         res["recalled"] = _recall_all(ctx, a, recall_why)
-    # ⑤ 트리거
-    if not control.is_paused(conn):
+    # ⑤ 트리거(주문이 나가지 않는 모드면 재평가 세션도 띄우지 않는다)
+    if hold is None:
         for pos in store.open_positions(conn, a.id):
             if pos.status != "held" or pos.qty_held <= 0 or pos.active_reduce_leg_id:
                 continue
@@ -468,19 +514,24 @@ def _tick_account(
                                 trigger={"kind": triggers.ledger_kind(t.kind),
                                          "detail": t.detail}, today=today)  # fmt: skip
             if rq.get("ok"):
-                request_reeval(ctx, rq["params"])
+                # 대기열 등록 실패 → '실패:' 로 닫아 다음 간격에 다시 시도
+                if request_reeval(ctx, rq["params"]) is False:
+                    repo.mark_trigger_handled(conn, tid, "실패: 대기열 등록",
+                                              handled_at=now.isoformat())  # fmt: skip
             else:
                 repo.mark_trigger_handled(conn, tid, f"실패: {rq.get('error')}"[:200],
                                           handled_at=now.isoformat())  # fmt: skip
             res["triggers"].append({"position_id": pos.id, "kind": t.kind, "trigger_id": tid,
                                     "request": rq.get("params")})  # fmt: skip
     # ⑥ 보류 진입·REPLACE
-    res["entries"] = _pending_entries(ctx, a, now=now, today=today, blocked=recall_why)
-    res["entries"] += reeval.continue_replace(ctx, a)
+    res["entries"] = _pending_entries(ctx, a, now=now, today=today, blocked=recall_why,
+                                      hold=hold)  # fmt: skip
+    if hold is None:
+        res["entries"] += reeval.continue_replace(ctx, a)
     # ⑦ 스냅샷
     if broker is not None:
         try:
-            fo_balance.refresh(conn, broker, a, now=ctx.now, cfg=cfg)
+            fo_balance.refresh(conn, broker, a, now=ctx.now, cfg=cfg, balance=bal)
             res["snapshot"] = True
         except Exception as e:  # noqa: BLE001
             res["errors"].append(f"snapshot: {type(e).__name__}: {e}")
@@ -488,7 +539,19 @@ def _tick_account(
 
 
 def _risk_reduce(ctx: FoExecContext, a: AccountConfig, pos: FoPositionRow, target: int, why: str,
-                 today: date, now: datetime) -> dict[str, Any]:  # fmt: skip
+                 today: date, now: datetime,
+                 hold: str | None = None) -> dict[str, Any]:  # fmt: skip
+    """유지 조건 축소. 기록만 모드면 목표·트리거를 건드리지 않고 기록만, 살아 있는 진입 다리가
+    있으면 그것부터 회수(다음 틱에 보유만으로 다시 계산)한다."""
+    if hold is not None:
+        return {"position_id": pos.id, "target": target, "reason": why, "status": "recorded",
+                "record_only": hold}  # fmt: skip
+    if any(is_entry(x.intent) for x in store.live_legs(ctx.conn, position_id=pos.id)):
+        rr = executor.recall_entries(ctx, a, pos.id, reason=f"위험 축소: {why}")
+        return {"position_id": pos.id, "target": target, "reason": why, "status": "recalled",
+                **rr.__dict__}  # fmt: skip
+    if target >= pos.qty_held:
+        return {"position_id": pos.id, "target": target, "reason": why, "status": "within"}
     _notify_once(ctx, a.id, f"maintain:{pos.id}:{target}",
                  messages.fo_risk_reduce(account=a.id, code=pos.code,
                                          name=executor._name_of(ctx, pos.code), reason=why,
@@ -562,7 +625,8 @@ def _trigger_for(ctx: FoExecContext, pos: FoPositionRow, q: FoQuote | None, *,
 
 
 def _pending_entries(ctx: FoExecContext, a: AccountConfig, *, now: datetime, today: date,
-                     blocked: str | None) -> list[dict[str, Any]]:  # fmt: skip
+                     blocked: str | None,
+                     hold: str | None = None) -> list[dict[str, Any]]:  # fmt: skip
     """아침 보류 진입(진입 창 밖 결정)을 진입 창이 열리면 실행 직전 재계산으로 낸다. 회수 사유가
     있거나 cutoff 가 지났으면 버린다. 플래그는 실행 **전에** 지운다(중복 실행 방지)."""
     from trader.orchestrator import tools
@@ -577,6 +641,8 @@ def _pending_entries(ctx: FoExecContext, a: AccountConfig, *, now: datetime, tod
         return [{"discarded": blocked, "request_id": flag.get("request_id")}]
     if not rules._in_entry_window(now, cfg):
         return []  # 08:45~09:00 은 기다린다(cutoff 뒤는 blocked 로 이미 버렸다)
+    if hold is not None:  # dry_run·paused·off: 플래그를 소비하지 않는다(실제 데몬이 낸다)
+        return [{"pending": flag.get("request_id"), "held": hold}]
     control.set_flag(conn, key, None)
     try:
         env = FoDecisionEnvelope.model_validate(flag["envelope"])

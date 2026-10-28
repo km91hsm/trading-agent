@@ -498,7 +498,7 @@ def _send_entry(
         position_id=pos.id if pos else None, expected_version=pos.version if pos else None,
         new_position=new_position, new_status=new_status, planned_loss_per_contract=per_contract,
         planned_loss_existing=verdict.planned_loss_existing, budget_limit=budget_limit,
-        position_changes=changes,
+        position_changes=changes, request_id=env.request_id,
     )  # fmt: skip
     with store.tx(ctx.conn):
         rr = store.reserve(
@@ -547,6 +547,7 @@ def _send_reduce(
     today: date,
     reason: str,
     changes: dict[str, Any] | None = None,
+    request_id: str | None = None,
 ) -> dict[str, Any]:
     """축소 다리 예약·전송. `changes` 는 결정이 함께 바꾸는 포지션 열(목표 수량·손절선 등).
     `exit_failed` 는 그대로 둔다(재시도 중임을 보이기 위해)."""
@@ -555,7 +556,7 @@ def _send_reduce(
         intent=leg.intent, round=round, qty=leg.qty, price=leg.price, order_type=leg.order_type,
         position_id=pos.id, expected_version=pos.version,
         new_status=None if pos.status in (target, "exit_failed") else target,
-        position_changes=changes or {},
+        position_changes=changes or {}, request_id=request_id,
     )  # fmt: skip
     with store.tx(ctx.conn):
         rr = store.reserve(
@@ -638,7 +639,8 @@ def run_leg(
                 "request_id": env.request_id,
             },
         )
-        return [reduce(ctx, account, pos, intent="CLOSE", qty=None, reason=source, round=round)]
+        return [reduce(ctx, account, pos, intent="CLOSE", qty=None, reason=source, round=round,
+                       request_id=env.request_id)]  # fmt: skip
 
     # 진입·HOLD: 재조회 → 전체 재계산
     fi = fetch_fresh(ctx, account, pos.code if pos else None, pos.kind if pos else None)
@@ -799,7 +801,7 @@ def run_leg(
             results.append(
                 reduce(
                     ctx, account, cur, intent="RESIZE_DOWN", qty=None, reason=source, round=round,
-                    stage=od_stage,
+                    stage=od_stage, request_id=env.request_id,
                 )  # fmt: skip
             )
     return results
@@ -916,12 +918,19 @@ def recall_entries(
     return rr
 
 
+def broker_row(balance: FoBalance | None, pos: FoPositionRow):
+    """브로커 잔고에서 이 포지션(코드·보유 방향)의 확정 행(`FoPosition`). 없으면 None."""
+    if balance is None:
+        return None
+    side = pos.contract_side
+    return next((p for p in balance.positions if p.code == pos.code and p.contract_side == side),
+                None)  # fmt: skip
+
+
 def _broker_qty(balance: FoBalance, pos: FoPositionRow) -> int | None:
     """브로커 잔고에서 이 포지션(코드·방향)의 확정 수량. 행이 없으면 None."""
-    for p in balance.positions:
-        if p.code == pos.code and p.contract_side == pos.contract_side:
-            return p.qty
-    return None
+    row = broker_row(balance, pos)
+    return row.qty if row is not None else None
 
 
 def _resize_target_reached(conn: sqlite3.Connection, cur: FoPositionRow) -> bool:
@@ -974,6 +983,7 @@ def reduce(
     reason: str,
     round: int = 0,
     stage: str | None = None,
+    request_id: str | None = None,
 ) -> dict[str, Any]:
     """§5 청산·축소 절차: 진입 회수 → 잔고 재조회로 잔량 확정 → 축소 다리 1개(첫 시도 지정가,
     재시도는 시장가). 다음 틱은 `continue_reduce`. `qty=None` 은 전량(RESIZE_DOWN 은 목표
@@ -1061,8 +1071,9 @@ def reduce(
     quote = quote_of(ctx, cur.code, cur.kind)
     leg = rules.reduce_leg(cfg, quote, cur, intent, n, market=attempt > 1)
     return _send_reduce(
-        ctx, account, cur, leg, round=round, stage=stage, mode=mode, today=today, reason=reason
-    )
+        ctx, account, cur, leg, round=round, stage=stage, mode=mode, today=today, reason=reason,
+        request_id=request_id,
+    )  # fmt: skip
 
 
 def _apply_position_fills(

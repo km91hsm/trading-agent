@@ -105,12 +105,34 @@ def test_round_row_unique_via_submit(project, conn):
     assert n == 1
 
 
-def test_run_marks_trigger_and_skips_changed(project, conn):
-    fo, _ = _fo(conn)
+def _ready_fo(conn):
+    fo, inp = _fo(conn)
+    tctx = tools.ToolContext(settings=fo.settings, accounts=[], conn=conn, now=lambda: T0, fo=fo,
+                             dry_run=False)  # fmt: skip
+    tctx._inputs = inp  # type: ignore[attr-defined]
+    _ready(tctx)
+    return fo
+
+
+def test_run_skips_without_morning_summary(project, conn):
+    fo, _ = _fo(conn)  # 입력만 있고 애널리스트·요약 없음
     pos = _held_position(conn, fo, qty=2)
     tid = triggers.record(conn, pos, triggers.Trigger("move", {}, Decimal("365")), now=T0)
     rq = reeval.request(fo, account_id=ACCT, position_id=pos.id, trigger_id=tid,
                         trigger={"kind": "fo:move"}, today=TODAY)  # fmt: skip
+    called = []
+    out = reeval.run(fo, rq["params"], session_runner=lambda *a, **k: called.append(1))
+    assert "skipped" in out and called == []
+    row = conn.execute("SELECT session_id FROM triggers WHERE id = ?", (tid,)).fetchone()
+    assert row["session_id"].startswith("폐기")
+
+
+def test_run_marks_trigger_and_skips_changed(project, conn):
+    fo = _ready_fo(conn)
+    pos = _held_position(conn, fo, qty=2)
+    tid = triggers.record(conn, pos, triggers.Trigger("move", {}, Decimal("365")), now=T0)
+    rq = reeval.request(fo, account_id=ACCT, position_id=pos.id, trigger_id=tid,
+                        trigger={"kind": "fo:move"}, today=D)  # fmt: skip
     seen = {}
 
     def runner(spec, *a, **kw):
@@ -118,14 +140,14 @@ def test_run_marks_trigger_and_skips_changed(project, conn):
         return SimpleNamespace(ok=True, session_id="s-1", error=None)
 
     out = reeval.run(fo, rq["params"], session_runner=runner)
-    assert out["ok"] and seen["kind"] == "fo_resume"
+    assert out.get("ok") and seen["kind"] == "fo_resume", out
     assert seen["position"]["request_id"] == rq["params"]["request_id"]
     assert repo.get_trigger(conn, tid)["handled_at"]
     assert "skipped" in reeval.run(fo, rq["params"], session_runner=runner)  # 이미 처리
     # 포지션 버전이 바뀐 요청은 세션 없이 폐기
     tid2 = triggers.record(conn, pos, triggers.Trigger("news", {}, None), now=T0)
     rq2 = reeval.request(fo, account_id=ACCT, position_id=pos.id, trigger_id=tid2,
-                         trigger={"kind": "fo:news"}, today=TODAY)  # fmt: skip
+                         trigger={"kind": "fo:news"}, today=D)  # fmt: skip
     with store.tx(conn):
         store.transition(conn, pos.id, expected_version=pos.version, note="변경")
     seen.clear()

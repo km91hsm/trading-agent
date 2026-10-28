@@ -177,3 +177,32 @@ def test_option_expiry_settles_next_day(conn):
     _tick(ctx)
     cur = store.get_position(conn, pos.id)
     assert cur.status == "settled"  # 복구가 정산 대기로 옮기고 같은 틱의 정산 확인이 닫는다
+
+
+def test_stop_while_entering_recalls_and_counts_fill_during_cancel(conn):
+    """진입 중(부분체결 1) 손절 → 미체결 진입 회수 중 1계약 더 체결 → 실제 보유 2계약만 청산."""
+    ctx = make_ctx(conn, market=_market(), max_contracts=10, reeval={"periodic_max_per_day": 0})
+    broker = ctx.brokers[ACCT]
+    acct = executor.account_of(ctx, ACCT)
+    out = executor.run_leg(ctx, acct, env(_decision("FUTURES", "LONG")))
+    assert out[0]["status"] == "accepted"
+    req = broker.orders[0]
+    n = req.qty
+    assert n >= 3
+    pos = store.open_positions(conn, ACCT)[0]
+    _sync(ctx, [fill("FAKE-1", filled=1, amount=req.price, remaining=n - 1, side="BUY",
+                     code=req.code)])  # fmt: skip
+    assert store.get_position(conn, pos.id).qty_held == 1
+    # 취소 요청 뒤 원주문 조회: 누적 2계약 체결, 나머지 취소로 끝남
+    broker.states["FAKE-1"] = state("FAKE-1", order_qty=n, filled=2, remaining=0,
+                                    cancelled=n - 2, terminal=True, st="cancelled")  # fmt: skip
+    broker.balance = balance([holding(qty=2)])
+    ctx.market_client = _market("344")
+    out = _tick(ctx)
+    exits = out["accounts"][ACCT]["exits"]
+    assert exits and exits[0]["intent"] == "STOP", out
+    stop = broker.orders[-1]
+    assert (stop.side, stop.qty) == ("SELL", 2)
+    assert broker.cancelled and broker.cancelled[0][0] == "FAKE-1"
+    cur = store.get_position(conn, pos.id)
+    assert cur.qty_held == 2 and cur.status == "closing"

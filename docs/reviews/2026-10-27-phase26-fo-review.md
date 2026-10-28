@@ -153,3 +153,33 @@ base `1bd0172` → (단계 2 GitHub 리뷰 반영 뒤) `c7bf51e`, head `94e4e3f`
 | G3-2 | P2 | 재개 분기 계좌 선별 | 판정 파일(`_fo_risk_check_<계좌>`)은 다리 예약 **전에** 쓰이므로, 그 사이에 죽으면 재개가 그 계좌를 끝난 것으로 보고 건너뜀 | `_fo_account_done`: 보류 플래그·`_fo_order_<계좌>`·결정 파일 저장 뒤 생긴 라운드 0 원장 다리(OPEN·RESIZE_UP·RESIZE_DOWN·CLOSE)가 있거나, 판정이 실행할 것이 없을 때(거부·기록만·오류·건너뜀·다리 없음)만 끝난 것. 승인·다리 있는 판정만 남았으면 다시 실행. `test_resume_reruns_account_whose_risk_check_has_no_leg` |
 | G3-3 | P2 | `fo/inputs._news_macro` | `market_view.build_inputs` 에 시크릿을 넘기지 않아 FRED·ECOS 거시 지표가 늘 빠짐 | `FoExecContext.secrets` 추가, `cli._fo_tool_ctx`·`fo/session.run(secrets=)`·`fo session` CLI 가 `boot.secrets` 를 넘김. `test_news_macro_forwards_secrets`·`test_session_run_puts_secrets_on_context`·`test_fo_tool_ctx_carries_boot_secrets` |
 | G3-4 | P2 | `_fo_run_accounts` 창 판정 | RESIZE·REPLACE 를 진입으로 보고 진입 창(cutoff 15:30) 밖이면 보류해, 장중(15:45 까지) 축소·청산이 막힘 | 진입 창은 OPEN 과 보유 없는 RESIZE·REPLACE 만. 보유가 있으면 장중이면 바로 `run_leg`(증액 다리는 게이트가 진입 창 밖이면 거부). `test_replace_with_position_closes_after_entry_cutoff`·`test_resize_with_position_runs_open_without_position_pends`·`test_open_after_entry_cutoff_still_pends` |
+
+## 단계 4 — 데몬·모니터·재평가·웹 (`feat/phase26-4-daemon-web`)
+
+리뷰 base `800ca63`(단계 3 head), head `9362175`. 세 리뷰를 같은 범위에서 돌렸다: Codex exec(초점 프롬프트 11항목) P0 7·P1 6, `codex review --base 800ca63` P1 1·P2 3, Claude `/code-review` high 10. 겹치는 지적이 많아 한 표로 묶는다(출처 X=exec, R=review, C=Claude).
+
+| # | 심각도 | 위치 | 문제 | 조치 |
+|---|---|---|---|---|
+| S4-1 | P0 | `fo/order_test.py` 청산 재시도 (X1·R1) | 청산 지정가 취소 중 체결돼도 취소 결과를 버리고 시장가 1계약을 다시 내 반대 포지션이 생길 수 있음 | `_close`: 취소가 **terminal 로 확정**될 때만 확정 잔량만큼 시장가 재주문, 미확정이면 재주문 없이 `unresolved`. `test_option_close_filled_during_cancel_no_extra_order`·`test_close_cancel_unconfirmed_does_not_resubmit` |
+| S4-2 | P0 | `order_test.run` 진입 취소 (X2·R2) | 진입 취소 미확정·조회 실패를 '보유 없음' 으로 끝냄 | terminal 취소일 때만 무보유 종료, 아니면 주문번호와 함께 `unresolved`. `test_entry_cancel_unconfirmed_is_unresolved` |
+| S4-3 | P0 | `order_test.run` 확인 단계 (X3·R3·C2) | 진입 체결 뒤 잔고 조회·시세·청산 주문 예외가 정리(청산)를 건너뛰고 traceback 으로 끝남 | 확인 단계 예외는 기록 후 청산 진행, 청산 시세 실패는 시장가, 주문 예외는 `_place` 가 '살아 있을 수 있음' 으로 기록·`unresolved`. `test_balance_failure_still_closes`·`test_close_order_exception_reported_unresolved` |
+| S4-4 | P0 | `fo/engine.maintain` (X4) | 유지 검사가 `held` 만 보고 진입 중 보유·미체결 진입 예약을 빼서 노출·예산·스트레스가 과소 계산 | `entering` 포함, 살아 있는 진입 다리 잔량을 노출·수명 예산·스트레스에 합산, 위반이면 `_risk_reduce` 가 **진입 회수부터**(다음 틱에 보유만으로 재계산). `test_maintain_counts_pending_entry_and_recalls_first` |
+| S4-5 | P0 | 데몬·CLI `engine.tick` 호출 (X5) | 휴장일 함수를 넘기지 않아 강제 청산일·만기 의견일이 평일 휴장을 운영일로 셈 | `engine.tick` 이 `holiday_fn` 이 없으면 `market_client.is_holiday`(KIS, 틱 안 캐시, 실패는 개장)를 쓴다. `test_force_close_day_uses_market_holidays` |
+| S4-6 | P0 | `positions.adopt`·`fo adopt` (X6) | 다른 계좌 잔고로 unknown 포지션을 승계할 수 있음 | `adopt(account_id=)` 소유 계좌 일치 필수, CLI 가 넘긴다. `test_adopt_refuses_other_account` |
+| S4-7 | P0 | `reeval.apply` HOLD (X7)·`engine` 기록만 모드 (C1·C4) | dry_run·paused·off 에서도 HOLD 익절선 변경, 보류 진입 플래그 소비(실제 데몬이 아침 결정을 못 냄), REPLACE 플래그 소비, 트리거 기록·재평가 대기열 등록, 정산 전이, 유지 축소의 `qty_target` 하향이 일어남 | `engine._hold`(=`executor._record_only`)가 있으면 보류 진입·REPLACE 를 소비하지 않고 트리거·재평가를 띄우지 않으며 유지 축소는 목표를 건드리지 않고 기록만, dry_run 은 정산·halted 를 쓰지 않음, HOLD 의 `tp_pt` 는 주문이 나가는 모드일 때만. `test_dry_run_tick_keeps_pending_flag_and_records_no_trigger`·`test_paused_risk_reduce_does_not_lower_target`·`test_reeval_hold_tp_unchanged_when_paused` |
+| S4-8 | P1 | `engine` 일일 손실 (C3) | `cash.unrealized`(진입 이후 누적 평가손익)로 '일일' 손실을 판정해 스윙 보유의 옛 손실로 halt | 오늘 첫 관측 평가손익을 `control.fo_day_open:<계좌>` 에 두고 `realized_today + (unrealized − 기준)` 으로 판정(밤사이 갭은 첫 틱 이전이라 빠진다 — 근사, 문서화). `test_daily_loss_uses_today_change_not_cumulative` |
+| S4-9 | P1 | `triggers._fo_rows` (R4) | 같은 계약을 가진 다른 계좌의 트리거가 대기·간격·하루 상한을 함께 소비 | 조회에 `account_id` 추가(트리거 행은 계좌를 적는다), 청산 때 폐기도 계좌 범위. `test_trigger_throttle_is_per_account` |
+| S4-10 | P1 | `triggers._OK`·`reeval.run` (X9·X10) | 세션 없이 버린 처리('폐기:')를 성공으로 세고, 처리 시각을 세션 **시작** 시각으로 적음 | `_OK` 가 '실패:'·'폐기:' 를 모두 제외, `handled_at` 은 세션이 끝난 뒤 `ctx.now()`. `test_discarded_trigger_not_counted` |
+| S4-11 | P1 | `submit_fo_decision` `_r<n>` (X11) | 재평가 결정의 기준 지수가 아침 `_fo_inputs` 값으로 저장돼 다음 move 트리거 기준이 틀림 | 재평가 제출 때 `market_client.get_kospi200()` 로 `resolved.index_at_decision` 을 갱신(실패면 아침 값) |
+| S4-12 | P1 | `tools._fo_account_done` (X12·C10) | 재개 판정이 결정과 무관한 다리·파일 mtime 에 의존 | 원장 **v27** `fo_order_legs.request_id`(+인덱스): `ReservePlan.request_id` 로 진입·축소 다리에 결정 봉투를 남기고 재개는 `account_id + request_id` 다리 유무로 판정(보류 진입을 엔진이 실행해도 같은 request_id) |
+| S4-13 | P1 | `reeval.run` (C5) | 아침 파생 세션이 없던 날(상한·실패) 재평가 세션이 떠도 제출 전제(리포트·요약)에 막혀 비용만 씀 | 그날 `_fo_inputs`·`_fo_summary` 가 없으면 세션 없이 '폐기:'(보호선·유지 조건은 엔진이 계속). `test_run_skips_without_morning_summary` |
+| S4-14 | P2 | `engine` 트리거 요청 (C6) | 대기열 등록 실패 시 트리거가 미처리로 남아 그날 그 계약의 트리거가 전부 막힘 | `_enqueue` 가 실패면 False(중복은 True) → 엔진이 '실패:' 로 닫아 다음 간격 재시도. `test_enqueue_failure_marks_trigger_failed` |
+| S4-15 | P2 | `engine._novel_news` (C7) | 종목 태그가 있는 개별 종목 뉴스까지 세어 지수 포지션의 뉴스 재평가가 무관한 기사로 뜸 | 종목 태그 없는 시장·거시 뉴스만. `test_novel_news_counts_untagged_only` |
+| S4-16 | P2 | `engine` 틱 (C8) | 틱마다 잔고 조회 2회 | `fo.balance.refresh(balance=)` 로 같은 틱의 잔고 재사용 |
+| S4-17 | P2 | `engine._held_row` (C9) | `executor._broker_qty` 와 같은 매칭 중복 | `executor.broker_row` 하나로(`_broker_qty` 도 그것을 쓴다); 복구 알림 키는 프로세스마다 같은 sha1 |
+| S4-18 | P1 | 테스트 범위 (X13) | 수명 시나리오가 진입 중 손절·취소 중 체결을 안 봄, 현물 스냅샷은 KR BUY·HOLD 실행만 | `test_stop_while_entering_recalls_and_counts_fill_during_cancel` 추가. 현물 스냅샷은 execute 경로의 회귀 방어일 뿐이며 계좌 목록·데몬 소비자는 `tests/test_daemon_fo.py` 가 따로 본다(한계를 문서에 명시) |
+| S4-19 | P1 | `engine.maintain` 국면 cap 0·대조 0 (X8) | 스펙 §4.4 '배수 한도는 유지 조건' 과 달리 cap 0·대조 0 을 최대 한도로 바꿔 감액하지 않음 | **설계 유지(문서 명시)**: 설정 의미가 '그 국면 신규 금지'(N4)라 보유를 0 으로 강제 청산하지 않는다 — 게이트 `rules.evaluate` 와 같은 해석. 국면 전환 시 청산을 원하면 별도 설정으로 다룬다(실기 3 뒤 판단, TODO 결정 대기) |
+
+확인함(리뷰어 공통): 지수 보호선의 시간·신선도 조건, 옵션 손절의 저장선 단독 발동, 옵션 매도 +1운영일, `hold_overnight=false` 마감 시각, 스트레스 15:00 확정, 진입 다리만 회수, halted 날짜, 보류 진입 실행 전 플래그 삭제·cutoff 폐기, 늦은 재평가 CAS·REPLACE 다음 틱, 현물·파생 계좌 목록 분리와 소비자별 전달, 파생 시계 게이트, order-test 실전 거부·통과 수단만 플래그, 거부 목록, 웹 계좌 검증·합산 분리·SSE 지문, 합성 fixture·비밀정보 없음.
+
+단계 4 결론: **보완 뒤 진행** — P0 7·P1 8·P2 4 반영(S4-19 는 설계 유지로 문서화). `uv run ruff check`·`uv run pytest`·web typecheck/vitest/build 통과 뒤 PR(`--base feat/phase26-3-session`).

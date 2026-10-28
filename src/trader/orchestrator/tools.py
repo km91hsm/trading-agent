@@ -2040,7 +2040,8 @@ def submit_fo_decision(
                 return out
             todo = [
                 a for a in fo.accounts
-                if a.asset == "fo" and not _fo_account_done(ctx, d, stage, stages, a.id, date)
+                if a.asset == "fo"
+                and not _fo_account_done(ctx, d, stages, a.id, date, env_prev.request_id)
             ]  # fmt: skip
             if todo:
                 res = _fo_run_accounts(
@@ -2105,6 +2106,14 @@ def submit_fo_decision(
                 ),
             }
     resolved = _fo_resolved(ctx, inputs, env, pos, today=date)
+    if round_n > 0 and getattr(fo, "market_client", None) is not None:
+        # 재평가의 기준 지수는 결정 시점의 지수(아침 `_fo_inputs` 의 값이 아님 — move 트리거 기준)
+        try:
+            idx, _ = fo.market_client.get_kospi200()
+            if idx is not None:
+                resolved["index_at_decision"] = str(idx)
+        except Exception as e:  # noqa: BLE001 — 실패면 아침 입력 값 유지
+            logger.warning("재평가 기준 지수 조회 실패(아침 값 유지): %s", e)
     historical = bool(meta.get("historical")) or bool(getattr(fo, "historical", False))
     # 기록만 하는 사유(실행 없음): 과거 asof 입력, 다른 운영일의 입력(S3 P0)
     record_only: str | None = None
@@ -2157,8 +2166,6 @@ def submit_fo_decision(
 
 FO_INPUT_DATE_NOTE = "입력 날짜 불일치 — 실행 안 함"
 FO_SUBMIT_STALE_NOTE = "제출·재개 시점 입력 노후 — 실행 안 함"
-# 아침 결정의 계좌 다리(회수·감시 다리 STOP·EXPIRY 등은 제외) — 재개 판정의 원장 근거
-_FO_DECISION_LEG_INTENTS = ("OPEN", "RESIZE_UP", "RESIZE_DOWN", "CLOSE")
 
 
 def _fo_submit_stale(ctx: ToolContext, inputs: dict) -> str | None:
@@ -2179,25 +2186,19 @@ def _fo_submit_stale(ctx: ToolContext, inputs: dict) -> str | None:
 
 
 def _fo_account_done(
-    ctx: ToolContext, d: Path, stage: str, stages: list[str], account_id: str, day: date
+    ctx: ToolContext, d: Path, stages: list[str], account_id: str, day: date, request_id: str
 ) -> bool:
-    """아침 결정 재개 때 이 계좌를 건너뛸지(PR #61 리뷰). 판정 파일은 다리 예약 **전에** 쓰이므로
-    그것만으로는 끝났다고 보지 않는다 — 보류 플래그·주문 체크포인트·결정 저장 뒤 생긴 원장 다리
-    (아침 결정 의도, 라운드 0)가 있거나, 판정이 실행할 것이 없는 경우(거부·기록만·오류·건너뜀·
-    다리 없음)만 끝난 것이다. 다리 `created_at` 과 결정 파일 mtime 은 둘 다 벽시계 UTC 다."""
+    """아침 결정 재개 때 이 계좌를 건너뛸지(PR #61 리뷰·단계 4 리뷰). 판정 파일은 다리 예약
+    **전에** 쓰이므로 그것만으로는 끝났다고 보지 않는다 — 보류 플래그·주문 체크포인트·**이 결정
+    봉투(request_id)로 만든 원장 다리**(v27 `fo_order_legs.request_id`)가 있거나, 판정이 실행할
+    것이 없는 경우(거부·기록만·오류·건너뜀·다리 없음)만 끝난 것이다."""
     if fo_pending_entry(ctx.conn, account_id, day) is not None:
         return True
     if f"_fo_order_{account_id}" in stages:
         return True
-    try:
-        since = datetime.fromtimestamp((d / f"{stage}.json").stat().st_mtime, UTC).isoformat()
-    except OSError:
-        since = None
-    marks = ",".join("?" * len(_FO_DECISION_LEG_INTENTS))
-    if since is not None and ctx.conn.execute(
-        f"SELECT 1 FROM fo_order_legs WHERE account_id = ? AND round = 0 AND intent IN ({marks})"
-        " AND created_at >= ? LIMIT 1",
-        (account_id, *_FO_DECISION_LEG_INTENTS, since),
+    if ctx.conn.execute(
+        "SELECT 1 FROM fo_order_legs WHERE account_id = ? AND request_id = ? LIMIT 1",
+        (account_id, request_id),
     ).fetchone():
         return True
     rc_stage = f"_fo_risk_check_{account_id}"

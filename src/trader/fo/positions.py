@@ -246,10 +246,14 @@ def adopt(
     qty: int,
     stop_pt: Decimal,
     balance: FoBalance,
+    account_id: str | None = None,
 ) -> bool:
-    """사람의 승계: 브로커 행(코드·방향·종류·수량)과 **대조 일치할 때만** `held` 로 올린다."""
+    """사람의 승계: 브로커 행(코드·방향·종류·수량)과 **대조 일치할 때만** `held` 로 올린다.
+    `account_id` 를 주면 그 계좌의 포지션일 때만(다른 계좌 잔고로 승계 금지)."""
     pos = store.get_position(conn, position_id)
     if pos is None or pos.status != "unknown":
+        return False
+    if account_id is not None and pos.account_id != account_id:
         return False
     row = next((p for p in balance.positions if p.code == pos.code), None)
     if row is None or (row.contract_side, row.kind, row.qty) != (side, kind, qty):

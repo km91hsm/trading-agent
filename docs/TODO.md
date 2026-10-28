@@ -500,7 +500,8 @@
 - [x] 단계 3 교차 리뷰 → 수정 → PR(`--base feat/phase26-2-store-gate-exec`): Codex exec P0 5·P1 4 + codex review P1 1 + Claude 14(중복 8) 반영(`docs/reviews/2026-10-27-phase26-fo-review.md` 「단계 3」, `tests/fo/test_review_s3.py`) — 국면·시장 뷰 연결, 지연 fo 컨텍스트·오프라인 마스터, kind 별 프롬프트, 입력 날짜 가드·계좌별 예외 격리·재개, 보류 플래그 dry_run·소비자, KST 봉 컷, 현물 헤지 보유 전달, 재평가 요청 재사용·`--round`, 묶음 목록 축소 (2026-10-28)
 - [x] 단계 3 GitHub Codex PR #61 리뷰 4건(G3-1~4) 반영: 제출·재개 시점 신선도, 원장 다리로 재개 판정, 거시 시크릿 전달, 보유 축소는 장중 실행 (2026-10-28)
 - [x] 단계 4 데몬·모니터·재평가·웹 (`feat/phase26-4-daemon-web`): `fo/triggers`·`engine`(보호선 이중 조건·유지 조건·회수)·`reeval`(CAS·REPLACE 다음 틱), 데몬 잡 `kr_fo_session`·`kr_fo_monitor`·큐 kind 3, 소비자별 계좌 목록, CLI `fo status|monitor|adopt|close` + `order-test` 왕복 구현, 텔레그램 `/fo`·STATUS 절, `/api/fo/*`·`/fo` 페이지, E2E 수명 시나리오·현물 회귀 스냅샷 (2026-10-28)
-- [ ] 단계 4 교차 리뷰 → 수정 → PR
+- [x] 단계 4 교차 리뷰 → 수정 → PR(`--base feat/phase26-3-session`): Codex exec P0 7·P1 6 + codex review P1 1·P2 3 + Claude 10(중복 묶어 S4-1~19) 반영(`docs/reviews/2026-10-27-phase26-fo-review.md` 「단계 4」, `tests/fo/test_review_s4.py`, 원장 v27) (2026-10-28)
+- [ ] 결정 대기(사용자): 국면이 bear 로 바뀌어 `leverage_by_regime.bear: 0`(신규 금지)일 때 기존 파생 보유를 자동 감액·청산할지(현재는 신규만 막고 보유는 보호선·만기로만 정리 — S4-19)
 - [ ] 단계 5 문서·전체 교차 리뷰 B·체인 ff 머지 (`feat/phase26-5-docs-review`)
 - [ ] 실기 1(사용자 확인 대기, 조회 전용): `uv run trader fo verify --account paper-fo` → 시세·마스터·주문가능·잔고 필드 확인(빈 잔고면 방향·NAV 미검증으로 남음) → 비식별 fixture 로 미확인 항목 확정
 - [ ] 실기 2(사용자 실행, 거부 목록): `uv run trader fo order-test --account paper-fo --vehicle FUTURES` → `OPTION_BUY` → `OPTION_SELL` 1계약 왕복 → 수단별 `fo_verified` 플래그

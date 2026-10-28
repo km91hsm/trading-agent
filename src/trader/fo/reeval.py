@@ -95,8 +95,16 @@ def run(
         repo.mark_trigger_handled(conn, tid, "폐기: 포지션 변경", handled_at=now.isoformat())
         return {"skipped": "포지션이 바뀌어 재평가 생략", "trigger_id": tid}
     day = date.fromisoformat(params["date"])
+    mdir = market_dir(day, MARKET, ctx.state)
     stage = f"_fo_reeval_r{int(params['round'])}_{params['account_id']}"
-    req = (read_checkpoint(market_dir(day, MARKET, ctx.state), stage) or {}).get("data") or {}
+    req = (read_checkpoint(mdir, stage) or {}).get("data") or {}
+    if read_checkpoint(mdir, "_fo_inputs") is None or read_checkpoint(mdir, "_fo_summary") is None:
+        # 재평가는 그날 아침 세션의 입력·리포트 위에서만 결정을 받을 수 있다(제출 전제조건) —
+        # 아침 세션이 없던 날은 세션 비용을 쓰지 않고 버린다. 보호선·유지 조건은 엔진이 계속 본다
+        repo.mark_trigger_handled(
+            conn, tid, "폐기: 오늘 파생 분석 없음", handled_at=now.isoformat()
+        )
+        return {"skipped": "오늘 아침 파생 세션의 입력·요약이 없어 재평가 생략", "trigger_id": tid}
     if req.get("request_id") != params.get("request_id"):
         repo.mark_trigger_handled(conn, tid, "폐기: 요청 불일치", handled_at=now.isoformat())
         return {"skipped": f"재평가 요청 {stage} 이 없거나 다름", "trigger_id": tid}
@@ -112,9 +120,12 @@ def run(
             notifier=ctx.notifier, fo=ctx, **extra,
         )  # fmt: skip
     except session_mod.PipelineError as e:
-        repo.mark_trigger_handled(conn, tid, f"실패: {e}"[:200], handled_at=now.isoformat())
+        repo.mark_trigger_handled(conn, tid, f"실패: {e}"[:200], handled_at=ctx.now().isoformat())
         return {"skipped": str(e), "trigger_id": tid}
-    repo.mark_trigger_handled(conn, tid, resume.handled_marker(res), handled_at=now.isoformat())
+    # 처리 시각은 세션이 **끝난** 시각(간격 제한이 세션 길이만큼 짧아지지 않게)
+    repo.mark_trigger_handled(
+        conn, tid, resume.handled_marker(res), handled_at=ctx.now().isoformat()
+    )
     return {"trigger_id": tid, "ok": res.ok, "error": res.error, "session_id": res.session_id}
 
 
@@ -152,7 +163,9 @@ def apply(ctx: FoExecContext, env: FoDecisionEnvelope, *, round_n: int) -> dict[
         out = executor.run_leg(ctx, account, close_env, round=round_n, source="reeval")
         return {"applied": "REPLACE", "results": out, "replace_pending": d.direction != "FLAT"}
     out = executor.run_leg(ctx, account, env, round=round_n, source="reeval")
-    if d.intent == "HOLD" and d.take_profit_pt is not None:
+    mode, _ = executor.effective_mode(conn, account)
+    hold = executor._record_only(ctx, mode, control.is_paused(conn))
+    if d.intent == "HOLD" and d.take_profit_pt is not None and hold is None:
         cur = store.get_position(conn, pos.id)
         tp = rules._d(d.take_profit_pt)
         if cur is not None and cur.tp_pt != tp and cur.status == "held":
