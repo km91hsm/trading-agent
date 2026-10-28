@@ -373,6 +373,22 @@ Claude 리뷰어 4 + Codex 2 교차검증 결과 중 비주문 항목. 표의 �
 - **같은 값 다시 쓰기**: `control.set_flag` 는 저장된 JSON 과 같으면 쓰지 않는다(upsert `WHERE control.value IS NOT excluded.value`, updated_at 불변). 메모리 브레이커·`ops_level` 의 `at` 은 '그 상태가 된 시각'이라 상태가 같으면 유지한다. SSE `positions` 지문은 created_at(마지막 관측 시각 — 신선도 판단용이라 upsert 는 계속 갱신) 대신 최근 사흘 행의 값 해시.
 - **단타 판정자**: `ScalpJudge` 제출 기록은 `JUDGE_TTL_S`(30분) 지나면 회수 여부와 무관하게 버린다(후보에서 빠진 종목의 키가 쌓이지 않게).
 
+## 전체 검토 2차 결정 반영 — 묶음 5 보정 보류·테마 입력 (2026-10-28, 결정 문서 §3·§4)
+
+- **보정 주입 보류(결정 14번).** `ml.yaml calibration.inject`(기본 false)가 꺼져 있으면 `tools.ensure_
+  calibration` 은 만기 결정이 `min_decisions` 이상이어도 `35_calibration` 을 쓰지 않는다 — 현 보정은
+  역할·이웃 표본 수와 무관하게 할인을 지시해(이웃 k=20 < n≥30) L12 개선 전에는 넣지 않는다. 만기
+  `min_decisions` 도달은 운영 점검 llm 영역 `llm.calibration_review`(watch)로 재검토를 알리고, readiness
+  `calibration_active` 메모가 주입 꺼짐을 적는다. `trader calibration build` 는 리포트 확인용으로 그대로.
+- **테마·사건 소속 공통 조회(결정 19번 i).** `scan/membership.of` 하나를 게이트(`executor._theme_of`, asof
+  없음 = 오늘 최신)와 트레이더 묶음(`context.theme`, `00_inputs.meta.asof` 기준)이 쓴다. 기록은 그날 최신값
+  하나라 과거 시각으로 되돌릴 수 없어, asof 뒤 관측(`after_asof`)·관측 시각 없는 옛 기록(`unknown_time`)은
+  입력에 넣지 않는다. 사건 기록(`control.events:<시장>`)은 결과가 바뀔 때의 `observed_at` 을 남긴다.
+- **퀀트 기간·익절과 최소 보유(19번 ii·iii).** trader.md 가 5일 확률을 긴 결정 기간의 확률로 쓰지 않게
+  하고, 트레이더 묶음 `context.holding`(계좌별 `held_since`·`held_trading_days`·`min_hold_days`·
+  `sell_allowed`, 게이트와 같은 휴장일 반영 거래일)으로 "익절가는 재평가 기준일 뿐 최소 보유 전 청산을
+  보장하지 않는다" 를 알린다. 최소 보유 예외(조기 익절)는 주문 정책 결정이라 보류.
+
 ## 전체 검토 2차 결정 반영 — 묶음 4 설계 (2026-10-28, `docs/reviews/2026-10-28-decision-review.md`)
 
 사용자 선택안 + Codex 보완. 주문 경로(현금 ETF·실행 키·무효화 트리거)를 건드린다.

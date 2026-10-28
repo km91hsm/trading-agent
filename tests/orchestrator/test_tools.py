@@ -832,9 +832,29 @@ def test_ensure_calibration_inactive_below_60(ctx, project):
     assert b["calibration"] is None
 
 
-def test_ensure_calibration_active_at_60_and_in_context(ctx, project):
+def test_calibration_not_injected_by_default_even_at_60(ctx, project):
+    """14번(L12 보류): 개선 전 보정은 만기 60건에 도달해도 트레이더 입력에 자동으로 들어가지 않는다
+    (`ml.yaml calibration.inject` 기본 false — 60건 도달은 운영 점검의 재검토 알림)."""
     from helpers_memory import seed_matured
 
+    _inputs(project)
+    seed_matured(ctx.conn, 60)
+    assert tools.ensure_calibration(ctx, ticker="005930", market="KR", date=D) is None
+    assert read_checkpoint(run_dir(D, "KR", "005930"), "35_calibration") is None
+
+
+def test_ensure_calibration_active_at_60_and_in_context(ctx, project, monkeypatch):
+    from helpers_memory import seed_matured
+
+    from trader import config as _config
+
+    monkeypatch.setattr(
+        _config,
+        "load_ml",
+        lambda path=None: _config.MlConfig.model_validate(
+            {"models": {"calibration": {"inject": True}}}
+        ),
+    )
     _inputs(project)
     seed_matured(ctx.conn, 60)
     r = tools.ensure_calibration(ctx, ticker="005930", market="KR", date=D)
@@ -1011,7 +1031,16 @@ def test_market_dir_helper_creates_dir(project):
 def test_ensure_calibration_query_vector_uses_run_date(ctx, project, monkeypatch):
     from helpers_memory import seed_matured
 
+    from trader import config as _config
     from trader.calibration import model as cal
+
+    monkeypatch.setattr(  # 보정 주입은 기본 꺼짐(결정 14번) — 이 테스트는 켠 경로를 본다
+        _config,
+        "load_ml",
+        lambda path=None: _config.MlConfig.model_validate(
+            {"models": {"calibration": {"inject": True}}}
+        ),
+    )
     from trader.memory import vector as vec
     from trader.ml import features as feat
 
@@ -1490,3 +1519,80 @@ def test_trader_bundle_counts_evidence_before_dropping_it(ctx, project):
     assert st["missing_roles"] == [] and st["directions"] == {"BULLISH": 4}
     assert st["agreement"] == 1.0
     assert "evidence" not in b["reports"][0]
+
+
+def test_trader_bundle_theme_context_respects_inputs_asof(ctx, project):
+    """19번(i): 트레이더 입력의 `context.theme` 은 게이트와 같은 조회 함수로 종목의 상위 테마·shock
+    사건 소속을 싣되, 입력 기준 시각(`00_inputs.meta.asof`) 뒤에 관측된 결과는 넣지 않는다
+    (룩어헤드)."""
+    from trader.control import control
+
+    _realistic_reports_and_turns(ctx, project)
+    inputs = read_checkpoint(run_dir(D, "KR", "005930"), "00_inputs")
+    asof = (inputs.get("data") or inputs)["meta"]["asof"]
+    heat = {
+        "market": "KR",
+        "date": D.isoformat(),
+        "observed_at": "2000-01-01T00:00:00+00:00",
+        "themes": [{"theme": "반도체", "members": ["005930"], "tickers": []}],
+    }
+    control.set_flag(ctx.conn, "theme_heat:KR", heat)
+    b = tools.checkpoint_bundle(ctx, ticker="005930", market="KR", date=D, kind="trader")["data"]
+    th = b["context"]["theme"]
+    assert th["themes"] == ["반도체"] and th["status"]["theme"] == "ok"
+    control.set_flag(
+        ctx.conn, "theme_heat:KR", {**heat, "observed_at": "2999-01-01T00:00:00+00:00"}
+    )
+    b2 = tools.checkpoint_bundle(ctx, ticker="005930", market="KR", date=D, kind="trader")["data"]
+    assert (
+        b2["context"]["theme"]["themes"] == []
+        and b2["context"]["theme"]["status"]["theme"] == "after_asof"
+    )
+    assert asof  # 기준 시각이 있는 입력
+
+
+def test_trader_bundle_holding_context_shows_min_hold(ctx, project):
+    """19번(iii): 재평가 입력에 보유 거래일·최소 보유 충족 여부를 싣는다 — 익절가 도달이 최소 보유
+    전이면 SELL/TRIM 이 게이트에서 거부될 수 있음을 트레이더가 안다."""
+    from decimal import Decimal
+
+    from trader.ledger import repo
+
+    _realistic_reports_and_turns(ctx, project)
+    oid = repo.insert_order(
+        ctx.conn,
+        decision_id=None,
+        account_id="paper-main",
+        ticker="005930",
+        market="KR",
+        side="BUY",
+        qty=1,
+        order_type="LIMIT",
+        price=Decimal("70000"),
+        status="filled",
+        order_no="1",
+        message="",
+        mode="auto",
+        created_at=f"{D.isoformat()}T01:00:00+00:00",
+    )
+    ctx.conn.execute(
+        "INSERT INTO fills(order_id, account_id, qty, price, filled_at) VALUES (?, ?, ?, ?, ?)",
+        (oid, "paper-main", 1, "70000", f"{D.isoformat()}T01:00:00+00:00"),
+    )
+    ctx.conn.commit()
+    b = tools.checkpoint_bundle(ctx, ticker="005930", market="KR", date=D, kind="trader")["data"]
+    h = b["context"]["holding"]["paper-main"]
+    assert h["held_trading_days"] == 0 and h["min_hold_days"] == 3 and h["sell_allowed"] is False
+
+
+def test_existing_calibration_checkpoint_not_injected_when_switch_off(ctx, project):
+    """PR #65 Codex: 이미 있는 35_calibration(전에 켜져 있었거나 옛 실행)도 스위치가 꺼져 있으면
+    트레이더 입력에 넣지 않는다 — 생성 앞뿐 아니라 소비 지점에서도 막는다."""
+    from trader.orchestrator.run_store import checkpoint_payload, write_checkpoint
+
+    _realistic_reports_and_turns(ctx, project)
+    d = run_dir(D, "KR", "005930")
+    write_checkpoint(d, "35_calibration", checkpoint_payload({"active": True, "roles": {}}, None))
+    assert tools.ensure_calibration(ctx, ticker="005930", market="KR", date=D) is None
+    b = tools.checkpoint_bundle(ctx, ticker="005930", market="KR", date=D, kind="trader")["data"]
+    assert b["context"]["calibration"] is None

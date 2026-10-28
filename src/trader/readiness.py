@@ -65,6 +65,15 @@ def _rate(conn: sqlite3.Connection, table: str, col: str, bad: tuple, since_iso:
     return (row["b"] or 0) / row["n"] if row["n"] else 0.0
 
 
+def _calibration_inject() -> bool:
+    try:
+        from trader import config
+
+        return bool(config.load_ml().models.calibration.inject)
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _min_decisions() -> int:
     try:
         from trader import config
@@ -167,7 +176,9 @@ def check(
             True,
             matured >= min_dec,
             min_dec,
-            f"정보: 만기 결정 {matured}건 (활성 기준 {min_dec})",
+            f"정보: 만기 결정 {matured}건 (활성 기준 {min_dec}"
+            + ("" if _calibration_inject() else ", 트레이더 주입 꺼짐 — L12 개선 전")
+            + ")",
         )
     )
     stale = conn.execute(

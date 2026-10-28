@@ -22,6 +22,8 @@ models:
   # promote_min_alpha 는 KR 왕복 30bp 기준. US 는 왕복 50bp 라 by_market 으로 0.005 (2026-10-20 사용자 결정).
   quant: {enabled: true, backend: auto, promote_metric: alpha, promote_min_alpha: 0.003, promote_min_alpha_by_market: {US: 0.005}, promote_min_positive_folds: 0.66, promote_min_accuracy: 0.40}
   ranker: {enabled: true}
-  calibration: {enabled: true, min_decisions: 60}
+  # calibration.inject: 트레이더 입력에 넣을지 — L12 개선(벤치마크 대비 부호·Wilson 하한·수축) 전까지 false.
+  # 만기 결정이 min_decisions 에 닿으면 운영 점검이 재검토를 알린다(2026-10-28 결정 14번).
+  calibration: {enabled: true, min_decisions: 60, inject: false}
   # rl_sizer.horizon_days 는 학습 때 label.horizon_days 로 덮인다(보상 정규화용). 승격은 `trader rl promote` 수동.
   rl_sizer: {enabled: false, seeds: 3, mode: shadow, backend: auto}
