@@ -9,6 +9,7 @@ import { Section } from "../components/Section";
 import { ErrorBox } from "../components/Tables";
 import { Term } from "../components/Term";
 import { useToast } from "../components/Toast";
+import { modeAccountLabel, settingsAccounts } from "../fo";
 import { termHelp } from "../glossary";
 import { useApp, useLoad } from "../hooks";
 import { parseWatch } from "../tape";
@@ -23,7 +24,9 @@ const THEMES: Array<[Theme, string]> = [
 ];
 
 export function SettingsPage() {
-  const { accounts, token, setToken, events, reloadAccounts, tick, theme, setTheme } = useApp();
+  const { accounts: stockAccounts, foAccounts, token, setToken, events, reloadAccounts, tick, theme, setTheme } = useApp();
+  // 계좌 모드는 계좌를 가리지 않는 제어 — 파생 계좌(Phase 26)도 고른다
+  const accounts = settingsAccounts(stockAccounts, foAccounts);
   const toast = useToast();
   const [tokenInput, setTokenInput] = useState(token ?? "");
   const [acct, setAcct] = useState("");
@@ -117,7 +120,7 @@ export function SettingsPage() {
                 <select value={acct || accounts[0]?.id || ""} onChange={(e) => setAcct(e.target.value)}>
                   {accounts.map((a) => (
                     <option key={a.id} value={a.id}>
-                      {a.id} · {a.env === "real" ? "실전" : "모의"} · 현재 {a.mode}
+                      {modeAccountLabel(a)}
                     </option>
                   ))}
                 </select>

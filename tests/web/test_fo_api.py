@@ -101,3 +101,23 @@ def test_sse_fingerprint_changes_on_leg_update(project, conn):
     with closing(db.connect()) as c2:
         after = sse.snapshot(c2)["fo"]
     assert before != mid != after
+
+
+def test_settings_mode_and_keys_include_fo_account(project, conn):
+    """설정 화면(계좌 모드·연결 키)은 계좌를 가리지 않는 소비자 — 파생 계좌도 받는다. 현물 계좌
+    단위 조회(`require_account`)는 그대로 현물만."""
+    from helpers_web import AUTH
+
+    deps = make_deps(project)
+    deps.fo_accounts = [fo_account()]
+    c = TestClient(create_app(deps), client=("127.0.0.1", 50000), base_url="http://127.0.0.1")
+    r = c.post("/api/control/mode", json={"account_id": ACCT, "mode": "off"}, headers=AUTH)
+    assert r.status_code == 200, r.text
+    assert r.json() == {"account_id": ACCT, "mode": "off"}
+    status = c.post("/api/control/secrets/status", headers=AUTH).json()
+    keys = {k["name"]: k for k in status["keys"]}
+    prefix = "KIS_" + ACCT.upper().replace("-", "_") + "_"
+    assert keys[prefix + "APP_KEY"]["account"] == ACCT
+    upd = c.post("/api/control/secrets", headers=AUTH, json={"values": {prefix + "HTS_ID": "x"}})
+    assert upd.status_code == 200, upd.text
+    assert c.get("/api/portfolio", params={"account_id": ACCT}).status_code == 400

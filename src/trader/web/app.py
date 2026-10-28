@@ -43,11 +43,17 @@ class WebDeps:
     schedule: Any | None = None  # ScheduleConfig: /api/system/daemon 의 잡 예정표 (없으면 빈 목록)
     quote_hub: Any | None = None  # 국내 실시간 시세 허브(web/live_quotes.QuoteHub), 없으면 REST 만
     # Phase 26: `accounts` 는 현물만(현물 화면·`account()` 조회), 파생 계좌는 따로 — `/api/fo/*` 와
-    # 계좌 목록(`all_accounts`, asset 꼬리표)만 본다
+    # 계좌를 가리지 않는 소비자(계좌 목록·설정 화면의 모드·연결 키 — `all_accounts`·
+    # `any_account`)만 본다
     fo_accounts: list[AccountConfig] = field(default_factory=list)
 
     def account(self, account_id: str) -> AccountConfig | None:
+        """현물 계좌(현물 조회·주문 화면용). 파생은 `fo_accounts`."""
         return next((a for a in self.accounts if a.id == account_id), None)
+
+    def any_account(self, account_id: str) -> AccountConfig | None:
+        """계좌를 가리지 않는 소비자(설정 화면의 계좌 모드 등)용 — 현물 + 파생."""
+        return next((a for a in self.all_accounts if a.id == account_id), None)
 
     @property
     def all_accounts(self) -> list[AccountConfig]:

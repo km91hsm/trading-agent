@@ -19,6 +19,17 @@ export function splitAccounts(rows: Account[]): { stock: Account[]; fo: Account[
   return { stock: rows.filter((a) => a.asset !== "fo"), fo: rows.filter((a) => a.asset === "fo") };
 }
 
+/** 설정 화면(계좌 모드)의 계좌 목록 — 계좌를 가리지 않는 제어라 현물 뒤에 파생 계좌까지. */
+export function settingsAccounts(stock: Account[], fo: Account[]): Account[] {
+  return [...stock, ...fo];
+}
+
+/** 계좌 모드 선택지 문구. 파생 계좌는 '선물옵션' 꼬리표. */
+export function modeAccountLabel(a: Account): string {
+  const env = a.env === "real" ? "실전" : "모의";
+  return `${a.id} · ${env}${a.asset === "fo" ? " 선물옵션" : ""} · 현재 ${a.mode}`;
+}
+
 export const directionLabel = (d: string | null | undefined) => (d ? DIRECTION[d] ?? d : "—");
 export const vehicleLabel = (v: string | null | undefined) => (v ? VEHICLE[v] ?? v : "—");
 export const intentLabel = (i: string | null | undefined) => (i ? INTENT[i] ?? i : "—");

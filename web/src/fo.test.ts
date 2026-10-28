@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { decisionLine, legRows, positionRows, splitAccounts } from "./fo";
+import { decisionLine, legRows, modeAccountLabel, positionRows, settingsAccounts, splitAccounts } from "./fo";
 import type { Account, FoDecisionRow, FoLeg, FoPosition } from "./types";
 
 const pos = (over: Partial<FoPosition> = {}): FoPosition => ({
@@ -17,6 +17,16 @@ describe("파생 화면 변환 (Phase 26)", () => {
     const { stock, fo } = splitAccounts(rows);
     expect(stock.map((a) => a.id)).toEqual(["a", "c"]);
     expect(fo.map((a) => a.id)).toEqual(["b"]);
+  });
+  it("설정 화면 계좌 모드는 현물 뒤에 파생 계좌까지, 꼬리표로 구분", () => {
+    const stock = [{ id: "paper-main", env: "paper", mode: "auto" }] as Account[];
+    const fo = [{ id: "paper-fo", env: "paper", mode: "auto", asset: "fo" }] as Account[];
+    expect(settingsAccounts(stock, fo).map((a) => a.id)).toEqual(["paper-main", "paper-fo"]);
+    expect(modeAccountLabel(stock[0])).toBe("paper-main · 모의 · 현재 auto");
+    expect(modeAccountLabel(fo[0])).toBe("paper-fo · 모의 선물옵션 · 현재 auto");
+    expect(modeAccountLabel({ id: "real-fo", env: "real", mode: "off", asset: "fo" } as Account)).toBe(
+      "real-fo · 실전 선물옵션 · 현재 off",
+    );
   });
   it("positionRows: 방향·수단·보유 방향·배수·예산 문자열", () => {
     const [r] = positionRows([pos()]);
