@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import io
 import logging
+import re
 import zipfile
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
@@ -25,8 +26,20 @@ logger = logging.getLogger("trader.kis")
 
 MASTER_URL = "https://new.real.download.dws.co.kr/common/master/fo_idx_code_mts.mst.zip"
 MASTER_NAME = "fo_idx_code_mts.mst"
-# 코드 접두 → (종류, 위클리). 위클리(209/309)는 해석 대상에서 뺀다
+# 코드 접두 → (종류, 위클리). 위클리는 해석 대상에서 뺀다. KRX 영문 단축코드(실기 1, 2026-10-28
+# 마스터): 선물 A01(정규)·A05(미니), 콜 B01·B05, 풋 C01·C05, 위클리 목 B09·C09·월 BAF·CAF.
+# 옛 숫자 코드(101·105·201…)는 하위 호환
 PREFIX_KIND: dict[str, tuple[FoKind, bool]] = {
+    "A01": ("FUTURES", False),
+    "A05": ("FUTURES", False),
+    "B01": ("CALL", False),
+    "B05": ("CALL", False),
+    "C01": ("PUT", False),
+    "C05": ("PUT", False),
+    "B09": ("CALL", True),
+    "C09": ("PUT", True),
+    "BAF": ("CALL", True),
+    "CAF": ("PUT", True),
     "101": ("FUTURES", False),
     "105": ("FUTURES", False),
     "201": ("CALL", False),
@@ -64,9 +77,17 @@ def _dec(v: str) -> Decimal | None:
         return None
 
 
-def _ym(v: str) -> str | None:
+_NAME_YM = re.compile(r"(?<!\d)(20\d{2}(?:0[1-9]|1[0-2]))(?!\d)")
+
+
+def _ym(v: str, name: str = "") -> str | None:
+    """월물구분 칸이 YYYYMM 이면 그것, 아니면(현행 마스터는 순번) 종목명의 YYYYMM
+    ('미니F 202611')."""
     s = v.strip()
-    return s if len(s) == 6 and s.isdigit() else None
+    if len(s) == 6 and s.isdigit():
+        return s
+    m = _NAME_YM.search(name)
+    return m.group(1) if m else None
 
 
 def parse(raw: bytes) -> list[Contract]:
@@ -93,7 +114,7 @@ def parse(raw: bytes) -> list[Contract]:
                 kind=kind,
                 weekly=weekly,
                 strike=None if kind == "FUTURES" else _dec(strike),
-                expiry_ym=_ym(ym),
+                expiry_ym=None if weekly else _ym(ym, name),
                 underlying=under,
                 atm_flag=atm or None,
                 product_type=ptype,

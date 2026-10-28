@@ -16,7 +16,15 @@ BASE = "/uapi/domestic-futureoption/v1/quotations"
 T0 = datetime(2026, 10, 27, 1, 15, 30, tzinfo=UTC)  # 10:15:30 KST
 
 
+def no_book(respx_mock):
+    """시세 시각·1호가를 채우는 호가 조회(실기 1)를 빈 응답으로 — 시세 필드만 보는 테스트용."""
+    return respx_mock.get(REAL + BASE + "/inquire-asking-price").mock(
+        return_value=httpx.Response(200, json={"rt_cd": "0", "output1": {}, "output2": {}})
+    )
+
+
 def test_fo_price_futures_fields(real_client, respx_mock):
+    no_book(respx_mock)
     route = respx_mock.get(REAL + BASE + "/inquire-price").mock(
         return_value=httpx.Response(200, json=load("fo_price_futures.json"))
     )
@@ -34,6 +42,7 @@ def test_fo_price_futures_fields(real_client, respx_mock):
 
 
 def test_fo_price_option_greeks(real_client, respx_mock):
+    no_book(respx_mock)
     route = respx_mock.get(REAL + BASE + "/inquire-price").mock(
         return_value=httpx.Response(200, json=load("fo_price_option.json"))
     )
@@ -76,6 +85,7 @@ def test_fo_minute_skips_empty_time(real_client, respx_mock):
 
 
 def test_option_chain_skips_failed_rows(real_client, respx_mock):
+    no_book(respx_mock)
     ok = load("fo_price_option.json")
 
     def respond(request):
@@ -101,6 +111,7 @@ def test_option_chain_skips_failed_rows(real_client, respx_mock):
 
 
 def test_option_chain_caps_calls(real_client, respx_mock):
+    no_book(respx_mock)
     respx_mock.get(REAL + BASE + "/inquire-price").mock(
         return_value=httpx.Response(200, json=load("fo_price_option.json"))
     )
@@ -157,6 +168,7 @@ def test_fake_market_fo_methods():
 
 
 def test_option_quote_iv_is_percent_and_reprice_converts(real_client, respx_mock):
+    no_book(respx_mock)
     """Codex 단계 1 P0-3: 시세 IV 는 KIS 그대로 퍼센트(18.4)이고 Black-76 재평가는 /100 으로
     넣는다."""
     from trader.fo import pricing
@@ -169,3 +181,57 @@ def test_option_quote_iv_is_percent_and_reprice_converts(real_client, respx_mock
     got = pricing.reprice(q, index_shift_pct=0.0, iv_rel=0.0, days_left=q.days_left)
     want = pricing.price("CALL", q.underlying, q.strike, 0.184, q.days_left)
     assert got == want and got < Decimal("50")
+
+
+# 실기 1(2026-10-28): 시세(FHMIF10000000) 응답에는 시각·1호가가 없고, 호가(FHMIF10010000) 응답의
+# output2 에 1~5호가와 호가접수시간 `aspr_acpt_hour` 가 있다. 구조만 본뜬 합성 값.
+PRICE_NO_TIME = {
+    "rt_cd": "0", "msg_cd": "MCA00000", "msg1": "ok",
+    "output1": {"hts_kor_isnm": "미니F 202611", "futs_prpr": "946.70", "futs_prdy_ctrt": "0.1",
+                "acml_vol": "10", "basis": "0.30", "futs_last_tr_date": "20261112",
+                "hts_rmnn_dynu": "16"},
+    "output2": {"bstp_cls_code": "0001", "hts_kor_isnm": "종합", "bstp_nmix_prpr": "6012.44"},
+    "output3": {"bstp_cls_code": "2001", "hts_kor_isnm": "KOSPI200", "bstp_nmix_prpr": "946.40"},
+}  # fmt: skip
+BOOK_OUTPUT2 = {
+    "rt_cd": "0", "msg_cd": "MCA00000", "msg1": "ok",
+    "output1": {"futs_shrn_iscd": "A05611", "futs_prpr": "946.70"},
+    "output2": {"futs_askp1": "946.72", "futs_bidp1": "946.68", "askp_rsqn1": "3",
+                "bidp_rsqn1": "4", "aspr_acpt_hour": "101530"},
+}  # fmt: skip
+
+
+def test_fo_price_takes_time_and_top_of_book_from_orderbook(real_client, respx_mock):
+    respx_mock.get(REAL + BASE + "/inquire-price").mock(
+        return_value=httpx.Response(200, json=PRICE_NO_TIME)
+    )
+    book = respx_mock.get(REAL + BASE + "/inquire-asking-price").mock(
+        return_value=httpx.Response(200, json=BOOK_OUTPUT2)
+    )
+    q = KisMarket(real_client, now=lambda: T0).get_fo_price("A05611", "FUTURES")
+    assert book.calls[0].request.url.params["FID_INPUT_ISCD"] == "A05611"
+    assert q.bid == Decimal("946.68") and q.ask == Decimal("946.72")
+    assert q.underlying == Decimal("946.40")  # output2 는 코스피 종합 — 업종코드 2001 묶음만
+    assert q.quote_asof == datetime(2026, 10, 27, 1, 15, 30, tzinfo=UTC)  # 10:15:30 KST
+    assert q.received_at == T0
+
+
+def test_fo_price_orderbook_failure_leaves_time_none(real_client, respx_mock):
+    respx_mock.get(REAL + BASE + "/inquire-price").mock(
+        return_value=httpx.Response(200, json=PRICE_NO_TIME)
+    )
+    respx_mock.get(REAL + BASE + "/inquire-asking-price").mock(
+        return_value=httpx.Response(200, json={"rt_cd": "1", "msg_cd": "X", "msg1": "실패"})
+    )
+    q = KisMarket(real_client, now=lambda: T0).get_fo_price("A05611", "FUTURES")
+    assert q.price == Decimal("946.70")  # 시세는 쓸 수 있고
+    assert q.quote_asof is None and q.bid is None and q.ask is None  # 진입 근거는 없다
+
+
+def test_fo_orderbook_reads_output2(real_client, respx_mock):
+    respx_mock.get(REAL + BASE + "/inquire-asking-price").mock(
+        return_value=httpx.Response(200, json=BOOK_OUTPUT2)
+    )
+    ob = KisMarket(real_client, now=lambda: T0).get_fo_orderbook("A05611", "FUTURES")
+    assert ob.asks[0] == (Decimal("946.72"), 3) and ob.bids[0] == (Decimal("946.68"), 4)
+    assert ob.asof == datetime(2026, 10, 27, 1, 15, 30, tzinfo=UTC)

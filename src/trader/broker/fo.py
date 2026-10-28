@@ -45,7 +45,7 @@ logger = logging.getLogger("trader.kis")
 # 브로커 응답 계약 버전. 파서가 보는 필드·판정식이 바뀌면 올리고, control `fo_verified:*` 값이
 # 이것과
 # 다른 수단은 신규 진입이 막힌다(실기 재검증 필요).
-CONTRACT_VERSION = 1
+CONTRACT_VERSION = 2  # 2: 실기 1 — 시세 시각·1호가는 호가 응답, 기초지수는 업종 2001 묶음
 
 # 잔고 `prdt_type_cd` → 종류. 실기 1 에서 확정 전까지는 가정값이고, 표 밖 값은 UnverifiedHolding.
 PRDT_TYPE: dict[str, FoKind] = {"301": "FUTURES", "302": "CALL", "303": "PUT"}

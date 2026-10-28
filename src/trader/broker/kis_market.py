@@ -620,17 +620,27 @@ def _fo_price(self: KisMarket, code: str, kind: FoKind) -> FoQuote:
         {"FID_COND_MRKT_DIV_CODE": FO_DIV[kind], "FID_INPUT_ISCD": code},
     )
     out = data.get("output1") or {}
-    idx = data.get("output2") or {}
+    idx = _kospi200_block(data)
     now = self._now()
     ltd_raw = str(out.get("futs_last_tr_date") or "").strip()
     days_raw = out.get("hts_rmnn_dynu")
     under_raw = idx.get("bstp_nmix_prpr")
+    bid = _opt_dec(_first(out, "futs_bidp", "bidp1", "futs_bidp1"))
+    ask = _opt_dec(_first(out, "futs_askp", "askp1", "futs_askp1"))
+    asof = _hms_to_dt(_first(out, "futs_cntg_hour", "stck_cntg_hour", "bsop_hour"), now)
+    if bid is None or ask is None or asof is None:
+        # 실기 1(2026-10-28): 시세 응답에는 시각·1호가가 없다 → 호가 응답 output2 의 1호가와
+        # 호가접수시간(시장 시각). 실패하면 None 그대로(진입 게이트가 막는다, 수신시각 대체 없음)
+        book = _fo_book_top(self, code, kind, now)
+        bid = bid if bid is not None else book[0]
+        ask = ask if ask is not None else book[1]
+        asof = asof if asof is not None else book[2]
     return FoQuote(
         code=code,
         kind=kind,
         price=_dec(out.get("futs_prpr")),
-        bid=_opt_dec(_first(out, "futs_bidp", "bidp1", "futs_bidp1")),
-        ask=_opt_dec(_first(out, "futs_askp", "askp1", "futs_askp1")),
+        bid=bid,
+        ask=ask,
         change_pct=float(_dec(out.get("futs_prdy_ctrt"))) / 100,
         volume=_int(out.get("acml_vol")),
         open_interest=_int(out["hts_otst_stpl_qty"]) if out.get("hts_otst_stpl_qty") else None,
@@ -648,8 +658,46 @@ def _fo_price(self: KisMarket, code: str, kind: FoKind) -> FoQuote:
         strike=_opt_dec(out.get("acpr")) if kind != "FUTURES" else None,
         underlying=_opt_dec(under_raw),
         underlying_asof=_hms_to_dt(_first(idx, "bsop_hour", "stck_cntg_hour"), now),
-        quote_asof=_hms_to_dt(_first(out, "futs_cntg_hour", "stck_cntg_hour", "bsop_hour"), now),
+        quote_asof=asof,
         received_at=now,
+    )
+
+
+def _kospi200_block(data: dict) -> dict:
+    """시세 응답의 코스피200 묶음. 실기 1(2026-10-28): output2 는 코스피 종합(업종 0001), output3 이
+    코스피200(2001) — 업종코드로 고르고, 코드가 붙은 묶음 중 2001 이 없으면 빈 묶음(기초지수
+    없음 → 게이트가 막는다). 코드가 없는 옛 응답만 output2 를 그대로 쓴다."""
+    blocks = [data.get(k) or {} for k in ("output3", "output2")]
+    coded = [b for b in blocks if str(b.get("bstp_cls_code") or "").strip()]
+    if coded:
+        return next((b for b in coded if str(b["bstp_cls_code"]).strip() == "2001"), {})
+    return data.get("output2") or {}
+
+
+def _book_out(data: dict) -> dict:
+    """호가 응답의 호가 묶음 — 실기로 확인한 output2, 없으면 옛 가정 output1."""
+    out2 = data.get("output2") or {}
+    return out2 if out2.get("futs_askp1") or out2.get("futs_bidp1") else (data.get("output1") or {})
+
+
+def _fo_book_top(
+    self: KisMarket, code: str, kind: FoKind, now: datetime
+) -> tuple[Decimal | None, Decimal | None, datetime | None]:
+    """(매수 1호가, 매도 1호가, 호가접수시간). 조회 실패는 (None, None, None)."""
+    try:
+        data = self._client.get(
+            path("FO_ORDERBOOK"),
+            "FO_ORDERBOOK",
+            {"FID_COND_MRKT_DIV_CODE": FO_DIV[kind], "FID_INPUT_ISCD": code},
+        )
+    except KisApiError as e:
+        logger.warning("파생 호가 조회 실패 %s(시각·1호가 없음): %s", code, e)
+        return None, None, None
+    b = _book_out(data)
+    return (
+        _opt_dec(b.get("futs_bidp1")),
+        _opt_dec(b.get("futs_askp1")),
+        _hms_to_dt(b.get("aspr_acpt_hour"), now),
     )
 
 
@@ -659,13 +707,14 @@ def _fo_orderbook(self: KisMarket, code: str, kind: FoKind) -> OrderBook:
         "FO_ORDERBOOK",
         {"FID_COND_MRKT_DIV_CODE": FO_DIV[kind], "FID_INPUT_ISCD": code},
     )
-    out = data.get("output1") or {}
+    out = _book_out(data)
+    now = self._now()
     return OrderBook(
         ticker=code,
         market="KR",
         asks=self._levels(out, "futs_askp", "askp_rsqn"),
         bids=self._levels(out, "futs_bidp", "bidp_rsqn"),
-        asof=self._now(),
+        asof=_hms_to_dt(out.get("aspr_acpt_hour"), now) or now,
     )
 
 

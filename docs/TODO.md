@@ -509,7 +509,7 @@
 - [x] 단계 4 교차 리뷰 → 수정 → PR(`--base feat/phase26-3-session`): Codex exec P0 7·P1 6 + codex review P1 1·P2 3 + Claude 10(중복 묶어 S4-1~19) 반영(`docs/reviews/2026-10-27-phase26-fo-review.md` 「단계 4」, `tests/fo/test_review_s4.py`, 원장 v34) (2026-10-28)
 - [x] 결정(사용자, 추천대로 2026-10-28): 국면이 bear 로 바뀌어 `leverage_by_regime.bear: 0`(신규 금지)이어도 기존 파생 보유는 자동 감액·청산하지 않는다 — **현행 유지**(신규만 막고 보유는 손절선·만기·유지 조건으로 정리, 국면과 같은 방향의 숏까지 강제 청산하지 않게, S4-19)
 - [x] 단계 5 문서·전체 교차 리뷰 B·체인 ff 머지 (`feat/phase26-5-docs-review`): 리뷰 B(S5)·GitHub Codex(G4·G5) 반영, main #63·#65·#67 병합(파생 원장 v33·v34, 무효화는 `invalidation_rules`), PR #57·#60·#61·#64·#66 머지 (2026-10-28 확인)
-- [ ] 실기 1(사용자 확인 대기, 조회 전용): `uv run trader fo verify --account paper-fo` → 시세·마스터·주문가능·잔고 필드 확인(빈 잔고면 방향·NAV 미검증으로 남음) → 비식별 fixture 로 미확인 항목 확정
+- [x] 실기 1(조회 전용, 2026-10-28 확인): `uv run trader fo verify --account paper-fo` 오류 0 — 마스터 KRX 영문 단축코드(A05·B05·C05)·종목명 만기월, 시세 시각·1호가는 호가 응답 output2, 기초지수는 시세 output3(코스피200), 주문가능 현금은 잔고값으로 대체, 지수 시각 없음(보호선은 선물 가격). 빈 잔고라 방향·종류 필드는 실기 2 로(architecture.md 「미확인」)
 - [ ] 실기 2(사용자 실행, 거부 목록): `uv run trader fo order-test --account paper-fo --vehicle FUTURES` → `OPTION_BUY` → `OPTION_SELL` 1계약 왕복 → 수단별 `fo_verified` 플래그
 - [ ] 실기 3(사용자 확인 대기, 약 $1~2): `fo.enabled: true` 뒤 `FAKE_CLAUDE` 없이 `uv run trader fo session` 1회 → 결정·배수·진입·재평가·청산 로그
 - [ ] 해외선물옵션 (Phase 26 이연): KIS 해외선물 모의 미지원(`OTFM3001U` 모의 분기 없음) — 실전 전환 뒤 재검토

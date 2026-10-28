@@ -453,17 +453,27 @@ Regime = Literal["bull", "neutral", "bear"]
 
 class FoProductCfg(BaseModel):
     """상품(미니·정규) 코드 접두·승수·호가단위. `option_ticks` 는 `[상한, tick]` 구간 목록이고
-    마지막 구간의 상한은 `inf`(None)."""
+    마지막 구간의 상한은 `inf`(None). 접두는 여러 개를 받는다(문자열 하나도 됨) — KRX 영문
+    단축코드(선물 A05·콜 B05·풋 C05)가 현행이고, 옛 숫자 코드(105·205·305)는 하위 호환으로 둔다."""
 
     model_config = ConfigDict(extra="forbid")
 
-    futures_prefix: str
-    call_prefix: str
-    put_prefix: str
+    futures_prefix: tuple[str, ...]
+    call_prefix: tuple[str, ...]
+    put_prefix: tuple[str, ...]
     multiplier: int = Field(gt=0)
     futures_tick: Decimal = Field(gt=0)
     option_ticks: list[tuple[Decimal | None, Decimal]]
     name: str
+
+    @field_validator("futures_prefix", "call_prefix", "put_prefix", mode="before")
+    @classmethod
+    def _prefixes(cls, v):
+        items = [v] if isinstance(v, str) else list(v or [])
+        out = tuple(str(x).strip().upper() for x in items if str(x).strip())
+        if not out:
+            raise ValueError("코드 접두가 비어 있습니다")
+        return out
 
     @field_validator("option_ticks", mode="before")
     @classmethod
@@ -607,18 +617,18 @@ class FoCfg(BaseModel):
     products: dict[str, FoProductCfg] = Field(
         default_factory=lambda: {
             "mini": FoProductCfg(
-                futures_prefix="105",
-                call_prefix="205",
-                put_prefix="305",
+                futures_prefix=("A05", "105"),
+                call_prefix=("B05", "205"),
+                put_prefix=("C05", "305"),
                 multiplier=50000,
                 futures_tick=Decimal("0.02"),
                 option_ticks=[("3", "0.01"), ("10", "0.02"), ("inf", "0.05")],
                 name="미니코스피200",
             ),
             "regular": FoProductCfg(
-                futures_prefix="101",
-                call_prefix="201",
-                put_prefix="301",
+                futures_prefix=("A01", "101"),
+                call_prefix=("B01", "201"),
+                put_prefix=("C01", "301"),
                 multiplier=250000,
                 futures_tick=Decimal("0.05"),
                 option_ticks=[("10", "0.01"), ("inf", "0.05")],

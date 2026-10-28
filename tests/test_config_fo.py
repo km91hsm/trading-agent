@@ -32,7 +32,7 @@ def test_fo_defaults_disabled_and_mini():
     fo = config.FoCfg()
     assert fo.enabled is False and fo.product == "mini"
     p = fo.product_cfg()
-    assert p.multiplier == 50000 and p.futures_prefix == "105"
+    assert p.multiplier == 50000 and p.futures_prefix == ("A05", "105")
     assert len(p.option_ticks) == 3 and p.option_ticks[-1][0] is None
     assert p.futures_tick == Decimal("0.02")
     assert fo.vehicles == ["FUTURES", "OPTION_BUY", "OPTION_SELL"]
