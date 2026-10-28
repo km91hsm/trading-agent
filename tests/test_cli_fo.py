@@ -251,16 +251,57 @@ def test_fo_order_test_refuses_real(project, monkeypatch):
     assert r.exit_code == 1 and "모의" in (r.stdout + r.stderr)
 
 
-def test_fo_order_test_paper_not_wired_yet(project, monkeypatch):
-    """단계 1: 명령 틀만 — 모의 계좌라도 주문 없이 안내하고 끝낸다(실제 왕복은 단계 2 executor)."""
+def test_fo_order_test_sets_flag_only_on_success(project, monkeypatch):
+    """실기 2 왕복(`fo/order_test.run`)이 통과한 수단만 `fo_verified` 플래그를 연다."""
+    from trader.fo import order_test
+
     _accounts(project)
     market, brokers, made = _fakes()
     monkeypatch.setattr(cli, "_build_brokers", brokers)
-    r = CliRunner().invoke(
-        app, ["fo", "order-test", "--account", "paper-fo", "--vehicle", "FUTURES"]
-    )
-    assert r.exit_code == 2
-    assert all(b.orders == [] for b in made if isinstance(b, FakeFoBroker))
+    monkeypatch.setattr(cli, "_build_market", lambda secrets: market)
+    monkeypatch.setattr(fo_master, "load", lambda **kw: fo_master.parse(FIX.read_bytes()))
+    results = iter([{"ok": False, "errors": ["x"]}, {"ok": True, "errors": []}])
+    monkeypatch.setattr(order_test, "run", lambda *a, **kw: next(results))
+    args = ["fo", "order-test", "--account", "paper-fo", "--vehicle", "FUTURES"]
+    r = CliRunner().invoke(app, args)
+    assert r.exit_code == 1
+    conn = db.connect()
+    key = [k for (k,) in conn.execute("SELECT key FROM control WHERE key LIKE 'fo_verified:%'")]
+    assert key == []
+    r = CliRunner().invoke(app, args)
+    assert r.exit_code == 0, r.stdout + r.stderr
+    keys = [k for (k,) in conn.execute("SELECT key FROM control WHERE key LIKE 'fo_verified:%'")]
+    assert len(keys) == 1 and keys[0].endswith(":FUTURES")
+    assert control.get_flag(conn, keys[0]) == CONTRACT_VERSION
+    conn.close()
+
+
+def test_fo_status_and_close_requires_confirm(project, monkeypatch):
+    _accounts(project)
+    r = CliRunner().invoke(app, ["fo", "status"])
+    assert r.exit_code == 0 and "보유 없음" in r.stdout
+    r = CliRunner().invoke(app, ["fo", "close", "--account", "paper-fo", "--position", "1"])
+    assert r.exit_code == 1 and "CLOSE" in (r.stdout + r.stderr)
+
+
+def test_fo_monitor_once_dry_run_ticks(project, monkeypatch):
+    from trader.fo import engine
+
+    _accounts(project)
+    market, brokers, _ = _fakes()
+    monkeypatch.setattr(cli, "_build_brokers", brokers)
+    monkeypatch.setattr(cli, "_build_market", lambda secrets: market)
+    monkeypatch.setattr(fo_master, "load", lambda **kw: fo_master.parse(FIX.read_bytes()))
+    seen = {}
+
+    def tick(ctx, **kw):
+        seen["dry_run"], seen["accounts"] = ctx.dry_run, [a.id for a in ctx.accounts]
+        return {"accounts": {}}
+
+    monkeypatch.setattr(engine, "tick", tick)
+    r = CliRunner().invoke(app, ["fo", "monitor", "--once", "--dry-run"])
+    assert r.exit_code == 0, r.stdout + r.stderr
+    assert seen == {"dry_run": True, "accounts": ["paper-fo"]}
 
 
 def test_fo_contracts_lists_front_month_and_strikes(project, monkeypatch):
@@ -274,11 +315,11 @@ def test_fo_contracts_lists_front_month_and_strikes(project, monkeypatch):
     assert Decimal("350") in {Decimal(s) for s in out["options"]["front"]["strikes"]}
 
 
-def test_settings_json_denies_fo_order_test_and_close():
+def test_settings_json_denies_fo_order_test_close_monitor():
     deny = json.loads(
         (Path(__file__).parents[1] / ".claude" / "settings.json").read_text(encoding="utf-8")
     )["permissions"]["deny"]
-    for cmd in ("fo order-test", "fo close"):
+    for cmd in ("fo order-test", "fo close", "fo monitor"):
         assert f"Bash(python -m trader {cmd}*)" in deny
         assert f"Bash(uv run trader {cmd}*)" in deny
 

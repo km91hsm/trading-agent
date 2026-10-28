@@ -10,7 +10,7 @@ from __future__ import annotations
 import functools
 import json
 from collections.abc import Callable
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -423,21 +423,167 @@ def session_cmd(
 def order_test_cmd(
     account: str = typer.Option(..., "--account", help="모의 선물옵션 계좌 id (실전 거부)"),
     vehicle: str = typer.Option(..., "--vehicle", help="FUTURES|OPTION_BUY|OPTION_SELL"),
+    wait_s: float = typer.Option(30.0, "--wait", help="체결 확정 대기(초)"),
 ) -> None:
-    """실기 2 전용(거부 목록): 1계약 진입 → 잔고로 방향·종류·NAV·증거금 검증 → 즉시 청산 →
-    체결 확정. 단계 1 에서는 명령 틀만 있고 실제 왕복은 단계 2 의 fo executor 로 연결된다."""
-    from trader.cli import _boot
+    """실기 2 전용(거부 목록): 1계약 진입 → 체결 확정 → 잔고로 방향·종류·NAV·증거금 필드 확인 →
+    즉시 청산 → 체결 확정. 전부 통과하면 그 수단의 `fo_verified` 플래그를 연다. 원장 미기록."""
+    from trader.cli import _boot, _build_brokers, _build_market
+    from trader.control import control
+    from trader.fo import order_test
 
     if vehicle not in VEHICLES:
         raise config.ConfigError(f"--vehicle 은 {'|'.join(VEHICLES)} 중 하나")
-    boot = _boot(settings=True, accounts=True, secrets=True)
-    acct = _find_fo_account(boot.all_accounts, account)
-    if acct.env != "paper":
-        typer.echo("오류: fo order-test 는 모의(paper) 계좌에서만 실행합니다", err=True)
+    boot = _boot(settings=True, accounts=True, secrets=True, conn=True, log_name="fo")
+    settings, conn = boot.settings, boot.conn
+    try:
+        acct = _find_fo_account(boot.all_accounts, account)
+        if acct.env != "paper":
+            typer.echo("오류: fo order-test 는 모의(paper) 계좌에서만 실행합니다", err=True)
+            raise typer.Exit(code=1)
+        broker = next(iter(_build_brokers(boot.secrets, [acct], settings=settings)), None)
+        if broker is None:
+            raise config.ConfigError("앱키가 없어 파생 브로커를 만들지 못했습니다")
+        out = order_test.run(
+            broker, _build_market(boot.secrets), _master(settings), settings, vehicle,
+            today=datetime.now(KST).date(), wait_s=wait_s,
+        )  # fmt: skip
+        if out["ok"]:
+            key = executor.verified_key(settings, acct, vehicle)
+            control.set_flag(conn, key, CONTRACT_VERSION)
+            out["verified_flag"] = key
+    finally:
+        conn.close()
+    typer.echo(json.dumps(out, ensure_ascii=False, default=str))
+    if not out["ok"]:
         raise typer.Exit(code=1)
-    typer.echo(
-        "fo order-test 는 아직 연결되지 않았습니다(Phase 26 단계 2 executor 뒤 활성). "
-        "주문은 내지 않았습니다",
-        err=True,
-    )
-    raise typer.Exit(code=2)
+
+
+def _exec_ctx(boot, *, dry_run: bool):
+    """파생 실행 컨텍스트(CLI 용): 파생 계좌·브로커·시세·마스터·알림·국면/시장 뷰."""
+    from trader.cli import _build_brokers, _build_market
+    from trader.fo.executor import FoExecContext, context_sources
+    from trader.notify.telegram import make_notifier
+
+    settings = boot.settings
+    fo_accounts = list(boot.fo_accounts or [])
+    brokers = {
+        b.account.id: b for b in _build_brokers(boot.secrets, fo_accounts, settings=settings)
+    }
+    try:
+        market = _build_market(boot.secrets)
+    except Exception as e:  # noqa: BLE001 — 시세 없이도 축소는 시장가로 간다
+        typer.echo(f"경고: 시세 클라이언트 없음({type(e).__name__})", err=True)
+        market = None
+    try:
+        master = _master(settings)
+    except Exception as e:  # noqa: BLE001
+        typer.echo(f"경고: 마스터 적재 실패({type(e).__name__}) — 빈 목록", err=True)
+        master = []
+    return FoExecContext(
+        settings=settings, accounts=fo_accounts, conn=boot.conn, brokers=brokers,
+        market_client=market, master=master, notifier=make_notifier(boot.secrets),
+        dry_run=dry_run, secrets=boot.secrets,
+        **context_sources(boot.conn, lambda: datetime.now(UTC)),
+    )  # fmt: skip
+
+
+@app.command("status")
+@_config_errors
+def status_cmd() -> None:
+    """파생 포지션·오늘 결정·한도 상태(원장만 읽음, 텔레그램 `/fo` 와 같은 줄)."""
+    from trader.cli import _boot
+    from trader.fo import status as fo_status
+
+    boot = _boot(settings=True, conn=True)
+    try:
+        typer.echo("\n".join(fo_status.lines(boot.conn, datetime.now(UTC))))
+    finally:
+        boot.conn.close()
+
+
+@app.command("monitor")
+@_config_errors
+def monitor_cmd(
+    once: bool = typer.Option(False, "--once", help="한 번만 돌고 끝"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="판정·기록만(주문·취소 없음)"),
+    interval: int = typer.Option(60, "--interval", min=5, help="반복 간격(초)"),
+) -> None:
+    """파생 모니터(Phase 26 단계 4, 거부 목록 — 자동 주문). 데몬 `kr_fo_monitor` 와 같은
+    `fo/engine.tick`. 반복 모드는 파생 정규장(08:45~15:45) 밖에서 쉰다."""
+    import time
+
+    from trader.cli import _boot
+    from trader.fo import engine
+    from trader.market_hours import is_fo_open
+
+    boot = _boot(settings=True, accounts=True, secrets=True, conn=True, log_name="fo")
+    try:
+        ctx = _exec_ctx(boot, dry_run=dry_run)
+        while True:
+            if once or is_fo_open(ctx.now()):
+                out = engine.tick(ctx)
+                typer.echo(json.dumps(out, ensure_ascii=False, default=str))
+            if once:
+                break
+            time.sleep(interval)
+    finally:
+        boot.conn.close()
+
+
+@app.command("adopt")
+@_config_errors
+def adopt_cmd(
+    account: str = typer.Option(..., "--account"),
+    position: int = typer.Option(..., "--position", help="unknown 포지션 id"),
+    side: str = typer.Option(..., "--side", help="LONG|SHORT (계약 보유 방향)"),
+    kind: str = typer.Option(..., "--kind", help="FUTURES|CALL|PUT"),
+    qty: int = typer.Option(..., "--qty", min=1),
+    stop_pt: float = typer.Option(..., "--stop-pt", help="기초지수 손절선"),
+) -> None:
+    """사람의 승계: 브로커 잔고 행(코드·방향·종류·수량)과 **일치할 때만** unknown → held."""
+    from trader.cli import _boot, _build_brokers
+    from trader.fo import positions
+
+    boot = _boot(settings=True, accounts=True, secrets=True, conn=True, log_name="fo")
+    try:
+        acct = _find_fo_account(boot.all_accounts, account)
+        broker = next(iter(_build_brokers(boot.secrets, [acct], settings=boot.settings)), None)
+        if broker is None:
+            raise config.ConfigError("앱키가 없어 파생 브로커를 만들지 못했습니다")
+        ok = positions.adopt(
+            boot.conn, position_id=position, side=side, kind=kind, qty=qty,
+            stop_pt=Decimal(str(stop_pt)), balance=broker.get_balance(),
+        )  # fmt: skip
+        boot.conn.commit()
+    finally:
+        boot.conn.close()
+    typer.echo(json.dumps({"position_id": position, "adopted": ok}, ensure_ascii=False))
+    if not ok:
+        raise typer.Exit(code=1)
+
+
+@app.command("close")
+@_config_errors
+def close_cmd(
+    account: str = typer.Option(..., "--account"),
+    position: int = typer.Option(..., "--position"),
+    confirm: str = typer.Option("", "--confirm", help="CLOSE 를 적어야 실행"),
+) -> None:
+    """수동 청산(거부 목록 — 사용자만): 진입 회수 → 잔고 재조회 → 청산 다리. unknown 포지션은
+    먼저 `fo adopt` 로 승계해야 한다."""
+    from trader.cli import _boot
+    from trader.fo import store
+
+    if confirm != "CLOSE":
+        raise config.ConfigError("--confirm CLOSE 가 있어야 청산합니다")
+    boot = _boot(settings=True, accounts=True, secrets=True, conn=True, log_name="fo")
+    try:
+        ctx = _exec_ctx(boot, dry_run=False)
+        acct = executor.account_of(ctx, account)
+        pos = store.get_position(boot.conn, position)
+        if acct is None or pos is None or pos.account_id != acct.id:
+            raise config.ConfigError(f"계좌 {account} 의 포지션 {position} 이 없습니다")
+        out = executor.reduce(ctx, acct, pos, intent="CLOSE", qty=None, reason="수동 청산(CLI)")
+    finally:
+        boot.conn.close()
+    typer.echo(json.dumps(out, ensure_ascii=False, default=str))
