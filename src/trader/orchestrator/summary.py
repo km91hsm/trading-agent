@@ -24,6 +24,11 @@ _DIRECTION = {
 }
 
 
+def signal_direction(signal: str | None) -> str:
+    """애널리스트 신호 → BULLISH|BEARISH|NEUTRAL(모르는 값·UNKNOWN 은 NEUTRAL)."""
+    return _DIRECTION.get(str(signal or ""), "NEUTRAL")
+
+
 def signed_conviction(turn: DebateTurn) -> float:
     return turn.conviction * _SIGN[turn.stance]
 

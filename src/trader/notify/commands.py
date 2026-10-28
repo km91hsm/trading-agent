@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from datetime import datetime
 from typing import Any
 
 from trader import heartbeat, names
@@ -148,8 +149,25 @@ def run_command(ectx: Any, arg: str | None) -> str:
     return messages.event(f"요청 #{rid}", f"{jobq.label(kind, p)} — 데몬이 순서대로 실행해요")
 
 
-# 보낸 사람을 확인할 수 없어도 처리하는 명령: 조회와 위험을 줄이는 것(일시정지·킬스위치)만
-UNTRUSTED_OK = frozenset({"status", "pause", "kill", "daily", "fo"})
+# 보낸 사람을 확인할 수 없어도 처리하는 명령: **조회만**(2-T2). 일시정지·킬스위치도 쓰기다 —
+# 킬스위치 해제는 CLI 로만 되므로 그룹 구성원 한 명의 실수가 매매 중단으로 이어졌다.
+UNTRUSTED_OK = frozenset({"status", "daily", "fo"})  # /fo 는 원장 조회만(Phase 26)
+HELP_FLAG = "telegram_help_at"  # 마지막 도움말 발송 시각(폴링 사이에도 유지)
+HELP_EVERY_S = 60
+
+
+def _help_due(ectx: Any, conn) -> bool:
+    """모르는 /xxx 마다 도움말을 보내지 않는다 — 분당 1회(2-T2). 시각은 control 에 남긴다."""
+    now = ectx.now()
+    last = control.get_flag(conn, HELP_FLAG)
+    if last:
+        try:
+            if (now - datetime.fromisoformat(str(last))).total_seconds() < HELP_EVERY_S:
+                return False
+        except ValueError:
+            pass
+    control.set_flag(conn, HELP_FLAG, now.isoformat())
+    return True
 
 
 def poll_once(ectx: Any, receiver: Any, *, echo: Callable[[str], None] = lambda s: None) -> dict:
@@ -164,8 +182,9 @@ def poll_once(ectx: Any, receiver: Any, *, echo: Callable[[str], None] = lambda 
         cmd = parse_command(u.text)
         if cmd is None:
             if u.text.strip().startswith("/"):
-                # 오타·모르는 명령을 조용히 버리지 않는다(전체 검토 T2)
-                ectx.notifier.send(messages.event("명령 안내", HELP_LINE))
+                # 오타·모르는 명령을 조용히 버리지 않는다(전체 검토 T2) — 단 분당 1회(2-T2)
+                if _help_due(ectx, conn):
+                    ectx.notifier.send(messages.event("명령 안내", HELP_LINE))
                 control.set_flag(conn, "telegram_offset", int(u.update_id) + 1)
             continue
         handled += 1

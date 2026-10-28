@@ -733,3 +733,105 @@ def test_has_open_order_include_filled_flag(conn):
     )
     assert oid and repo.has_open_order_or_approval(conn, 7, "a", "SELL")
     assert not repo.has_open_order_or_approval(conn, 7, "a", "SELL", include_filled=False)
+
+
+def _origin_order(conn, *, origin, side="BUY", created_at, order_no, fill_price=None):
+    oid = repo.insert_order(
+        conn,
+        decision_id=None,
+        account_id="paper-main",
+        ticker="005930",
+        market="KR",
+        side=side,
+        qty=1,
+        order_type="LIMIT",
+        price=Decimal("100"),
+        status="accepted",
+        order_no=order_no,
+        message="",
+        mode="auto",
+        created_at=created_at,
+        origin=origin,
+    )
+    if fill_price is not None:
+        repo.insert_fill(
+            conn,
+            order_id=oid,
+            account_id="paper-main",
+            qty=1,
+            price=Decimal(str(fill_price)),
+            filled_at=created_at,
+        )
+    return oid
+
+
+def test_weekly_count_and_realized_pnl_ignore_python_made_orders(conn):
+    """전체 검토 2차 2-O8: 단타·리밸런스·재호가·헤지 주문(origin)은 LLM 결정의 주 2회 한도·5일
+    실현손익 성향을 소비하지 않는다. llm·stop(과 origin 이 없는 옛 행)만 센다."""
+    t = "2026-10-08T01:00:00+00:00"  # D=10-09 가 속한 주
+    _origin_order(conn, origin="scalp", created_at=t, order_no="s1", fill_price=100)
+    _origin_order(
+        conn, origin="scalp", side="SELL", created_at=t, order_no="s2", fill_price=50
+    )  # 단타 손실 −50
+    _origin_order(conn, origin="rebalance", created_at=t, order_no="r1")
+    _origin_order(conn, origin="reprice", created_at=t, order_no="p1")
+    _origin_order(conn, origin="hedge", created_at=t, order_no="h1")
+    assert repo.trades_this_week(conn, "paper-main", D) == {}
+    assert repo.realized_pnl_5d(conn, "paper-main", D) == Decimal(0)
+    _origin_order(conn, origin="llm", created_at=t, order_no="l1", fill_price=100)
+    _origin_order(conn, origin="stop", side="SELL", created_at=t, order_no="t1", fill_price=90)
+    _origin_order(conn, origin=None, created_at=t, order_no="old")  # 옛 행 = llm
+    assert repo.trades_this_week(conn, "paper-main", D) == {"005930": 3}
+    assert repo.realized_pnl_5d(conn, "paper-main", D) == Decimal("-10")
+    assert conn.execute("SELECT origin FROM orders WHERE order_no='s1'").fetchone()[0] == "scalp"
+
+
+def test_list_and_release_exec_keys(conn):
+    """전체 검토 2차 2-O13: 보낸 뒤 예외로 남은 실행 키를 사람이 보고 푼다."""
+    assert repo.claim_exec_key(conn, "7|paper-main|BUY|50_order", now="t0", stale_before="t0")
+    repo.mark_exec_key_sent(conn, "7|paper-main|BUY|50_order", sent_at="t1")
+    keys = repo.list_exec_keys(conn)
+    assert [k["key"] for k in keys] == ["7|paper-main|BUY|50_order"]
+    assert keys[0]["sent_at"] == "t1" and keys[0]["order_id"] is None
+    repo.release_exec_key(conn, "7|paper-main|BUY|50_order")
+    assert repo.list_exec_keys(conn) == []
+
+
+def _ingest_decision(conn, d, stage, **over):
+    return repo.ingest_checkpoint(conn, d, "KR", "005930", stage, {"data": ok_decision(**over)})
+
+
+def test_max_stop_since_keeps_floor_across_same_day_overwrite_and_ignores_sell_trim(conn):
+    """전체 검토 2차 2-O1·2-O2: 같은 날 재평가가 행을 덮어써도 손절선 바닥은 최고값으로 남고(2-O1),
+    SELL/TRIM 결정의 손절가는 바닥 계산에 들어가지 않는다(2-O2)."""
+    _ingest_decision(conn, D, "30_decision", stop_loss=65000.0)
+    _ingest_decision(conn, D, "31_decision_r1", action="HOLD", target_weight=0.0, stop_loss=None)
+    assert repo.max_stop_since(conn, "KR", "005930", D) == Decimal("65000")
+    # 더 낮은 HOLD 손절가도 바닥을 내리지 못한다
+    _ingest_decision(conn, D, "31_decision_r2", action="HOLD", target_weight=0.0, stop_loss=60000.0)
+    assert repo.max_stop_since(conn, "KR", "005930", D) == Decimal("65000")
+    # 게이트가 거부한 TRIM 재평가가 현재가 바로 아래 손절가를 적어도 바닥이 되지 않는다
+    _ingest_decision(
+        conn, D, "31_decision_r3", action="TRIM", target_weight=0.05, stop_loss=69900.0
+    )
+    assert repo.max_stop_since(conn, "KR", "005930", D) == Decimal("65000")
+    _ingest_decision(conn, date(2026, 10, 10), "30_decision", action="SELL", stop_loss=69950.0)
+    assert repo.max_stop_since(conn, "KR", "005930", D) == Decimal("65000")
+    assert repo.max_stop_since(conn, "KR", "005930", None) is None
+
+
+def test_realized_pnl_cost_basis_uses_all_fills_but_counts_only_llm_sells(conn):
+    """PR #58 Codex: origin 필터는 손익에 **넣을 매도**에만 — 보유 묶음의 수량·평단은 재호가·
+    리밸런스 체결도 포함해 재구성한다. 재호가 BUY 100 → 손절 SELL 90 은 −10 이고, LLM BUY 100 →
+    리밸런스 전량 매도 → LLM BUY 20 → LLM SELL 30 은 +10 (옛 묶음이 리셋돼야 한다)."""
+    t = "2026-10-08T01:00:00+00:00"
+    _origin_order(conn, origin="reprice", created_at=t, order_no="p1", fill_price=100)
+    _origin_order(conn, origin="stop", side="SELL", created_at=t, order_no="t1", fill_price=90)
+    assert repo.realized_pnl_5d(conn, "paper-main", D) == Decimal("-10")
+    _origin_order(conn, origin="llm", created_at=t, order_no="l1", fill_price=100)
+    _origin_order(
+        conn, origin="rebalance", side="SELL", created_at=t, order_no="r1", fill_price=50
+    )  # 리밸런스 매도 −50 은 LLM 손익이 아니지만 묶음은 비운다
+    _origin_order(conn, origin="llm", created_at=t, order_no="l2", fill_price=20)
+    _origin_order(conn, origin="llm", side="SELL", created_at=t, order_no="l3", fill_price=30)
+    assert repo.realized_pnl_5d(conn, "paper-main", D) == Decimal("0")  # −10 + 10

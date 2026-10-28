@@ -33,7 +33,12 @@ INDEX_STRATEGIES = ("index_hold", "index_trend")
 TREND_MA = 100
 DEFAULT_TOP_N = 3
 HORIZON = 5
+# 쌍이 이보다 적으면 이동 블록 재표본이 서로 같아 구간이 [mean, mean] 으로 보인다 — 구간 없음(2-L2)
+MIN_CI_PAIRS = 2 * HORIZON
 LEAD_DAYS = 10  # 시작일 직전 거래일 탐색 여유
+# 비중 있는 종목의 종가가 없을 때 만기 봉 뒤 이만큼(달력일)은 보류 — 그 사이 일일 스냅샷(열린 창
+# 종목, `ledger/open_window`)이 봉을 채운다. 지나면 `partial` 로 채우고 paired_stats 에서 뺀다(2-L1)
+GRACE_DAYS = 14
 BUY_ACTIONS = ("BUY", "ADD")
 
 
@@ -41,9 +46,22 @@ def _equal(tickers: list[str]) -> dict[str, float]:
     return {t: 1 / len(tickers) for t in tickers} if tickers else {}
 
 
-def build(conn: sqlite3.Connection, *, market: str, day: date, scan: dict, top_n: int) -> dict:
-    """전략별 비중 {strategy: {ticker: weight}}."""
-    scored = [c for c in scan.get("candidates") or [] if c.get("score") is not None]
+def build(
+    conn: sqlite3.Connection,
+    *,
+    market: str,
+    day: date,
+    scan: dict,
+    top_n: int,
+    exclude: frozenset[str] = frozenset(),
+) -> dict:
+    """전략별 비중 {strategy: {ticker: weight}}. `exclude` 는 그날 세션이 실패한 종목(2-L6) —
+    LLM 이 고를 수 없었으므로 후보 기준선에서도 뺀다."""
+    scored = [
+        c
+        for c in scan.get("candidates") or []
+        if c.get("score") is not None and str(c.get("ticker")) not in exclude
+    ]
     scored.sort(key=lambda c: float(c["score"]), reverse=True)
     tickers = [str(c["ticker"]) for c in scored]
     rows = conn.execute(
@@ -75,8 +93,11 @@ def index_weights(index: pd.DataFrame, *, day: date) -> dict[str, dict[str, floa
     return {"index_hold": {sym: 1.0}, "index_trend": {sym: 1.0} if trend else {}}
 
 
-def index_table(market_client, hedge_cfg, market: str, *, days: int = 200) -> pd.DataFrame:
-    """지수 proxy 일봉 종가표(KIS). 실패·설정 없음은 빈 표 — 지수 기준선만 빠진다."""
+def index_table(
+    market_client, hedge_cfg, market: str, *, days: int = 200, now: datetime | None = None
+) -> pd.DataFrame:
+    """지수 proxy 일봉 종가표(KIS). 실패·설정 없음은 빈 표 — 지수 기준선만 빠진다. `now` 를 주면
+    완성 봉까지만(장중의 오늘 봉 제외, 2-P4)."""
     inst = (hedge_cfg.index_proxy or {}).get(market) if hedge_cfg is not None else None
     if market_client is None or inst is None:
         return pd.DataFrame()
@@ -89,6 +110,10 @@ def index_table(market_client, hedge_cfg, market: str, *, days: int = 200) -> pd
     except Exception as e:  # noqa: BLE001 - 측정 보조: 실패하면 지수 기준선만 생략
         logger.warning("지수 proxy 일봉 실패 %s %s: %s", market, inst.symbol, e)
         return pd.DataFrame()
+    if now is not None:
+        from trader import market_hours
+
+        candles = market_hours.completed_candles(market, candles, now)
     if not candles:
         return pd.DataFrame()
     return pd.DataFrame(
@@ -106,12 +131,13 @@ def record(
     top_n: int = DEFAULT_TOP_N,
     now: datetime | None = None,
     index: pd.DataFrame | None = None,
+    exclude: frozenset[str] = frozenset(),
 ) -> int:
     """운영일 기록. 만기 전 행은 같은 날 재실행(실패 뒤 재시도)이 덮어쓰고, 만기된 행은 그대로
     둔다(PR #33 리뷰). `index` 가 있으면 지수 기준선도. 쓰거나 덮어쓴 행 수."""
     created = (now or datetime.now(UTC)).isoformat()
     n = 0
-    plans = build(conn, market=market, day=day, scan=scan, top_n=top_n)
+    plans = build(conn, market=market, day=day, scan=scan, top_n=top_n, exclude=exclude)
     if index is not None:
         plans.update(index_weights(index, day=day))
     for strategy, weights in plans.items():
@@ -141,17 +167,36 @@ def rows(conn: sqlite3.Connection, *, market: str | None = None) -> list[dict]:
             "weights": json.loads(r["weights_json"]),
             "fwd_ret": r["fwd_ret"],
             "matured_at": r["matured_at"],
+            "partial": bool(r["partial"]),
         }
         for r in conn.execute(sql + " ORDER BY date, strategy", args).fetchall()
     ]
 
 
-def _window_closed(dates: list[date], start: date, horizon: int, today: date) -> bool:
+def pending_tickers(conn: sqlite3.Connection, market: str) -> set[str]:
+    """만기 전 행의 비중 종목(지수 기준선 제외) — 열린 창 종목(2-L1) 의 섀도 부분."""
+    out: set[str] = set()
+    for r in conn.execute(
+        "SELECT weights_json FROM shadow_portfolios WHERE market=? AND fwd_ret IS NULL "
+        f"AND strategy NOT IN ({','.join('?' * len(INDEX_STRATEGIES))})",
+        (market, *INDEX_STRATEGIES),
+    ):
+        out |= {str(t) for t in (json.loads(r["weights_json"]) or {})}
+    return out
+
+
+def _maturity_date(dates: list[date], start: date, horizon: int) -> date | None:
+    """시작일 이후 첫 거래일에서 horizon 거래일 뒤 봉의 날짜(표에 아직 없으면 None)."""
     starts = [i for i, d in enumerate(dates) if d >= start]
     if not starts:
-        return False
+        return None
     i1 = starts[0] + horizon
-    return i1 < len(dates) and dates[i1] <= today
+    return dates[i1] if i1 < len(dates) else None
+
+
+def _window_closed(dates: list[date], start: date, horizon: int, today: date) -> bool:
+    due = _maturity_date(dates, start, horizon)
+    return due is not None and due <= today
 
 
 def mature(
@@ -163,7 +208,9 @@ def mature(
     index_tables: dict[str, pd.DataFrame] | None = None,
 ) -> int:
     """만기가 지난 미결 행의 `fwd_ret` 를 채운다(멱등). 채운 행 수.
-    종가가 없는 종목은 빼고 남은 비중으로 다시 나눈다(전부 없으면 다음에 다시 본다).
+    비중 있는 종목이 하나라도 종가가 없으면 만기 봉 뒤 `GRACE_DAYS` 까지 보류한다(2-L1 — 유니버스
+    밖 종목의 봉은 일일 스냅샷이 열린 창 종목으로 채운다). 유예가 지나도 없으면 남은 비중으로 다시
+    나눠 채우되 `partial` 로 표시해 `paired_stats` 에서 뺀다(전부 없으면 0).
     `index_tables` 는 시장별 지수 proxy 종가표(피처 스토어에 없는 proxy 를 채운다)."""
     from trader.memory import outcomes
 
@@ -194,18 +241,31 @@ def mature(
             continue
         weights: dict[str, float] = json.loads(r["weights_json"])
         got: list[tuple[float, float]] = []
+        missing: list[str] = []
         for t, w in weights.items():
             res = outcomes.window_return(table, t, start, horizon, end_before=today)
             if res is not None:
                 got.append((w, res[0]))
-        if weights and not got:
-            logger.info("섀도 만기 보류 %s %s: 종가 없음", market, r["date"])
-            continue
+            else:
+                missing.append(t)
+        if missing:
+            due = _maturity_date(list(table.index), start, horizon)
+            if due is None or today <= due + timedelta(days=GRACE_DAYS):
+                logger.info(
+                    "섀도 만기 보류 %s %s: 종가 없음 %s", market, r["date"], ", ".join(missing)
+                )
+                continue
+            logger.warning(
+                "섀도 부분 만기 %s %s: 유예 뒤에도 종가 없음 %s — paired_stats 제외",
+                market,
+                r["date"],
+                ", ".join(missing),
+            )
         wsum = sum(w for w, _ in got)
         ret = sum(w * x for w, x in got) / wsum if wsum > 0 else 0.0
         conn.execute(
-            "UPDATE shadow_portfolios SET fwd_ret=?, matured_at=? WHERE id=?",
-            (ret, stamp, r["id"]),
+            "UPDATE shadow_portfolios SET fwd_ret=?, matured_at=?, partial=? WHERE id=?",
+            (ret, stamp, 1 if missing else 0, r["id"]),
         )
         filled += 1
     conn.commit()
@@ -233,13 +293,14 @@ def paired_stats(
     n_boot: int = 2000,
     seed: int = 0,
 ) -> dict:
-    """같은 (시장, 운영일) 에 둘 다 만기된 쌍의 a − b 평균과 95% 신뢰구간.
+    """같은 (시장, 운영일) 에 둘 다 만기된 쌍의 a − b 평균과 95% 신뢰구간(`partial` 행 제외).
     연속 운영일의 5거래일 수익은 4일씩 겹쳐 독립이 아니다 → 날짜 순서를 지키는 이동 블록
     부트스트랩(블록 길이 = `HORIZON`)으로 구간을 넓게 잡는다(PR #33 리뷰)."""
     sql = (
         "SELECT x.fwd_ret - y.fwd_ret AS d FROM shadow_portfolios x JOIN shadow_portfolios y "
         "ON x.market = y.market AND x.date = y.date "
-        "WHERE x.strategy=? AND y.strategy=? AND x.fwd_ret IS NOT NULL AND y.fwd_ret IS NOT NULL"
+        "WHERE x.strategy=? AND y.strategy=? AND x.fwd_ret IS NOT NULL AND y.fwd_ret IS NOT NULL "
+        "AND x.partial = 0 AND y.partial = 0"
     )
     order = " ORDER BY x.market, x.date"
     args: list = [a, b]
@@ -249,6 +310,13 @@ def paired_stats(
     diffs = np.array([float(r["d"]) for r in conn.execute(sql + order, args).fetchall()])
     if diffs.size == 0:
         return {"n": 0, "mean_diff": None, "ci_low": None, "ci_high": None}
+    if diffs.size < MIN_CI_PAIRS:
+        return {
+            "n": int(diffs.size),
+            "mean_diff": round(float(diffs.mean()), 6),
+            "ci_low": None,
+            "ci_high": None,
+        }
     means = _block_bootstrap_means(diffs, block=HORIZON, n_boot=n_boot, seed=seed)
     return {
         "n": int(diffs.size),

@@ -219,3 +219,28 @@ def test_corpcode_failure_backs_off_and_uses_stale_cache(project, respx_mock):
     d3._map_failed_at = later - timedelta(hours=1)  # 백오프 지남 → 다시 받는다
     d3._corp_map = None
     assert d3.corp_code("005930") == "00126380" and route.call_count == 3
+
+
+def test_market_disclosures_follows_total_page_up_to_cap(respx_mock, tmp_path):
+    """2-L11: 분기 말 1,000건 넘는 날도 total_page 까지 받는다(상한 MAX_LIST_PAGES) — 3쪽에서
+    잘리면 보유 종목 공시가 빠졌다."""
+    from datetime import date as _date
+
+    import httpx as _httpx
+
+    from trader.sources import dart as dart_mod
+    from trader.sources.dart import DartClient
+
+    def reply(request):
+        page = request.url.params["page_no"]
+        return httpx.Response(
+            200, json={"status": "000", "total_page": 5, "list": [{"rcept_no": page}]}
+        )
+
+    respx_mock.get(url__startswith="https://opendart.fss.or.kr/api/list.json").mock(
+        side_effect=reply
+    )
+    c = DartClient("key", tmp_path, http=_httpx.Client())
+    rows = c.market_disclosures(_date(2026, 10, 27))
+    assert [r["rcept_no"] for r in rows] == ["1", "2", "3", "4", "5"]
+    assert dart_mod.MAX_LIST_PAGES >= 10

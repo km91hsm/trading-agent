@@ -1,8 +1,10 @@
 """모의 체결 대 가정 주간 점검(Stock docs/07 「모의 운용 4-7」 교훈): 백테스트·게이트는 지정가가
 체결되고 비용이 왕복 `costs.round_trip_bp` 라고 가정한다. 모의 계좌의 LLM 결정 주문으로 그 가정을
-잰다 — 체결률(끝난 주문 중 체결)과 지정가 대비 체결가 차이(bp, +면 불리). 기준(체결률 80% 미만,
-슬리피지가 편도 비용 가정의 2배 초과, 끝난 주문 `MIN_ORDERS` 이상일 때만)을 넘으면 경고 줄을
-낸다. 읽기 전용(설정·주문 불변). 데몬 주간 잡 `paper_review`·CLI `trader paper-review`."""
+잰다 — 단위는 주문 행이 아니라 **(결정, 방향) 주문 사슬**(원 지정가 → 재호가 재제출, 2-L12):
+체결률(끝난 사슬 중 체결)과 **원 지정가** 대비 사슬 체결가 차이(bp, +면 불리 — 재호가로 비싸게
+산 만큼이 슬리피지). 기준(체결률 80% 미만, 슬리피지가 편도 비용 가정의 2배 초과, 끝난 사슬
+`MIN_ORDERS` 이상일 때만)을 넘으면 경고 줄을 낸다. 읽기 전용(설정·주문 불변). 데몬 주간 잡
+`paper_review`·CLI `trader paper-review`."""
 
 from __future__ import annotations
 
@@ -23,29 +25,50 @@ TERMINAL = ("filled", "expired", "cancelled")
 OPEN = ("accepted", "unknown", "pending", "partial")
 
 
-def _row(conn: sqlite3.Connection, account_id: str, market: str, lo: str, hi: str) -> dict:
-    orders = conn.execute(
-        "SELECT o.id, o.side, o.qty, o.price, o.status FROM orders o "
+# 결정 주문 사슬에 넣는 origin — 손절·헤지·단타·현금 주차·외부는 LLM 결정 체결 가정과 무관
+CHAIN_ORIGINS = (None, "llm", "reprice")
+
+
+def _chains(conn: sqlite3.Connection, account_id: str, market: str, lo: str, hi: str) -> list:
+    """(decision_id, side) 단위 주문 사슬(생성순). 재호가는 원 주문을 cancelled 로 남기고 같은
+    결정으로 다시 내므로 주문 행이 아니라 사슬이 백테스트의 '결정 1건 = 주문 1건' 가정에
+    대응한다(2-L12)."""
+    rows = conn.execute(
+        "SELECT o.id, o.decision_id, o.side, o.qty, o.price, o.status, o.origin FROM orders o "
         "WHERE o.account_id=? AND o.market=? AND o.decision_id IS NOT NULL "
-        "AND o.created_at >= ? AND o.created_at < ?",
+        "AND o.created_at >= ? AND o.created_at < ? ORDER BY o.created_at, o.id",
         (account_id, market, lo, hi),
     ).fetchall()
-    terminal = [o for o in orders if o["status"] in TERMINAL]
-    n_open = sum(1 for o in orders if o["status"] in OPEN)
+    chains: dict[tuple[int, str], list] = {}
+    for o in rows:
+        if o["origin"] not in CHAIN_ORIGINS or o["status"] not in (*TERMINAL, *OPEN):
+            continue  # failed·rejected 는 거래소에 안 나간 주문
+        chains.setdefault((int(o["decision_id"]), str(o["side"])), []).append(o)
+    return list(chains.values())
+
+
+def _row(conn: sqlite3.Connection, account_id: str, market: str, lo: str, hi: str) -> dict:
+    chains = _chains(conn, account_id, market, lo, hi)
+    terminal = [c for c in chains if all(o["status"] in TERMINAL for o in c)]
+    n_open = len(chains) - len(terminal)
     filled, slips, qty_ordered, qty_filled = 0, [], 0, 0
-    for o in terminal:
-        qty_ordered += int(o["qty"] or 0)
-        fills = conn.execute("SELECT qty, price FROM fills WHERE order_id=?", (o["id"],)).fetchall()
+    for chain in terminal:
+        first = chain[0]  # 원 지정가·수량 = 백테스트가 가정한 체결
+        qty_ordered += int(first["qty"] or 0)
+        fills = conn.execute(
+            f"SELECT qty, price FROM fills WHERE order_id IN ({','.join('?' * len(chain))})",
+            tuple(o["id"] for o in chain),
+        ).fetchall()
         qty = sum(int(f["qty"]) for f in fills)
         qty_filled += qty
         if qty <= 0:
             continue
         filled += 1
-        ref = Decimal(str(o["price"])) if o["price"] not in (None, "") else Decimal(0)
+        ref = Decimal(str(first["price"])) if first["price"] not in (None, "") else Decimal(0)
         if ref <= 0:
             continue
         avg = sum(Decimal(str(f["price"])) * int(f["qty"]) for f in fills) / qty
-        diff = (avg / ref - 1) if o["side"] == "BUY" else (1 - avg / ref)
+        diff = (avg / ref - 1) if first["side"] == "BUY" else (1 - avg / ref)
         slips.append(float(diff) * 1e4)
     return {
         "account_id": account_id,

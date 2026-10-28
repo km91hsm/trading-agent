@@ -302,3 +302,64 @@ def test_monitor_body_runs_reprice_after_open_once(conn, monkeypatch):
     deps.dry_run = True
     control.set_flag(conn, reprice_mod.done_key("KR", date(2026, 10, 23)), None)
     assert daemon._reprice_body(deps, "KR") == {"skipped": "비활성"}
+
+
+def test_reprice_body_quote_fn_returns_full_quote(conn, monkeypatch):
+    """2-O5: 데몬의 재호가 quote_fn 은 가격만이 아니라 시세 객체(등락률·종목상태)를 넘긴다."""
+    from trader.orchestrator import reprice as reprice_mod
+
+    deps = _hedge_deps(conn, closes=[100] * 40, prices={"005930": Decimal("70300")})
+    deps.settings = Settings()
+    deps.now = lambda: datetime(2026, 10, 23, 0, 40, tzinfo=UTC)  # 09:40 KST
+    seen = {}
+
+    def fake_reprice(ctx, *, quote_fn, **kw):
+        seen["q"] = quote_fn("005930", None)
+        return {"repriced": [], "skipped": []}
+
+    monkeypatch.setattr(reprice_mod, "reprice", fake_reprice)
+    assert daemon._reprice_body(deps, "KR") == {"repriced": [], "skipped": []}
+    q = seen["q"]
+    assert Decimal(str(q.price)) == Decimal("70300") and hasattr(q, "change_pct")
+
+
+def test_proxy_candles_drop_today_bar_while_session_open(conn):
+    """2-P4(L7): 장중의 오늘 봉은 거래량이 있어도 미완성 — 국면 지표는 D−1 완성 봉까지만."""
+    from decimal import Decimal as _D
+
+    deps = _hedge_deps(conn, closes=[100] * 30)
+    y = Candle(date=date(2026, 10, 22), open=_D(1), high=_D(1), low=_D(1), close=_D(100), volume=9)
+    t = Candle(date=date(2026, 10, 23), open=_D(1), high=_D(1), low=_D(1), close=_D(90), volume=9)
+    deps.market_client = SimpleNamespace(get_daily_kr=lambda *a, **k: [y, t])
+    deps.now = lambda: datetime(2026, 10, 23, 1, 0, tzinfo=UTC)  # 목 10:00 KST 장중
+    assert daemon._proxy_candles(deps, "KR") == [y]
+    deps.now = lambda: datetime(2026, 10, 23, 7, 0, tzinfo=UTC)  # 16:00 KST 마감 뒤
+    assert daemon._proxy_candles(deps, "KR") == [y, t]
+
+
+def test_ksd_body_keeps_last_success_and_notifies_when_stale(conn):
+    """2-O9: 종류 하나의 수집이 실패하면 그 종류의 지난 일정을 유지하고, 3일 넘게 실패가 이어지면
+    [권리 일정 수집 실패] 알림 — 조용히 빈 일정으로 블랙아웃이 꺼지지 않게."""
+    from trader.risk import blackout
+
+    class M:
+        def __init__(self, fail=()):
+            self.fail = set(fail)
+
+        def ksd_schedule(self, kind, start, end):
+            if kind in self.fail:
+                raise RuntimeError("x")
+            return [{"ticker": "005930", "kind": kind, "date": "2026-10-30", "name": "삼성전자"}]
+
+    deps = _hedge_deps(conn, closes=[100] * 30)
+    deps.settings = Settings(event_blackout={"enabled": True, "kinds": ["paidin", "rev_split"]})
+    deps.market_client = M()
+    assert daemon._ksd_body(deps)["events"] == 2
+    assert deps.notifier.msgs == []
+    deps.market_client = M(fail={"rev_split"})
+    deps.now = lambda: NOW + timedelta(days=4)
+    out = daemon._ksd_body(deps)
+    assert out["events"] == 2 and out["stale"] == ["rev_split"]
+    data = control.get_flag(conn, blackout.FLAG)
+    assert sorted(e["kind"] for e in data["events"]) == ["paidin", "rev_split"]
+    assert any("[권리 일정 수집 실패]" in m and "액면교체" in m for m in deps.notifier.msgs)

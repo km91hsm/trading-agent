@@ -14,6 +14,9 @@ def test_health_and_settings(client):
     assert r.status_code == 200 and r.json()["ok"] is True and r.json()["version"]
     s = client.get("/api/system/settings").json()
     assert s["web"]["port"] == 8787 and "KIS_" not in str(s)
+    # 2-W7: 토큰 없는 조회 API 는 tailnet 사용자 이메일을 돌려주지 않는다(수만)
+    assert "tailscale_users" not in s["web"] and s["web"]["tailscale_users_count"] == 0
+    assert s["web"]["realtime_ws"] is True and "tailscale_hosts" not in s["web"]
     assert s["risk"]["max_positions"] == 5 and s["llm"]["budget_usd"] == 5.0
 
 
@@ -103,6 +106,7 @@ def test_usage_endpoint_reports_windows_and_observed_limits(client, deps, conn, 
     r = client.get("/api/system/usage").json()
     assert r["rate_limits"] is None and r["windows"]["today"] == {"sessions": 0, "cap": 80}
     assert r["throttle"]["state"] == "ok"
+    assert "usage_file" not in r and r["usage_file_present"] is False  # 2-W7: 홈 경로 노출 안 함
     p = tmp_path / "rl.json"
     p.write_text(
         json.dumps({"at": 0, "rate_limits": {"five_hour": {"used_percentage": 3}}}),
@@ -111,6 +115,7 @@ def test_usage_endpoint_reports_windows_and_observed_limits(client, deps, conn, 
     deps.settings.llm.usage_file = str(p)
     r = client.get("/api/system/usage").json()
     assert r["rate_limits"]["five_hour"]["used_pct"] == 3.0 and "/usage" in r["note"]
+    assert r["usage_file_present"] is True
     assert r["rate_limits"]["source"] == "statusline"
     # Phase 24: 세션 rate_limit_event 가 더 최신이면 그것, 사용률이 높으면 감속 상태
     from trader import usage
@@ -455,3 +460,41 @@ def test_portfolio_position_drift(client, conn):
     assert by["005930"]["drift_pp"] == pytest.approx(10.0)
     assert by["000660"]["drift_pp"] is None
     assert r["rebalance_band_pct"] == 0.05
+
+
+def _req(headers: dict):
+    from starlette.requests import Request
+
+    return Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/x",
+            "headers": [(k.lower().encode(), v.encode()) for k, v in headers.items()],
+        }
+    )
+
+
+def test_require_same_origin_checks_origin_and_referer_without_fetch_metadata():
+    """2-W9: Sec-Fetch-Site 가 없으면 Origin → Referer 로 같은 출처를 본다. 둘 다 없으면 비브라우저
+    호출(테스트·CLI)이라 통과."""
+    import pytest
+    from fastapi import HTTPException
+
+    from trader.web.routers._common import require_same_origin
+
+    host = {"host": "127.0.0.1:8787"}
+    require_same_origin(_req(host))  # 헤더 없음 — 통과
+    require_same_origin(_req({**host, "origin": "http://127.0.0.1:8787"}))
+    require_same_origin(_req({**host, "referer": "http://127.0.0.1:8787/orders"}))
+    require_same_origin(_req({**host, "sec-fetch-site": "same-origin", "origin": "http://x.test"}))
+    for bad in (
+        {"origin": "http://evil.test"},
+        {"origin": "null"},
+        {"origin": "http://127.0.0.1:9999"},
+        {"referer": "http://evil.test/page"},
+        {"sec-fetch-site": "cross-site"},
+    ):
+        with pytest.raises(HTTPException) as e:
+            require_same_origin(_req({**host, **bad}))
+        assert e.value.status_code == 403, bad

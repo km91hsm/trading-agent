@@ -442,9 +442,9 @@ def test_us_holiday_skipped(conn):
 def test_reflect_job_snapshots_features_first(conn):
     calls = []
     deps = _deps(conn, FakeMarket(), now=lambda: datetime(2026, 10, 8, 7, 0, tzinfo=UTC))
-    deps.snapshot_fn = lambda markets: calls.append(list(markets)) or 3
+    deps.snapshot_fn = lambda markets, extra=None: calls.append((list(markets), extra)) or 3
     r = daemon._reflect_body(deps)
-    assert calls == [["KR", "US"]] and r["features"] == 3
+    assert calls == [(["KR", "US"], [])] and r["features"] == 3
 
     class Sent:
         msgs = []
@@ -461,6 +461,35 @@ def test_reflect_job_snapshots_features_first(conn):
     deps.snapshot_fn = boom
     r = daemon._reflect_body(deps)  # 스냅샷 실패는 통보하고 반성은 계속
     assert r["features"] is None and any("피처 스냅샷 실패" in m for m in Sent.msgs)
+
+
+def test_reflect_snapshot_includes_open_window_tickers_outside_universe(conn):
+    """전체 검토 2차 2-L1: reflect 앞 일일 스냅샷은 유니버스 + 열린 창(보유·미만기 메모리·미만기
+    섀도) 종목을 함께 찍는다 — 유니버스 밖 매수 종목도 만기 봉이 생기게. 거래소 미상 US 는 뺀다."""
+    from trader.config import Universe, UsSymbol
+    from trader.ledger import repo
+    from trader.memory import store
+
+    for i, (market, ticker) in enumerate([("KR", "247540"), ("US", "RIVN"), ("US", "AAPL")]):
+        store.record_decision(
+            conn,
+            decision_id=i + 1,
+            ticker=ticker,
+            market=market,
+            account_id="paper-main",
+            decided_at="2026-10-07T00:00:00+00:00",
+            decision={"action": "BUY", "confidence": 0.6},
+            row=None,
+            horizon_days=5,
+            vector=[0.0] * 12,
+        )
+    repo.upsert_ticker_exchange(conn, "US", "RIVN", "NAS")
+    calls = []
+    deps = _deps(conn, FakeMarket(), now=lambda: datetime(2026, 10, 8, 7, 0, tzinfo=UTC))
+    deps.universe = Universe(kr=["005930"], us=[UsSymbol(symbol="AAPL", exchange="NAS")])
+    deps.snapshot_fn = lambda markets, extra=None: calls.append((list(markets), extra)) or 3
+    daemon._reflect_body(deps)
+    assert calls == [(["KR", "US"], [("247540", "KR", None), ("RIVN", "US", "NAS")])]
 
 
 def test_ml_train_job_trains_sizer_even_when_not_enabled(conn, monkeypatch):
@@ -739,18 +768,29 @@ def test_shadow_record_skips_incomplete_analysis_and_fake(conn, monkeypatch):
     write_checkpoint(
         run_store.market_dir(date(2026, 10, 8), "KR", create=True),
         "_scan",
-        {"candidates": [{"ticker": "005930", "score": 0.5}], "analyze_targets": []},
+        {
+            "candidates": [{"ticker": "005930", "score": 0.5}, {"ticker": "000660", "score": 0.4}],
+            "analyze_targets": [],
+        },
     )
     monkeypatch.delenv("FAKE_CLAUDE", raising=False)
-    daemon._shadow_record(deps, "KR", {"targets": 2, "ok": 1, "failed": ["000660"]})
+    daemon._shadow_record(deps, "KR", {"targets": 2, "ok": 0, "failed": ["005930", "000660"]})
     daemon._shadow_record(deps, "KR", {"targets": 2, "ok": 0, "failed": [], "stopped": True})
     assert shadow.rows(conn, market="KR") == []
     monkeypatch.setenv("FAKE_CLAUDE", "1")
     daemon._shadow_record(deps, "KR", {"targets": 1, "ok": 1, "failed": []})
     assert shadow.rows(conn, market="KR") == []
     monkeypatch.delenv("FAKE_CLAUDE")
-    daemon._shadow_record(deps, "KR", {"targets": 1, "ok": 1, "failed": []})
-    assert len(shadow.rows(conn, market="KR")) == 3
+    # 2-L6: 일부 실패는 그날을 통째로 버리지 않고 성공한 결정으로 기록하되, 실패 종목은 LLM 이 고를
+    # 수 없었으므로 후보 기준선에서도 뺀다(같은 후보 집합 비교)
+    daemon._shadow_record(deps, "KR", {"targets": 2, "ok": 1, "failed": ["000660"]})
+    got = {r["strategy"]: r["weights"] for r in shadow.rows(conn, market="KR")}
+    assert got["candidates_1n"] == {"005930": 1.0} and got["quant_topn"] == {"005930": 1.0}
+    conn.execute("DELETE FROM shadow_portfolios")
+    conn.commit()
+    daemon._shadow_record(deps, "KR", {"targets": 2, "ok": 2, "failed": []})
+    got = {r["strategy"]: r["weights"] for r in shadow.rows(conn, market="KR")}
+    assert got["candidates_1n"] == {"005930": 0.5, "000660": 0.5}
 
 
 def test_scan_analyze_body_scan_failure_still_runs_analyze_and_notifies(conn, monkeypatch):
@@ -979,11 +1019,16 @@ def test_scan_line_and_listed_discovery_snapshot(conn, monkeypatch):
     r = daemon._analyze_targets(
         deps,
         "KR",
-        [{"ticker": "005930"}, {"ticker": "247540", "exchange": None, "discovery": "listed"}],
+        [
+            {"ticker": "005930"},
+            {"ticker": "247540", "exchange": None, "discovery": "listed"},
+            {"ticker": "900100", "exchange": None, "discovery": "listed"},
+        ],
         today=date(2026, 10, 8),
     )
-    assert r["ok"] == 2
-    assert calls == [("snapshot", ["KR"], [("247540", None)])]
+    assert r["ok"] == 3
+    # 2-P9: 발굴 종목을 모아 스냅샷 1회(종목마다 스토어를 다시 읽지 않는다)
+    assert calls == [("snapshot", ["KR"], [("247540", None), ("900100", None)])]
     # features_fn 이 없으면(시세 클라이언트 없음) 건너뛴다
     deps.features_fn = None
     calls.clear()
