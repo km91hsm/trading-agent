@@ -630,6 +630,19 @@ pre.status {
 .statusline .pend {
   color: var(--pending);
 }
+/* 선물 한 줄 요약: 위 상태줄에 붙여 괘선 하나만 쓴다 */
+.statusline.fo-summary {
+  margin-top: calc(-1 * var(--s-4));
+  border-top: 0;
+  flex-direction: column;
+  gap: var(--s-1);
+}
+.fo-summary-row .up {
+  color: var(--up);
+}
+.fo-summary-row .dn {
+  color: var(--dn);
+}
 .gate.ok {
   color: var(--ok);
 }
@@ -1036,4 +1049,11 @@ tr.danger td:first-child {
   width: 64px;
   min-width: 0;
   height: 8px;
+}
+
+/* 전체 계좌: 계좌가 여럿인 시장·환경의 계좌별 줄 */
+tr.sub-row td {
+  font-size: var(--t-xs);
+  color: var(--ink-2);
+  border-top: 0;
 }

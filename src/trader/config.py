@@ -370,7 +370,16 @@ class LlmSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     budget_usd: float = 5.0
-    timeout_s: int = 600
+    # 세션 타임아웃(초). 2026-10-29 운영 점검: 600초에서 분석 세션 35% 가 시간 초과(성공 최장 588초)
+    timeout_s: int = 900
+    # 종류별 타임아웃(없으면 timeout_s). 스크리너·발굴은 짧게, 재평가는 중간
+    timeout_by_kind: dict[str, int] = Field(
+        default_factory=lambda: {
+            "screen": 300, "discover": 300, "resume": 600, "fo_resume": 600, "reflect": 600,
+        }
+    )  # fmt: skip
+    # 같은 운영일 같은 종목이 타임아웃으로 이만큼 실패하면 그날은 다시 띄우지 않는다
+    timeout_retry_max: int = Field(default=2, ge=1, le=10)
     # 종목 analyze + 시장 세션 + 장중 발굴·재분석 합계. Phase 24 에 40→80
     # (구독 사용률 감속 usage_throttle 이 실제 브레이크, 2~4주 통계 뒤 다시 정한다)
     daily_session_cap: int = 80
@@ -379,6 +388,9 @@ class LlmSettings(BaseModel):
     # 대화형 Claude Code 상태줄이 남기는 구독 사용률 관측 파일 (usage.py). 비우면 표시 안 함
     usage_file: str | None = "~/.claude/rate_limits.json"
     usage_probe: UsageProbe = Field(default_factory=UsageProbe)
+
+    def timeout_for(self, kind: str) -> int:
+        return int(self.timeout_by_kind.get(kind, self.timeout_s))
 
 
 class WebSettings(BaseModel):

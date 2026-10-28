@@ -285,3 +285,19 @@ def test_prune_keeps_last_good_capture_and_latest_files(tmp_path):
     latest = json.loads((tmp_path / "latest" / "news_all.json").read_text())
     assert latest["items"][0]["title"] == "더 옛 성공"
     assert store.status()["streams"]["news_all"]["status"] == "error"
+
+
+def test_should_start_retries_auth_block_after_six_hours(tmp_path, monkeypatch):
+    """인증 실패 정지도 계정 파일 변경만 기다리지 않고 6시간마다 1회 다시 시도(1분 반복은 안 함)."""
+    monkeypatch.setattr(automation, "service_elsewhere", lambda: False)
+    now = datetime(2026, 10, 27, 1, 0, tzinfo=UTC)
+    home = tmp_path / "st"
+    creds = tmp_path / "saveticker.env"
+    creds.write_text("x", encoding="utf-8")
+    os.utime(creds, (now.timestamp() - 60, now.timestamp() - 60))
+    for reason in ("authentication", "authentication_or_stopped"):
+        _service_state(home, {"state": "blocked", "reason": reason, "at": now.isoformat()})
+        assert automation.should_start(home, creds, now=now + timedelta(hours=5))[0] is False
+        assert (
+            automation.should_start(home, creds, now=now + timedelta(hours=6, minutes=1))[0] is True
+        )

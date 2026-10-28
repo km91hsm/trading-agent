@@ -44,6 +44,11 @@ class PipelineError(RuntimeError):
     """세션을 띄울 수 없거나(상한·설정) 파이프라인 전제가 깨졌을 때."""
 
 
+class ThrottleBlocked(PipelineError):
+    """구독 사용률 감속으로 세션을 띄우지 않았다 — 실패가 아니라 '생략'(데몬·대기열이 skipped
+    로 센다)."""
+
+
 @dataclass
 class SessionSpec:
     market: str
@@ -381,6 +386,24 @@ def run_claude(cmd: list[str], **kw: Any) -> subprocess.CompletedProcess:
     return subprocess.CompletedProcess(cmd, proc.returncode, out, err)
 
 
+def _guard_repeated_timeouts(conn, spec: SessionSpec, settings: Settings) -> None:
+    """같은 운영일 같은 종목이 타임아웃으로 `timeout_retry_max` 번 실패했으면 다시 띄우지 않는다 —
+    600초씩 같은 종목을 반복하며 구독만 쓰던 문제(2026-10-29, 000660 3회)."""
+    if conn is None or spec.kind != "analyze" or len(spec.tickers) != 1:
+        return
+    from trader.ledger import repo
+
+    ticker = spec.tickers[0].get("ticker")
+    lo, hi = repo.day_bounds(spec.date, spec.market)
+    n = conn.execute(
+        "SELECT COUNT(*) FROM agent_calls WHERE ticker = ? AND market = ? AND status = 'error' "
+        "AND error LIKE '세션 타임아웃%' AND created_at >= ? AND created_at < ?",
+        (ticker, spec.market, lo, hi),
+    ).fetchone()[0]
+    if n >= settings.llm.timeout_retry_max:
+        raise PipelineError(f"{ticker} 오늘 세션 타임아웃 {n}회 — 오늘은 다시 띄우지 않습니다")
+
+
 def run_session(
     spec: SessionSpec,
     settings: Settings,
@@ -423,7 +446,8 @@ def run_session(
     if not is_fake():
         ok, why = usage.session_allowance(conn, settings, kind=spec.kind, now=now())
         if not ok:
-            raise PipelineError(why or "구독 사용률 감속")
+            raise ThrottleBlocked(why or "구독 사용률 감속")
+        _guard_repeated_timeouts(conn, spec, settings)
     run_kind = run_kind_of(spec.kind)
     # 파생 세션(Phase 26)은 `fo.session_cap` 도 본다(아침 fo 만 — 재평가는 runs.kind=monitor)
     extra_cap = ("fo", settings.fo.session_cap) if run_kind == "fo" else None
@@ -568,13 +592,13 @@ def run_session(
             env=env,
             cwd=str(cwd),
             shell=False,
-            timeout=settings.llm.timeout_s,
+            timeout=settings.llm.timeout_for(spec.kind),
             **({"cancel": cancel} if cancel is not None else {}),
         )
     except SessionCancelled:
         return fail("세션 중단 (종료 요청)")
     except subprocess.TimeoutExpired:
-        return fail(f"세션 타임아웃 ({settings.llm.timeout_s}s)")
+        return fail(f"세션 타임아웃 ({settings.llm.timeout_for(spec.kind)}s)")
     except OSError as e:  # 실행파일 없음·권한 등: running 행을 남기지 않고 오류로 닫는다
         return fail(f"세션 기동 실패: {type(e).__name__}: {e}")
     finally:

@@ -736,3 +736,39 @@ def test_run_session_raises_when_throttled(project, conn, accounts, monkeypatch)
             agents_dir=REPO_AGENTS,
         )
     assert conn.execute("SELECT COUNT(*) FROM agent_calls").fetchone()[0] == 0
+
+
+def test_throttle_raises_throttle_blocked_and_timeout_by_kind(project, conn, accounts, monkeypatch):
+    """감속 차단은 ThrottleBlocked(PipelineError 하위) — 데몬·대기열이 '오류' 대신 '생략'으로 센다.
+    세션 타임아웃은 종류별(분석 900초·스크리너 300초)."""
+    from datetime import UTC, datetime
+
+    from trader import usage
+
+    monkeypatch.delenv("FAKE_CLAUDE", raising=False)
+    usage.record_rate_limit(
+        conn, {"unifiedWindows": {"five_hour": {"utilization": 0.9}}}, now=datetime.now(UTC)
+    )
+    s = Settings(llm={"usage_file": None})
+    with pytest.raises(session.ThrottleBlocked):
+        run_session(spec(), s, conn, accounts)
+    assert s.llm.timeout_for("analyze") == 900 and s.llm.timeout_for("screen") == 300
+    assert s.llm.timeout_for("resume") == 600 and s.llm.timeout_for("unknown") == s.llm.timeout_s
+
+
+def test_same_ticker_not_retried_after_two_timeouts_today(project, conn, accounts, monkeypatch):
+    """같은 종목이 오늘 타임아웃으로 두 번 실패했으면 세 번째는 띄우지 않는다
+    (000660 이 600초씩 3번)."""
+    from datetime import UTC, datetime
+
+    monkeypatch.delenv("FAKE_CLAUDE", raising=False)
+    for _ in range(2):
+        conn.execute(
+            "INSERT INTO agent_calls(ticker, market, agent, model, status, error, created_at) "
+            "VALUES ('005930', 'KR', 'orchestrator', 'sonnet', 'error', '세션 타임아웃 (600s)', ?)",
+            (datetime.combine(D, datetime.min.time()).replace(hour=2, tzinfo=UTC).isoformat(),),
+        )
+    conn.commit()
+    with pytest.raises(session.PipelineError, match="타임아웃"):
+        later = datetime.combine(D, datetime.min.time()).replace(hour=3, tzinfo=UTC)
+        run_session(spec(), Settings(llm={"usage_file": None}), conn, accounts, now=lambda: later)

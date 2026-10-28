@@ -511,3 +511,29 @@ def test_usage_throttle_toggle_api(client, conn):
     assert t["enabled"] is False and t["source"] == "control"
     r = client.post("/api/control/usage-throttle", json={"enabled": None}, headers=AUTH)
     assert r.json() == {"enabled": True, "source": "yaml"}
+
+
+def test_saveticker_status_and_restart_api(project, deps):
+    """설정 화면 세이브티커 칸: 상태 조회(토큰 없음)·다시 시작(토큰 + 이 PC 직접 접속)."""
+    from fastapi.testclient import TestClient
+    from helpers_web import AUTH
+
+    from trader import saveticker as st
+    from trader.saveticker import automation
+    from trader.saveticker.store import atomic_json
+    from trader.web.app import create_app
+
+    c = TestClient(create_app(deps), client=("127.0.0.1", 50000), base_url="http://127.0.0.1")
+    r = c.get("/api/system/saveticker").json()
+    assert r["configured"] is False
+    (project / "secrets").mkdir(exist_ok=True)
+    st.credentials_path().write_text("x", encoding="utf-8")
+    blocked = {"state": "blocked", "reason": "authentication", "at": "2026-10-29T00:00:00+00:00"}
+    atomic_json(st.home() / "runtime" / "service.json", blocked)
+    r = c.get("/api/system/saveticker").json()
+    assert r["configured"] is True and r["blocked"] is True
+    assert r["reason_text"].startswith("인증 실패")
+    assert c.post("/api/control/saveticker/restart").status_code == 401
+    r = c.post("/api/control/saveticker/restart", headers=AUTH)
+    assert r.status_code == 200 and r.json()["blocked"] is False
+    assert (automation.read(st.home() / "runtime" / "service.json") or {})["state"] == "stopped"

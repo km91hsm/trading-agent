@@ -455,8 +455,22 @@ def run_job(
             run_id = db.start_run(conn, name, None)
         finally:
             conn.close()
+    from trader.orchestrator.session import ThrottleBlocked
+
     try:
         result = fn()
+    except ThrottleBlocked as e:  # 사용량 감속은 실패가 아니라 생략(오류 행·ERROR 로그로 쌓지 않음)
+        logger.info("잡 생략 %s: 사용량 감속 — %s", name, e)
+        conn = conn_factory()
+        try:
+            if run_id is None:
+                run_id = db.start_run(conn, name, None)
+            db.finish_run(conn, run_id, "skipped", f"사용량 감속 — {e}")
+        finally:
+            conn.close()
+        if heartbeat is not None:
+            heartbeat.job_finished(name, datetime.now(UTC), "skipped", None)
+        return {"skipped": f"사용량 감속 — {e}"}
     except Exception as e:  # noqa: BLE001 - 잡 하나의 실패가 데몬을 죽이지 않는다
         logger.exception("잡 실패 %s", name)
         conn = conn_factory()
@@ -790,10 +804,23 @@ def _analyze_targets(
 ) -> dict:
     """대상 종목마다 수집 → 05_quant → 세션 1회. dry_run 이 None 이면 데몬 설정을 따른다
     (대기열의 단일 종목 분석은 `deps.dry_run or 요청값` 으로 데몬 --dry-run 을 뒤집지 못한다)."""
-    from trader.orchestrator.session import SessionSpec, run_session
+    from trader import usage
+    from trader.orchestrator.session import SessionSpec, ThrottleBlocked, is_fake, run_session
     from trader.sources.inputs import collect_and_save
 
     dry = deps.dry_run if dry_run is None else (deps.dry_run or dry_run)
+    if not is_fake() and deps.session_runner is None:
+        # 감속 중이면 수집(KIS 호출)부터 하지 않는다 — 세션이 어차피 막힌다
+        conn = deps.conn_factory()
+        try:
+            allowed, why = usage.session_allowance(
+                conn, deps.settings, kind="analyze", now=deps.now()
+            )
+        finally:
+            conn.close()
+        if not allowed:
+            _throttle_notice(deps, market, why or "구독 사용률 감속")
+            return {"targets": len(targets), "skipped": f"사용량 감속 — {why}"}
 
     def collect(t: dict) -> None:
         # 종목 **직전**에 수집한다: 전 종목을 먼저 모으면 마지막 종목 입력이 세션 때 수십 분 늙는다
@@ -845,6 +872,13 @@ def _analyze_targets(
                     notifier=deps.notifier,
                     cancel=deps.stop_event,
                 )
+        except ThrottleBlocked as e:
+            # 도중에 감속 기준을 넘었다 — 남은 종목도 같은 이유로 막히므로 여기서 멈춘다(실패 아님)
+            logger.info("analyze 생략(사용량 감속) %s: %s", market, e)
+            _throttle_notice(deps, market, str(e))
+            conn.close()
+            return {"targets": len(targets), "ok": ok, "failed": failed, "sessions": sessions,
+                    "skipped": f"사용량 감속 — {e}"}  # fmt: skip
         except Exception as e:  # noqa: BLE001 - 한 종목 세션 실패가 나머지를 막지 않는다
             logger.exception("analyze 세션 기동 실패 %s %s", market, t["ticker"])
             failed.append(t["ticker"])
@@ -1615,9 +1649,33 @@ def _usage_probe_once(deps: DaemonDeps, cfg, *, force: bool) -> dict:
         ok, reason = usage.session_allowance(conn, deps.settings, kind="resume", now=now)
         if not ok:
             return {"skipped": f"감속: {reason}"}
-        return quick.probe_usage(deps.settings, conn, now=deps.now, cancel=deps.stop_event)
+        if not force and _probe_failing(conn, now):
+            return {"skipped": f"연속 실패 — {PROBE_BACKOFF.seconds // 3600}시간 쉼"}
+        out = quick.probe_usage(deps.settings, conn, now=deps.now, cancel=deps.stop_event)
+        if isinstance(out, dict) and out.get("error"):
+            # 확인 실패는 다음 주기에 다시 — 잡 오류로 쌓지 않는다(실패 기록은 agent_calls 에 남음)
+            return {"skipped": f"확인 실패(다음 주기): {out['error']}"}
+        return out
     finally:
         conn.close()
+
+
+PROBE_BACKOFF = timedelta(hours=2)
+
+
+def _probe_failing(conn: sqlite3.Connection, now: datetime) -> bool:
+    """최근 사용량 확인 2번이 모두 실패이고 마지막 실패가 PROBE_BACKOFF 안이면 쉰다."""
+    rows = conn.execute(
+        "SELECT status, created_at FROM agent_calls WHERE agent = 'usage_probe' "
+        "ORDER BY id DESC LIMIT 2"
+    ).fetchall()
+    if len(rows) < 2 or any(r["status"] != "error" for r in rows):
+        return False
+    try:
+        last = datetime.fromisoformat(rows[0]["created_at"])
+    except (TypeError, ValueError):
+        return False
+    return now - last < PROBE_BACKOFF
 
 
 SAVETICKER_WATCH_S = 60
@@ -2258,7 +2316,10 @@ def _news_trigger(deps: DaemonDeps, conn: sqlite3.Connection, market: str, unive
             out["queued"].append({"ticker": ticker, "request_id": rid, "news": len(items)})
     cap_key = f"discover_count:{market}:{today.isoformat()}"
     n_disc = int(control.get_flag(conn, cap_key) or 0)
-    if n_disc < cfg.discover_cap:
+    allowed, why = _session_allowed(deps, conn, "discover")
+    if not allowed:  # 감속 중엔 큐에 넣지 않는다(넣으면 실행 때 막혀 '오류'로 쌓였다, 2026-10-29)
+        out["discover"] = f"사용량 감속 — {why}"
+    elif n_disc < cfg.discover_cap:
         try:
             rid = jobq.enqueue(conn, "discover", {"market": market}, source="news", now=deps.now())
             control.set_flag(conn, cap_key, n_disc + 1)
@@ -2349,6 +2410,8 @@ def _news_reanalyze(
                 source="news",
                 now=deps.now(),
             )
+        if not _session_allowed(deps, conn, "analyze")[0]:
+            return None  # 감속 중 — 실행 때 막힐 분석을 큐에 넣지 않는다
         params: dict[str, Any] = {"market": market, "ticker": ticker, "dry_run": deps.dry_run}
         if exchange:
             params["exchange"] = exchange
@@ -2657,6 +2720,33 @@ def _rl_train(
     return r
 
 
+def _session_allowed(
+    deps: DaemonDeps, conn: sqlite3.Connection, kind: str
+) -> tuple[bool, str | None]:
+    """이 종류의 세션을 지금 띄울 수 있나(구독 사용률 감속). FAKE 는 항상 허용."""
+    from trader import usage
+    from trader.orchestrator.session import is_fake
+
+    if is_fake():
+        return True, None
+    return usage.session_allowance(conn, deps.settings, kind=kind, now=deps.now())
+
+
+def _throttle_notice(deps: DaemonDeps, market: str, why: str) -> None:
+    """사용량 감속으로 분석을 쉰 날 알림 1번(시장·운영일 단위)."""
+    from trader.orchestrator.run_store import run_date_for
+
+    key = f"throttle_notice:{market}:{run_date_for(market, deps.now()).isoformat()}"
+    conn = deps.conn_factory()
+    try:
+        if control.get_flag(conn, key):
+            return
+        control.set_flag(conn, key, deps.now().isoformat())
+    finally:
+        conn.close()
+    deps.notifier.send(messages.throttle_skip(market=market, why=why))
+
+
 def _scan_analyze_body(deps: DaemonDeps, market: str) -> dict:
     """scan 뒤 바로 analyze. scan 이 예외로 죽어도 통보하고 analyze 를 시도한다(_analyze_body 가
     `_scan.json` 없음을 알림·error 로 남긴다). 세션을 세기 전에 stale running 을 정리한다."""
@@ -2672,9 +2762,15 @@ def _scan_analyze_body(deps: DaemonDeps, market: str) -> dict:
     except Exception as e:  # noqa: BLE001
         logger.exception("전략가 지표 반영 실패 %s", market)
         deps.notifier.send(messages.failure("국면 재판정 실패", f"{market}", e))
+    from trader.orchestrator.session import ThrottleBlocked
+
     scan_error: str | None = None
     try:
         _scan_body(deps, market)
+    except ThrottleBlocked as e:
+        # 감속 중엔 분석 세션도 같은 이유로 막힌다 — 오류가 아니라 그날 분석 생략(알림 하루 1번)
+        _throttle_notice(deps, market, str(e))
+        return {"skipped": f"사용량 감속 — {e}"}
     except Exception as e:  # noqa: BLE001 - scan 실패가 analyze 시도를 막지 않는다
         logger.exception("scan 실패 %s", market)
         scan_error = f"{type(e).__name__}: {e}"  # 알림은 _analyze_body 가 원인과 함께 1건만
@@ -3215,12 +3311,17 @@ def _queue_tick_locked(
             conn.close()
 
     def wrapped() -> Any:
+        from trader.orchestrator.session import ThrottleBlocked
+
         try:
             body = queued_job_body(deps, req, _progress_writer(deps, req_id))
             result = body()
         except jobq.JobCancelled as e:
             _finish("skipped", error=str(e))
             return {"skipped": str(e)}
+        except ThrottleBlocked as e:
+            _finish("skipped", error=f"사용량 감속 — {e}")
+            return {"skipped": f"사용량 감속 — {e}"}
         except Exception as e:
             _finish("error", error=f"{type(e).__name__}: {e}")
             raise

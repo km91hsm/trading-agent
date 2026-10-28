@@ -156,6 +156,21 @@ def _set_paused(request: Request, value: bool) -> dict:
         return {"ok": True, "paused": control.is_paused(conn)}
 
 
+@router.post("/saveticker/restart", dependencies=[Depends(require_direct_local)])
+def saveticker_restart(request: Request) -> dict:
+    """세이브티커 '다시 시작': 정지·작업 쉬기 기록을 지워 데몬이 1분 안에 서비스를 다시 띄우게 한다
+    (인증 실패를 반복 로그인으로 밀어붙이지 않도록 사람이 누를 때만)."""
+    import logging
+
+    from trader import saveticker as st
+    from trader.saveticker import automation
+
+    home = st.home()
+    automation.clear_blocks(home)
+    logging.getLogger("trader.web").info("세이브티커 다시 시작 요청(웹)")
+    return {"configured": st.credentials_path().is_file(), **automation.status(home)}
+
+
 @router.post("/usage-throttle")
 def usage_throttle(request: Request, body: ThrottleBody) -> dict:
     """Claude 구독 사용률 감속 켜기·끄기(설정 화면). 끄면 사용률과 무관하게 세션을 띄운다 —

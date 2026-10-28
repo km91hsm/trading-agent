@@ -245,6 +245,17 @@ def ops_status(request: Request, live: bool = False) -> dict:
     return result | {"headline": health.headline(result), "source": "live"}
 
 
+@router.get("/saveticker")
+def saveticker_status(request: Request) -> dict:
+    """세이브티커 수집기 상태(설정 화면): 계정 파일 유무·서비스 상태·멈춘 이유·작업별 상태·쉬는
+    작업·마지막 수집 시각. 계정·값은 돌려주지 않는다."""
+    from trader import saveticker as st
+    from trader.saveticker import automation
+
+    home = st.home()
+    return {"configured": st.credentials_path().is_file(), **automation.status(home)}
+
+
 @router.get("/scalp")
 def scalp_status(request: Request, market: str | None = None) -> dict:
     """분 단위 단타(Phase 23 S) 상태: 설정·오늘 진입/청산·중단 사유. 토큰 없음."""

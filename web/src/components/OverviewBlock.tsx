@@ -1,8 +1,9 @@
 // 전체 계좌 합산 (Phase 24): 시장(통화) × 모의/실전별 NAV·현금·평가손익·보유·섹터.
 // 시장끼리, 모의·실전끼리는 더하지 않는다(PRODUCT.md 원칙 3) — 보유 비중·섹터의 분모도 그 행의 NAV.
+import { Fragment } from "react";
 import { Link } from "react-router-dom";
 import { applyQuotes, liveLabel, type QuotesResp } from "../live";
-import { liveSummary, missingText, overviewRows, type OverviewRow } from "../overview";
+import { accountSubRows, liveSummary, missingText, overviewRows, type OverviewRow } from "../overview";
 import type { Market, Overview } from "../types";
 import { Badge } from "./Badge";
 import { EmptyState } from "./EmptyState";
@@ -75,8 +76,10 @@ export function OverviewBlock({
           <tbody>
             {rows.map((r) => {
               const s = liveSummary(r.data, r.market, quotes[r.market]?.quotes);
+              const subs = accountSubRows(r);
               return (
-              <tr key={`${r.market}:${r.env}`}>
+              <Fragment key={`${r.market}:${r.env}`}>
+              <tr>
                 <Td core>
                   {r.market} <Badge kind="env" value={r.env} />
                   {s.live ? <span className="live-tag">실시간</span> : null}
@@ -91,6 +94,22 @@ export function OverviewBlock({
                 <Td num>{r.holdings}종목</Td>
                 <Td>{r.data.accounts.map((a) => a.id).join(", ")}</Td>
               </tr>
+              {/* 계좌가 여럿이면 계좌별 순자산·현금(합산 줄 아래, 같은 열) */}
+              {subs.map((a) => (
+                <tr key={a.id} className="sub-row">
+                  <Td core>
+                    <span className="muted">└ {a.id}</span>
+                  </Td>
+                  <Td num core>
+                    {a.nav}
+                  </Td>
+                  <Td num>{a.cash}</Td>
+                  <Td num core />
+                  <Td num />
+                  <Td className="muted">기준 {a.date}</Td>
+                </tr>
+              ))}
+              </Fragment>
               );
             })}
           </tbody>

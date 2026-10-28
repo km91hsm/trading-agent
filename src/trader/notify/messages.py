@@ -153,6 +153,15 @@ def event(tag: str, text: str = "", *lines: str) -> str:
     return render(tag, text, lines)
 
 
+def throttle_skip(*, market: str, why: str) -> str:
+    """구독 사용률 감속으로 그날 분석을 쉰다(하루 1번). 오류가 아니라 설정된 브레이크."""
+    return render(
+        "분석 생략: 사용량 감속",
+        market,
+        (why, "보유 재평가는 계속돼요. 설정 화면 'Claude 사용량 감속'에서 끌 수 있어요"),
+    )
+
+
 def briefing(lines: list[str], uncertain: list[str]) -> str:
     """아침 브리핑(사람이 읽는 요약 — 결정·주문과 무관)."""
     return event(

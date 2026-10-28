@@ -7,6 +7,7 @@ import { Delta, Mark, Num, Table, Td, Th } from "./components/Table";
 import { Term } from "./components/Term";
 import { Ticker } from "./components/Ticker";
 import { JobRequestsTable } from "./components/JobRequests";
+import { FoSummaryRows } from "./components/FoSummary";
 import { SectorTable } from "./components/Sectors";
 import { requestRows } from "./jobs";
 
@@ -297,3 +298,19 @@ describe("업종 비중 '자동' 꼬리표", () => {
     expect(out).toContain("config/sectors.yaml");
   });
 });
+
+describe("대시보드 선물 요약 줄", () => {
+  it("상태 배지·순자산·포지션·파생 화면 링크, 계좌 없으면 아무것도 안 그림", () => {
+    const st = {
+      id: "paper-fo", env: "paper", mode: "auto", mode_note: null, paused: false, state: "unverified" as const, enabled: true,
+      vehicles: ["FUTURES"], verified: { FUTURES: false }, halted: false, pending_entry: false, nav_date: "2026-10-29",
+      nav: "50000000", cash: "50000000", margin_total: "0", add_margin: "0", margin_pct: 0, positions: [], decision: null,
+    };
+    const out = html(<MemoryRouter><FoSummaryRows accounts={[st]} /></MemoryRouter>);
+    expect(out).toContain("검증 전");
+    expect(out).toContain("순자산 5,000만");
+    expect(out).toContain("파생 화면으로");
+    expect(html(<MemoryRouter><FoSummaryRows accounts={[]} /></MemoryRouter>)).toBe("");
+  });
+});
+

@@ -71,3 +71,17 @@ def test_sqlite_diagnostics_preserve_code_without_error_message():
             result = sqlite_diagnostics(exc)
     assert result == {"sqlite_errorcode": 1, "sqlite_errorname": "SQLITE_ERROR"}
     assert "private_secret_column" not in str(result)
+
+
+def test_plan_lanes_skips_paused_lanes():
+    """서비스가 접근이 막힌 작업만 빼고 다시 띄운다(`run --skip-lanes community`)."""
+    from trader.saveticker.cli import plan_lanes
+    from trader.saveticker.service import View, build_views
+
+    planned = build_views("2026-10", "2026-11") + [
+        View("news_all", "news"),
+        View("news_reports", "news"),
+    ]
+    assert plan_lanes(planned, None) == ["background", "community", "market", "news"]
+    assert plan_lanes(planned, "community") == ["background", "market", "news"]
+    assert plan_lanes(planned, "community, market") == ["background", "news"]

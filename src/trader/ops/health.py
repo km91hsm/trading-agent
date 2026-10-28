@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, date, datetime, time, timedelta
@@ -24,6 +25,8 @@ from trader.notify import messages
 from trader.orchestrator import tools
 from trader.orchestrator.run_store import run_date_for
 from trader.platform import paths
+
+logger = logging.getLogger("trader.ops")
 
 LEVELS = ("ok", "watch", "warning", "critical")
 LABEL = {"ok": "정상", "watch": "관심", "warning": "주의", "critical": "경보"}
@@ -69,11 +72,12 @@ def check(
     items += _llm(conn, settings, now)
     items += _disclosure(conn, settings, accounts, now)
     items += _fo(conn, settings, accounts, now)
+    items += _saveticker(now)
     areas: dict[str, str] = {}
     for it in items:
         area = it.key.split(".")[0]
         areas[area] = worst([areas.get(area, "ok"), it.level])
-    for area in ("loss", "orders", "reconcile", "jobs", "llm", "disclosure", "fo"):
+    for area in ("loss", "orders", "reconcile", "jobs", "llm", "disclosure", "fo", "saveticker"):
         areas.setdefault(area, "ok")
     level = worst([it.level for it in items])
     return {
@@ -546,6 +550,31 @@ def today_key(now: datetime) -> date:
 # --- 파생(Phase 26) ----------------------------------------------------------------------
 
 FO_SETTLE_GRACE_DAYS = 1
+
+
+def _saveticker(now) -> list[Item]:
+    """세이브티커 수집기(계정 파일이 있을 때만): 서비스 정지 warning, 접근이 막혀 쉬는 작업 watch.
+    데몬 감시 잡은 정지 상태여도 'ok' 로 끝나 보이지 않던 문제(2026-10-29)."""
+    from trader import saveticker as st
+    from trader.saveticker import automation
+
+    try:
+        if not st.credentials_path().is_file():
+            return []
+        home = st.home()
+        s = automation.status(home)
+        paused = automation.active_skip_lanes(home, now=now)
+    except Exception as e:  # noqa: BLE001 — 점검은 읽기 전용, 실패가 다른 영역을 막지 않는다
+        logger.debug("세이브티커 점검 실패: %s", e)
+        return []
+    out: list[Item] = []
+    if s["blocked"]:
+        text = f"세이브티커 수집 멈춤 — {s['reason_text']}"
+        out.append(Item("saveticker.stopped", "warning", text, link="/settings"))
+    if paused:
+        text = f"세이브티커 {', '.join(paused)} 작업 쉬는 중(접근 거부, 6시간 뒤 다시 시도)"
+        out.append(Item("saveticker.lane_paused", "watch", text, link="/settings"))
+    return out
 
 
 def _fo(conn, settings, accounts, now) -> list[Item]:

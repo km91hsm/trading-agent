@@ -146,6 +146,113 @@ def test_service_transient_restart_budget_and_auth_stop(tmp_path, monkeypatch):
     state = automation.read(tmp_path / "runtime/service.json")
     assert state["reason"] == "restart_limit"
     launched.clear()
-    atomic_json(tmp_path / "runtime/runner-news.json", {"error_type": "AccessDenied"})
+    # 세션 상실(LoginRequired)은 전체 정지 — 일부 작업의 AccessDenied 는 그 작업만 쉰다(아래 테스트)
+    atomic_json(tmp_path / "runtime/runner-news.json", {"error_type": "LoginRequired"})
     automation.service(tmp_path)
     assert len(launched) == 1
+    assert automation.read(tmp_path / "runtime/service.json")["reason"] == "authentication"
+
+
+# --- 작업 단위 격리·자동 재시도·다시 시작 (2026-10-29 운영 점검: 커뮤니티 AccessDenied 하나가
+#     뉴스·시장·캘린더까지 이틀 멈춤) -----------------------------------------------------
+
+
+def test_classify_auth_failure_lane_vs_full():
+    rows = {"runner": {"error_type": "WorkerExited"},
+            "runner-community": {"error_type": "AccessDenied"},
+            "runner-news": {"state": "stopped"}, "runner-market": {"state": "stopped"},
+            "runner-background": {"state": "stopped"}}  # fmt: skip
+    assert automation.classify_exit(rows) == ("lanes", {"community"})
+    rows["runner-news"] = {"error_type": "LoginRequired"}
+    assert automation.classify_exit(rows) == ("full", {"community", "news"})
+    every = {f"runner-{x}": {"error_type": "AccessDenied"} for x in automation.LANES}
+    assert automation.classify_exit(every)[0] == "full"
+    assert automation.classify_exit({"runner-news": {"error_type": "TimeoutError"}}) == (
+        "retry",
+        set(),
+    )
+
+
+def test_service_skips_denied_lane_and_keeps_others(tmp_path, monkeypatch):
+    from trader.saveticker.store import atomic_json
+
+    launched = []
+    runs = iter([1, 1])
+
+    class Stop:
+        n = 0
+
+        def is_set(self):
+            return Stop.n >= 2
+
+        def set(self):
+            pass
+
+        def wait(self, delay):
+            pass
+
+    class Child:
+        pid = 1
+
+        def __init__(self, args, **kwargs):
+            launched.append(args)
+            Stop.n += 1
+            if Stop.n == 1:  # 첫 실행: 커뮤니티 작업만 AccessDenied 로 끝남
+                atomic_json(
+                    tmp_path / "runtime/runner-community.json", {"error_type": "AccessDenied"}
+                )
+
+        def wait(self, **kwargs):
+            return next(runs)
+
+        def poll(self):
+            return 1
+
+    monkeypatch.setattr(automation.threading, "Event", Stop)
+    fake = SimpleNamespace(**{k: getattr(subprocess, k) for k in ("DEVNULL", "SubprocessError")})
+    fake.Popen = Child
+    monkeypatch.setattr(automation, "subprocess", fake)
+    monkeypatch.setattr("trader.saveticker.chromium.ensure", lambda stop=None: True)
+    automation.service(tmp_path)
+    assert len(launched) == 2
+    assert "--skip-lanes" not in launched[0]
+    i = launched[1].index("--skip-lanes")
+    assert launched[1][i + 1] == "community"  # 두 번째 실행은 커뮤니티만 빼고 계속
+    state = automation.read(tmp_path / "runtime/service.json") or {}
+    assert state.get("state") != "blocked"
+    blocks = automation.lane_blocks(tmp_path)
+    assert set(blocks) == {"community"} and blocks["community"]["reason"] == "AccessDenied"
+
+
+def test_lane_blocks_expire_and_restart_clears(tmp_path):
+    from trader.saveticker.store import atomic_json
+
+    now = datetime(2026, 10, 29, 1, 0, tzinfo=UTC)
+    atomic_json(tmp_path / "runtime/lane-blocked.json",
+                {"community": {"reason": "AccessDenied", "at": now.isoformat()}})  # fmt: skip
+    assert automation.active_skip_lanes(tmp_path, now=now + timedelta(hours=1)) == ["community"]
+    assert automation.active_skip_lanes(tmp_path, now=now + timedelta(hours=7)) == []
+    blocked = {"state": "blocked", "reason": "authentication", "at": now.isoformat()}
+    atomic_json(tmp_path / "runtime/service.json", blocked)
+    automation.clear_blocks(tmp_path)
+    assert automation.lane_blocks(tmp_path) == {}
+    assert (automation.read(tmp_path / "runtime/service.json") or {}).get("state") != "blocked"
+
+
+def test_status_summary_for_web(tmp_path):
+    from trader.saveticker.store import atomic_json
+
+    at = "2026-10-27T13:44:57+00:00"
+    old = {"state": "blocked", "reason": "authentication_or_stopped", "at": at}
+    atomic_json(tmp_path / "runtime/service.json", old)
+    atomic_json(tmp_path / "runtime/runner-community.json",
+                {"state": "error", "error_type": "AccessDenied", "stage": "collect_community",
+                 "updated_at": "2026-10-27T13:44:42+00:00"})  # fmt: skip
+    atomic_json(tmp_path / "runtime/alert-monitor.json",
+                {"last_success_at": {"news_all": "2026-10-27T13:44:00+00:00",
+                                     "market_gain_live": "2026-10-27T13:44:30+00:00"}})  # fmt: skip
+    s = automation.status(tmp_path)
+    assert s["service"]["state"] == "blocked" and s["blocked"] is True
+    assert s["reason_text"].startswith("인증 실패")
+    assert s["lanes"]["community"]["error_type"] == "AccessDenied"
+    assert s["last_success_at"] == "2026-10-27T13:44:30+00:00"

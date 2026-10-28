@@ -94,7 +94,54 @@ export type FoCheck = {
   status: string | null;
   record_only: string | null;
   error: string | null;
+  // 게이트 판정 상세(FoVerdict) — 주문 단계에는 없다
+  leverage_used?: number | null;
+  exposure_after?: string | null;
+  stress_loss_after?: string | null;
+  lifetime_budget?: { used: string | null; planned: string | null; limit: string | null; free: string | null } | null;
+  cross_factor?: number | null;
+  n_target?: number | null;
+  approved_mult?: number | null;
+  code?: string | null;
 };
+
+export type FoState = "off" | "disabled" | "unverified" | "halted" | "record_only" | "active";
+
+/** 파생 계좌 상태 한 묶음(`/api/fo/summary`·`/api/fo/account`). 금액은 문자열(Decimal). */
+export type FoStatus = {
+  id: string;
+  env: string;
+  mode: string;
+  mode_note: string | null;
+  paused: boolean;
+  state: FoState;
+  enabled: boolean;
+  vehicles: string[];
+  verified: Record<string, boolean>;
+  halted: boolean;
+  pending_entry: boolean;
+  nav_date: string | null;
+  nav: string | null;
+  cash: string | null;
+  margin_total: string | null;
+  add_margin: string | null;
+  margin_pct: number | null;
+  positions: { code: string; kind: string; contract_side: string; direction: string; qty: number; status: string }[];
+  decision: FoDecisionRow | null;
+};
+
+export type FoContext = {
+  source: "inputs" | "settings";
+  index: { price: string | number | null; asof: string | null } | null;
+  regime: { state: string | null; count?: number | null } | null;
+  market_view: { state?: string | null; stance?: string | null; confidence?: number | null } | null;
+  limits: Record<string, unknown> | null;
+  products: Record<string, unknown> | null;
+};
+
+export type FoTrigger = { kind: string; code: string; price: string | null; at: string; handled: boolean; session: string | null };
+export type FoAccountView = { status: FoStatus; context: FoContext; triggers: FoTrigger[] };
+export type FoScorecard = { decisions: number; matured: number; hit_rate: number | null; contract_pnl: string | null };
 
 export type FoToday = {
   date: string;
