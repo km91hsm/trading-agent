@@ -14,7 +14,7 @@ export type SavetickerStatus = {
 
 const LANE: Record<string, string> = { news: "뉴스", community: "커뮤니티", market: "시장", background: "캘린더·리포트" };
 const STATE: Record<string, string> = { collecting: "수집 중", logging_in: "로그인 중", stopped: "멈춤", error: "오류", paused: "쉼", supervising: "감독 중" };
-const REASON: Record<string, string> = { AccessDenied: "접근 거부", LoginRequired: "로그인 필요" };
+const REASON: Record<string, string> = { AccessDenied: "접근 거부", LoginRequired: "로그인 필요", VerificationRequired: "사이트 재확인 필요" };
 
 /** 수집기 배지. */
 export function savetickerBadge(s: SavetickerStatus): { label: string; kind: "ok" | "neutral" | "pending" | "danger" } {

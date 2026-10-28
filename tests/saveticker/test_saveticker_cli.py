@@ -85,3 +85,24 @@ def test_plan_lanes_skips_paused_lanes():
     assert plan_lanes(planned, None) == ["background", "community", "market", "news"]
     assert plan_lanes(planned, "community") == ["background", "market", "news"]
     assert plan_lanes(planned, "community, market") == ["background", "news"]
+
+
+def test_lane_login_is_serialized_with_shared_lock(tmp_path):
+    """네 작업이 동시에 로그인하지 않게 같은 잠금 파일로 한 번에 하나씩."""
+    from trader.platform import filelock
+    from trader.saveticker.cli import serialized_login
+
+    held = []
+
+    class Adapter:
+        def login(self):
+            fh = filelock.try_hold(tmp_path / "login.lock")
+            held.append(fh is None)  # 로그인 중에는 다른 작업이 잠금을 못 잡는다
+            if fh is not None:
+                filelock.release_hold(fh)
+
+    serialized_login(Adapter(), tmp_path)
+    assert held == [True]
+    fh = filelock.try_hold(tmp_path / "login.lock")
+    assert fh is not None  # 끝나면 풀린다
+    filelock.release_hold(fh)

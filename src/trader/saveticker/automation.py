@@ -184,15 +184,16 @@ def monitor(root, *, send=None):
 
 
 LANES = ("background", "community", "market", "news")
-AUTH_ERRORS = ("AccessDenied", "LoginRequired")
+AUTH_ERRORS = ("AccessDenied", "LoginRequired", "VerificationRequired")
 LANE_BLOCK_FILE = "lane-blocked.json"
 LANE_RETRY_S = 6 * 3600  # 접근이 막힌 작업만 쉬고 이 시간 뒤 1회 다시 넣는다
 AUTH_RETRY_S = 6 * 3600  # 인증 실패 전체 정지도 계정 파일 변경 없이 이 간격으로만 다시 시도
 
 
 def classify_exit(runners):
-    """수집 실행이 끝난 이유 → ("full"|"lanes"|"retry", 인증 실패 작업들).
-    LoginRequired(세션 상실)이 하나라도 있거나 모든 작업이 AccessDenied 면 전체 정지("full"),
+    """수집 실행이 끝난 이유 → ("verify"|"full"|"lanes"|"retry", 인증 실패 작업들).
+    사이트 재확인(VerificationRequired)이 하나라도 있으면 "verify"(사람이 마칠 때까지 정지),
+    LoginRequired(세션 상실)이 있거나 모든 작업이 AccessDenied 면 전체 정지("full"),
     일부 작업만 AccessDenied 면 그 작업만 쉰다("lanes"), 인증 실패가 없으면 일반 재시도("retry")."""
     denied: dict[str, str] = {}
     for name, row in runners.items():
@@ -202,6 +203,8 @@ def classify_exit(runners):
     if not denied:
         return "retry", set()
     lanes = set(denied)
+    if "VerificationRequired" in denied.values():
+        return "verify", lanes
     if "LoginRequired" in denied.values() or lanes >= set(LANES):
         return "full", lanes
     return "lanes", lanes
@@ -246,6 +249,10 @@ def clear_blocks(home):
 
 
 _REASON_TEXT = {
+    "verification": (
+        "사이트 재확인 필요 — 브라우저에서 세이브티커에 로그인해 재확인을 마친 뒤 '다시 시작'"
+        "(6시간 뒤 1회 자동 재시도)"
+    ),
     "authentication": "인증 실패로 멈춤 — 6시간마다 다시 시도(계정 확인 필요할 수 있음)",
     "authentication_or_stopped": "인증 실패로 멈춤 — 6시간마다 다시 시도(계정 확인 필요할 수 있음)",
     "restart_limit": "재기동 한도로 멈춤 — 1시간 뒤 다시 시도",
@@ -283,10 +290,7 @@ def status(home):
 
 
 def retry_allowed(runners):
-    return not any(
-        (row or {}).get("error_type") in ("AccessDenied", "LoginRequired")
-        for row in runners.values()
-    )
+    return not any((row or {}).get("error_type") in AUTH_ERRORS for row in runners.values())
 
 
 STOP_GRACE_S = 70  # 데몬 종료 때 서비스(→ 수집 작업 → 브라우저) 정리 유예
@@ -365,7 +369,7 @@ def should_start(home, credentials, *, now):
         at = datetime.fromisoformat(state["at"])
     except (KeyError, TypeError, ValueError):
         at = None
-    if state.get("reason") in ("authentication", "authentication_or_stopped"):
+    if state.get("reason") in ("authentication", "authentication_or_stopped", "verification"):
         changed = at is None or credentials.stat().st_mtime > at.timestamp()
         waited = at is not None and (now - at).total_seconds() >= AUTH_RETRY_S
         if changed or waited:
@@ -441,6 +445,9 @@ def service(root):
                 break
             rows = {n: read(runtime / (n + ".json")) for n in RUNNERS}
             kind, lanes = classify_exit(rows)
+            if kind == "verify":
+                _blocked(runtime, "verification", exit_code=code, lanes=sorted(lanes))
+                return
             if kind == "full":
                 _blocked(runtime, "authentication", exit_code=code, lanes=sorted(lanes))
                 return

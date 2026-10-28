@@ -256,3 +256,31 @@ def test_status_summary_for_web(tmp_path):
     assert s["reason_text"].startswith("인증 실패")
     assert s["lanes"]["community"]["error_type"] == "AccessDenied"
     assert s["last_success_at"] == "2026-10-27T13:44:30+00:00"
+
+
+def test_verification_required_stops_service_with_its_own_reason():
+    """사이트 재확인(VerificationRequired)은 어느 작업에서든 전체 정지 — 사람이 마칠 때까지
+    반복 로그인 금지."""
+    rows = {
+        "runner-news": {"error_type": "VerificationRequired"},
+        "runner-market": {"state": "stopped"},
+    }
+    assert automation.classify_exit(rows) == ("verify", {"news"})
+    assert not automation.retry_allowed(rows)
+
+
+def test_verification_reason_text_and_retry_rule(tmp_path, monkeypatch):
+    import os
+
+    from trader.saveticker.store import atomic_json
+
+    monkeypatch.setattr(automation, "service_elsewhere", lambda: False)
+    now = datetime(2026, 10, 29, 0, 0, tzinfo=UTC)
+    creds = tmp_path / "saveticker.env"
+    creds.write_text("x", encoding="utf-8")
+    os.utime(creds, (now.timestamp() - 60, now.timestamp() - 60))
+    atomic_json(tmp_path / "runtime/service.json",
+                {"state": "blocked", "reason": "verification", "at": now.isoformat()})  # fmt: skip
+    assert automation.status(tmp_path)["reason_text"].startswith("사이트 재확인 필요")
+    assert automation.should_start(tmp_path, creds, now=now + timedelta(hours=1))[0] is False
+    assert automation.should_start(tmp_path, creds, now=now + timedelta(hours=7))[0] is True

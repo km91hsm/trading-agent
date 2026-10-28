@@ -28,4 +28,8 @@ describe("세이브티커 상태(설정 화면)", () => {
       { lane: "community", label: "커뮤니티", state: "쉼", note: "접근 거부 — 6시간 뒤 다시 시도" },
     ]);
   });
+  it("재확인 오류는 '사이트 재확인 필요'", () => {
+    const s = { ...base, lane_blocks: {}, lanes: { news: { state: "error", error_type: "VerificationRequired", stage: "login_profile", updated_at: null } } };
+    expect(laneRows(s)[0]).toEqual({ lane: "news", label: "뉴스", state: "오류", note: "사이트 재확인 필요" });
+  });
 });
