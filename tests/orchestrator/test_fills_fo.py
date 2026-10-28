@@ -39,9 +39,11 @@ def balance() -> FoBalance:
 
 
 def fill(order_no, *, filled, amount, remaining, orgn=None, side="BUY", code="105W11"):
+    """`amount` 는 포인트 합(가격 × 수량); KIS 체결금액(통화)은 승수를 곱한 값이다."""
     return FoFill(
         order_no=order_no, orgn_order_no=orgn, code=code, side=side, remaining_qty=remaining,
-        filled_qty=filled, rejected_qty=0, cancelled_qty=0, filled_amount=Decimal(amount),
+        filled_qty=filled, rejected_qty=0, cancelled_qty=0,
+        filled_amount=Decimal(amount) * MULT,  # 통화 금액(포인트 × 승수)
         avg_price=None, filled_at=T_MID,
     )  # fmt: skip
 

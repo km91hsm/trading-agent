@@ -2,8 +2,13 @@
 `account.asset == "fo"` 면 여기로 위임한다.
 
 - 체결은 **원주문 계보**(`orgn_odno` 또는 `odno`) 단위로 누적값(`filled_qty`·`filled_amount`)을
-  읽고 `fills` 행 1개를 **교체**한다(현물과 같은 방식, 차분 삽입 아님). 증분 평균가는
-  `Δ금액 ÷ Δ수량` 으로만 계산해 포지션 평균가·실현손실·비용에 쓴다.
+  읽고 `fills` 행 1개를 **교체**한다(현물과 같은 방식, 차분 삽입 아님). KIS `filled_amount` 는
+  **통화 금액**(포인트 × 수량 × 승수)이라 먼저 승수로 나눠 포인트 합으로 바꾸고(G2-1), 그 뒤의
+  `fills.price`(파생 행은 **포인트 단가**)·증분 평균가(`Δ포인트 합 ÷ Δ수량`)·실현손실·비용은 전부
+  포인트 기준이다. `orders.amount` 만 통화 금액 그대로.
+- 진입 평균가의 가중 수량은 **경제값이 반영된 수량**(`qty_held` − 수량만 먼저 올라간 다리의 미반영
+  체결)으로 센다(`_accounted_entry_qty`, G2-4) — 복구가 여러 다리를 먼저 확정해도 평균이 틀어지지
+  않는다.
 - 다리 매칭은 `order_no`(계보 원주문) → 같은 계좌·**같은 현지 날짜**(KIS 주문번호는 날마다
   재시작)의 `fo_order_legs.order_no`. 주문번호 없는 `sending|unknown` 다리는 같은 코드·방향·수량
   후보가 **정확히 1건**일 때만 묶는다. 어느 다리에도 붙지 않는 체결은 외부 주문(`orders(asset='fo',
@@ -177,6 +182,7 @@ def _sync_lineage(
     """계보 하나를 반영한다(호출자 트랜잭션 안). 수량 진행은 `record_fill_progress`(이미 반영돼
     있으면 0), 경제값은 `fills` 행 누적 대비 증분으로 — 둘은 독립이라 어느 쪽이 먼저여도 1회."""
     multiplier = cfg.product_cfg().multiplier
+    amount_pt = lin["amount"] / multiplier  # 통화 금액 → 포인트 합(G2-1)
     leg, newly_bound = _leg_for(conn, account.id, order_no, lin, day)
     if leg is None:
         oid, created = _external_order(conn, account.id, order_no, lin, day)
@@ -186,7 +192,7 @@ def _sync_lineage(
             out["external"] += 1
         if _replace_fill(
             conn, order_id=oid, account_id=account.id, filled=lin["filled"],
-            amount=lin["amount"], filled_at=lin["filled_at"],
+            amount=amount_pt, filled_at=lin["filled_at"],
         ):  # fmt: skip
             out["inserted"] += 1
         _order_status(conn, oid, lin["filled"])
@@ -205,19 +211,21 @@ def _sync_lineage(
         store.set_leg(conn, leg.id, order_id=oid)
     prev_qty, prev_amt = _fill_totals(conn, oid)
     d_qty = lin["filled"] - prev_qty
+    accounted = _accounted_entry_qty(conn, leg.position_id) if is_entry(leg.intent) else None
     if lin["filled"] > leg.filled_qty:
         store.record_fill_progress(conn, leg.id, lin["filled"], lin["amount"])
     if d_qty > 0:
         # 증분 평균가 = Δ금액 ÷ Δ수량(누적 평균이 아니라 이번 증분만)
-        d_amt = lin["amount"] - prev_amt
+        d_amt = amount_pt - prev_amt
         if d_amt > 0:
             store.apply_fill_economics(
                 conn, leg.position_id, entry=is_entry(leg.intent), inc_price=d_amt / d_qty,
                 delta=d_qty, multiplier=multiplier, cost_bp=_cost_bp(cfg, lin["code"]),
+                accounted_qty=accounted,
             )  # fmt: skip
     if _replace_fill(
         conn, order_id=oid, account_id=account.id, filled=lin["filled"],
-        amount=lin["amount"], filled_at=lin["filled_at"],
+        amount=amount_pt, filled_at=lin["filled_at"],
     ):  # fmt: skip
         out["inserted" if d_qty > 0 else "updated"] += 1
     _order_status(conn, oid, lin["filled"])
@@ -250,8 +258,25 @@ def _flag_anomaly(
             logger.debug("파생 체결 모순 알림 실패", exc_info=True)
 
 
+def _accounted_entry_qty(conn: sqlite3.Connection, position_id: int) -> int:
+    """평균가에 이미 반영된 진입 수량 = `qty_held` − Σ(진입 다리 `filled_qty` − 그 주문의 `fills`
+    누적 수량). 수량만 먼저 올라간(회수·복구) 체결은 아직 평균가 밖이다(G2-4)."""
+    pos = store.get_position(conn, position_id)
+    if pos is None:
+        return 0
+    rows = conn.execute(
+        "SELECT l.filled_qty AS progressed, "
+        "(SELECT COALESCE(SUM(f.qty), 0) FROM fills f WHERE f.order_id = l.order_id) AS acc "
+        "FROM fo_order_legs l WHERE l.position_id = ? "
+        "AND l.intent IN ('OPEN', 'RESIZE_UP')",
+        (position_id,),
+    ).fetchall()
+    unaccounted = sum(max(int(r["progressed"]) - int(r["acc"]), 0) for r in rows)
+    return max(pos.qty_held - unaccounted, 0)
+
+
 def _fill_totals(conn: sqlite3.Connection, order_id: int) -> tuple[int, Decimal]:
-    """주문의 `fills` 행 누적(수량, 금액 = Σ price × qty, Decimal 합·REAL 캐스트 없음)."""
+    """주문의 `fills` 행 누적(수량, 포인트 합 = Σ price × qty, Decimal 합·REAL 캐스트 없음)."""
     rows = conn.execute("SELECT qty, price FROM fills WHERE order_id = ?", (order_id,)).fetchall()
     qty = sum(int(r["qty"]) for r in rows)
     amt = sum((Decimal(str(r["price"])) * int(r["qty"]) for r in rows), Decimal(0))

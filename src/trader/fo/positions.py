@@ -183,6 +183,9 @@ def recover(
         # 브로커에 없음
         if pos.status == "unknown":
             continue
+        if pos.status == "awaiting_settlement":
+            rep.settling.append(pos.id)  # 정산 확인 전까지 그대로(G2-6)
+            continue
         if pos.qty_held == 0 and not any(is_entry(x.intent) and x.filled_qty > 0 for x in legs):
             # 아직 아무것도 체결되지 않은 진입 — 살아 있는 다리가 있으면 그대로, 없으면 닫는다
             if not legs and store.release_if_empty(conn, pos.id, "복구: 체결 없는 빈 진입"):

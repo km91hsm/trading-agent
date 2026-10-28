@@ -34,7 +34,15 @@ from trader.config import KST, AccountConfig, Settings
 from trader.control import control
 from trader.fo import positions, rules, sizing, store
 from trader.fo.schemas import FoDecisionEnvelope, contract_side_of, kind_of, order_side
-from trader.fo.types import FoPortfolio, FoPositionRow, FoVerdict, GateInput, Leg, is_entry
+from trader.fo.types import (
+    FoPortfolio,
+    FoPositionRow,
+    FoVerdict,
+    GateInput,
+    Leg,
+    is_entry,
+    is_reduce,
+)
 from trader.ledger import repo
 from trader.ledger.db import now_iso
 from trader.notify import messages
@@ -549,8 +557,10 @@ def run_leg(
     *,
     round: int = 0,
     source: str = "decision",
+    _recalled: bool = False,
 ) -> list[dict[str, Any]]:
-    """결정 봉투를 이 계좌에서 실행한다. 반환은 다리별 결과(기록만 한 경우도 1건)."""
+    """결정 봉투를 이 계좌에서 실행한다. 반환은 다리별 결과(기록만 한 경우도 1건). `_recalled` 는
+    미체결 진입 회수 뒤의 재계산 호출(한 번만)."""
     d, cfg, conn = env.decision, ctx.settings.fo, ctx.conn
     now, today = _today(ctx)
     rc_stage = _stage("_fo_risk_check", account.id, round)
@@ -640,6 +650,33 @@ def run_leg(
         "position_id": pos.id if pos else None, "contract": contract.code if contract else None,
     }  # fmt: skip
     _ckpt(ctx, today, rc_stage, rc)
+
+    if v.approved and v.recall_entries and pos is not None:
+        # 목표 < 보유 + 미체결 진입(G2-5): 미체결 진입을 회수(취소 확정)한 뒤 한 번 다시 계산한다
+        if hold is not None:
+            r = {
+                "stage": rc_stage, "approved": True, "legs": [], "note": v.note,
+                "status": "recorded", "record_only": hold, "request_id": env.request_id,
+            }  # fmt: skip
+            _ckpt(ctx, today, od_stage, r)
+            return [r]
+        if _recalled:
+            return [{"stage": rc_stage, "approved": True, "legs": [], "status": "blocked",
+                     "note": v.note + "; 회수 뒤에도 미체결 진입 남음"}]  # fmt: skip
+        rec = recall_entries(ctx, account, pos.id, reason=f"{source}: 목표 축소")
+        if rec.pending:
+            return [{
+                "stage": rc_stage, "status": "blocked",
+                "note": f"미확정 진입 다리 {rec.pending}건", "recall": rec.__dict__,
+            }]  # fmt: skip
+        cur = store.get_position(conn, pos.id)
+        if cur is None or cur.status in ("closed", "settled"):
+            return [{"stage": rc_stage, "status": cur.status if cur else "missing"}]
+        env2 = (
+            env if env.expected_version is None
+            else env.model_copy(update={"expected_version": cur.version})
+        )
+        return run_leg(ctx, account, env2, round=round, source=source, _recalled=True)
 
     if d.intent == "HOLD":
         if pos is not None and hold is None and v.stop_pt is not None and v.stop_pt != pos.stop_pt:
@@ -799,10 +836,17 @@ def recall_entries(
     for leg in legs:
         if leg.status == "prepared":
             with store.tx(conn):
-                store.set_leg(conn, leg.id, status="cancelled")
-                store.release_if_empty(conn, position_id, "회수: 전송 전 진입 다리 취소")
-            rr.cancelled += 1
-            continue
+                ok = store.cancel_prepared(conn, leg.id)  # 아직 prepared 일 때만(G2-2)
+                if ok:
+                    store.release_if_empty(conn, position_id, "회수: 전송 전 진입 다리 취소")
+            if ok:
+                rr.cancelled += 1
+                continue
+            cur_leg = store.get_leg(conn, leg.id)  # 전송기가 선점했다 — 현재 상태로 본다
+            if cur_leg is None or cur_leg.order_no is None:
+                rr.pending += 1
+                continue
+            leg = cur_leg
         if leg.order_no is None:
             rr.pending += 1
             continue
@@ -849,8 +893,23 @@ def _broker_qty(balance: FoBalance, pos: FoPositionRow) -> int | None:
     return None
 
 
+def _resize_target_reached(conn: sqlite3.Connection, cur: FoPositionRow) -> bool:
+    """마지막 축소 다리가 감액(RESIZE_DOWN)이고 보유 ≤ 목표(> 0) 이면 True — 전량 청산 의도의
+    exit_failed 는 해당 없음."""
+    legs = store.legs_of(conn, cur.id)
+    last = next((x for x in reversed(legs) if is_reduce(x.intent)), None)
+    return (
+        last is not None
+        and last.intent == "RESIZE_DOWN"
+        and 0 < cur.qty_target
+        and cur.qty_held <= cur.qty_target
+    )
+
+
 def finalize(ctx: FoExecContext, pos: FoPositionRow) -> dict[str, Any]:
-    """살아 있는 다리가 없을 때 상태를 정리한다: 보유 0 이면 closed, 보유 > 0 이면 held."""
+    """살아 있는 다리가 없을 때 상태를 정리한다: 보유 0 이면 closed, 보유 > 0 이면 held(감액이
+    `exit_failed` 까지 갔다가 목표에 닿은 경우 포함, G2-7). 전량 청산의 `exit_failed`·`closing`
+    잔량은 그대로 두어 재시도가 이어진다."""
     conn = ctx.conn
     cur = store.get_position(conn, pos.id)
     if cur is None:
@@ -861,7 +920,10 @@ def finalize(ctx: FoExecContext, pos: FoPositionRow) -> dict[str, Any]:
     changes: dict[str, Any] = {}
     if cur.qty_held == 0 and cur.status in ("entering", "resizing", "closing", "exit_failed"):
         changes = {"status": "closed", "closed_at": now_iso(), "active_reduce_leg_id": None}
-    elif cur.qty_held > 0 and cur.status in ("entering", "resizing"):
+    elif cur.qty_held > 0 and (
+        cur.status in ("entering", "resizing")
+        or (cur.status == "exit_failed" and _resize_target_reached(conn, cur))
+    ):
         changes = {"status": "held", "active_reduce_leg_id": None}
     if changes:
         with store.tx(conn):
@@ -976,7 +1038,9 @@ def _apply_position_fills(
     ctx: FoExecContext, broker: Any, pos: FoPositionRow, today: date
 ) -> bool:
     """오늘 체결 조회로 이 포지션의 주문번호 있는 다리들의 누적 체결을 다리 진행에 반영한다(경제값은
-    체결 동기화가 `fills` 행 기준으로 따로). 조회 실패면 False. 계보 모순(ValueError)은 경고만."""
+    체결 동기화가 `fills` 행 기준으로 따로). **오늘 전송한 다리만** 본다 — KIS 주문번호는 날마다
+    재시작하므로 옛 다리에 오늘 번호가 붙지 않게(G2-3, `fills._leg_for` 와 같은 날짜 범위). 조회
+    실패면 False. 계보 모순(ValueError)은 경고만."""
     try:
         fills = broker.get_fills(today)
     except Exception as e:  # noqa: BLE001
@@ -986,8 +1050,12 @@ def _apply_position_fills(
     for f in fills:
         key = f.orgn_order_no or f.order_no
         by_no[key] = max(by_no.get(key, 0), f.filled_qty)
+    lo, hi = repo.day_bounds(today, "KR")
     for leg in store.legs_of(ctx.conn, pos.id):
         if leg.order_no is None or leg.order_no not in by_no:
+            continue
+        at = leg.accepted_at or leg.sent_at or leg.created_at
+        if at < lo or at >= hi:
             continue
         filled = by_no[leg.order_no]
         if filled <= leg.filled_qty:
@@ -1004,19 +1072,18 @@ def _resume_reduce(
     ctx: FoExecContext, account: AccountConfig, cur: FoPositionRow, leg: Any
 ) -> dict[str, Any]:
     """활성 축소 다리가 끝났는데(거부·취소·만료) 잔량이 목표보다 많으면 다시 낸다(단계 2 리뷰
-    S2-4·C2-3). 목표에 닿았으면 상태 정리."""
+    S2-4·C2-3). 감액(RESIZE_DOWN)은 `exit_failed` 로 격상된 뒤에도 **목표 수량을 유지한 채**
+    보유 − 목표만 다시 내고(G2-7), 전량 청산 의도는 잔량 전부. 목표에 닿았으면 상태 정리."""
+    intent = leg.intent if leg is not None else "CLOSE"
+    rnd = leg.round if leg is not None else 0
+    if intent == "RESIZE_DOWN":
+        if cur.status in ("resizing", "exit_failed") and cur.qty_held > cur.qty_target:
+            return reduce(ctx, account, cur, intent="RESIZE_DOWN", qty=None,
+                          reason="재시도(다리 종료)", round=rnd)  # fmt: skip
+        return finalize(ctx, cur)
     if cur.qty_held > 0 and cur.status in ("closing", "exit_failed"):
-        intent = leg.intent if leg is not None and leg.intent != "RESIZE_DOWN" else "CLOSE"
         return reduce(ctx, account, cur, intent=intent, qty=None, reason="재시도(다리 종료)",
-                      round=leg.round if leg is not None else 0)  # fmt: skip
-    if (
-        cur.status == "resizing"
-        and leg is not None
-        and leg.intent == "RESIZE_DOWN"
-        and cur.qty_held > cur.qty_target
-    ):
-        return reduce(ctx, account, cur, intent="RESIZE_DOWN", qty=None, reason="재시도(다리 종료)",
-                      round=leg.round)  # fmt: skip
+                      round=rnd)  # fmt: skip
     return finalize(ctx, cur)
 
 

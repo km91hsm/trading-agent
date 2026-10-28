@@ -55,9 +55,9 @@ REDUCE_INTENTS = ("RESIZE_DOWN", "CLOSE", "STOP", "EXPIRY", "SESSION_CLOSE", "RI
 TRANSITIONS: dict[str, set[str]] = {
     "entering": {"held", "closed", "unknown", "resizing", "closing"},
     "held": {"resizing", "closing", "unknown", "awaiting_settlement"},
-    "resizing": {"held", "closing", "closed", "unknown"},
+    "resizing": {"held", "closing", "closed", "unknown", "exit_failed"},
     "closing": {"closed", "exit_failed", "unknown", "awaiting_settlement", "held"},
-    "exit_failed": {"closing", "closed", "unknown"},
+    "exit_failed": {"closing", "closed", "unknown", "held"},  # held 는 감액 목표 도달(G2-7)
     "awaiting_settlement": {"settled", "unknown"},
     "unknown": {"held", "closed"},  # 사람(adopt·close)만
     "settled": set(),
@@ -270,6 +270,8 @@ class FoVerdict:
     kind: str | None = None
     code: str | None = None
     planned_loss_existing: Decimal = Decimal(0)
+    # 목표 < 보유 + 미체결 진입: 다리 없이 미체결 진입을 회수한 뒤 다시 계산하라는 요청(G2-5)
+    recall_entries: bool = False
 
     def as_dict(self) -> dict[str, Any]:
         from dataclasses import asdict

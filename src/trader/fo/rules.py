@@ -354,6 +354,19 @@ def evaluate(gi: GateInput) -> FoVerdict:
         base.approved = not base.reasons
         base.note = "; ".join(notes)
         return base
+    if d.intent == "RESIZE" and pos is not None and sr.n_leg < 0:
+        # 목표 ≥ 보유지만 보유 + 미체결 진입보다 작다: 다리 없이 미체결 진입을 회수한 뒤 실행기가
+        # 다시 계산한다(GitHub 리뷰 G2-5). 감액처럼 진입 전용 사유는 적용하지 않는다
+        live = sr.n_target - held - sr.n_leg
+        base.recall_entries = True
+        notes.append(
+            f"목표 {sr.n_target} < 보유 {held} + 미체결 {live} → 미체결 진입 회수 뒤 재계산"
+        )
+        if entry or sr.reasons:
+            notes.append("진입 조건 무시(회수): " + " | ".join([*entry, *sr.reasons]))
+        base.approved = not base.reasons
+        base.note = "; ".join(notes)
+        return base
     base.reasons.extend(entry)
     base.reasons.extend(sr.reasons)
     if price is not None and _limit_too_far(

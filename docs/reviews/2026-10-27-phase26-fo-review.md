@@ -83,3 +83,17 @@ Claude `/code-review`: 아래 「단계 1 Claude 리뷰」.
 확인함(리뷰어 공통): 예약 핵심 구간(`BEGIN IMMEDIATE` 안 총량 재계산·`active_reduce_leg_id`), sending/unknown 재전송 금지와 조기 closed 방지, 재시도 상한 → exit_failed, `premium_stop` 부호(매도 min·매수 max)·`approved_mult` 단조, 증거금 전제 5종·IV 퍼센트 변환, `orders.asset` 전파(현물 호출부 `asset="stock"` 명시)와 **현물 집계·스냅샷·점검 회귀 없음**, 실현손실 부호(LONG +1/SHORT −1), v26 추가만·fixture 합성·비밀정보 없음.
 
 단계 2 결론: **보완 뒤 진행** — Codex P0 11·P1 2·P2 1 + Claude 10(중복 3) 전부 반영. `uv run ruff check`·`uv run pytest` 통과 뒤 PR(`--base feat/phase26-1-fo-broker`).
+
+### GitHub Codex PR 리뷰 (G2-1~7, PR #60 head `1bd0172`)
+
+| # | 심각도 | 위치 | 문제 | 조치 |
+|---|---|---|---|---|
+| G2-1 | P1 | `fo/fills._sync_lineage` | KIS `filled_amount` 는 통화 금액(1계약 350pt = 17,500,000원)인데 `Δ금액 ÷ Δ수량` 을 포인트 단가로 저장 → 평균가 1,750만·비용에 승수 이중 곱 → 수명 예산 붕괴 | 계보 금액을 승수로 나눠 포인트 합으로 바꾼 뒤 `fills.price`(포인트)·증분 평균가·비용·실현손실 전부 포인트 기준(`orders.amount` 만 통화). 테스트 fixture 도 통화 금액으로. `test_fill_amount_currency_converted_to_points` |
+| G2-2 | P1 | `executor.recall_entries` | 낡은 `prepared` 스냅샷을 무조건 cancelled 로 덮어 전송기가 `claim_leg` 로 선점한 다리를 취소 처리(빈 포지션 닫힘)하면서 주문은 나감 | `store.cancel_prepared`(`WHERE status='prepared'` 조건부 UPDATE) 가 rowcount 1 일 때만 취소·해제, 아니면 현재 행을 다시 읽어 주문번호 없으면 pending. `test_recall_skips_prepared_leg_claimed_by_transmitter` |
+| G2-3 | P2 | `executor._apply_position_fills` | 주문번호만으로 전 다리를 매칭해 어제 다리에 오늘의 같은 번호 체결이 붙음(유령 계약 → unknown) | `repo.day_bounds(today, "KR")` 의 접수·전송·생성 시각 안 다리만(체결 동기화 `_leg_for` 와 같은 범위). `test_apply_position_fills_only_today_legs` |
+| G2-4 | P2 | `store.apply_fill_economics` | 복구가 여러 다리 수량을 먼저 올리면 `qty_held − delta` 가중이 미반영 체결까지 옛 평균으로 셈(350.6875 ≠ 350.75) | `accounted_qty` 인자(기본 None 은 기존식) — `fills._accounted_entry_qty` = `qty_held` − Σ(진입 다리 `filled_qty` − 그 주문 `fills` 누적). `test_entry_average_weights_only_accounted_fills` |
+| G2-5 | P1 | `rules.evaluate` RESIZE 분기 | 목표 ≥ 보유 ∧ < 보유 + 미체결(`n_leg < 0`)을 "같음" 으로 보고 승인·다리 없음 → 미체결 3이 다 체결되면 목표 2 대비 4 | `FoVerdict.recall_entries`: 다리 없이 회수 요청(진입 전용 사유 무시, note "미체결 진입 회수 뒤 재계산"); `run_leg` 가 `recall_entries` 뒤 `expected_version` 갱신 봉투로 한 번 재계산(`_recalled`), 미확정이면 blocked. `test_resize_below_pending_requests_recall`·`test_resize_recalls_excess_pending_then_resizes` |
+| G2-6 | P2 | `positions.recover` ② | `awaiting_settlement` 포지션이 같은 잔고로 두 번째 복구에서 `can_transition` 실패 → unknown 격상 | 브로커에 없음 분기 첫머리에서 정산 대기는 `settling` 으로 보고 그대로. `test_recover_keeps_awaiting_settlement_on_repeat` |
+| G2-7 | P1 | `executor.reduce`·`types.TRANSITIONS` | RESIZE_DOWN 재시도 소진 때 `resizing → exit_failed` 가 표에 없어 ValueError, 알림·다음 축소 없음 | 표에 `resizing → exit_failed`·`exit_failed → held`(감액 목표 도달만, `_resize_target_reached`) 추가; `_resume_reduce` 는 감액이면 exit_failed 뒤에도 목표 유지 채 보유 − 목표, 전량 의도는 잔량 전부. `test_resize_down_retry_exhaustion_escalates_to_exit_failed` |
+
+GitHub 7건 전부 반영(`tests/fo/test_review_s2_github.py`), 스레드 답글·해결 처리.

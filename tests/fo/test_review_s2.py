@@ -45,7 +45,8 @@ MULT = 50000
 def _fill(order_no, *, side, filled, amount, cancelled=0):
     return FoFill(
         order_no=order_no, orgn_order_no=None, code="105W11", side=side, remaining_qty=0,
-        filled_qty=filled, rejected_qty=0, cancelled_qty=cancelled, filled_amount=Decimal(amount),
+        filled_qty=filled, rejected_qty=0, cancelled_qty=cancelled,
+        filled_amount=Decimal(amount) * MULT,  # 통화 금액(포인트 × 승수)
         avg_price=None, filled_at=T0,
     )  # fmt: skip
 
