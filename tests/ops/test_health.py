@@ -120,3 +120,37 @@ def test_reconcile_due_follows_cron_timezone(conn, project):
         "US", date(2026, 10, 27), [job], datetime(2026, 10, 27, 15, tzinfo=UTC)
     )
     assert (due.month, due.day, due.hour, due.minute) == (10, 27, 17, 40)
+
+
+def test_loss_area_shows_flow_suspicion(conn):
+    """2-O16: 입출금 의심은 운영 점검 loss 영역 warning — 기준 재설정 명령과 전역 효과를 안내."""
+    from datetime import UTC, datetime
+
+    from trader.control import control
+    from trader.ops import health
+
+    now = datetime(2026, 10, 27, 3, 0, tzinfo=UTC)
+    control.set_flag(
+        conn,
+        "killswitch_flow:paper-main:KR",
+        {"date": "2026-10-27", "residual": "-2500", "prev_nav": "10500", "nav": "8000"},
+    )
+    items = health._loss(conn, Settings(), [make_account("paper-main", "paper", "auto")], now)
+    flow = [i for i in items if i.key == "loss.flow.paper-main.KR"]
+    assert flow and flow[0].level == "warning"
+    assert "killswitch off" in flow[0].text and "모든 계좌" in flow[0].text
+
+
+def test_orders_area_shows_disabled_rate_limiter(conn, monkeypatch):
+    """2-P8: 교차 프로세스 레이트리미터가 꺼져 있으면 orders 영역 warning(EGW00201 재발 위험)."""
+    from trader.broker import rate_store
+
+    monkeypatch.setattr(
+        rate_store,
+        "disabled_status",
+        lambda: [{"env": "real", "path": "/x/kis_rate.db", "since": "t", "error": "boom"}],
+    )
+    now = datetime(2026, 10, 27, 3, 0, tzinfo=UTC)
+    items = health._orders(conn, Settings(), [make_account("paper-main", "paper", "auto")], now)
+    hit = [i for i in items if i.key == "orders.rate_limiter"]
+    assert hit and hit[0].level == "warning" and "real" in hit[0].text

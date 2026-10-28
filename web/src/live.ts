@@ -15,6 +15,7 @@ export type QuotesResp = {
   quotes: Record<string, LiveQuote>;
   stream?: boolean; // 서버 실시간 허브(웹소켓)가 붙어 있다
   degraded?: boolean; // 시세 요청이 실패했거나 TTL 이 지나 모든 시세를 stale 로 내렸다(2-W1)
+  hub_yield?: "fills_listener" | "appkey_in_use" | null; // 실시간 허브가 붙지 않는 이유(2-P13)
 };
 export const QUOTE_TTL_MS = 30_000; // 이 안에 새 응답이 없으면 이전 시세를 '실시간' 으로 두지 않는다
 
@@ -98,5 +99,13 @@ export function liveLabel(resp: QuotesResp | null, liveCount: number): string {
     return at ? `시세 지연 · 마지막 ${at} 기준` : "시세 지연 · 마지막 응답 기준";
   }
   if (!liveCount) return "실시간 대기";
-  return resp.stream ? `실시간 ${liveCount}종목 · 체결 즉시` : `실시간 ${liveCount}종목 · 10초마다`;
+  if (resp.stream) return `실시간 ${liveCount}종목 · 체결 즉시`;
+  const why = resp.hub_yield ? YIELD_LABEL[resp.hub_yield] : "";
+  return `실시간 ${liveCount}종목 · 10초마다${why ? ` (${why})` : ""}`;
 }
+
+// 2-P13: 웹소켓이 붙지 않는 이유 — 실전 체결통보와 시세가 같은 앱키면 실전 전용 앱키를 발급한다
+const YIELD_LABEL: Record<string, string> = {
+  fills_listener: "실전 체결통보가 앱키 사용 중",
+  appkey_in_use: "다른 연결이 앱키 사용 중",
+};

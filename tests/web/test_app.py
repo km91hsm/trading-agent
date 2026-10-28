@@ -460,3 +460,41 @@ def test_portfolio_position_drift(client, conn):
     assert by["005930"]["drift_pp"] == pytest.approx(10.0)
     assert by["000660"]["drift_pp"] is None
     assert r["rebalance_band_pct"] == 0.05
+
+
+def _req(headers: dict):
+    from starlette.requests import Request
+
+    return Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/x",
+            "headers": [(k.lower().encode(), v.encode()) for k, v in headers.items()],
+        }
+    )
+
+
+def test_require_same_origin_checks_origin_and_referer_without_fetch_metadata():
+    """2-W9: Sec-Fetch-Site 가 없으면 Origin → Referer 로 같은 출처를 본다. 둘 다 없으면 비브라우저
+    호출(테스트·CLI)이라 통과."""
+    import pytest
+    from fastapi import HTTPException
+
+    from trader.web.routers._common import require_same_origin
+
+    host = {"host": "127.0.0.1:8787"}
+    require_same_origin(_req(host))  # 헤더 없음 — 통과
+    require_same_origin(_req({**host, "origin": "http://127.0.0.1:8787"}))
+    require_same_origin(_req({**host, "referer": "http://127.0.0.1:8787/orders"}))
+    require_same_origin(_req({**host, "sec-fetch-site": "same-origin", "origin": "http://x.test"}))
+    for bad in (
+        {"origin": "http://evil.test"},
+        {"origin": "null"},
+        {"origin": "http://127.0.0.1:9999"},
+        {"referer": "http://evil.test/page"},
+        {"sec-fetch-site": "cross-site"},
+    ):
+        with pytest.raises(HTTPException) as e:
+            require_same_origin(_req({**host, **bad}))
+        assert e.value.status_code == 403, bad

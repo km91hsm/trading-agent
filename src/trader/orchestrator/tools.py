@@ -645,6 +645,44 @@ def _shrink(obj: dict, limit: int, *, drop_evidence: bool = False) -> dict:
     return cut
 
 
+EVIDENCE_ROLES = ("technical", "fundamental", "news_macro", "sentiment")
+EVIDENCE_DEFINITION = (
+    "리포트가 낸 근거 항목 수(evidence)·고유 출처 수(source_id)·data_gaps·counter_evidence·"
+    "key_risks 개수와 신호 방향. 파이썬이 센 개수일 뿐 검증된 근거 수가 아니다 — 중복·상충 "
+    "근거도 그대로 센다"
+)
+
+
+def evidence_stats(reports: list[dict]) -> dict:
+    """트레이더 묶음이 evidence 를 떼기 전에 원본 리포트에서 센 숫자(10-26 검토 L10). 프롬프트의
+    '검증 가능한 근거 수' 판단은 이 숫자와 리포트 본문(bullets·summary)을 함께 본다."""
+    from trader.orchestrator.summary import signal_direction
+
+    roles: dict[str, dict] = {}
+    for r in reports:
+        ev = r.get("evidence") or []
+        roles[str(r.get("role"))] = {
+            "evidence": len(ev),
+            "sources": len({e.get("source_id") for e in ev if isinstance(e, dict)}),
+            "data_gaps": len(r.get("data_gaps") or []),
+            "counter_evidence": len(r.get("counter_evidence") or []),
+            "key_risks": len(r.get("key_risks") or []),
+            "direction": signal_direction(r.get("signal")),
+        }
+    directions: dict[str, int] = {}
+    for v in roles.values():
+        directions[v["direction"]] = directions.get(v["direction"], 0) + 1
+    top = max((n for k, n in directions.items() if k != "NEUTRAL"), default=0)
+    return {
+        "definition": EVIDENCE_DEFINITION,
+        "roles": roles,
+        "missing_roles": [x for x in EVIDENCE_ROLES if x not in roles],
+        "directions": directions,
+        # 방향 일치도 = 가장 많은 방향(중립 제외)의 역할 수 ÷ 받은 리포트 수
+        "agreement": round(top / len(roles), 4) if roles else 0.0,
+    }
+
+
 def _latest_decision_stage(d: Path) -> str | None:
     """오늘의 최신 결정 단계 (31_decision_r<n> 중 n 최대, 없으면 30_decision, 둘 다 없으면 None)."""
     stages = list_checkpoints(d)
@@ -737,6 +775,7 @@ def checkpoint_bundle(
                 calibration=(read_checkpoint(d, "35_calibration") or {}).get("data"),
             ),
         }
+        data["context"]["evidence_stats"] = evidence_stats(reports)  # evidence 를 떼기 전에 센다
         return {"ok": True, "data": _shrink(data, BUNDLE_LIMIT_BYTES, drop_evidence=True)}
     return {"ok": False, "error": f"알 수 없는 kind: {kind} (researcher|trader)"}
 

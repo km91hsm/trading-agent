@@ -1468,3 +1468,24 @@ def test_fake_session_submit_does_not_record_portfolio(ctx, project, monkeypatch
     r = tools.submit_decision(ctx, ticker="005930", market="KR", date=D, payload=ok_decision())
     assert r["ok"] and r["executions"][0]["approved"]
     assert ctx.conn.execute("SELECT COUNT(*) AS n FROM positions_snapshot").fetchone()["n"] == 0
+
+
+def test_trader_bundle_counts_evidence_before_dropping_it(ctx, project):
+    """L10: 트레이더 묶음은 evidence 를 떼지만, 떼기 전 원본에서 역할별 근거 항목 수·출처 수·
+    data_gaps 수·방향과 방향 일치도를 파이썬이 센다(검증된 근거 수가 아님을 정의에 명시)."""
+    _realistic_reports_and_turns(ctx, project)
+    b = tools.checkpoint_bundle(ctx, ticker="005930", market="KR", date=D, kind="trader")["data"]
+    st = b["context"]["evidence_stats"]
+    assert "검증" in st["definition"]
+    tech = st["roles"]["technical"]
+    assert tech == {
+        "evidence": 5,
+        "sources": 1,
+        "data_gaps": 2,
+        "counter_evidence": 2,
+        "key_risks": 3,
+        "direction": "BULLISH",
+    }
+    assert st["missing_roles"] == [] and st["directions"] == {"BULLISH": 4}
+    assert st["agreement"] == 1.0
+    assert "evidence" not in b["reports"][0]

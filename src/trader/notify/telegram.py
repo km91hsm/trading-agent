@@ -276,7 +276,8 @@ class TelegramReceiver:
             if self._allowed:
                 trusted = sender in self._allowed
             else:
-                trusted = chat_obj.get("type", "private") == "private"
+                # 종류가 빠진 응답은 1:1 로 간주하지 않는다(Codex 보완 — 보수적 기본값)
+                trusted = chat_obj.get("type") == "private"
             out.append(
                 Update(update_id=uid, text=text, chat_id=chat, sender_id=sender, trusted=trusted)
             )

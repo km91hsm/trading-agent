@@ -448,16 +448,36 @@ def _build_dart(secrets: config.Secrets):
     return DartClient(secrets.DART_API_KEY, cache) if secrets.DART_API_KEY else None
 
 
+EDGAR_PLACEHOLDER = "@example.com"  # templates/config/sources.yaml 의 자리표시자
+_edgar_warned = False
+
+
 def _build_edgar(cfg: config.SourcesConfig | None = None):
     """EDGAR 클라이언트 (수집·US 비율 피처 공용).
 
-    `sources.yaml` edgar.enabled 가 꺼져 있으면 None."""
+    `sources.yaml` edgar.enabled 가 꺼져 있으면 None. User-Agent 는 Secrets `EDGAR_USER_AGENT` 가
+    yaml 보다 우선이고(2-W13 — 공개 저장소에 개인 이메일을 두지 않는다), 자리표시자만 있으면 SEC 에
+    보내지 않고 None(경고 1회) — SEC 는 연락처 없는 User-Agent 를 막는다."""
+    global _edgar_warned
     from trader.sources.edgar import EdgarClient
 
     cfg = cfg if cfg is not None else config.load_sources()
     if not cfg.edgar.enabled:
         return None
-    return EdgarClient(cfg.edgar.user_agent, paths.state_dir() / "cache")
+    try:
+        secret = config.load_secrets().EDGAR_USER_AGENT
+    except config.ConfigError:
+        secret = None
+    ua = (secret or cfg.edgar.user_agent or "").strip()
+    if not ua or EDGAR_PLACEHOLDER in ua:
+        if not _edgar_warned:
+            _edgar_warned = True
+            logging.getLogger("trader.sources").warning(
+                "EDGAR User-Agent 미설정 — EDGAR 수집을 끕니다 "
+                "(설정 화면 '연결 키' 또는 secrets/.env 의 EDGAR_USER_AGENT)"
+            )
+        return None
+    return EdgarClient(ua, paths.state_dir() / "cache")
 
 
 def _run_features(action: str, market: str | None, **kwargs) -> None:
@@ -2752,6 +2772,63 @@ def regime_backtest(
         "bear_spans": spans,
         "transitions": len(spans),
     }
+    typer.echo(json.dumps(out, ensure_ascii=False, default=str))
+
+
+screen_app = typer.Typer(
+    help="정량 스크린 과거 검증(10-26 검토 L15): 피처 스토어만 읽는 리포트", no_args_is_help=True
+)
+app.add_typer(screen_app, name="screen")
+
+
+@screen_app.command("backtest")
+@_config_errors
+def screen_backtest(
+    market: str = typer.Option("KR", "--market", help="KR|US"),
+    days: int = typer.Option(1100, "--days", min=30, help="최근 N일 피처 파일"),
+    top: int = typer.Option(5, "--top", min=1, max=30, help="바구니 종목 수"),
+    horizon: int = typer.Option(5, "--horizon", min=1, max=60, help="보유 거래일"),
+) -> None:
+    """`roc_10` 상위 N·실제 scan 점수 상위 N·필터 통과 1/N 을 다음 거래일 진입, horizon 거래일
+    보유, 같은 왕복비용으로 비교한다(겹치지 않는 창). 읽기 전용 — 설정·주문 불변."""
+    import json
+    from datetime import timedelta
+
+    from trader.ledger import db
+    from trader.ml import dataset, universe_pit
+    from trader.risk import costs
+    from trader.scan import backtest
+
+    if market not in ("KR", "US"):
+        raise config.ConfigError(f"시장은 KR 또는 US: {market}")
+    state = paths.state_dir()
+    since = date.today() - timedelta(days=days)
+    df = dataset.load_all(
+        state,
+        market=market,
+        since=since,
+        columns=["close", "volume", "roc_10", "high_52w_pos", "atr_14"],
+    )
+    conn = db.connect()
+    try:
+        db.init_schema(conn)
+        # 시점 유니버스는 신호일 선택에만 — 가격표는 걸러지지 않은 df(PR #62 Codex)
+        eligible, pit = universe_pit.apply(df, conn, config.load_ml().train.pit)
+    finally:
+        conn.close()
+    out = backtest.run(
+        df,
+        market=market,
+        top_n=top,
+        horizon=horizon,
+        cost_bp=costs.round_trip_bp(market),
+        select=eligible,
+    )
+    out["pit"] = pit
+    out["note"] = (
+        "survivorship: 피처 스토어는 오늘 유니버스로 백필 — pit.recorded_since 이전 구간은 "
+        "생존 편향이 남는다(편출·상장폐지 종목 없음)"
+    )
     typer.echo(json.dumps(out, ensure_ascii=False, default=str))
 
 
