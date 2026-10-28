@@ -17,6 +17,7 @@ import { parseWatch } from "../tape";
 import type { Theme } from "../theme";
 import { Ticker } from "../components/Ticker";
 import { SecretsPanel } from "../components/SecretsPanel";
+import { AccountsPanel } from "../components/AccountsPanel";
 
 const THEMES: Array<[Theme, string]> = [
   ["light", "라이트"],
@@ -233,6 +234,7 @@ export function SettingsPage() {
           </Section>
         </div>
       </div>
+      <AccountsPanel token={token} accounts={accounts} />
       <SecretsPanel token={token} />
       <Section title="STATUS.md" aside="`trader status` 가 만든 요약">
         <pre className="status">{status.data?.markdown || "(없음)"}</pre>

@@ -12,6 +12,8 @@ from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict
 
+from trader import accounts_io
+from trader.accounts_io import AccountSpec
 from trader.config import ConfigError
 from trader.control import control
 from trader.web.auth import require_direct_local, require_token
@@ -248,6 +250,50 @@ def secrets_update(request: Request, body: SecretsBody) -> dict:
         "연결 키 변경(웹): 설정 %s · 지움 %s", r["updated"], r["cleared"]
     )
     return {**r, "restart_required": bool(r["updated"] or r["cleared"])}
+
+
+# --- 계좌 추가·삭제(config/accounts.yaml) ------------------------------------------
+# 연결 키와 같은 규칙(토큰 + 이 PC 직접 접속). 계좌 목록은 시작할 때 읽으므로 재시작 뒤에 적용된다.
+# 계좌번호는 받지 않는다(자리표시자 — 실제 번호는 연결 키의 KIS_<ID>_CANO)
+
+
+class AccountRemoveBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    account_id: str
+
+
+def _accounts_path():
+    from trader.platform import paths
+
+    return paths.config_dir() / "accounts.yaml"
+
+
+@router.post("/accounts", dependencies=[Depends(require_direct_local)])
+def account_add(request: Request, spec: AccountSpec) -> dict:
+    import logging
+
+    try:
+        r = accounts_io.add_account(_accounts_path(), spec)
+    except ConfigError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    logging.getLogger("trader.web").info("계좌 추가(웹): %s (%s·%s)", spec.id, spec.env, spec.asset)
+    return {**r, "restart_required": True}
+
+
+@router.post("/accounts/remove", dependencies=[Depends(require_direct_local)])
+def account_remove(request: Request, body: AccountRemoveBody) -> dict:
+    import logging
+
+    try:
+        with closing(deps_of(request).conn_factory()) as conn:
+            r = accounts_io.remove_account(_accounts_path(), body.account_id, conn)
+    except accounts_io.AccountInUse as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+    except ConfigError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    logging.getLogger("trader.web").info("계좌 삭제(웹): %s", body.account_id)
+    return {**r, "restart_required": True}
 
 
 @public_router.get("/bootstrap-token")

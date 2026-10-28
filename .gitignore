@@ -34,3 +34,7 @@ web/node_modules/
 .impeccable/review/
 .impeccable/build/
 .impeccable/config.local.json
+
+# 설정 화면 계좌 추가·삭제가 남기는 백업·잠금
+config/*.bak-*
+config/*.lock
