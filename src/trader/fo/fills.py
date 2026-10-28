@@ -205,7 +205,7 @@ def _sync_lineage(
             conn, decision_id=None, account_id=account.id, ticker=lin["code"], market="KR",
             side=lin["side"], qty=leg.qty, order_type=leg.order_type, price=leg.price,
             status="accepted", order_no=order_no, message="체결 동기화로 확정한 다리",
-            mode="recovered", asset="fo", commit=False,
+            mode="recovered", asset="fo", origin="fo", commit=False,
             amount=Decimal(leg.qty) * (leg.price or Decimal(0)) * multiplier,
         )  # fmt: skip
         store.set_leg(conn, leg.id, order_id=oid)
@@ -307,7 +307,8 @@ def _external_order(
         conn, decision_id=None, account_id=account_id, ticker=lin["code"], market="KR",
         side=lin["side"], qty=lin["total"], order_type="LIMIT", price=None, status="accepted",
         order_no=order_no, message="원장 밖에서 낸 파생 주문(체결 동기화로 생성)", mode="external",
-        created_at=lin["filled_at"].isoformat(), amount=lin["amount"], asset="fo", commit=False,
+        created_at=lin["filled_at"].isoformat(), amount=lin["amount"], asset="fo",
+        origin="external", commit=False,
     )  # fmt: skip
     return oid, True
 

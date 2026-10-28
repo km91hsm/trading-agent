@@ -14,7 +14,7 @@ export type UsageWindow = { sessions: number; cost_usd: number; avg_duration_s: 
 export type UsageResp = {
   rate_limits: RateLimits;
   throttle?: Throttle;
-  usage_file: string | null;
+  usage_file_present: boolean;
   windows: { h5: UsageWindow; d7: UsageWindow; today: { sessions: number; cap: number } };
   note: string;
 };

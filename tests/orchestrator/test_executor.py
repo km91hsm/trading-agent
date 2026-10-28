@@ -436,6 +436,40 @@ def test_executor_updates_circuit_breaker_from_nav(ectx):
     assert repo.nav_history(ectx.conn, "paper-main", "KR", days=30)[-1][1] == Decimal("8900000")
 
 
+def test_build_portfolio_records_us_exchange_from_balance(ectx):
+    """전체 검토 2차 2-L1: 잔고 응답의 US 거래소(ovrs_excg_cd)를 원장 `ticker_exchanges` 에 남긴다 —
+    유니버스 밖 보유·미만기 종목의 일일 스냅샷이 거래소를 알 수 있게. KR 은 적지 않는다."""
+    from trader.broker.models import Position
+
+    acct = ectx.accounts[0]
+    broker = ectx.brokers[acct.id]
+    broker.positions = [
+        Position(
+            ticker="RIVN",
+            market="US",
+            qty=3,
+            avg_price=Decimal("10"),
+            current_price=Decimal("11"),
+            eval_amount=Decimal("33"),
+            pnl_pct=0.1,
+            exchange="NAS",
+        ),
+        Position(
+            ticker="005930",
+            market="KR",
+            qty=1,
+            avg_price=Decimal("70000"),
+            current_price=Decimal("71500"),
+            eval_amount=Decimal("71500"),
+            pnl_pct=0.02,
+        ),
+    ]
+    executor.build_portfolio(ectx.conn, broker, acct, "US", D)
+    executor.build_portfolio(ectx.conn, broker, acct, "KR", D)
+    assert repo.ticker_exchanges(ectx.conn, "US") == {"RIVN": "NAS"}
+    assert repo.ticker_exchanges(ectx.conn, "KR") == {}
+
+
 def test_build_portfolio_breaker_uses_settings_and_market(ectx):
     from trader.config import MemorySettings
     from trader.memory import store
@@ -542,6 +576,70 @@ def test_apply_mode_rejected_by_gate_not_marked_applied(ectx):
     assert by["paper-main"]["approved"] is False
     rows = _shadow_rows(ectx, "paper-main")
     assert len(rows) == 1 and rows[0]["applied"] == 0
+
+
+def test_orders_record_origin_per_execution_kind(ectx):
+    """전체 검토 2차 2-O3·2-O8: 주문 행에 실행 종류(origin)를 남긴다 — llm(결정)·stop(손절)·
+    reprice(재호가)·approve 경로도 원래 origin 유지. 주 2회·실현손익·재호가 후보가 이것으로
+    가른다."""
+    from trader.broker.models import Position
+
+    _run(ectx)  # 50_order → llm
+    pos = Position(
+        ticker="005930",
+        market="KR",
+        qty=10,
+        avg_price=Decimal("70000"),
+        current_price=Decimal("71500"),
+        eval_amount=Decimal("715000"),
+        pnl_pct=0.02,
+    )
+    ectx.brokers["paper-main"].positions = [pos]
+    dec_id = repo.decision_id(ectx.conn, D, "KR", "005930")
+    sl = Decision(**ok_decision(action="SELL", target_weight=0.0, order_type="MARKET"))
+    executor.execute(
+        ectx,
+        sl,
+        date=D,
+        market="KR",
+        price=PRICE,
+        dry_run=False,
+        is_stop_loss=True,
+        decision_id=dec_id,
+    )
+    # 재호가는 원 지정가를 취소한 뒤 재제출한다(reprice.py) — 취소 전이면 체결 전 BUY 가 같은 종목
+    # 비중에 들어가(2-O4) 거부된다
+    ectx.conn.execute(
+        "UPDATE orders SET status='cancelled' WHERE account_id='paper-main' AND side='BUY'"
+    )
+    ectx.conn.commit()
+    rp = Decision(**ok_decision(limit_price=70500.0))
+    res = executor.execute(
+        ectx,
+        rp,
+        date=D + timedelta(days=1),
+        market="KR",
+        price=PRICE,
+        dry_run=False,
+        decision_id=dec_id,
+        is_reprice=True,
+        skip_accounts=frozenset({"real-main"}),
+    )
+    assert res[0]["approved"], res[0]["reasons"]
+    rows = ectx.conn.execute(
+        "SELECT origin FROM orders WHERE account_id='paper-main' ORDER BY id"
+    ).fetchall()
+    assert [r["origin"] for r in rows] == ["llm", "stop", "reprice"]
+    # approve 계좌: 요청 → 승인 실행이 origin 을 이어 받는다
+    control.set_account_mode(ectx.conn, ectx.accounts[0], "approve")
+    ectx.brokers["paper-main"].positions = []
+    r = _run(ectx, ok_decision(ticker="000660"))
+    aid = next(x for x in r if x["account_id"] == "paper-main")["approval_id"]
+    assert executor.approve(ectx, aid)["ok"]
+    row = ectx.conn.execute(
+        "SELECT origin FROM orders WHERE ticker='000660' AND account_id='paper-main'"
+    ).fetchone()
+    assert row["origin"] == "llm"
 
 
 def test_stop_loss_not_blocked_by_pending_sell_approval(ectx):
@@ -1005,7 +1103,12 @@ def test_closed_approval_key_is_reclaimed(ectx):
 def test_pending_approval_key_blocks_other_process(ectx):
     """다른 프로세스가 잡은 살아 있는 승인 키가 있으면 승인 요청을 또 만들지 않는다."""
     aid = _pending(ectx)
-    ectx.conn.execute("UPDATE approvals SET decision_id=0 WHERE id=?", (aid,))  # 중복 확인 우회
+    # 중복 확인·같은 종목 체결 전 비중(2-O4) 우회 — 실행 키만 남긴다
+    ectx.conn.execute(
+        "UPDATE approvals SET decision_id=0, "
+        "order_json=json_set(order_json, '$.ticker', '000660') WHERE id=?",
+        (aid,),
+    )
     ectx.conn.commit()
     r = next(x for x in _run(ectx) if x["account_id"] == "paper-main")
     assert r["approval_id"] is None and any("실행 키" in s for s in r["reasons"])
@@ -1146,3 +1249,18 @@ def test_killswitch_sweep_keeps_hedge_orders(ectx):
         ectx.conn, b, "paper-main", "KR", D, keep=frozenset({"005930"})
     )
     assert (n, left) == (0, []) and b.cancelled == []
+
+
+def test_record_portfolio_false_skips_snapshot_and_killswitch(ectx):
+    """전체 검토 2차 2-O7: FAKE 세션(가짜 브로커 잔고)은 판정만 하고 positions_snapshot·킬스위치
+    기준 NAV 를 건드리지 않는다 — 가짜 NAV 가 성과·킬스위치 기준선을 오염시키지 않게."""
+    ectx.record_portfolio = False
+    r = _run(ectx)
+    assert next(x for x in r if x["account_id"] == "paper-main")["approved"]
+    n = ectx.conn.execute("SELECT COUNT(*) AS n FROM positions_snapshot").fetchone()["n"]
+    ks = ectx.conn.execute("SELECT COUNT(*) AS n FROM control WHERE key LIKE 'killswitch%'")
+    assert n == 0 and ks.fetchone()["n"] == 0
+    ectx.record_portfolio = True
+    _run(ectx)
+    n = ectx.conn.execute("SELECT COUNT(*) AS n FROM positions_snapshot").fetchone()["n"]
+    assert n > 0

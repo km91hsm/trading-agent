@@ -63,7 +63,7 @@ def test_auto_gate_fo_kinds_use_fo_clock(conn):
 
 
 def test_queue_fo_reevaluate_fast_lane_priority(conn):
-    assert "fo_reevaluate" in jobq.FAST_KINDS and "fo_session" in jobq.SLOW_KINDS
+    assert "fo_reevaluate" in jobq.REEVAL_KINDS and "fo_session" in jobq.SLOW_KINDS
     assert "fo_close" in jobq.FAST_KINDS
     params = {"account_id": ACCT, "position_id": 1, "expected_version": 0, "request_id": "abc",
               "round": 1, "trigger_id": 1, "date": "2026-10-27"}  # fmt: skip

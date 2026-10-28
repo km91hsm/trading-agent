@@ -22,6 +22,18 @@ from trader.broker.kis_client import RateLimitBusy, RateLimiter
 logger = logging.getLogger("trader.kis")
 
 DB_TIMEOUT_S = 5.0
+RETRY_S = 300.0  # 파일을 못 열어 프로세스 안 리미터로 내려간 뒤 다시 열어 볼 간격(2-P8)
+
+# 교차 프로세스 제한이 꺼진 리미터(경로|env → 상태). 같은 프로세스의 운영 점검이 읽는다(2-P8) —
+# 꺼지면 데몬과 `trader tool` 이 같은 1초 창을 나누지 못해 EGW00201 이 다시 날 수 있다.
+_DISABLED: dict[str, dict] = {}
+_DISABLED_LOCK = threading.Lock()
+
+
+def disabled_status() -> list[dict]:
+    """이 프로세스에서 교차 프로세스 제한이 꺼진 리미터 목록 [{env, path, since, error}]."""
+    with _DISABLED_LOCK:
+        return [dict(v) for v in _DISABLED.values()]
 
 
 class SharedRateLimiter(RateLimiter):
@@ -40,6 +52,7 @@ class SharedRateLimiter(RateLimiter):
         self._path = Path(path)
         self._env = env
         self._disabled = False
+        self._disabled_at = 0.0
         # 스레드마다 연결 하나를 재사용한다(전체 검토 P13): KIS 호출마다 연결·PRAGMA·DDL 을 다시
         # 하면 호출당 수 ms 와 fsync 가 더 든다. sqlite3 연결은 만든 스레드에서만 쓴다
         self._conns = threading.local()
@@ -52,16 +65,46 @@ class SharedRateLimiter(RateLimiter):
             return conn
         self._path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(self._path, timeout=DB_TIMEOUT_S, isolation_level=None)
-        conn.execute("PRAGMA journal_mode=WAL")
-        with self._ddl_lock:
-            if not self._ddl_done:
-                conn.execute(
-                    "CREATE TABLE IF NOT EXISTS calls(env TEXT NOT NULL, ts REAL NOT NULL)"
-                )
-                conn.execute("CREATE INDEX IF NOT EXISTS idx_calls_env_ts ON calls(env, ts)")
-                self._ddl_done = True
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            with self._ddl_lock:
+                if not self._ddl_done:
+                    conn.execute(
+                        "CREATE TABLE IF NOT EXISTS calls(env TEXT NOT NULL, ts REAL NOT NULL)"
+                    )
+                    conn.execute("CREATE INDEX IF NOT EXISTS idx_calls_env_ts ON calls(env, ts)")
+                    self._ddl_done = True
+        except sqlite3.Error:
+            conn.close()  # 초기화 중 실패한 연결을 남기지 않는다(2-P8)
+            raise
+        # 스레드가 끝나면 threading.local 값이 지워지며 연결도 해제된다(CPython 참조 해제 시 close)
         self._conns.conn = conn
         return conn
+
+    def _key(self) -> str:
+        return f"{self._path}|{self._env}"
+
+    def _disable(self, e: Exception) -> None:
+        self._disabled = True
+        self._disabled_at = self._clock()
+        with _DISABLED_LOCK:
+            _DISABLED[self._key()] = {
+                "env": self._env,
+                "path": str(self._path),
+                "since": self._disabled_at,
+                "error": f"{type(e).__name__}: {e}",
+            }
+        logger.warning(
+            "공유 레이트리미터 파일을 열 수 없어 프로세스 안 리미터로 동작(%.0f초 뒤 재시도): %s",
+            RETRY_S,
+            e,
+        )
+
+    def _enable(self) -> None:
+        self._disabled = False
+        with _DISABLED_LOCK:
+            _DISABLED.pop(self._key(), None)
+        logger.info("공유 레이트리미터 다시 사용: %s", self._env)
 
     def _drop_conn(self) -> None:
         conn = getattr(self._conns, "conn", None)
@@ -89,18 +132,22 @@ class SharedRateLimiter(RateLimiter):
             conn.execute("COMMIT")
 
     def acquire(self) -> None:
+        retrying = False
         if self._disabled:
-            super().acquire()
-            return
+            if self._clock() - self._disabled_at < RETRY_S:
+                super().acquire()
+                return
+            retrying = True  # 간격이 지났다 — 파일을 다시 열어 본다
         limit = getattr(self._local, "max_wait", None)
         waited = 0.0
         try:
             conn = self._connect()
-        except sqlite3.Error as e:
-            self._disabled = True
-            logger.warning("공유 레이트리미터 파일을 열 수 없어 프로세스 안 리미터로 동작: %s", e)
+        except (sqlite3.Error, OSError) as e:
+            self._disable(e)
             super().acquire()
             return
+        if retrying:
+            self._enable()
         while True:
             try:
                 wait = self._try_take(conn)

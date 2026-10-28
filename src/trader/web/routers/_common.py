@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import csv
 import io
+from urllib.parse import urlsplit
 
 from fastapi import HTTPException, Request
 from fastapi.responses import Response
@@ -16,11 +17,41 @@ def deps_of(request: Request):
     return request.app.state.deps
 
 
+_DEFAULT_PORT = {"http": 80, "https": 443}
+
+
+def _origin_of(url: str) -> tuple[str, str, int] | None:
+    """(scheme, host, 유효 port). 깨진 값·`null` 은 None."""
+    try:
+        u = urlsplit(url)
+        port = u.port or _DEFAULT_PORT.get(u.scheme)
+    except ValueError:
+        return None
+    if u.scheme not in _DEFAULT_PORT or not u.hostname or port is None:
+        return None
+    return (u.scheme, u.hostname.lower(), port)
+
+
 def require_same_origin(request: Request) -> None:
     """토큰 없는 쓰기성 호출(페이지 접속 갱신)을 다른 사이트(no-cors 단순 요청)가 부르지 못하게
-    같은 출처만 — 헤더가 없는 비브라우저 호출(테스트·CLI)은 통과(전체 검토 2026-10-27)."""
+    같은 출처만(전체 검토 2026-10-27). `Sec-Fetch-Site` 가 있으면 그것으로, 없으면 Origin →
+    Referer 의 scheme·host·port 를 요청 Host 와 비교한다(2-W9, `null`·깨진 값 거부). 셋 다 없는
+    호출(테스트·CLI)은 통과 — Fetch Metadata·Origin·Referer 를 모두 빼는 브라우저 요청은 막지
+    못하는 잔여 위험이며, 이 검사를 쓰는 곳은 토큰 없는 갱신 요청뿐이다(주문·키 변경은 토큰
+    필수)."""
     site = request.headers.get("sec-fetch-site")
-    if site is not None and site not in ("same-origin", "none"):
+    if site is not None:
+        if site not in ("same-origin", "none"):
+            raise HTTPException(status_code=403, detail="같은 출처 화면에서만 부를 수 있습니다")
+        return
+    claimed = request.headers.get("origin") or request.headers.get("referer")
+    if claimed is None:
+        return
+    host = request.headers.get("host") or ""
+    scheme = request.scope.get("scheme") or "http"
+    mine = _origin_of(f"{scheme}://{host}")
+    theirs = _origin_of(claimed)
+    if theirs is None or mine is None or theirs[1:] != mine[1:]:
         raise HTTPException(status_code=403, detail="같은 출처 화면에서만 부를 수 있습니다")
 
 

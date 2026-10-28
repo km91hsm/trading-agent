@@ -6,6 +6,10 @@
 ## 0. 전제
 - 모의 계좌(`paper-main`)가 `auto` 로 4주 이상 무사고 운영됐다 (`docs/TODO.md` Phase 6·8 완료 기준).
 - `secrets/.env` 에 실전 앱키·계좌가 있고 `uv run trader kis ping --account real-main` 이 exit 0.
+- **실전 계좌 전용 앱키**를 따로 발급해 계좌 전용 키(`KIS_REAL_MAIN_APP_KEY`·`_APP_SECRET`, 설정 화면
+  '연결 키')로 넣고, 시세용 실전 공용 키(`KIS_REAL_APP_KEY`)와 **다른 키**로 둔다. KIS 는 앱키당 웹소켓
+  세션이 하나라 같은 키면 실전 모드가 `off` 가 아닌 동안 체결통보가 세션을 쓰고 국내 실시간 시세·호가·
+  지수가 전부 10초 폴링으로 내려간다(화면 표 머리 '실전 체결통보가 앱키 사용 중', 2-P13).
 - 텔레그램 알림이 동작한다 (`uv run trader notify-test`).
 
 ## 1. 준비도 점검 (읽기 전용)

@@ -33,7 +33,7 @@ dart:
 
 edgar:
   enabled: true
-  user_agent: "trading-agent km91hsm@gmail.com"   # SEC 요구 형식: "<이름> <이메일>"
+  user_agent: "trading-agent <your-email@example.com>"   # SEC 요구 형식: "<이름> <이메일>"
 
 community:
   enabled: true

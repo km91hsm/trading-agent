@@ -88,7 +88,9 @@ def test_failed_send_goes_to_outbox_and_flush_retries(tmp_path):
     http = httpx.Client(transport=httpx.MockTransport(handler))
     box = tmp_path / "outbox.jsonl"
     n = TelegramNotifier("T", "C", http=http, outbox=box)
-    assert n.send("[주문 상태 미확인] 테스트") is False
+    # 2-T1: 보관에 성공했으면 True — 재전송 책임은 notifier(flush)에 있고 호출부는 다시 보내지
+    # 않는다
+    assert n.send("[주문 상태 미확인] 테스트") is True
     assert box.exists()
     assert n.flush_outbox()["sent"] == 0 and box.exists()  # 여전히 429
     calls["ok"] = True
@@ -149,3 +151,14 @@ def test_outbox_survives_crash_during_flush(tmp_path):
     with pytest.raises(KeyboardInterrupt):
         n.flush_outbox()
     assert "남아야 할 알림" in box.read_text(encoding="utf-8")
+
+
+def test_failed_send_without_outbox_returns_false(tmp_path):
+    """2-T1: 보관함이 없는 notifier 만 False 를 돌려 호출부(단타 묶음·watchdog)가 스스로
+    재시도한다."""
+    import httpx
+
+    from trader.notify.telegram import TelegramNotifier
+
+    http = httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(429, json={})))
+    assert TelegramNotifier("T", "C", http=http).send("x") is False

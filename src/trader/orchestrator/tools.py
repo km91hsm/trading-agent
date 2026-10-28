@@ -670,6 +670,44 @@ def _shrink(obj: dict, limit: int, *, drop_evidence: bool = False) -> dict:
     return cut
 
 
+EVIDENCE_ROLES = ("technical", "fundamental", "news_macro", "sentiment")
+EVIDENCE_DEFINITION = (
+    "리포트가 낸 근거 항목 수(evidence)·고유 출처 수(source_id)·data_gaps·counter_evidence·"
+    "key_risks 개수와 신호 방향. 파이썬이 센 개수일 뿐 검증된 근거 수가 아니다 — 중복·상충 "
+    "근거도 그대로 센다"
+)
+
+
+def evidence_stats(reports: list[dict]) -> dict:
+    """트레이더 묶음이 evidence 를 떼기 전에 원본 리포트에서 센 숫자(10-26 검토 L10). 프롬프트의
+    '검증 가능한 근거 수' 판단은 이 숫자와 리포트 본문(bullets·summary)을 함께 본다."""
+    from trader.orchestrator.summary import signal_direction
+
+    roles: dict[str, dict] = {}
+    for r in reports:
+        ev = r.get("evidence") or []
+        roles[str(r.get("role"))] = {
+            "evidence": len(ev),
+            "sources": len({e.get("source_id") for e in ev if isinstance(e, dict)}),
+            "data_gaps": len(r.get("data_gaps") or []),
+            "counter_evidence": len(r.get("counter_evidence") or []),
+            "key_risks": len(r.get("key_risks") or []),
+            "direction": signal_direction(r.get("signal")),
+        }
+    directions: dict[str, int] = {}
+    for v in roles.values():
+        directions[v["direction"]] = directions.get(v["direction"], 0) + 1
+    top = max((n for k, n in directions.items() if k != "NEUTRAL"), default=0)
+    return {
+        "definition": EVIDENCE_DEFINITION,
+        "roles": roles,
+        "missing_roles": [x for x in EVIDENCE_ROLES if x not in roles],
+        "directions": directions,
+        # 방향 일치도 = 가장 많은 방향(중립 제외)의 역할 수 ÷ 받은 리포트 수
+        "agreement": round(top / len(roles), 4) if roles else 0.0,
+    }
+
+
 def _latest_decision_stage(d: Path) -> str | None:
     """오늘의 최신 결정 단계 (31_decision_r<n> 중 n 최대, 없으면 30_decision, 둘 다 없으면 None)."""
     stages = list_checkpoints(d)
@@ -762,6 +800,7 @@ def checkpoint_bundle(
                 calibration=(read_checkpoint(d, "35_calibration") or {}).get("data"),
             ),
         }
+        data["context"]["evidence_stats"] = evidence_stats(reports)  # evidence 를 떼기 전에 센다
         return {"ok": True, "data": _shrink(data, BUNDLE_LIMIT_BYTES, drop_evidence=True)}
     return {"ok": False, "error": f"알 수 없는 kind: {kind} (researcher|trader)"}
 
@@ -877,9 +916,9 @@ def submit_decision(
         trig = repo.latest_trigger_price(ctx.conn, market, ticker, date)
         if trig is not None:
             price = trig
-            change_pct = (
-                None  # 트리거 가격의 등락률은 모른다 — 아침 시세 값으로 추격 판정하지 않는다
-            )
+            # 트리거 가격의 당일 등락률 = 트리거 가격 ÷ 직전 완성 봉 종가 − 1 (2-O6) — None 으로
+            # 두면 장중 급등을 쫓는 BUY 가 추격 금지를 지난다
+            change_pct = _trigger_change_pct(inputs, trig, date)
         elif price is not None:  # 뉴스 재평가(가격 없는 트리거)는 재수집 입력 + 재시세
             price, requote, change_pct = _requote(ctx, inputs, market, ticker, price)
     elif price is not None:
@@ -902,15 +941,20 @@ def submit_decision(
     stage_name = resume_stage or "30_decision"
     path = write_checkpoint(d, stage_name, _wrap(decision.model_dump(), _call(agent, call_meta)))
     _ingest_run(ctx, d, date, market, ticker)
-    if ctx.conn is not None:  # 수집이 알아낸 종목명을 원장에 남긴다 (웹·알림 표기용)
-        repo.upsert_ticker_name(
-            ctx.conn, market, ticker, (inputs.get("meta") or {}).get("name"), "inputs"
-        )
+    if ctx.conn is not None:  # 수집이 알아낸 종목명·US 거래소를 원장에 남긴다 (표기·만기 스냅샷용)
+        meta = inputs.get("meta") or {}
+        repo.upsert_ticker_name(ctx.conn, market, ticker, meta.get("name"), "inputs")
+        repo.upsert_ticker_exchange(ctx.conn, market, ticker, meta.get("exchange"))
     if resume_stage:  # 재평가 결정이 최신 결정이 되도록 마지막에 적재
         repo.ingest_checkpoint(
             ctx.conn, date, market, ticker, resume_stage, read_checkpoint(d, resume_stage) or {}
         )
     m_round = _RESUME_RE.match(resume_stage) if resume_stage else None
+    # 합의로 토론을 생략했는지(L17)를 원장 결정·메모리 행에 남긴다(2-L23: 전후 비교용)
+    summ = read_checkpoint(d, "25_research_summary") or {}
+    skipped = bool((summ.get("data") or summ).get("skipped_debate"))
+    if ctx.conn is not None and (did := repo.decision_id(ctx.conn, date, market, ticker)):
+        repo.set_skipped_debate(ctx.conn, did, skipped)
     executions, memory_entry_id = _execute_and_record(
         ctx,
         d,
@@ -922,6 +966,7 @@ def submit_decision(
         resume_round=int(m_round.group(1)) if m_round else None,
         extra_note=requote,
         change_pct=change_pct,
+        skipped_debate=skipped,
     )
     logger.info("결정 저장 %s %s: %s (계좌 %d)", market, ticker, decision.action, len(executions))
     return {
@@ -950,11 +995,13 @@ def _execute_and_record(
     skip_accounts: frozenset[str] = frozenset(),
     extra_note: str | None = None,
     change_pct: float | None = None,
+    skipped_debate: bool | None = None,
 ) -> tuple[list[dict], int | None]:
     """리스크 게이트·계좌별 실행(주문은 executor 안에서만) + 메모리 엔트리.
 
     결정은 1회, 판정·주문은 계좌마다. 재평가 라운드는 41_/51_ 체크포인트 이름에 들어간다."""
     from trader.orchestrator import executor
+    from trader.orchestrator import session as session_mod
 
     assert ctx.conn is not None
     ectx = executor.ExecContext(
@@ -967,6 +1014,7 @@ def _execute_and_record(
         now=ctx.now,
         holiday_fn=ctx.holiday_fn,
         rl_sizer=_load_sizer(ctx.state),
+        record_portfolio=not session_mod.is_fake(),  # 가짜 브로커 잔고는 기록하지 않는다(2-O7)
     )
     # 메모리의 decided_at 은 실행 직전 시각 — 이 라운드의 주문이 그 뒤에 생겨 체결가 채점 창이 된다
     decided_at = _decided_at(ctx.now(), date, market)
@@ -985,7 +1033,13 @@ def _execute_and_record(
         trade_block=_trade_block(inputs),
     )
     memory_entry_id = _record_memory(
-        ctx, decision, market, date, round_no=resume_round or 0, decided_at=decided_at
+        ctx,
+        decision,
+        market,
+        date,
+        round_no=resume_round or 0,
+        decided_at=decided_at,
+        skipped_debate=skipped_debate,
     )
     return executions, memory_entry_id
 
@@ -1023,6 +1077,7 @@ def _record_memory(
     *,
     round_no: int = 0,
     decided_at: datetime | None = None,
+    skipped_debate: bool | None = None,
 ) -> int | None:
     """결정 1건(라운드별)을 메모리 엔트리로 기록한다 ((decision_id, round) 멱등).
 
@@ -1057,6 +1112,7 @@ def _record_memory(
             horizon_days=decision.horizon_days,
             round_no=round_no,
             held_at_decision=held,
+            skipped_debate=skipped_debate,
         )
     except Exception as e:  # noqa: BLE001
         logger.warning("메모리 기록 실패 %s %s: %s", market, decision.ticker, e)
@@ -1064,6 +1120,21 @@ def _record_memory(
 
 
 REQUOTE_AFTER_S = 600  # 입력 수집 뒤 이만큼 지났으면 제출 때 현재가를 다시 받는다(Phase 21)
+
+
+def _trigger_change_pct(inputs: dict, price: Decimal, run_date: date) -> float | None:
+    """트리거 가격의 당일 등락률(소수): `00_inputs.technical.daily` 에서 운영일 전 마지막 일봉
+    종가 대비. 직전 종가를 모르면 None — 아침 시세의 등락률로 트리거 가격을 판정하지 않는다
+    (PR #26 리뷰: 아침 +12% 가 장중 되돌린 가격의 재평가를 막지 않게)."""
+    try:
+        rows = inputs["technical"]["daily"]["data"] or []
+        prev = [r for r in rows if str(r.get("date") or "") < run_date.isoformat()]
+        close = Decimal(str(prev[-1]["close"]))
+        if close > 0:
+            return float(price / close - 1)
+    except (KeyError, TypeError, ValueError, IndexError, InvalidOperation, AttributeError):
+        pass
+    return None
 
 
 def _input_change_pct(inputs: dict) -> float | None:
@@ -2190,7 +2261,7 @@ def _fo_account_done(
 ) -> bool:
     """아침 결정 재개 때 이 계좌를 건너뛸지(PR #61 리뷰·단계 4 리뷰). 판정 파일은 다리 예약
     **전에** 쓰이므로 그것만으로는 끝났다고 보지 않는다 — 보류 플래그·주문 체크포인트·**이 결정
-    봉투(request_id)로 만든 원장 다리**(v27 `fo_order_legs.request_id`)가 있거나, 판정이 실행할
+    봉투(request_id)로 만든 원장 다리**(v31 `fo_order_legs.request_id`)가 있거나, 판정이 실행할
     것이 없는 경우(거부·기록만·오류·건너뜀·다리 없음)만 끝난 것이다."""
     if fo_pending_entry(ctx.conn, account_id, day) is not None:
         return True

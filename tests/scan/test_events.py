@@ -235,3 +235,58 @@ def test_event_cap_counts_universe_members_too():
         max_event=1,
     )
     assert [c["ticker"] for c in r["candidates"]] == ["005930"]
+
+
+def test_resolve_event_ticker_is_case_insensitive():
+    """2-L22: scout 가 US 심볼을 소문자로 내도 `watch_index`(대문자 키)에서 찾는다."""
+    watch = [
+        {"id": "oil_shock", "label": "유가", "kind": "shock", "hits": 2, "news": [],
+         "tickers": [{"ticker": "XOM", "name": "Exxon", "role": "정유", "exchange": "NYS"}]},
+    ]  # fmt: skip
+    disc = {"candidates": [{"name": "Exxon", "ticker": "xom", "market": "US", "tier": "event",
+                            "catalyst": "x", "confidence": 0.6, "source_ids": []}]}  # fmt: skip
+    r = discovery.resolve(
+        disc, market="US", universe=config.Universe(kr=["005930"]), cache_names={},
+        event_watch=watch, max_event=4, max_per_event=2,
+    )  # fmt: skip
+    assert [c["ticker"] for c in r["candidates"]] == ["XOM"] and r["unresolved"] == []
+
+
+def test_detect_dedupes_same_story_and_honors_exclude(conn):
+    """2-L10: 같은 통신 기사가 매체마다 따로 적재돼도(세이브티커 22스트림·네이버·구글) 정규화 제목
+    기준 1건으로 세고, `exclude` 패턴(무역전쟁)이 든 뉴스는 세지 않는다 — 한글 키워드가 부분
+    문자열이라 `전쟁` 이 무역전쟁·반도체전쟁에 걸리던 것."""
+    cfg = EventsConfig.model_validate(
+        {
+            "enabled": True,
+            "events": [
+                {
+                    "id": "war_geopolitics",
+                    "label": "전쟁",
+                    "min_news": 2,
+                    "keywords": ["공습", "전쟁"],
+                    "exclude": ["무역전쟁", "반도체 전쟁"],
+                    "beneficiaries": {"KR": [{"ticker": "012450", "name": "한화에어로"}]},
+                }
+            ],
+        }
+    )
+    _news(
+        conn,
+        ["중동 공습 확대 - 연합뉴스", "[속보] 중동 공습 확대 - 뉴시스", "미중 무역전쟁 격화"],
+    )
+    asof = datetime.now(UTC) + timedelta(seconds=5)
+    assert events.detect(conn, cfg, market="KR", asof=asof) == []  # 중복 1건 + 제외 → 기준 2 미만
+    news_store.insert_items(  # URL 이 겹치면 적재되지 않으므로(멱등) 새 URL 로
+        conn,
+        [{"url": "https://ex.test/KR/war-1", "title": "접경 지역 전쟁 위기 고조"}],
+        market="KR",
+        source="test",
+        query="q",
+        lang="ko",
+        names={},
+    )
+    found = events.detect(conn, cfg, market="KR", asof=asof)
+    assert [e["id"] for e in found] == ["war_geopolitics"] and found[0]["hits"] == 2
+    titles = [n["title"] for n in found[0]["news"]]
+    assert titles[0] == "접경 지역 전쟁 위기 고조" and len(titles) == 2 and "공습" in titles[1]

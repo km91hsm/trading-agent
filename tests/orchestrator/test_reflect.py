@@ -104,7 +104,8 @@ def test_run_reflect_without_pending_skips_session(conn):
     assert conn.execute("SELECT COUNT(*) FROM runs").fetchone()[0] == 0
 
 
-def test_submit_reflection_promotes_on_lesson(conn):
+def test_submit_reflection_saves_lesson_without_single_promotion(conn):
+    """L13: lesson 한 건으로는 승격하지 않는다(같은 상황 결정 3건 이상일 때만, memory/store)."""
     eid = _matured(conn)
     ctx = tools.ToolContext(settings=Settings(), accounts=_accounts(), conn=conn, now=lambda: NOW)
     payload = [
@@ -118,7 +119,8 @@ def test_submit_reflection_promotes_on_lesson(conn):
     ]
     r = tools.submit_reflection(ctx, market="KR", date=D, payload=payload)
     assert r["ok"] and r["saved"] == 1
-    assert store.get_entry(conn, eid)["tier"] == "mid"
+    e = store.get_entry(conn, eid)
+    assert e["tier"] == "short" and e["reflection"]["lesson"] == "추세 추종 유효"
     bad = tools.submit_reflection(
         ctx,
         market="KR",
