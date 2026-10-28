@@ -87,11 +87,16 @@ class FoExecContext:
     # 현물 계좌·브로커 — 거시 절의 헤지 ETF 보유(`inputs._news_macro`)만 읽는다(주문 없음)
     spot_accounts: list[AccountConfig] = field(default_factory=list)
     spot_brokers: dict[str, Any] = field(default_factory=dict)
-    # 재평가 결정 적용 훅(단계 4 `fo/reeval.apply`): (봉투, 라운드) → 결과 dict. 없으면 기록만
+    # 재평가 결정 적용 훅(봉투, 라운드 → dict). 없으면 `fo/reeval.apply`(테스트가 바꿔 끼움)
     reeval_apply: Callable[[FoDecisionEnvelope, int], dict] | None = None
     # 시크릿(FRED·ECOS 등) — 거시 절(`inputs._news_macro` → `market_view.build_inputs`)이
     # 거시 지표를 받는 데만 쓴다. 없으면 거시 지표 절이 키 없음으로 빠진다(PR #61 리뷰)
     secrets: Any | None = None
+
+
+def account_of(ctx: FoExecContext, account_id: str | None) -> AccountConfig | None:
+    """컨텍스트의 파생 계좌(`asset: fo`) 하나. 없으면 None."""
+    return next((a for a in ctx.accounts if a.id == account_id and a.asset == "fo"), None)
 
 
 def context_sources(

@@ -2140,8 +2140,15 @@ def submit_fo_decision(
         "direction": dec.direction, "vehicle": dec.vehicle, "resolved": resolved,
     }  # fmt: skip
     if round_n > 0:
-        applied = fo.reeval_apply(env, round_n) if fo.reeval_apply is not None else None
-        return out | {"applied": applied, "executed": applied is not None}
+        # 재평가 적용은 `fo/reeval.apply`(늦은 재평가 CAS → run_leg). `reeval_apply` 훅은 테스트용
+        from trader.fo import reeval as fo_reeval
+
+        if fo.reeval_apply is not None:
+            applied = fo.reeval_apply(env, round_n)
+        else:
+            applied = fo_reeval.apply(fo, env, round_n=round_n)
+        executed = isinstance(applied, dict) and "discarded" not in applied
+        return out | {"applied": applied, "executed": executed}
     return out | _fo_run_accounts(
         ctx, date=date, env=env, stage=stage, inputs=inputs,
         accounts=[a for a in fo.accounts if a.asset == "fo"], record_only=record_only,
