@@ -183,6 +183,105 @@ def monitor(root, *, send=None):
         lock.release()
 
 
+LANES = ("background", "community", "market", "news")
+AUTH_ERRORS = ("AccessDenied", "LoginRequired")
+LANE_BLOCK_FILE = "lane-blocked.json"
+LANE_RETRY_S = 6 * 3600  # 접근이 막힌 작업만 쉬고 이 시간 뒤 1회 다시 넣는다
+AUTH_RETRY_S = 6 * 3600  # 인증 실패 전체 정지도 계정 파일 변경 없이 이 간격으로만 다시 시도
+
+
+def classify_exit(runners):
+    """수집 실행이 끝난 이유 → ("full"|"lanes"|"retry", 인증 실패 작업들).
+    LoginRequired(세션 상실)이 하나라도 있거나 모든 작업이 AccessDenied 면 전체 정지("full"),
+    일부 작업만 AccessDenied 면 그 작업만 쉰다("lanes"), 인증 실패가 없으면 일반 재시도("retry")."""
+    denied: dict[str, str] = {}
+    for name, row in runners.items():
+        err = (row or {}).get("error_type")
+        if err in AUTH_ERRORS and name.startswith("runner-"):
+            denied[name.removeprefix("runner-")] = err
+    if not denied:
+        return "retry", set()
+    lanes = set(denied)
+    if "LoginRequired" in denied.values() or lanes >= set(LANES):
+        return "full", lanes
+    return "lanes", lanes
+
+
+def lane_blocks(home):
+    return read(home / "runtime" / LANE_BLOCK_FILE) or {}
+
+
+def active_skip_lanes(home, *, now):
+    """쉬는 중인 작업(막힌 지 LANE_RETRY_S 안). 시간이 지나면 다시 넣는다."""
+    out = []
+    for lane, row in sorted(lane_blocks(home).items()):
+        try:
+            at = datetime.fromisoformat(row["at"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if (now - at).total_seconds() < LANE_RETRY_S:
+            out.append(lane)
+    return out
+
+
+def _block_lanes(home, lanes, runners, *, now):
+    blocks = lane_blocks(home)
+    for lane in lanes:
+        err = (runners.get(f"runner-{lane}") or {}).get("error_type")
+        blocks[lane] = {"reason": err or "AccessDenied", "at": now.isoformat()}
+    atomic_json(home / "runtime" / LANE_BLOCK_FILE, blocks)
+
+
+def clear_blocks(home):
+    """사람의 '다시 시작': 작업 쉬기·서비스 정지 기록을 지워 데몬이 1분 안에 다시 띄우게 한다."""
+    runtime = home / "runtime"
+    runtime.mkdir(parents=True, exist_ok=True)
+    (runtime / LANE_BLOCK_FILE).unlink(missing_ok=True)
+    state = read(runtime / "service.json") or {}
+    if state.get("state") == "blocked":
+        atomic_json(
+            runtime / "service.json",
+            {"state": "stopped", "cleared_at": datetime.now(UTC).isoformat()},
+        )
+
+
+_REASON_TEXT = {
+    "authentication": "인증 실패로 멈춤 — 6시간마다 다시 시도(계정 확인 필요할 수 있음)",
+    "authentication_or_stopped": "인증 실패로 멈춤 — 6시간마다 다시 시도(계정 확인 필요할 수 있음)",
+    "restart_limit": "재기동 한도로 멈춤 — 1시간 뒤 다시 시도",
+    "chromium_install_failed": "Chromium 설치 실패 — 1시간 뒤 다시 시도",
+}
+
+
+def status(home):
+    """웹·운영 점검용 요약: 서비스 상태·멈춘 이유·작업별 상태·쉬는 작업·마지막 수집 시각."""
+    runtime = home / "runtime"
+    service_state = read(runtime / "service.json") or {}
+    lanes = {}
+    for lane in LANES:
+        row = read(runtime / f"runner-{lane}.json") or {}
+        lanes[lane] = {k: row.get(k) for k in ("state", "error_type", "stage", "updated_at")}
+    monitor = read(runtime / "alert-monitor.json") or {}
+    success = monitor.get("last_success_at") or {}
+    last = (
+        max((v for v in success.values() if isinstance(v, str)), default=None)
+        if isinstance(success, dict)
+        else None
+    )
+    blocked = service_state.get("state") == "blocked"
+    return {
+        "service": {k: service_state.get(k) for k in ("state", "reason", "at", "exit_code")},
+        "blocked": blocked,
+        "reason_text": _REASON_TEXT.get(service_state.get("reason"), service_state.get("reason"))
+        if blocked
+        else None,
+        "lanes": lanes,
+        "lane_blocks": lane_blocks(home),
+        "last_success_at": last,
+        "health": monitor.get("health"),
+    }
+
+
 def retry_allowed(runners):
     return not any(
         (row or {}).get("error_type") in ("AccessDenied", "LoginRequired")
@@ -266,9 +365,12 @@ def should_start(home, credentials, *, now):
         at = datetime.fromisoformat(state["at"])
     except (KeyError, TypeError, ValueError):
         at = None
-    if state.get("reason") == "authentication_or_stopped":
+    if state.get("reason") in ("authentication", "authentication_or_stopped"):
         changed = at is None or credentials.stat().st_mtime > at.timestamp()
-        return (True, "") if changed else (False, "인증 실패로 멈춤 — 계정 파일 확인 필요")
+        waited = at is not None and (now - at).total_seconds() >= AUTH_RETRY_S
+        if changed or waited:
+            return True, ""
+        return False, "인증 실패로 멈춤 — 6시간 뒤 다시 시도(계정 파일을 바꾸면 바로)"
     if at is not None and (now - at).total_seconds() < RESTART_LIMIT_RETRY:
         return False, f"멈춤({state.get('reason')}) — 1시간 뒤 재시도"
     return True, ""
@@ -306,6 +408,7 @@ def service(root):
         attempts = 0
         while not stop.is_set():
             started = time.monotonic()
+            skip = active_skip_lanes(root, now=datetime.now(UTC))
             with (runtime / "service.log").open("a", encoding="utf-8") as log:
                 child = subprocess.Popen(
                     [
@@ -317,6 +420,7 @@ def service(root):
                         "2",
                         "--max-details",
                         "2",
+                        *(["--skip-lanes", ",".join(skip)] if skip else []),
                     ],
                     stdin=subprocess.DEVNULL,
                     stdout=log,
@@ -336,9 +440,19 @@ def service(root):
             if stop.is_set():
                 break
             rows = {n: read(runtime / (n + ".json")) for n in RUNNERS}
-            if code == 0 or not retry_allowed(rows):
-                _blocked(runtime, "authentication_or_stopped", exit_code=code)
+            kind, lanes = classify_exit(rows)
+            if kind == "full":
+                _blocked(runtime, "authentication", exit_code=code, lanes=sorted(lanes))
                 return
+            if kind == "lanes":
+                # 일부 작업만 접근이 막혔다 — 그 작업만 쉬고 나머지는 바로 다시 띄운다(2026-10-29)
+                _block_lanes(root, lanes, rows, now=datetime.now(UTC))
+                for lane in lanes:
+                    atomic_json(
+                        runtime / f"runner-{lane}.json",
+                        {"state": "paused", "reason": "access_denied"},
+                    )
+                continue
             if time.monotonic() - started >= 300:
                 attempts = 0
             attempts += 1

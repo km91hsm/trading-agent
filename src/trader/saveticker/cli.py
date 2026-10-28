@@ -122,6 +122,12 @@ def select_views(
     return views
 
 
+def plan_lanes(planned: list[View], skip: str | None) -> list[str]:
+    """수집 계획의 작업(lane) 목록에서 쉬는 작업을 뺀다(서비스가 `--skip-lanes` 로 넘긴다)."""
+    skipped = {x.strip() for x in (skip or "").split(",") if x.strip()}
+    return [g for g in sorted({lane_for(view) for view in planned}) if g not in skipped]
+
+
 @app.command("run")
 def run_cmd(
     once: bool = typer.Option(False, help="전체 스트림을 1회 수집한 뒤 종료"),
@@ -132,6 +138,7 @@ def run_cmd(
     max_scrolls: int = typer.Option(20, min=1, max=500),
     max_details: int = typer.Option(20, min=0, max=500),
     lane: str | None = typer.Option(None, hidden=True),
+    skip_lanes: str | None = typer.Option(None, "--skip-lanes", hidden=True),
 ):
     """계정 파일로 자동 로그인해 수집한다. Ctrl+C로 종료한다."""
     from trader.saveticker.browser import Browser, credentials
@@ -218,7 +225,7 @@ def run_cmd(
                     raise ConfigError("알 수 없는 수집 스트림입니다")
                 planned = [view for view in planned if view.stream in requested]
             commands = {}
-            for group in sorted({lane_for(view) for view in planned}):
+            for group in plan_lanes(planned, skip_lanes):
                 command = [
                     *bundle.cli_argv(),
                     "saveticker",

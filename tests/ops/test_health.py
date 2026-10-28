@@ -165,3 +165,32 @@ def test_llm_area_flags_calibration_review_at_threshold(conn, monkeypatch):
     items = health._llm(conn, Settings(), now)
     hit = [i for i in items if i.key == "llm.calibration_review"]
     assert hit and hit[0].level == "watch" and "inject" in hit[0].text
+
+
+def test_saveticker_stopped_is_warning_and_paused_lane_is_watch(conn, project):
+    """세이브티커가 멈췄는데 데몬 잡은 'ok' 로만 보이던 문제(2026-10-29) — 운영 점검이 잡는다."""
+    from trader import saveticker as st
+    from trader.saveticker.store import atomic_json
+
+    def items():
+        r = health.check(conn, Settings(), ACCTS, now=NOW, state=project / "state")
+        return {i["key"]: i for i in r["items"]}, r["areas"]
+
+    got, areas = items()
+    # 계정 파일이 없으면 점검 대상이 아니다
+    assert "saveticker.stopped" not in got and areas["saveticker"] == "ok"
+    (project / "secrets").mkdir(exist_ok=True)
+    st.credentials_path().write_text("x", encoding="utf-8")
+    runtime = st.home() / "runtime"
+    blocked = {"state": "blocked", "reason": "authentication", "at": NOW.isoformat()}
+    atomic_json(runtime / "service.json", blocked)
+    got, areas = items()
+    assert got["saveticker.stopped"]["level"] == "warning" and areas["saveticker"] == "warning"
+    assert "인증 실패" in got["saveticker.stopped"]["text"]
+    atomic_json(runtime / "service.json", {"state": "running"})
+    lane = {"community": {"reason": "AccessDenied", "at": NOW.isoformat()}}
+    atomic_json(runtime / "lane-blocked.json", lane)
+    got, _ = items()
+    assert "saveticker.stopped" not in got
+    paused = got["saveticker.lane_paused"]
+    assert paused["level"] == "watch" and "community" in paused["text"]

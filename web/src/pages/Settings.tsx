@@ -13,6 +13,9 @@ import { modeAccountLabel, settingsAccounts } from "../fo";
 import { termHelp } from "../glossary";
 import { useApp, useLoad } from "../hooks";
 import { throttleSetting, type UsageResp } from "../usage";
+import { laneRows, savetickerBadge, type SavetickerStatus } from "../saveticker";
+import { Table, Td, Th } from "../components/Table";
+import { fmtTime } from "../format";
 import { parseWatch } from "../tape";
 import type { Theme } from "../theme";
 import { Ticker } from "../components/Ticker";
@@ -40,6 +43,16 @@ export function SettingsPage() {
   const watch = useLoad(() => getJson<{ tickers: string[] }>("/api/control/watchlist"), [tick]);
   const usage = useLoad(() => getJson<UsageResp>("/api/system/usage"), [tick]);
   const throttle = usage.data?.throttle;
+  const st = useLoad(() => getJson<SavetickerStatus>("/api/system/saveticker"), [tick]);
+  const restartSaveticker = async () => {
+    try {
+      await postJson("/api/control/saveticker/restart", null, token);
+      toast("다시 시작을 요청했어요 — 1분 안에 수집 창이 열려요", "ok");
+      st.reload();
+    } catch (e) {
+      toast(`실패: ${(e as Error).message}`, "error");
+    }
+  };
   const setThrottle = async (enabled: boolean | null, ok: string) => {
     try {
       await postJson("/api/control/usage-throttle", { enabled }, token);
@@ -131,6 +144,41 @@ export function SettingsPage() {
                 설정 파일 값으로
               </button>
             </div>
+          </Section>
+          <Section title="세이브티커 수집" aside={st.data ? <Badge kind={savetickerBadge(st.data).kind} value={savetickerBadge(st.data).label} /> : null}>
+            <ErrorBox error={st.error} />
+            {st.data && !st.data.configured ? (
+              <p className="note">secrets/saveticker.env(계정 파일)가 없어 수집하지 않아요.</p>
+            ) : st.data ? (
+              <>
+                {st.data.blocked ? <p className="pend">{st.data.reason_text}</p> : null}
+                <p className="muted">마지막 수집 {st.data.last_success_at ? fmtTime(st.data.last_success_at, "KR") : "—"} · 데몬이 1분마다 수집 서비스를 살펴요</p>
+                <Table dense caption="세이브티커 작업별 상태">
+                  <thead>
+                    <tr>
+                      <Th>작업</Th>
+                      <Th>상태</Th>
+                      <Th>비고</Th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {laneRows(st.data).map((r) => (
+                      <tr key={r.lane}>
+                        <Td>{r.label}</Td>
+                        <Td>{r.state}</Td>
+                        <Td className="muted">{r.note || "—"}</Td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </Table>
+                <div className="row">
+                  <button type="button" className="btn" disabled={!token} onClick={restartSaveticker} title={token ? undefined : "토큰이 필요해요"}>
+                    다시 시작
+                  </button>
+                </div>
+                <p className="note">멈춤·쉬는 작업 기록을 지우고 다시 띄워요. 인증이 계속 실패하면 계정 파일을 확인하세요(로그인을 반복하면 계정이 잠길 수 있어요).</p>
+              </>
+            ) : null}
           </Section>
           <Section title="거래" aside={events?.paused ? <Badge kind="pending" value="일시정지" /> : <Badge kind="ok" value="실행 중" />}>
             <p className="note">
