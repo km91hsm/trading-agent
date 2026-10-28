@@ -278,6 +278,9 @@ def build_status(
     lines += ["", "## 오늘 스캔", *scan_lines(settings, now)]
     lines += ["", "## 국면·헤지", *_regime_lines(conn, settings)]
     lines += ["", "## 단타(모의 전용)", *_scalp_lines(settings, now)]
+    from trader.fo import status as fo_status
+
+    lines += ["", "## 파생(선물옵션)", *fo_status.lines(conn, now)]
     lines += ["", "## 성과(30일)", *_perf_lines(conn, accounts)]
     lines += ["", "## ML 모델", *_ml_lines()]
     dist = metrics.decision_distribution(conn, days=30, now=now)

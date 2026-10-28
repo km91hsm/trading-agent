@@ -194,7 +194,7 @@ def make_notifier(secrets: Secrets, *, http: httpx.Client | None = None) -> Noti
 # --- 수신 (승인 명령, Phase 4) ------------------------------------------------------
 
 _COMMAND_RE = re.compile(
-    r"^/(approve|reject|status|pause|resume|mode|watch|run|kill|daily)(?:@\w+)?(?:\s+(.+?))?\s*$"
+    r"^/(approve|reject|status|pause|resume|mode|watch|run|kill|daily|fo)(?:@\w+)?(?:\s+(.+?))?\s*$"
 )
 
 

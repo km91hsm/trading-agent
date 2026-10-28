@@ -288,8 +288,24 @@ class Job:
     interval_s: int | None = None
 
 
-def build_jobs(schedule: ScheduleConfig, settings: Settings, *, markets: list[str]) -> list[Job]:
+def build_jobs(
+    schedule: ScheduleConfig, settings: Settings, *, markets: list[str], fo: bool = False
+) -> list[Job]:
+    """`fo` 는 `asset: fo` 계좌가 있을 때만 True — 파생 아침 세션(cron)·모니터(60초)를 더한다."""
     jobs: list[Job] = []
+    if fo:
+        fs = schedule.fo.kr
+        st = _hm(fs.session)
+        jobs.append(
+            Job(
+                "kr_fo_session",
+                "fo_session",
+                "KR",
+                cron={"hour": st.hour, "minute": st.minute, "day_of_week": "mon-fri",
+                      "timezone": "Asia/Seoul"},
+            )  # fmt: skip
+        )
+        jobs.append(Job("kr_fo_monitor", "fo_monitor", "KR", interval_s=fs.monitor.interval_s))
     for m in markets:
         ms = schedule.kr if m == "KR" else schedule.us
         lo = m.lower()
@@ -537,6 +553,19 @@ class DaemonDeps:
     # 둘 다 열린 주문 확인을 통과해 같은 잔고로 주문을 낼 수 있다 → (시장, 종목) 락
     ticker_locks: dict[tuple[str, str], threading.Lock] = field(default_factory=dict)
     ticker_locks_guard: threading.Lock = field(default_factory=threading.Lock)
+    # Phase 26 파생 레인: `accounts`·`brokers` 는 현물만(현물 잡이 그대로 쓴다). 파생 계좌·브로커는
+    # 따로 두고, 계좌 전부가 필요한 소비자(잔고·체결·대조·운영 점검)는 `all_accounts`·`all_brokers`
+    fo_accounts: list[AccountConfig] = field(default_factory=list)
+    fo_brokers: dict[str, Any] = field(default_factory=dict)
+    fo_master_fn: Callable[[], list] | None = None  # 파생 마스터(하루 캐시) — 없으면 빈 목록
+
+    @property
+    def all_accounts(self) -> list[AccountConfig]:
+        return [*self.accounts, *self.fo_accounts]
+
+    @property
+    def all_brokers(self) -> dict[str, Any]:
+        return {**self.brokers, **self.fo_brokers}
 
 
 HEAVY_POLL_S = 30.0  # heavy 락 대기 폴링 간격
@@ -1530,8 +1559,8 @@ def _balance_body(deps: DaemonDeps, *, force: bool = False) -> dict:
         return {
             m: balance.refresh(
                 conn,
-                accounts=deps.accounts,
-                brokers=deps.brokers,
+                accounts=deps.all_accounts,
+                brokers=deps.all_brokers,
                 market=m,
                 settings=deps.settings,
                 now=now,
@@ -1819,11 +1848,12 @@ def _ops_body(deps: DaemonDeps) -> dict:
         result = health.check(
             conn,
             deps.settings,
-            deps.accounts,
+            deps.all_accounts,
             now=deps.now(),
             state=deps.state,
             schedule_jobs=build_jobs(
-                deps.schedule, deps.settings, markets=list(deps.settings.markets)
+                deps.schedule, deps.settings, markets=list(deps.settings.markets),
+                fo=bool(deps.fo_accounts),
             ),
         )
         control.set_flag(conn, health.RESULT_FLAG, result)
@@ -1875,8 +1905,9 @@ def _fills_body(deps: DaemonDeps) -> dict:
     failures: list[str] = []
     conn = deps.conn_factory()
     try:
-        for a in deps.accounts:
-            b = deps.brokers.get(a.id)
+        brokers = deps.all_brokers
+        for a in deps.all_accounts:
+            b = brokers.get(a.id)
             if b is None:
                 continue
             try:
@@ -1924,8 +1955,8 @@ def _reconcile_body(deps: DaemonDeps, market: str | None) -> dict:
     try:
         return reconcile.reconcile_all(
             conn,
-            deps.brokers,
-            deps.accounts,
+            deps.all_brokers,
+            deps.all_accounts,
             market=market,
             today_for=lambda m: run_date_for(m, deps.now()),
             now=deps.now,
@@ -2703,6 +2734,12 @@ def job_body(
         )
     if job.kind == "scalp":
         return lambda: _scalp_job(deps, job.market or "KR")
+    if job.kind == "fo_session":
+        return lambda: market_job(
+            deps, "KR", "fo_session", lambda: _heavy(deps, lambda: _fo_session_body(deps))
+        )
+    if job.kind == "fo_monitor":
+        return lambda: _fo_monitor_job(deps)
     if job.kind == "rebalance":
         return lambda: market_job(
             deps, job.market or "KR", "rebalance", lambda: _rebalance_body(deps, job.market or "KR")
@@ -2757,6 +2794,125 @@ def job_body(
     if job.kind == "job_queue_info":
         return lambda: _info_queue_tick(deps, heartbeat)
     raise ValueError(f"알 수 없는 잡: {job.kind}")
+
+
+# --- 파생 레인(Phase 26) ---------------------------------------------------------------
+
+
+def _fo_ctx(deps: DaemonDeps, conn: sqlite3.Connection):
+    """데몬 잡용 파생 실행 컨텍스트. 마스터는 `fo_master_fn`(하루 캐시), 국면·시장 뷰는 원장."""
+    from trader.fo.executor import FoExecContext, context_sources
+
+    try:
+        master = deps.fo_master_fn() if deps.fo_master_fn is not None else []
+    except Exception as e:  # noqa: BLE001 — 마스터 없이도 보유분 감시는 돈다(신규는 게이트가 거부)
+        logger.warning("파생 마스터 적재 실패(빈 목록): %s", e)
+        master = []
+    return FoExecContext(
+        settings=deps.settings, accounts=list(deps.fo_accounts), conn=conn,
+        brokers=deps.fo_brokers, market_client=deps.market_client, master=master,
+        notifier=deps.notifier, state=deps.state, now=deps.now, dry_run=deps.dry_run,
+        spot_accounts=list(deps.accounts), spot_brokers=dict(deps.brokers),
+        secrets=deps.secrets, **context_sources(conn, deps.now),
+    )  # fmt: skip
+
+
+def _fo_window(deps: DaemonDeps) -> bool:
+    from trader import market_hours
+
+    now = deps.now()
+    win = deps.schedule.fo.kr.monitor
+    local = now.astimezone(KST).time().replace(second=0, microsecond=0)
+    return market_hours.is_fo_open(now) and in_window(local, win.start, win.end)
+
+
+def _fo_monitor_job(deps: DaemonDeps) -> dict | None:
+    """파생 모니터(60초): 파생 정규장·모니터 창 안, 평일·비휴장·비일시정지일 때만."""
+    if not deps.fo_accounts:
+        return {"skipped": "파생 계좌 없음"}
+    if not _fo_window(deps):
+        return {"skipped": "파생 창 밖"}
+    return market_job(deps, "KR", "fo_monitor", lambda: _fo_monitor_body(deps))
+
+
+def _fo_monitor_body(deps: DaemonDeps) -> dict:
+    from trader.fo import engine
+
+    conn = deps.conn_factory()
+    try:
+        ctx = _fo_ctx(deps, conn)
+        out = engine.tick(ctx)
+    finally:
+        conn.close()
+    summary = {
+        aid: {k: (len(v) if isinstance(v, list) else v) for k, v in r.items()
+              if k in ("exits", "maintain", "triggers", "entries", "recalled", "halted", "error")}
+        for aid, r in out["accounts"].items()
+    }  # fmt: skip
+    errs = [f"{aid}: {r['error']}" for aid, r in out["accounts"].items() if r.get("error")]
+    return {"accounts": summary, **({"error": "; ".join(errs)} if errs else {})}
+
+
+def _fo_session_body(deps: DaemonDeps) -> dict:
+    """파생 아침 세션 1회(`fo/session.run`). 계좌가 없거나 오늘 결정이 있으면 세션 없이 끝난다."""
+    from trader.fo import session as fo_session
+
+    if not deps.fo_accounts:
+        return {"skipped": "파생 계좌 없음"}
+    conn = deps.conn_factory()
+    try:
+        master = _fo_ctx(deps, conn).master
+        out = fo_session.run(
+            deps.settings, conn, fo_accounts=list(deps.fo_accounts), brokers=deps.fo_brokers,
+            market_client=deps.market_client, master=master, now=deps.now,
+            dry_run=deps.dry_run, state=deps.state, session_runner=deps.session_runner,
+            notifier=deps.notifier, cancel=deps.stop_event, spot_accounts=list(deps.accounts),
+            spot_brokers=dict(deps.brokers), secrets=deps.secrets,
+        )  # fmt: skip
+    finally:
+        conn.close()
+    dec = out.get("decision") or {}
+    return {
+        "date": out.get("date"), "skipped": out.get("skipped"), "error": out.get("error"),
+        "intent": (dec.get("decision") or {}).get("intent"), "dry_run": out.get("dry_run"),
+    }  # fmt: skip
+
+
+def _fo_reevaluate_request(deps: DaemonDeps, p: dict) -> dict:
+    """대기열 `fo_reevaluate`: 트리거 처리 여부·포지션 버전을 다시 보고 `fo_resume` 세션 1회."""
+    from trader.fo import reeval
+
+    conn = deps.conn_factory()
+    try:
+        ctx = _fo_ctx(deps, conn)
+        return reeval.run(ctx, p, session_runner=deps.session_runner, cancel=deps.stop_event)
+    finally:
+        conn.close()
+
+
+def _fo_close_request(deps: DaemonDeps, p: dict) -> dict:
+    """대기열 `fo_close`(사람 요청): 실행 직전에 장 시간·계좌·포지션 상태를 다시 보고, 모드·
+    일시정지·dry_run 은 executor 가 기록만으로 바꾼다."""
+    from trader import market_hours
+    from trader.fo import executor, store
+
+    if not market_hours.is_fo_open(deps.now()):
+        return {"skipped": "파생 장 밖"}
+    conn = deps.conn_factory()
+    try:
+        ctx = _fo_ctx(deps, conn)
+        account = executor.account_of(ctx, p["account_id"])
+        if account is None:
+            return {"skipped": f"파생 계좌 {p['account_id']} 없음"}
+        pos = store.get_position(conn, int(p["position_id"]))
+        if pos is None or pos.account_id != account.id:
+            return {"skipped": f"포지션 {p['position_id']} 없음"}
+        if pos.status in ("settled", "closed", "unknown", "awaiting_settlement"):
+            return {"skipped": f"포지션 상태 {pos.status} — 자동 청산 대상 아님"}
+        return executor.reduce(ctx, account, pos, intent="CLOSE", qty=None,
+                               reason="수동 청산(대기열)")  # fmt: skip
+    finally:
+        conn.close()
 
 
 # --- 작업 대기열 (jobs.py) ------------------------------------------------------------
@@ -2818,8 +2974,11 @@ def _analyze_ticker_request(deps: DaemonDeps, p: dict) -> dict:
 
 # 결정·주문으로 이어지는 kind. 데몬·뉴스가 자동으로 넣은 요청은 꺼낼 때 장 상태를 다시 본다
 TRADING_KINDS = frozenset(
-    {"scan_analyze", "analyze_ticker", "reevaluate", "discover", "market_view"}
-)
+    {
+        "scan_analyze", "analyze_ticker", "reevaluate", "discover", "market_view",
+        "fo_session", "fo_reevaluate", "fo_close",
+    }
+)  # fmt: skip
 AUTO_SOURCES = frozenset({"daemon", "news", "notice"})
 
 
@@ -2830,6 +2989,17 @@ def _auto_gate(deps: DaemonDeps, req: dict) -> str | None:
     from trader import market_hours
 
     if req["kind"] not in TRADING_KINDS or req.get("source") not in AUTO_SOURCES:
+        return None
+    if req["kind"].startswith("fo_"):  # 파생은 KRX 파생 시계(08:45~15:45)
+        conn = deps.conn_factory()
+        try:
+            why = should_skip("KR", deps.now(), deps.market_client, conn)
+        finally:
+            conn.close()
+        if why:
+            return why
+        if req["kind"] != "fo_session" and not market_hours.is_fo_open(deps.now()):
+            return "파생 장 밖"
         return None
     market = (req.get("params") or {}).get("market")
     if market not in ("KR", "US"):
@@ -2882,6 +3052,12 @@ def queued_job_body(
         return lambda: _reconcile_body(deps, p.get("market"))
     if kind == "discover":
         return lambda: _discover_body(deps, p["market"])
+    if kind == "fo_session":
+        return lambda: _fo_session_body(deps)
+    if kind == "fo_reevaluate":
+        return lambda: _fo_reevaluate_request(deps, p)
+    if kind == "fo_close":
+        return lambda: _fo_close_request(deps, p)
     raise ValueError(f"알 수 없는 작업: {kind}")
 
 
@@ -3163,7 +3339,10 @@ def run(
                 deps.settings.web.port,
                 notifier=deps.notifier,
             )
-        jobs = build_jobs(deps.schedule, deps.settings, markets=list(deps.settings.markets))
+        jobs = build_jobs(
+            deps.schedule, deps.settings, markets=list(deps.settings.markets),
+            fo=bool(deps.fo_accounts),
+        )
         try:
             catch_up_missed(deps, jobs)
         except Exception as e:  # noqa: BLE001 - 따라잡기 실패가 기동을 막지 않는다

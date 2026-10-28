@@ -1180,7 +1180,22 @@ def _daemon_deps(*, dry_run: bool = False):
             wd.extra_hosts.extend(extra)
         return create_app(wd)
 
+    fo_accounts = list(boot.fo_accounts or [])
+    fo_brokers = (
+        {b.account.id: b for b in _build_brokers(secrets, fo_accounts, settings=settings)}
+        if fo_accounts
+        else {}
+    )
+
+    def fo_master_fn():
+        from trader.broker import fo_master
+
+        return fo_master.load(cache_dir=paths.state_dir() / "fo")  # 24시간 캐시(만료면 다운로드)
+
     return daemon_mod.DaemonDeps(
+        fo_accounts=fo_accounts,
+        fo_brokers=fo_brokers,
+        fo_master_fn=fo_master_fn,
         settings=settings,
         schedule=schedule,
         accounts=accounts,
@@ -2202,10 +2217,12 @@ def watchdog_cmd(
         try:
             from trader.daemon import build_jobs
 
-            jobs = build_jobs(config.load_schedule(), b.settings, markets=list(b.settings.markets))
+            jobs = build_jobs(config.load_schedule(), b.settings, markets=list(b.settings.markets),
+                              fo=bool(b.fo_accounts))  # fmt: skip
         except config.ConfigError:
             jobs = []
-        out = watchdog_mod.run_once(b.conn, b.settings, b.accounts, notifier, schedule_jobs=jobs)
+        accounts = list(b.all_accounts or b.accounts)
+        out = watchdog_mod.run_once(b.conn, b.settings, accounts, notifier, schedule_jobs=jobs)
     finally:
         b.conn.close()
     typer.echo(json.dumps(out, ensure_ascii=False))

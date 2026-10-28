@@ -108,6 +108,29 @@ class DiscoverParams(_P):
     market: Market
 
 
+class FoSessionParams(_P):
+    """파생 아침 세션(Phase 26): 계좌·시각은 데몬 설정이 정한다."""
+
+
+class FoReevaluateParams(_P):
+    """파생 장중 재평가(엔진이 트리거·요청 체크포인트를 남긴 뒤 넣는다, `fo/reeval.run`)."""
+
+    account_id: str = Field(min_length=1, max_length=40, pattern=r"^[A-Za-z0-9_\-]+$")
+    position_id: int = Field(ge=1)
+    expected_version: int = Field(ge=0)
+    request_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_\-]+$")
+    round: int = Field(ge=1, le=99)
+    trigger_id: int = Field(ge=1)
+    date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+
+
+class FoCloseParams(_P):
+    """파생 포지션 수동 청산(실행 직전 모드·장 시간·상태를 다시 본다)."""
+
+    account_id: str = Field(min_length=1, max_length=40, pattern=r"^[A-Za-z0-9_\-]+$")
+    position_id: int = Field(ge=1)
+
+
 PARAMS: dict[str, type[BaseModel]] = {
     "features_backfill": FeaturesBackfillParams,
     "features_snapshot": FeaturesSnapshotParams,
@@ -124,12 +147,15 @@ PARAMS: dict[str, type[BaseModel]] = {
     "usage_probe": UsageProbeParams,
     "reconcile": ReconcileParams,
     "discover": DiscoverParams,
+    "fo_session": FoSessionParams,
+    "fo_reevaluate": FoReevaluateParams,
+    "fo_close": FoCloseParams,
 }
 KINDS: tuple[str, ...] = tuple(PARAMS)
 # kind 기본 우선순위. 손절 뒤 재평가는 시간이 생명이라 앞으로, 나머지는 요청 순서.
-PRIORITY: dict[str, int] = {"reevaluate": 10}
+PRIORITY: dict[str, int] = {"reevaluate": 10, "fo_reevaluate": 10, "fo_close": 10}
 # 가벼운 kind(체결 동기화·뉴스 수집)만 heavy 락 밖. 나머지는 세션·KIS·CPU 를 오래 쓴다.
-LIGHT_KINDS: frozenset[str] = frozenset({"fills_sync", "news_collect", "reconcile"})
+LIGHT_KINDS: frozenset[str] = frozenset({"fills_sync", "news_collect", "reconcile", "fo_close"})
 # 정보 레인: 사용량 확인(claude 하위 프로세스, 최대 90초)은 데몬 `job_queue_info` 틱만 꺼낸다 —
 # 빠른 레인에 두면 페이지 접속 확인이 체결통보 동기화·손절 재평가를 막는다(GitHub Codex #55)
 INFO_KINDS: frozenset[str] = frozenset({"usage_probe"})
@@ -138,7 +164,7 @@ HEAVY_KINDS: frozenset[str] = frozenset(
 )
 # 빠른 레인(전체 검토 P2): heavy 락과 무관하게 데몬 `job_queue_fast` 틱이 꺼낸다 — 백필·scan_analyze
 # 가 몇십 분 도는 동안 손절 재평가·체결 동기화가 뒤로 밀리지 않게
-FAST_KINDS: frozenset[str] = LIGHT_KINDS | {"reevaluate"}
+FAST_KINDS: frozenset[str] = LIGHT_KINDS | {"reevaluate", "fo_reevaluate"}
 # 기존 `job_queue` 가 꺼내는 종류 — 빠른 레인 종류는 빼서 소비자를 하나로 둔다(두 레인이 같은 종목
 # 재평가를 동시에 꺼내 `31_decision_r<n>` 를 함께 쓰는 경합 방지, Codex 리뷰)
 SLOW_KINDS: frozenset[str] = frozenset(KINDS) - FAST_KINDS - INFO_KINDS
@@ -158,6 +184,9 @@ _KIND_LABEL = {
     "usage_probe": "Claude 사용량 확인",
     "reconcile": "KIS 대조",
     "discover": "장중 발굴",
+    "fo_session": "파생 세션",
+    "fo_reevaluate": "파생 재평가",
+    "fo_close": "파생 청산",
 }
 
 

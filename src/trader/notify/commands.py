@@ -43,7 +43,7 @@ def approval_line(a: dict, env: str | None = None) -> str:
 HELP_LINE = (
     "/status · /approve <id> [실전] · /reject <id> · /pause · /resume · "
     "/mode <계좌> <auto|approve|off> · /watch add|remove|list <종목> · "
-    "/run <작업> [KR|US] [종목] · /daily · /kill(신규 매수 중단, 해제는 CLI)"
+    "/run <작업> [KR|US] [종목] · /daily · /fo(파생 포지션) · /kill(신규 매수 중단, 해제는 CLI)"
 )
 
 
@@ -149,7 +149,7 @@ def run_command(ectx: Any, arg: str | None) -> str:
 
 
 # 보낸 사람을 확인할 수 없어도 처리하는 명령: 조회와 위험을 줄이는 것(일시정지·킬스위치)만
-UNTRUSTED_OK = frozenset({"status", "pause", "kill", "daily"})
+UNTRUSTED_OK = frozenset({"status", "pause", "kill", "daily", "fo"})
 
 
 def poll_once(ectx: Any, receiver: Any, *, echo: Callable[[str], None] = lambda s: None) -> dict:
@@ -221,6 +221,12 @@ def _handle_command(ectx: Any, conn: Any, cmd: tuple[str, str | None], echo: Cal
                 else messages.event("일일 리포트", "오늘 잔고 스냅샷이 아직 없어요")
             )
             echo("daily")
+            return
+        if name == "fo":
+            from trader.fo import status as fo_status
+
+            ectx.notifier.send(messages.event("파생", *fo_status.lines(conn, ectx.now())))
+            echo("fo")
             return
         if name == "status":
             pending = repo.pending_approvals(conn)
