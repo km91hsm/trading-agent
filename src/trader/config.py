@@ -675,6 +675,23 @@ class Settings(BaseModel):
     scalp: ScalpCfg = Field(default_factory=ScalpCfg)  # Phase 23 분 단위 단타(모의 전용, 기본 끔)
     briefing: BriefingCfg = Field(default_factory=BriefingCfg)  # 아침 브리핑(Stock docs/06)
     cash_park: CashParkCfg = Field(default_factory=CashParkCfg)  # 현금 단기금리 ETF(기본 끔)
+    # 운용 상품(헤지·현금·지수 대용 ETF) 이름 — DART 기업코드 캐시에 ETF 가 없고 KIS 국내 시세
+    # 응답에도 이름이 없어 분석을 거치지 않는 상품은 코드만 보였다. `names` 의 마지막 대체 경로
+    instrument_names: dict[Market, dict[str, str]] = Field(
+        default_factory=lambda: {
+            "KR": {
+                "114800": "KODEX 인버스",
+                "252670": "KODEX 200선물인버스2X",
+                "069500": "KODEX 200",
+                "357870": "TIGER CD금리투자KIS(합성)",
+            },
+            "US": {
+                "SH": "ProShares Short S&P500",
+                "SDS": "ProShares UltraShort S&P500",
+                "SPY": "SPDR S&P 500 ETF Trust",
+            },
+        }
+    )
     event_blackout: BlackoutCfg = Field(default_factory=BlackoutCfg)  # 권리 일정 블랙아웃(기본 끔)
     # 체결통보 웹소켓(데몬, secrets KIS_HTS_ID 필요): 통보가 오면 체결 동기화를 바로 당긴다
     fill_notice: bool = True
