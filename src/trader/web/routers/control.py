@@ -130,7 +130,7 @@ def reject(request: Request, body: ApprovalBody) -> dict:
 @router.post("/mode")
 def mode(request: Request, body: ModeBody) -> dict:
     deps = deps_of(request)
-    acct = deps.account(body.account_id)
+    acct = deps.any_account(body.account_id)  # 설정 화면은 파생 계좌 모드도 바꾼다(Phase 26)
     if acct is None:
         raise HTTPException(status_code=400, detail=f"알 수 없는 계좌: {body.account_id}")
     with closing(deps.conn_factory()) as conn:
@@ -206,7 +206,7 @@ def secrets_status(request: Request) -> dict:
     from trader import secrets_io
     from trader.platform import paths
 
-    return secrets_io.status(paths.secrets_path(), deps_of(request).accounts)
+    return secrets_io.status(paths.secrets_path(), deps_of(request).all_accounts)
 
 
 @router.post("/secrets", dependencies=[Depends(require_direct_local)])
@@ -218,7 +218,10 @@ def secrets_update(request: Request, body: SecretsBody) -> dict:
 
     try:
         r = secrets_io.update(
-            paths.secrets_path(), deps_of(request).accounts, values=body.values, clear=body.clear
+            paths.secrets_path(),
+            deps_of(request).all_accounts,
+            values=body.values,
+            clear=body.clear,
         )
     except ConfigError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
