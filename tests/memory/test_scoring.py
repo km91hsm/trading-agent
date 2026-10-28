@@ -163,7 +163,7 @@ def test_buy_has_no_avoided_loss(conn, project):
     outcomes.mature(conn, state=None, today=DAYS[10])
     x = store.get_entry(conn, e)
     assert x["direction_score"] == pytest.approx(0.04) and x["avoided_loss"] is None
-    assert x["realized_pnl_pct"] is None  # 체결이 없으면 NULL
+    assert x["realized_pnl_pct"] is None and x["post_fill_return"] is None  # 체결이 없으면 NULL
 
 
 def _order_with_fill(conn, dec_id, side, created, fill_price, qty=10):
@@ -201,9 +201,13 @@ def test_realized_pnl_uses_actual_fill_price_per_round(conn, project):
     _order_with_fill(conn, dec_id, "SELL", _at(DAYS[0], 4) + timedelta(seconds=5), 108)
     outcomes.mature(conn, state=None, today=DAYS[10])
     m, r = store.get_entry(conn, morning), store.get_entry(conn, reeval)
-    assert m["realized_pnl_pct"] == pytest.approx(110 / 102 - 1)
+    # 2-L8: 체결가 → 만기 종가 수익은 post_fill_return(매수는 보유 성과, 매도는 회피 성과)
+    assert m["post_fill_return"] == pytest.approx(110 / 102 - 1)
     # TRIM: 판 가격 108 → 만기 110 이면 판 뒤 더 올랐으니 음수
-    assert r["realized_pnl_pct"] == pytest.approx(-(110 / 108 - 1))
+    assert r["post_fill_return"] == pytest.approx(-(110 / 108 - 1))
+    # realized_pnl_pct 는 SELL/TRIM 의 실제 실현손익(FIFO 원가 102 → 108, 왕복비용 30bp 차감)
+    assert r["realized_pnl_pct"] == pytest.approx(108 / 102 - 1 - 0.003)
+    assert m["realized_pnl_pct"] is None  # 매수는 실현이 아니다
     assert m["direction_score"] == pytest.approx(0.10) and r["direction_score"] == pytest.approx(
         -0.10
     )
@@ -359,8 +363,8 @@ def test_approved_order_belongs_to_round_that_requested_it(conn, project):
     conn.execute("UPDATE orders SET mode='approve' WHERE id=?", (oid,))
     conn.commit()
     outcomes.mature(conn, state=None, today=DAYS[10])
-    assert store.get_entry(conn, morning)["realized_pnl_pct"] == pytest.approx(110 / 104 - 1)
-    assert store.get_entry(conn, reeval)["realized_pnl_pct"] is None
+    assert store.get_entry(conn, morning)["post_fill_return"] == pytest.approx(110 / 104 - 1)
+    assert store.get_entry(conn, reeval)["post_fill_return"] is None
 
 
 def test_us_reevaluation_after_kst_midnight_keeps_round_order():
@@ -418,3 +422,25 @@ def test_us_consumers_use_decision_run_date_not_kst_date(conn):
     assert reflect.pending(conn, market="US")[0]["analyst_signals"] == {"technical": "BUY"}
     bt = backtest.simple_backtest(conn, None, since=run, market="US")
     assert bt["n"] == 1
+
+
+def test_sell_without_known_cost_basis_has_no_realized_pnl(conn, project):
+    """2-L8: 원장 밖에서 산 종목(원가 불명)을 판 SELL 은 실현손익을 지어내지 않는다(null)."""
+    _store({"A": [100] * 5 + [110] * 25})
+    dec_id = _decision_row(conn, "A", "SELL", DAYS[0])
+    e = _record(conn, dec_id, "A", "SELL", DAYS[0], hour=1)
+    _order_with_fill(conn, dec_id, "SELL", _at(DAYS[0], 1) + timedelta(seconds=5), 108)
+    outcomes.mature(conn, state=None, today=DAYS[10])
+    got = store.get_entry(conn, e)
+    assert got["realized_pnl_pct"] is None and got["post_fill_return"] == pytest.approx(
+        -(110 / 108 - 1)
+    )
+
+
+def test_v30_moves_old_values_to_post_fill_return(conn):
+    """2-L8 이행: 옛 realized_pnl_pct(체결가 → 만기 수익)는 post_fill_return 으로 옮기고 비운다."""
+    from trader.ledger import db
+
+    assert db.SCHEMA_VERSION >= 30
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(memory_entries)")}
+    assert "post_fill_return" in cols

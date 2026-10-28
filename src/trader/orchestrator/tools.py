@@ -227,6 +227,7 @@ def _memory_context(ctx: ToolContext, inputs: dict, market: Market) -> dict:
             "direction_score": e["direction_score"],
             "avoided_loss": e["avoided_loss"],
             "realized_pnl_pct": e["realized_pnl_pct"],
+            "post_fill_return": e.get("post_fill_return"),
             "lesson": (e.get("reflection") or {}).get("lesson") if e.get("reflection") else None,
             "score": e["score"],
         }
@@ -548,8 +549,16 @@ def checkpoint_summarize(ctx: ToolContext, *, ticker: str, market: Market, date:
     if 0 not in turns or set(turns[0]) != {"bull", "bear"}:
         return {"ok": False, "error": "라운드 0 의 bull·bear 턴이 모두 필요합니다"}
     final_round = max(r for r, sides in turns.items() if set(sides) == {"bull", "bear"})
+    evidence_ids = {
+        str(e.get("source_id"))
+        for r in _reports(d)
+        for e in (r.get("evidence") or [])
+        if isinstance(e, dict) and e.get("source_id")
+    }
     try:
-        summ = summary_mod.research_summary(turns[0], turns[final_round], rounds=final_round)
+        summ = summary_mod.research_summary(
+            turns[0], turns[final_round], rounds=final_round, evidence_ids=evidence_ids
+        )
     except ValueError as e:
         return {"ok": False, "error": str(e)}
     path = write_checkpoint(d, "25_research_summary", _wrap(summ, None))

@@ -756,7 +756,12 @@ def test_scan_analyze_body_records_shadow_portfolios(conn, monkeypatch):
     monkeypatch.setattr(daemon, "_market_view_body", lambda d, m: {"skipped": "test"})
     daemon._scan_analyze_body(deps, "KR")
     got = {r["strategy"]: r["weights"] for r in shadow.rows(conn, market="KR")}
-    assert got == {"candidates_1n": {"005930": 1.0}, "quant_topn": {"005930": 1.0}, "llm": {}}
+    assert got == {
+        "candidates_1n": {"005930": 1.0},
+        "quant_topn": {"005930": 1.0},
+        "llm": {},
+        "llm_all": {},
+    }
 
 
 def test_shadow_record_skips_incomplete_analysis_and_fake(conn, monkeypatch):

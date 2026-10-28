@@ -104,3 +104,68 @@ def test_no_consensus(signals, confs):
 def test_consensus_requires_all_four_roles():
     """리포트가 빠진 역할이 있으면(실패·재시도 소진) 합의로 보지 않는다."""
     assert analyst_consensus(reports(["BUY"] * 3, [0.9] * 3)[:3], 0.7) is None
+
+
+def _change(frm, reason="새 실적 공시로 판단을 바꿈", evidence=("fundamental.dart",)):
+    return {"from_stance": frm, "reason": reason, "evidence": list(evidence)}
+
+
+def test_justified_flip_is_not_sycophantic():
+    """2-L21: 입장을 바꾼 쪽이 바꾼 이유와 리포트에 실제로 있는 근거(source_id)를 대면 아첨이
+    아니다."""
+    r0 = {"bull": turn("bull", "BULLISH", 0.8), "bear": turn("bear", "BEARISH", 0.7)}
+    final = {
+        "bull": turn("bull", "BULLISH", 0.6, round=1),
+        "bear": turn("bear", "BULLISH", 0.5, round=1, stance_change=_change("BEARISH")),
+    }
+    s = research_summary(r0, final, rounds=1, evidence_ids={"fundamental.dart"})
+    assert s["sycophantic"] is False and s["preferred"] == "final"
+    assert s["convergence"] == "justified" and s["convergence_review"] is False
+
+
+def test_flip_citing_unknown_source_is_sycophantic():
+    r0 = {"bull": turn("bull", "BULLISH", 0.8), "bear": turn("bear", "BEARISH", 0.7)}
+    final = {
+        "bull": turn("bull", "BULLISH", 0.6, round=1),
+        "bear": turn(
+            "bear", "BULLISH", 0.5, round=1, stance_change=_change("BEARISH", evidence=("x.y",))
+        ),
+    }
+    s = research_summary(r0, final, rounds=1, evidence_ids={"fundamental.dart"})
+    assert s["sycophantic"] is True and s["convergence"] == "unjustified"
+
+
+def test_both_sides_lose_conviction_is_uncertainty_for_review():
+    """2-L21: 양측이 입장을 지킨 채 확신만 낮춘 수렴은 불확실성 증가 — 아첨으로 확정하지 않고
+    검토 플래그만."""
+    r0 = {"bull": turn("bull", "BULLISH", 0.6), "bear": turn("bear", "BEARISH", 0.6)}
+    final = {
+        "bull": turn("bull", "BULLISH", 0.1, round=1),
+        "bear": turn("bear", "BEARISH", 0.1, round=1),
+    }
+    s = research_summary(r0, final, rounds=1, evidence_ids=set())
+    assert s["sycophantic"] is False and s["preferred"] == "final"
+    assert s["convergence"] == "uncertainty" and s["convergence_review"] is True
+
+
+def test_flip_without_verifiable_sources_is_review_not_verdict():
+    """근거 목록을 모르면(시장 세션 등) 이유가 있는 전환은 확정 대신 검토 플래그."""
+    r0 = {"bull": turn("bull", "BULLISH", 0.8), "bear": turn("bear", "BEARISH", 0.7)}
+    final = {
+        "bull": turn("bull", "BULLISH", 0.6, round=1),
+        "bear": turn("bear", "BULLISH", 0.5, round=1, stance_change=_change("BEARISH")),
+    }
+    s = research_summary(r0, final, rounds=1)
+    assert s["sycophantic"] is False and s["convergence"] == "unverified"
+    assert s["convergence_review"] is True
+
+
+def test_bear_prompt_no_longer_forbids_bullish():
+    """2-L21: 약세 리서처의 BULLISH 금지를 역할 설명·출력 규칙 양쪽에서 푼다."""
+    from pathlib import Path
+
+    md = (Path(__file__).resolve().parents[2] / ".claude/agents/researcher-bear.md").read_text(
+        encoding="utf-8"
+    )
+    assert "BULLISH 로 바꾸지 않는다" not in md and "stance` 는 BEARISH 또는 NEUTRAL" not in md
+    assert "stance_change" in md

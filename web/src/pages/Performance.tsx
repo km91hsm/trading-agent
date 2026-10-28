@@ -150,7 +150,7 @@ export function PerformancePage() {
                 </tr>
                 <tr>
                   <Td>퀀트 상위 5 단독</Td>
-                  <Td num>{b?.quant ? <Delta value={pctNum(b.quant.return)} pct /> : <span className="muted">승격 모델 없음</span>}</Td>
+                  <Td num>{b?.quant ? <Delta value={pctNum(b.quant.return)} pct /> : <span className="muted">섀도 기록 없음</span>}</Td>
                 </tr>
                 <tr>
                   <Td>

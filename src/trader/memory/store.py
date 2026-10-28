@@ -148,6 +148,7 @@ def fill_outcome(
     direction_score: float | None = None,
     avoided_loss: float | None = None,
     realized_pnl_pct: float | None = None,
+    post_fill_return: float | None = None,
 ) -> None:
     """결과 채움. realized_return·alpha 는 하위 호환(옛 채점), 판단 품질은 direction_score·
     avoided_loss(outcomes 모듈 docstring). 방향 점수(없으면 실현수익)나 회피 손실이 5% 이상이면
@@ -163,8 +164,8 @@ def fill_outcome(
         importance = min(1.0, importance + 0.3)
     conn.execute(
         "UPDATE memory_entries SET realized_return=?, alpha_vs_benchmark=?, outcome_at=?, tier=?, "
-        "importance=?, price_return=?, direction_score=?, avoided_loss=?, realized_pnl_pct=? "
-        "WHERE id=?",
+        "importance=?, price_return=?, direction_score=?, avoided_loss=?, realized_pnl_pct=?, "
+        "post_fill_return=? WHERE id=?",
         (
             float(realized_return),
             float(alpha),
@@ -175,6 +176,7 @@ def fill_outcome(
             _opt(direction_score),
             _opt(avoided_loss),
             _opt(realized_pnl_pct),
+            _opt(post_fill_return),
             entry_id,
         ),
     )

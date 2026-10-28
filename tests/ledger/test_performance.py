@@ -161,26 +161,44 @@ def test_orders_window_uses_kst_day(conn):
     assert [r["amount"] for r in rows] == ["500"]
 
 
-def test_report_quant_benchmark_passes_universe_to_latest_rows(conn, project, monkeypatch):
-    """퀀트 벤치마크의 최신 행 조회는 유니버스 종목을 넘겨 파일 60개를 전부 읽지 않는다."""
-    import yaml
+def _shadow_quant(conn, day, weights):
+    import json
 
-    from trader.ml import features, ranker
-
-    (project / "config" / "universe.yaml").write_text(
-        yaml.safe_dump({"kr": ["A", "B"], "us": [], "watch": [], "exclude": []}), encoding="utf-8"
+    conn.execute(
+        "INSERT INTO shadow_portfolios(market, date, strategy, weights_json, created_at) "
+        "VALUES ('KR', ?, 'quant_topn', ?, 'x')",
+        (day.isoformat(), json.dumps(weights)),
     )
-    seen = {}
+    conn.commit()
 
-    def fake_latest_rows(state, market, *, tickers=None, asof=None, max_files=60):
-        seen["tickers"] = tickers
-        seen["asof"] = asof
-        return pd.DataFrame()
 
-    monkeypatch.setattr(features, "latest_rows", fake_latest_rows)
-    monkeypatch.setattr(ranker, "current", lambda state=None, **kw: (lambda df: df, "v1"))
-    _navs(conn, [100, 110])
+def test_report_quant_benchmark_uses_recorded_shadow_not_current_model(conn, project, monkeypatch):
+    """L14: 성과 페이지의 퀀트 기준선은 현재 모델을 과거 창에 소급 적용하지 않고, 그날 기록된 섀도
+    `quant_topn`(당시 정량 스크린)을 다음 봉부터 따른다. 기록 전은 N/A, 바구니 교체는 왕복비용."""
+    from trader.ml import ranker
+
+    monkeypatch.setattr(
+        ranker, "current", lambda *a, **k: (_ for _ in ()).throw(AssertionError("소급 금지"))
+    )
+    _store({"A": [100, 100, 110, 110, 121] + [121] * 20, "B": [100] * 25})
+    _navs(conn, [100, 100, 100, 100, 100])
     r = performance.report(conn, None, "paper-main", "KR", days=30)
-    assert seen["tickers"] == ["A", "B"]
-    # 퀀트 벤치마크 종목은 **창 시작** 시점 피처로 고른다 (창 끝 피처는 룩어헤드)
-    assert seen["asof"].isoformat() == r["nav"][0]["time"]
+    assert r["benchmarks"]["quant"] is None  # 섀도 기록 없음
+    _shadow_quant(conn, DAYS[1], {"A": 1.0})
+    q = performance.report(conn, None, "paper-main", "KR", days=30)["benchmarks"]["quant"]
+    assert q["source"] == "shadow_quant_topn" and q["since"] == DAYS[1].isoformat()
+    # DAYS[1] 종가에 들어가 → DAYS[2] +10%, DAYS[4] +10%. 진입 편도 비용 15bp(왕복 30bp 의 절반)
+    assert q["return"] == pytest.approx(0.9985 * 1.10 * 1.10 - 1, abs=1e-6)
+    assert q["series"][0]["time"] == DAYS[1].isoformat()
+
+
+def test_shadow_quant_benchmark_holds_drifted_weights_between_records(conn, project):
+    """PR #63 Codex: 기록 사이에는 바구니를 그대로 들고(비중이 가격 따라 표류) 새 기록이 올 때만
+    표류한 비중에서 목표로 리밸런스한다 — 매일 목표 비중으로 되돌리면 숨은 리밸런스 수익·비용이
+    생긴다.
+    50/50 에 A 100→200→100, B 그대로면 들고 있기만 한 바구니는 0%(진입 편도 비용만)."""
+    _store({"A": [100, 200, 100] + [100] * 22, "B": [100] * 25})
+    _navs(conn, [100, 100, 100])
+    _shadow_quant(conn, DAYS[0], {"A": 0.5, "B": 0.5})
+    q = performance.shadow_quant_benchmark(conn, None, "KR", DAYS[0], DAYS[2], cost_bp=30)
+    assert q["return"] == pytest.approx(0.9985 - 1, abs=1e-9)

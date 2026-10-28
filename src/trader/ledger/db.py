@@ -498,6 +498,20 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
             "ALTER TABLE decisions ADD COLUMN updated_at TEXT",
         ],
     ),
+    (
+        30,  # 2-L8: 체결가 → 만기 종가 수익(post_fill_return)과 SELL/TRIM 실제 실현손익 분리.
+        # 옛 realized_pnl_pct 는 매도에서 실현손익이 아니었다 — 새 열로 옮기고 비운다
+        [
+            "ALTER TABLE memory_entries ADD COLUMN post_fill_return REAL",
+            "UPDATE memory_entries SET post_fill_return = realized_pnl_pct, "
+            "realized_pnl_pct = NULL WHERE realized_pnl_pct IS NOT NULL",
+        ],
+    ),
+    (
+        31,  # PR #63 Codex: 섀도 비중 정의 버전 — 공통 후보 정의(2-L4) 전에 만기된 옛 llm 행
+        # (후보 밖 매수 포함)을 새 선택 효과 통계에 섞지 않는다. 옛 행은 NULL
+        ["ALTER TABLE shadow_portfolios ADD COLUMN def_version INTEGER"],
+    ),
 ]
 
 

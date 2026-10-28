@@ -49,14 +49,14 @@ def _navs(conn, values, account="paper-main"):
         )
 
 
-def _shadow_pairs(conn, diffs, start=date(2026, 9, 1)):
+def _shadow_pairs(conn, diffs, start=date(2026, 9, 1), market="KR"):
     for i, dlt in enumerate(diffs):
         day = (start + timedelta(days=i)).isoformat()
         for strat, ret in (("llm", 0.01 + dlt), ("candidates_1n", 0.01)):
             conn.execute(
                 "INSERT INTO shadow_portfolios(market, date, strategy, weights_json, created_at, "
-                "fwd_ret, matured_at) VALUES ('KR', ?, ?, '{}', ?, ?, ?)",
-                (day, strat, day, ret, day),
+                "fwd_ret, matured_at, def_version) VALUES (?, ?, ?, ?, ?, ?, ?, 2)",
+                (market, day, strat, '{"A": 1.0}', day, ret, day),
             )
     conn.commit()
 
@@ -218,3 +218,26 @@ def test_run_error_rate_ignores_interval_jobs(conn, project):
     )
     item = next(i for i in r["items"] if i["key"] == "run_error_rate")
     assert item["value"] == pytest.approx(1 / 20)
+
+
+def test_llm_alpha_judged_per_market_of_live_accounts(project, conn):
+    """2-L5: 시장을 이어 붙인 부트스트랩 대신 시장별 판정 — 실전 계좌가 거래하는 시장마다 20쌍 ∧
+    하한 > 0 이어야 통과한다(KR 만 좋고 US 가 없으면 통과 아님)."""
+    accounts = [
+        make_account("paper-main", "paper", "auto", ["KR", "US"]),
+        make_account("real-main", "real", "off", ["KR", "US"]),
+    ]
+
+    def item():
+        r = readiness.check(
+            conn, accounts=accounts, settings=Settings(), state=project / "state", today=TODAY
+        )
+        return next(i for i in r["items"] if i["key"] == "llm_alpha")
+
+    _shadow_pairs(conn, [0.004 + 0.001 * (i % 3) for i in range(readiness.MIN_SHADOW_PAIRS)])
+    it = item()
+    assert it["ok"] is False and "US" in it["note"] and "KR" in it["note"]
+    _shadow_pairs(
+        conn, [0.004 + 0.001 * (i % 3) for i in range(readiness.MIN_SHADOW_PAIRS)], market="US"
+    )
+    assert item()["ok"] is True
