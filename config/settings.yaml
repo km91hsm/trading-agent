@@ -157,6 +157,12 @@ cash_park:
   ticker: "357870"     # TIGER CD금리투자KIS(합성)
   reserve_pct: 0.20    # NAV 대비 남길 현금(조건부 매수·헤지 몫)
 
+# 운용 상품 이름(헤지·현금·지수 대용 ETF). DART 기업코드 캐시에 ETF 가 없고 KIS 국내 시세에도 이름이
+# 없어, 분석을 거치지 않고 바로 주문하는 상품은 화면·알림에 코드만 보였다. 상품을 바꾸면 여기도 고친다
+instrument_names:
+  KR: {"114800": KODEX 인버스, "252670": KODEX 200선물인버스2X, "069500": KODEX 200, "357870": TIGER CD금리투자KIS(합성)}
+  US: {SH: ProShares Short S&P500, SDS: ProShares UltraShort S&P500, SPY: SPDR S&P 500 ETF Trust}
+
 # 권리 일정 블랙아웃(Stock D-113, 기본 끔): 예탁원 기준일 5일 전 ~ 2일 뒤 신규 매수 금지(수집은 매일)
 event_blackout:
   enabled: false

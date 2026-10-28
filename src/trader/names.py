@@ -1,5 +1,6 @@
 """종목명: 원장 `ticker_names`(잔고·00_inputs 관측 시 upsert) → 캐시 JSON(DART 기업코드 맵·EDGAR
-티커 맵, `fetched_at` 무시) → 코드만. 어떤 경로도 네트워크를 타지 않는다. 표기는 `label` 하나다."""
+티커 맵, `fetched_at` 무시) → 설정 `instrument_names`(헤지·현금·지수 대용 ETF) → 코드만. 어떤
+경로도 네트워크를 타지 않는다. 표기는 `label` 하나다."""
 
 from __future__ import annotations
 
@@ -41,24 +42,49 @@ def load_cache_names(cache_dir: Path) -> dict[tuple[str, str], str]:
     return out
 
 
+_CONFIG_MEMO: dict[tuple[str, float], dict[tuple[str, str], str]] = {}
+
+
+def load_config_names() -> dict[tuple[str, str], str]:
+    """설정 `instrument_names` → {(시장, 코드): 이름}. 설정 파일 mtime 으로 메모하고 읽기 실패는
+    빈 dict(기본값은 설정 모델에 있어 파일에 없어도 채워진다)."""
+    from trader import config
+
+    p = paths.config_dir() / "settings.yaml"
+    try:
+        key = (str(p), p.stat().st_mtime if p.exists() else 0.0)
+        if key not in _CONFIG_MEMO:
+            s = config.load_settings(p) if p.exists() else config.Settings()
+            _CONFIG_MEMO.clear()
+            _CONFIG_MEMO[key] = {
+                (m, t): n for m, table in s.instrument_names.items() for t, n in table.items() if n
+            }
+        return _CONFIG_MEMO[key]
+    except Exception as e:  # noqa: BLE001 — 이름은 보조 정보
+        logger.debug("설정 종목명을 읽지 못함: %s", e)
+        return {}
+
+
 def resolve(
     conn: sqlite3.Connection | None, cache_dir: Path, market: str, ticker: str
 ) -> str | None:
-    """원장 → 캐시(적중하면 원장에 source='cache' 로 적재) → None."""
+    """원장 → 캐시 → 설정 운용 상품 이름(적중하면 원장에 source='cache'|'config' 로 적재) → None."""
     if conn is not None:
         found = repo.ticker_names(conn, market=market).get((market, ticker))
         if found:
             return found
-    cached = load_cache_names(cache_dir).get((market, ticker))
-    if cached and conn is not None:
-        repo.upsert_ticker_name(conn, market, ticker, cached, "cache")
-    return cached
+    name, source = load_cache_names(cache_dir).get((market, ticker)), "cache"
+    if not name:
+        name, source = load_config_names().get((market, ticker)), "config"
+    if name and conn is not None:
+        repo.upsert_ticker_name(conn, market, ticker, name, source)
+    return name
 
 
 def resolve_many(
     conn: sqlite3.Connection | None, cache_dir: Path, keys: list[tuple[str, str]]
 ) -> dict[tuple[str, str], str]:
-    """여러 종목을 한 번에: 원장 전체 1회 + 캐시 파일 1회."""
+    """여러 종목을 한 번에: 원장 전체 1회 + 캐시 파일 1회 + 설정 이름(메모)."""
     out: dict[tuple[str, str], str] = {}
     ledger = repo.ticker_names(conn) if conn is not None else {}
     cache: dict[tuple[str, str], str] | None = None
@@ -68,11 +94,13 @@ def resolve_many(
             continue
         if cache is None:
             cache = load_cache_names(cache_dir)
-        name = cache.get(key)
+        name, source = cache.get(key), "cache"
+        if not name:
+            name, source = load_config_names().get(key), "config"
         if name:
             out[key] = name
             if conn is not None:
-                repo.upsert_ticker_name(conn, key[0], key[1], name, "cache")
+                repo.upsert_ticker_name(conn, key[0], key[1], name, source)
     return out
 
 

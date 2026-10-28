@@ -160,3 +160,16 @@ def test_approval_request_and_status_use_names(conn, project):
     # 승인 실행은 order 의 name 을 벗겨 OrderRequest 를 만든다
     r = executor.approve(ectx, pending[0]["id"])
     assert r["ok"] is True and broker.orders[0].ticker == "005930"
+
+
+def test_configured_instrument_names_fill_etfs(conn, project):
+    """헤지·현금·지수 대용 ETF 는 DART 기업코드 캐시에 없다 — 설정 `instrument_names` 가 마지막
+    대체 경로이고(원장·캐시가 먼저), 적중하면 원장에 source='config' 로 남긴다."""
+    cache = project / "state" / "cache"
+    assert names.resolve(conn, cache, "KR", "252670") == "KODEX 200선물인버스2X"
+    assert repo.ticker_names(conn)[("KR", "252670")] == "KODEX 200선물인버스2X"
+    got = names.resolve_many(conn, cache, [("KR", "114800"), ("US", "SH"), ("KR", "999999")])
+    assert got == {("KR", "114800"): "KODEX 인버스", ("US", "SH"): "ProShares Short S&P500"}
+    repo.upsert_ticker_name(conn, "KR", "069500", "관측 이름", "balance")
+    assert names.resolve(conn, cache, "KR", "069500") == "관측 이름"  # 관측값 우선
+    assert names.display(conn, cache, "KR", "252670") == "KODEX 200선물인버스2X(252670)"
