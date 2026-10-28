@@ -274,7 +274,11 @@ def _verified(ctx: FoExecContext, accounts: list[AccountConfig]) -> dict[str, di
 
 
 def _limits(ctx: FoExecContext, regime_state: str | None) -> dict[str, Any]:
-    cfg = ctx.settings.fo
+    return limits_of(ctx.settings.fo, regime_state)
+
+
+def limits_of(cfg: Any, regime_state: str | None) -> dict[str, Any]:
+    """파생 한도 요약(`settings.fo` + 국면 상한) — 세션 입력과 웹 파생 화면이 같은 모양을 쓴다."""
     o = cfg.option
     return {
         "enabled": cfg.enabled,

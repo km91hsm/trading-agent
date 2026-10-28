@@ -144,3 +144,92 @@ def test_live_ops_and_daemon_jobs_include_fo(project, conn):
     assert any(i["key"] == "fo.position_blocked" for i in r["items"]), r["items"]
     jobs = {j["id"] for j in c.get("/api/system/daemon").json()["jobs"]}
     assert {"kr_fo_session", "kr_fo_monitor"} <= jobs
+
+
+# --- 대시보드 선물 요약·파생 화면 보강 ---------------------------------------------
+
+
+def _fo_client(project, conn, *, enabled=False, acct=None):
+    from trader.fo import store as fo_store
+
+    deps = make_deps(project)
+    a = acct or fo_account()
+    deps.fo_accounts = [a]
+    deps.settings = deps.settings.model_copy(
+        update={"fo": deps.settings.fo.model_copy(update={"enabled": enabled})}
+    )
+    today = deps.now().astimezone(__import__("trader.config", fromlist=["KST"]).KST).date()
+    fo_store.write_nav_snapshot(
+        conn, account_id=a.id, date=today.isoformat(), nav=Decimal("50000000"),
+        cash=Decimal("40000000"), margin_total=Decimal("10000000"), add_margin=Decimal("0"),
+    )  # fmt: skip
+    conn.commit()
+    return TestClient(create_app(deps)), deps, today
+
+
+def test_fo_summary_states_and_balance(project, conn):
+    from trader.control import control
+    from trader.fo.executor import CONTRACT_VERSION, verified_key
+
+    c, deps, _ = _fo_client(project, conn)
+    row = c.get("/api/fo/summary").json()["accounts"][0]
+    assert row["id"] == ACCT and row["state"] == "disabled" and row["mode"] == "auto"
+    assert row["nav"] == "50000000" and row["margin_pct"] == 0.2
+    assert row["verified"] == {"FUTURES": False, "OPTION_BUY": False, "OPTION_SELL": False}
+    c, deps, today = _fo_client(project, conn, enabled=True)
+    assert c.get("/api/fo/summary").json()["accounts"][0]["state"] == "unverified"
+    control.set_flag(conn, verified_key(deps.settings, deps.fo_accounts[0], "FUTURES"),
+                     CONTRACT_VERSION)  # fmt: skip
+    conn.commit()
+    row = c.get("/api/fo/summary").json()["accounts"][0]
+    assert row["state"] == "active" and row["verified"]["FUTURES"] is True
+    control.set_flag(conn, f"fo_halted:{ACCT}", today.isoformat())
+    conn.commit()
+    assert c.get("/api/fo/summary").json()["accounts"][0]["state"] == "halted"
+    ctx = make_ctx(conn)
+    _held_position(conn, ctx, qty=2, premium_stop=None)
+    pos = c.get("/api/fo/summary").json()["accounts"][0]["positions"]
+    assert pos == [{"code": "105W11", "kind": "FUTURES", "contract_side": "LONG",
+                    "direction": "LONG", "qty": 2, "status": "held"}]  # fmt: skip
+
+
+def test_fo_summary_real_account_is_off_and_empty_without_fo(project, conn):
+    c, _, _ = _fo_client(project, conn, enabled=True, acct=fo_account(env="real", mode="approve"))
+    row = c.get("/api/fo/summary").json()["accounts"][0]
+    assert row["state"] == "off" and row["mode"] == "off"
+    plain = TestClient(create_app(make_deps(project)))
+    assert plain.get("/api/fo/summary").json() == {"accounts": []}
+
+
+def test_fo_account_context_and_triggers(project, conn):
+    c, deps, today = _fo_client(project, conn)
+    conn.execute(
+        "INSERT INTO triggers(account_id, market, ticker, kind, detail, price, created_at) "
+        "VALUES (?, 'KR', '105W11', 'fo:move', '{}', '350', ?)",
+        (ACCT, deps.now().isoformat()),
+    )
+    conn.commit()
+    r = c.get("/api/fo/account", params={"account_id": ACCT}).json()
+    assert r["status"]["id"] == ACCT and r["status"]["state"] == "disabled"
+    lim = r["context"]["limits"]
+    assert lim["max_leverage"] == deps.settings.fo.max_leverage and lim["enabled"] is False
+    assert r["context"]["source"] == "settings"  # 오늘 _fo_inputs 가 없으면 설정값
+    assert [t["kind"] for t in r["triggers"]] == ["move"]
+    assert c.get("/api/fo/account", params={"account_id": "paper-main"}).status_code == 400
+
+
+def test_fo_today_checks_include_gate_detail(project, conn):
+    from trader.orchestrator import run_store
+
+    c, deps, today = _fo_client(project, conn)
+    mdir = run_store.market_dir(today, "KR", deps.state, create=True)
+    verdict = {"approved": True, "reasons": [], "note": "", "leverage_used": 0.4,
+               "exposure_after": "20000000", "stress_loss_after": "900000",
+               "lifetime_budget": {"used": "0", "planned": "300000", "limit": "1000000",
+                                   "free": "700000"},
+               "cross_factor": 1.0, "n_target": 2, "approved_mult": None}  # fmt: skip
+    payload = run_store.checkpoint_payload({"verdict": verdict}, None)
+    run_store.write_checkpoint(mdir, f"_fo_risk_check_{ACCT}", payload)
+    chk = c.get("/api/fo/today").json()["checks"][f"_fo_risk_check_{ACCT}"]
+    assert chk["leverage_used"] == 0.4 and chk["n_target"] == 2
+    assert chk["lifetime_budget"]["limit"] == "1000000" and chk["stress_loss_after"] == "900000"

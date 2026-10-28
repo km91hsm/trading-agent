@@ -37,6 +37,7 @@ import type {
   SystemSettings,
 } from "../types";
 import { Ticker } from "../components/Ticker";
+import { FoSummary } from "../components/FoSummary";
 
 
 /** 시장별 오늘(운영일): KR 은 KST 날짜, US 는 뉴욕 날짜. */
@@ -306,6 +307,7 @@ export function Dashboard() {
             );
           })}
       </div>
+      <FoSummary />
 
       <OverviewBlock
         data={overview.data}

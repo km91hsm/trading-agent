@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { liveSummary, mergeAccountRows, mergeHoldings, missingText, overviewRows, partialText, planCell, planCells } from "./overview";
+import { accountSubRows, liveSummary, mergeAccountRows, mergeHoldings, missingText, overviewRows, partialText, planCell, planCells } from "./overview";
 import type { Overview, OverviewEnv } from "./types";
 
 const env = (nav: string, accounts: string[]): OverviewEnv => ({
@@ -97,3 +97,21 @@ describe("liveSummary", () => {
     expect(liveSummary(e, "KR", { "005930": { price: "55000", change_pct: 1, asof: "", stale: true } }).nav).toContain("1,000,000");
   });
 });
+
+describe("계좌별 펼침 줄(계좌 여러 개)", () => {
+  it("한 시장·환경에 계좌가 둘 이상이면 계좌마다 순자산·현금·기준일, 하나면 없음", () => {
+    const o: Overview = {
+      markets: { KR: { envs: { real: env("3000", ["real-main", "real-2", "real-3"]), paper: env("1000", ["paper-main"]) } } },
+      accounts_missing_snapshot: {}, pending_approvals: 0, configured: 4,
+    } as Overview;
+    const rows = overviewRows(o);
+    const real = rows.find((r) => r.env === "real")!;
+    expect(accountSubRows(real)).toEqual([
+      { id: "real-main", nav: "3,000원", cash: "3,000원", date: "2026-10-24" },
+      { id: "real-2", nav: "3,000원", cash: "3,000원", date: "2026-10-24" },
+      { id: "real-3", nav: "3,000원", cash: "3,000원", date: "2026-10-24" },
+    ]);
+    expect(accountSubRows(rows.find((r) => r.env === "paper")!)).toEqual([]);
+  });
+});
+

@@ -71,6 +71,14 @@ export function overviewRows(o: Overview | null | undefined): OverviewRow[] {
   return out;
 }
 
+export type AccountSubRow = { id: string; nav: string; cash: string; date: string };
+
+/** 한 시장·환경에 계좌가 둘 이상일 때 계좌별 순자산·현금·기준일(합산 줄 아래 펼침). 하나면 빈 목록. */
+export function accountSubRows(r: OverviewRow): AccountSubRow[] {
+  if (r.data.accounts.length < 2) return [];
+  return r.data.accounts.map((a) => ({ id: a.id, nav: fmtMoney(a.nav, r.market), cash: fmtMoney(a.cash, r.market), date: a.snapshot_date }));
+}
+
 /** 스냅샷이 아직 없는 계좌 "KR: a, b · US: c". 없으면 "". */
 export function missingText(o: Overview | null | undefined): string {
   if (!o) return "";

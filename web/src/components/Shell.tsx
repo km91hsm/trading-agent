@@ -10,6 +10,7 @@ import { Clock } from "./Clock";
 import { IndexChips } from "./IndexChips";
 import { CommandPalette } from "./CommandPalette";
 import { Glyph, type GlyphName } from "./Glyph";
+import { modeAccountLabel } from "../fo";
 
 const THEME_NEXT: Record<Theme, Theme> = { light: "dark", dark: "system", system: "light" };
 const THEME_GLYPH: Record<Theme, GlyphName> = { light: "sun", dark: "moon", system: "system" };
@@ -45,7 +46,7 @@ export function Shell({ children }: { children: ReactNode }) {
             {accounts.length > 0 && <option value={ALL_ACCOUNTS}>전체 ({accounts.length}개 합산)</option>}
             {accounts.map((a) => (
               <option key={a.id} value={a.id}>
-                {a.id} · {a.env === "real" ? "실전" : "모의"} · {a.mode}
+                {modeAccountLabel(a)}
               </option>
             ))}
             {!accounts.length && <option value="">계좌 없음</option>}

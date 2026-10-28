@@ -53,6 +53,133 @@ def _decision_row(r) -> dict:
     }  # fmt: skip
 
 
+VEHICLES = ("FUTURES", "OPTION_BUY", "OPTION_SELL")
+# 게이트 판정(FoVerdict) 중 화면에 펼쳐 보이는 값
+VERDICT_FIELDS = (
+    "leverage_used", "exposure_after", "stress_loss_after", "lifetime_budget",
+    "cross_factor", "n_target", "approved_mult", "code", "kind", "contract_side",
+)  # fmt: skip
+
+
+def _account_status(conn, deps, a: AccountConfig, today: date) -> dict:
+    """대시보드 요약·파생 화면 계좌 상태 한 묶음(원장·control 만 — 브로커 호출 없음).
+    state 우선순위: 실전 파생 off → 레인 꺼짐(disabled) → 검증 전(unverified) → 일일 손실 한도
+    (halted) → 기록만(record_only: 모드 off·일시정지) → active."""
+    from trader.fo.executor import CONTRACT_VERSION, fo_mode, verified_key
+
+    cfg = deps.settings.fo
+    mode, note = fo_mode(conn, a)
+    paused = control.is_paused(conn)
+    verified = {
+        v: control.get_flag(conn, verified_key(deps.settings, a, v)) == CONTRACT_VERSION
+        for v in VEHICLES
+    }
+    halted = control.get_flag(conn, f"fo_halted:{a.id}") == today.isoformat()
+    pending = isinstance(control.get_flag(conn, f"fo_pending_entry:{a.id}"), dict)
+    nav_row = conn.execute(
+        "SELECT date, nav, cash, margin_total, add_margin FROM fo_nav_snapshot "
+        "WHERE account_id = ? ORDER BY date DESC LIMIT 1",
+        (a.id,),
+    ).fetchone()
+    nav = Decimal(str(nav_row["nav"])) if nav_row and nav_row["nav"] not in (None, "") else None
+    margin = (
+        Decimal(str(nav_row["margin_total"]))
+        if nav_row and nav_row["margin_total"] not in (None, "")
+        else None
+    )
+    positions = [
+        {"code": p.code, "kind": p.kind, "contract_side": p.contract_side,
+         "direction": p.direction, "qty": p.qty_held, "status": p.status}
+        for p in store.open_positions(conn, a.id)
+        if p.status not in ("settled", "closed")
+    ]  # fmt: skip
+    if a.env != "paper":
+        state = "off"
+    elif not cfg.enabled:
+        state = "disabled"
+    elif not any(verified[v] for v in cfg.vehicles):
+        state = "unverified"
+    elif halted:
+        state = "halted"
+    elif mode != "auto" or paused:
+        state = "record_only"
+    else:
+        state = "active"
+    rows = conn.execute(
+        "SELECT * FROM fo_decisions WHERE date = ? AND (account_id IS NULL OR account_id = ?) "
+        "ORDER BY round DESC, id DESC LIMIT 1",
+        (today.isoformat(), a.id),
+    ).fetchall()
+    return {
+        "id": a.id, "env": a.env, "mode": mode, "mode_note": note, "paused": paused,
+        "state": state, "enabled": cfg.enabled, "vehicles": list(cfg.vehicles),
+        "verified": verified, "halted": halted, "pending_entry": pending,
+        "nav_date": nav_row["date"] if nav_row else None, "nav": _s(nav),
+        "cash": nav_row["cash"] if nav_row else None, "margin_total": _s(margin),
+        "add_margin": nav_row["add_margin"] if nav_row else None,
+        "margin_pct": round(float(margin / nav), 4) if nav and margin is not None and nav > 0
+        else None,
+        "positions": positions,
+        "decision": _decision_row(rows[0]) if rows else None,
+    }  # fmt: skip
+
+
+@router.get("/summary")
+def summary(request: Request) -> dict:
+    """대시보드 선물 한 줄 요약 — 파생 계좌마다 상태·잔고·포지션·오늘 결정. 계좌 없으면 빈 목록."""
+    deps = deps_of(request)
+    today = today_kst(request)
+    with closing(deps.conn_factory()) as conn:
+        return {"accounts": [_account_status(conn, deps, a, today) for a in deps.fo_accounts]}
+
+
+@router.get("/account")
+def account(request: Request, account_id: str = Query(...)) -> dict:
+    """파생 화면 상단: 계좌 상태 + 시장·한도 맥락(오늘 `_fo_inputs` 가 있으면 그것, 없으면 설정·
+    control) + 오늘 트리거."""
+    from trader.fo.inputs import INPUTS_STAGE, limits_of
+
+    deps = deps_of(request)
+    a = _fo_account(request, account_id)
+    today = today_kst(request)
+    with closing(deps.conn_factory()) as conn:
+        status = _account_status(conn, deps, a, today)
+        regime = control.get_flag(conn, f"regime:{MARKET}") or {}
+        view = control.get_flag(conn, f"market_view:{MARKET}") or {}
+        lo, hi = repo.day_bounds(today, MARKET)
+        trig = [
+            {"kind": str(r["kind"]).removeprefix("fo:"), "code": r["ticker"],
+             "price": r["price"], "at": r["created_at"], "handled": r["handled_at"] is not None,
+             "session": r["session_id"]}
+            for r in conn.execute(
+                "SELECT * FROM triggers WHERE kind LIKE 'fo:%' AND account_id = ? "
+                "AND created_at >= ? AND created_at < ? ORDER BY id DESC",
+                (a.id, lo, hi),
+            )
+        ]  # fmt: skip
+    mdir = run_store.market_dir(today, MARKET, deps.state)
+    inputs = run_store.read_checkpoint(mdir, INPUTS_STAGE)
+    ctx = (((inputs or {}).get("data") or {}).get("context") or {}).get("data") or {}
+    if ctx:
+        context = {
+            "source": "inputs", "index": ctx.get("index"), "regime": ctx.get("regime"),
+            "market_view": ctx.get("market_view"), "limits": ctx.get("limits"),
+            "products": ctx.get("products"),
+        }  # fmt: skip
+    else:
+        rstate = regime.get("state") if isinstance(regime, dict) else None
+        context = {
+            "source": "settings", "index": None,
+            "regime": {"state": rstate, "count": regime.get("count") if isinstance(regime, dict)
+                       else None},
+            "market_view": {k: view.get(k) for k in ("stance", "confidence", "date")}
+            if isinstance(view, dict) and view else None,
+            "limits": limits_of(deps.settings.fo, rstate),
+            "products": None,
+        }  # fmt: skip
+    return {"status": status, "context": context, "triggers": trig}
+
+
 @router.get("/today")
 def today(request: Request, date_: str | None = Query(None, alias="date")) -> dict:
     """오늘(또는 date) 아침 결정·재평가 라운드·계좌별 판정 요약·보류·일일 손실 상태."""
@@ -85,6 +212,7 @@ def today(request: Request, date_: str | None = Query(None, alias="date")) -> di
                 "note": verdict.get("note") or data.get("note"),
                 "status": data.get("status"), "record_only": data.get("record_only"),
                 "error": data.get("error"),
+                **{k: verdict.get(k) for k in VERDICT_FIELDS if k in verdict},
             }  # fmt: skip
     morning = next((x for x in decisions if x["round"] == 0), None)
     return {
