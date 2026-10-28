@@ -26,6 +26,12 @@ class ApprovalBody(BaseModel):
     approval_id: int
 
 
+class ThrottleBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool | None  # None 이면 화면 설정을 지우고 yaml 값으로
+
+
 class ModeBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -148,6 +154,19 @@ def _set_paused(request: Request, value: bool) -> dict:
     with closing(deps.conn_factory()) as conn:
         control.set_flag(conn, "paused", value)
         return {"ok": True, "paused": control.is_paused(conn)}
+
+
+@router.post("/usage-throttle")
+def usage_throttle(request: Request, body: ThrottleBody) -> dict:
+    """Claude 구독 사용률 감속 켜기·끄기(설정 화면). 끄면 사용률과 무관하게 세션을 띄운다 —
+    하루 세션 상한(`llm.daily_session_cap`)은 그대로."""
+    from trader import usage
+
+    deps = deps_of(request)
+    with closing(deps.conn_factory()) as conn:
+        control.set_flag(conn, usage.THROTTLE_FLAG, body.enabled)
+        enabled, source = usage.throttle_enabled(conn, deps.settings)
+    return {"enabled": enabled, "source": source}
 
 
 @router.post("/pause")

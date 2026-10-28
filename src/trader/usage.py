@@ -195,6 +195,19 @@ def latest_observation(
 
 # soft 감속에서도 허용하는 보유 재평가 종류(현물 `resume`, 파생 `fo_resume` — Phase 26 R14)
 RESUME_KINDS = frozenset({"resume", "fo_resume"})
+# 설정 화면 켜기·끄기(bool). 없으면 yaml `llm.usage_throttle.enabled`
+THROTTLE_FLAG = "usage_throttle"
+
+
+def throttle_enabled(conn: sqlite3.Connection | None, settings: Any) -> tuple[bool, str]:
+    """(감속 켜짐, 출처 'control'|'yaml'). 런타임 플래그가 yaml 보다 우선한다."""
+    if conn is not None:
+        from trader.control import control
+
+        flag = control.get_flag(conn, THROTTLE_FLAG)
+        if isinstance(flag, bool):
+            return flag, "control"
+    return bool(settings.llm.usage_throttle.enabled), "yaml"
 
 
 def session_allowance(
@@ -203,7 +216,7 @@ def session_allowance(
     """구독 사용률 감속 (Phase 24, `llm.usage_throttle`). 관측 없음·오래됨·꺼짐 → 허용.
     어느 창이든 ≥ hard → 거부, ≥ soft → 보유 재평가(`resume`)만 허용."""
     cfg = settings.llm.usage_throttle
-    if not cfg.enabled:
+    if not throttle_enabled(conn, settings)[0]:
         return True, None
     obs = latest_observation(conn, now, usage_file(settings.llm.usage_file))
     if obs is None:

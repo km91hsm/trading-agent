@@ -12,6 +12,7 @@ import { useToast } from "../components/Toast";
 import { modeAccountLabel, settingsAccounts } from "../fo";
 import { termHelp } from "../glossary";
 import { useApp, useLoad } from "../hooks";
+import { throttleSetting, type UsageResp } from "../usage";
 import { parseWatch } from "../tape";
 import type { Theme } from "../theme";
 import { Ticker } from "../components/Ticker";
@@ -37,6 +38,17 @@ export function SettingsPage() {
   const settings = useLoad(() => getJson<Record<string, unknown>>("/api/system/settings"), [tick]);
   const status = useLoad(() => getJson<{ markdown: string }>("/api/system/status"), [tick]);
   const watch = useLoad(() => getJson<{ tickers: string[] }>("/api/control/watchlist"), [tick]);
+  const usage = useLoad(() => getJson<UsageResp>("/api/system/usage"), [tick]);
+  const throttle = usage.data?.throttle;
+  const setThrottle = async (enabled: boolean | null, ok: string) => {
+    try {
+      await postJson("/api/control/usage-throttle", { enabled }, token);
+      toast(ok, "ok");
+      usage.reload();
+    } catch (e) {
+      toast(`실패: ${(e as Error).message}`, "error");
+    }
+  };
   const target = accounts.find((a) => a.id === (acct || accounts[0]?.id));
   const needsLive = target?.env === "real" && mode === "auto";
 
@@ -99,6 +111,26 @@ export function SettingsPage() {
                 지우기
               </button>
             </form>
+          </Section>
+          <Section
+            title="Claude 사용량 감속"
+            aside={throttle ? <Badge kind={throttle.enabled ? "ok" : "pending"} value={throttle.enabled ? "켜짐" : "꺼짐"} /> : null}
+          >
+            <p className="note">
+              구독 사용률(5시간·7일)이 기준을 넘으면 새 분석 세션을 쉬어 사용량을 아낀다. 끄면 사용률과 무관하게 세션을 띄운다.
+            </p>
+            <p>{throttleSetting(throttle)}</p>
+            <div className="row">
+              <button type="button" className="btn btn-primary" disabled={!token || throttle?.enabled === true} onClick={() => setThrottle(true, "감속을 켰어요")}>
+                켜기
+              </button>
+              <button type="button" className="btn btn-danger" disabled={!token || throttle?.enabled === false} onClick={() => setThrottle(false, "감속을 껐어요")}>
+                끄기
+              </button>
+              <button type="button" className="btn" disabled={!token || throttle?.source !== "control"} onClick={() => setThrottle(null, "설정 파일 값으로 되돌렸어요")}>
+                설정 파일 값으로
+              </button>
+            </div>
           </Section>
           <Section title="거래" aside={events?.paused ? <Badge kind="pending" value="일시정지" /> : <Badge kind="ok" value="실행 중" />}>
             <p className="note">

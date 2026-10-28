@@ -855,16 +855,25 @@ pre.status {
   }
 }
 
-/* 작업 대기열 (Phase 17): 진행 문구 한 줄 말줄임, 확인창 체크박스 */
+/* 작업 대기열 (Phase 17): 진행·사유는 줄바꿈해 끝까지 — 길면 두 줄로 접고 '더 보기', 확인창 체크박스 */
+.progress-cell {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  max-width: 60ch;
+}
 .progress-text {
-  display: inline-block;
-  max-width: 28ch;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  vertical-align: bottom;
+  white-space: normal;
+  overflow-wrap: anywhere;
   color: var(--ink-2);
   font-size: var(--t-xs);
+}
+.progress-text.clamp {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 label.check {
   display: inline-flex;

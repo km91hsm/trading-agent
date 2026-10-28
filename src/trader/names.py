@@ -7,6 +7,8 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+from collections.abc import Callable
+from datetime import date
 from pathlib import Path
 
 from trader.ledger import repo
@@ -102,6 +104,49 @@ def resolve_many(
             if conn is not None:
                 repo.upsert_ticker_name(conn, key[0], key[1], name, source)
     return out
+
+
+MISS_FLAG = "names_miss"  # {"<시장>:<종목>": "YYYY-MM-DD"} — 그날 KIS 가 이름을 못 준 종목
+
+
+def fill_missing(
+    conn: sqlite3.Connection,
+    lookup: Callable[..., str | None],
+    *,
+    cache_dir: Path,
+    today: date,
+    limit: int = 20,
+) -> dict:
+    """데몬 names_fill: 원장에 나왔지만 이름이 없는 종목을 캐시·설정 → `lookup`(KIS 종목 기본정보)
+    순으로 채운다(source='kis'). 못 찾은 종목은 그날 다시 묻지 않고, 한 번에 `limit` 건까지만
+    조회한다. 화면 표시 경로는 이 함수를 부르지 않는다(네트워크 없음 유지)."""
+    from trader.control import control
+
+    keys = repo.unnamed_tickers(conn)
+    local = resolve_many(conn, cache_dir, keys)  # 캐시·설정으로 채워지는 것은 조회하지 않는다
+    missing = [k for k in keys if k not in local]
+    misses = dict(control.get_flag(conn, MISS_FLAG) or {})
+    misses = {k: v for k, v in misses.items() if v == today.isoformat()}  # 지난 날 기록은 버린다
+    exchanges = {m: repo.ticker_exchanges(conn, m) for m in ("US",)}
+    asked = filled = 0
+    for market, ticker in missing:
+        tag = f"{market}:{ticker}"
+        if tag in misses:
+            continue
+        if asked >= limit:
+            break
+        asked += 1
+        try:
+            name = lookup(market, ticker, exchange=exchanges.get(market, {}).get(ticker))
+        except Exception as e:  # noqa: BLE001 — 한 종목 실패가 나머지를 막지 않는다
+            logger.warning("종목명 조회 실패 %s: %s", tag, e)
+            name = None
+        if name and repo.upsert_ticker_name(conn, market, ticker, name, "kis"):
+            filled += 1
+        else:
+            misses[tag] = today.isoformat()
+    control.set_flag(conn, MISS_FLAG, misses)
+    return {"candidates": len(keys), "local": len(local), "asked": asked, "filled": filled}
 
 
 def label(ticker: str, name: str | None) -> str:

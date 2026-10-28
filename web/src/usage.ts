@@ -9,7 +9,7 @@ export type RateLimits = {
   spend_limit: LimitWindow;
   source?: "session" | "probe" | "statusline"; // 세션 rate_limit_event·데몬 사용량 확인(원장) 또는 대화형 상태줄 파일
 } | null;
-export type Throttle = { enabled: boolean; soft_pct: number; hard_pct: number; state: "ok" | "soft" | "hard"; reason: string | null };
+export type Throttle = { enabled: boolean; source?: "control" | "yaml"; soft_pct: number; hard_pct: number; state: "ok" | "soft" | "hard"; reason: string | null };
 export type UsageWindow = { sessions: number; cost_usd: number; avg_duration_s: number | null; errors: number };
 export type UsageResp = {
   rate_limits: RateLimits;
@@ -113,6 +113,15 @@ export function throttleText(t: Throttle | undefined): string {
   return t.state === "hard"
     ? `감속: 새 세션 전부 중지 (${Math.round(t.hard_pct * 100)}% 이상)`
     : `감속: 보유 재평가만 (${Math.round(t.soft_pct * 100)}% 이상)`;
+}
+
+/** 설정 화면 감속 상태 문구: 켜짐/꺼짐 + 기준 + 출처(화면에서 바꿨는지, 설정 파일 값인지). */
+export function throttleSetting(t: Throttle | undefined): string {
+  if (!t) return "상태 모름";
+  const src = t.source === "control" ? "설정 화면에서 바꿈" : "설정 파일 값";
+  return t.enabled
+    ? `켜짐 · ${Math.round(t.soft_pct * 100)}% 부터 보유 재평가만, ${Math.round(t.hard_pct * 100)}% 부터 새 세션 중지 · ${src}`
+    : `꺼짐 · 사용률과 무관하게 세션을 띄움(하루 세션 상한은 그대로) · ${src}`;
 }
 
 /** 상태 줄 칩 "5h 12% · 7d 54%". 관측이 없는 창은 0% 가 아니라 "—"(모르는 것을 0 으로 보이지 않게). */

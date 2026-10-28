@@ -75,11 +75,13 @@ def usage_view(request: Request) -> dict:
         windows = usage.ledger_windows(conn, now, cap=deps.settings.llm.daily_session_cap)
         ok_new, why_new = usage.session_allowance(conn, deps.settings, kind="analyze", now=now)
         ok_re, why_re = usage.session_allowance(conn, deps.settings, kind="resume", now=now)
+        enabled, source = usage.throttle_enabled(conn, deps.settings)
     t = deps.settings.llm.usage_throttle
     return {
         "rate_limits": limits,
         "throttle": {
-            "enabled": t.enabled,
+            "enabled": enabled,
+            "source": source,  # control(설정 화면) | yaml
             "soft_pct": t.soft_pct,
             "hard_pct": t.hard_pct,
             "state": "ok" if ok_new else ("soft" if ok_re else "hard"),

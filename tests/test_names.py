@@ -173,3 +173,35 @@ def test_configured_instrument_names_fill_etfs(conn, project):
     repo.upsert_ticker_name(conn, "KR", "069500", "관측 이름", "balance")
     assert names.resolve(conn, cache, "KR", "069500") == "관측 이름"  # 관측값 우선
     assert names.display(conn, cache, "KR", "252670") == "KODEX 200선물인버스2X(252670)"
+
+
+def test_fill_missing_names_from_broker(conn, project):
+    """데몬 names_fill: 원장에 나온 종목 중 이름이 없는 것만 조회해 source='kis' 로 남긴다.
+    못 찾은 종목은 그날 다시 묻지 않는다."""
+    from datetime import date
+
+    from trader.ledger import repo as r
+
+    for t in ("252670", "005930", "777777"):
+        r.snapshot_positions(conn, account_id="paper-main", d=date(2026, 10, 29), market="KR",
+                             nav=Decimal(1), cash=Decimal(1),
+                             positions=[{"ticker": t, "market": "KR", "qty": 1}])  # fmt: skip
+    r.upsert_ticker_name(conn, "KR", "005930", "삼성전자", "balance")
+    asked: list[tuple[str, str]] = []
+
+    def lookup(market, ticker, exchange=None):
+        asked.append((market, ticker))
+        return {"777777": "합성 종목"}.get(ticker)
+
+    cache = project / "state" / "cache"
+    out = names.fill_missing(conn, lookup, cache_dir=cache, today=date(2026, 10, 29))
+    # 252670 은 설정 이름으로 채워져 조회하지 않고, 005930 은 이미 있다
+    assert asked == [("KR", "777777")] and out["filled"] == 1
+    assert r.ticker_names(conn)[("KR", "777777")] == "합성 종목"
+    asked.clear()
+    r.snapshot_positions(conn, account_id="paper-main", d=date(2026, 10, 29), market="KR",
+                         nav=Decimal(1), cash=Decimal(1),
+                         positions=[{"ticker": "888888", "market": "KR", "qty": 1}])  # fmt: skip
+    names.fill_missing(conn, lookup, cache_dir=cache, today=date(2026, 10, 29))
+    names.fill_missing(conn, lookup, cache_dir=cache, today=date(2026, 10, 29))
+    assert asked == [("KR", "888888")]  # 못 찾은 종목은 그날 한 번만
