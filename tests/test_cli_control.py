@@ -120,3 +120,19 @@ def test_control_pause_reports_config_error_as_one_line(project):
     assert "Traceback" not in (r.stdout + (r.stderr or ""))
     r = CliRunner().invoke(app, ["features", "snapshot", "--asof", "2026/10/18"])
     assert r.exit_code == 1 and "오류:" in (r.stdout + (r.stderr or ""))
+
+
+def test_control_show_real_fo_account_is_off(project):
+    """실전 파생 계좌는 코드상 항상 off — 설정이 approve 여도 off 로 보인다(Phase 26)."""
+    data = {
+        "accounts": [
+            {"id": "paper-main", "env": "paper", "cano": "0", "markets": ["KR"], "mode": "auto"},
+            {"id": "real-fo", "env": "real", "cano": "2", "acnt_prdt_cd": "03",
+             "markets": ["KR"], "mode": "approve", "asset": "fo"},
+        ]
+    }  # fmt: skip
+    (project / "config" / "accounts.yaml").write_text(yaml.safe_dump(data), encoding="utf-8")
+    r = CliRunner().invoke(app, ["control", "show"])
+    assert r.exit_code == 0, r.stdout
+    line = next(x for x in r.stdout.splitlines() if x.startswith("real-fo"))
+    assert "off" in line and "approve" not in line.split("—")[0]

@@ -263,3 +263,36 @@ def test_unknown_command_help_at_most_once_per_minute(conn):
     t[0] += timedelta(seconds=61)
     commands.poll_once(ctx, Recv(["/bar"]))
     assert sum(m.startswith("[명령 안내]") for m in sent.msgs) == 2
+
+
+def _fo(id: str, env: str, mode: str):
+    from trader.config import AccountConfig
+
+    return AccountConfig(id=id, env=env, cano="00000000", acnt_prdt_cd="03", markets=["KR"],
+                         mode=mode, asset="fo")  # fmt: skip
+
+
+def test_mode_and_status_reach_fo_accounts(conn):
+    """/mode·/status 는 계좌를 가리지 않는 제어 — `control_accounts`(현물 + 파생)를 본다.
+    실전 파생은 코드상 항상 off 라 설정이 approve 여도 끔으로 보인다."""
+    import dataclasses
+
+    sent = Sent()
+    base = _ctx(conn, sent)
+    fo = [_fo("paper-fo", "paper", "auto"), _fo("real-fo", "real", "approve")]
+    ctx = dataclasses.replace(base, control_accounts=[*base.accounts, *fo])
+    commands.poll_once(ctx, Recv(["/mode paper-fo off"]))
+    assert control.get_account_mode(conn, fo[0]) == "off"
+    assert "알 수 없는" not in sent.msgs[-1]
+    commands.poll_once(ctx, Recv(["/status"]))
+    msg = sent.msgs[-1]
+    assert "paper-fo(모의) 끔" in msg
+    assert "real-fo(실전) 끔" in msg and "real-fo(실전) 승인" not in msg
+
+
+def test_account_mode_real_fo_is_always_off(conn):
+    from trader.orchestrator import executor
+
+    assert executor.account_mode(conn, _fo("real-fo", "real", "approve"))[0] == "off"
+    assert executor.account_mode(conn, _fo("paper-fo", "paper", "auto"))[0] == "auto"
+    assert executor.account_mode(conn, make_account("real-main", "real", "approve"))[0] == "approve"

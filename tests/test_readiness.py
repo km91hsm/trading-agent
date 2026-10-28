@@ -124,6 +124,17 @@ def test_readiness_items_and_thresholds(project, conn):
     assert by["paper_days"]["ok"] and by["paper_days"]["value"] == 22
     assert by["run_error_rate"]["ok"] and by["run_error_rate"]["value"] < 0.1
     assert by["order_failed_rate"]["ok"]
+    # 파생 레인(Phase 26) 주문 실패는 현물 실전 전환 준비도에 섞지 않는다
+    for i in range(5):
+        repo.insert_order(conn, decision_id=None, account_id="paper-fo", ticker=f"A0561{i}",
+                          market="KR", side="BUY", qty=1, order_type="LIMIT", price=None,
+                          status="failed", order_no=None, message="fo", mode="auto",
+                          created_at=f"{TODAY.isoformat()}T01:00:00+00:00", asset="fo",
+                          origin="fo")  # fmt: skip
+    again = readiness.check(
+        conn, accounts=accounts, settings=Settings(), state=project / "state", today=TODAY
+    )
+    assert next(i for i in again["items"] if i["key"] == "order_failed_rate")["ok"]
     assert by["return_vs_benchmark"]["ok"] and by["return_vs_benchmark"]["note"].startswith("정보")
     assert by["llm_alpha"]["ok"] and by["llm_alpha"]["value"] > 0
     assert by["mdd"]["ok"] and by["mdd"]["value"] < 0

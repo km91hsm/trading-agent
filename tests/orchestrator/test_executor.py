@@ -1377,3 +1377,30 @@ def test_reservation_bound_during_balance_read_is_not_double_counted(ectx):
     assert by["paper-main"]["qty"] == 14 and not any(
         "동시 판정" in x for x in by["paper-main"]["reasons"]
     )
+
+
+def test_breaker_sums_configured_paper_accounts_any_count(ectx):
+    """합산 대상은 설정의 모의 현물 계좌(개수 무관)다 — 원장 계좌 표가 늦게 갱신돼도 새 계좌가
+    빠지지 않고, 설정에서 지운 계좌의 옛 NAV 가 끼지 않는다. 파생 계좌는 제외."""
+    from trader.config import AccountConfig
+    from trader.ledger import db
+
+    old = AccountConfig(id="paper-old", env="paper", cano="8", markets=["KR"], mode="auto")
+    db.sync_accounts(ectx.conn, [*ectx.accounts, old])  # 원장 표에는 지운 계좌만 남아 있다
+    ids = ["paper-main", "paper-2", "paper-3"]
+    for i in range(3):
+        d = D - timedelta(days=3 - i)
+        for acct, nav in (("paper-main", "1000000"), ("paper-2", "2000000"),
+                          ("paper-3", "3000000"), ("paper-old", "9000000")):  # fmt: skip
+            repo.snapshot_positions(ectx.conn, account_id=acct, d=d, market="KR",
+                                    nav=Decimal(nav), cash=Decimal(1), positions=[])  # fmt: skip
+    series = executor._paper_nav_series(
+        ectx.conn, ectx.accounts[0], "KR", D, Decimal("1000000"), paper_ids=ids
+    )
+    assert series[-1] == (D.isoformat(), Decimal("6000000"))  # 1+2+3백만, paper-old 제외
+    fo = AccountConfig(id="paper-fo", env="paper", cano="7", acnt_prdt_cd="03", markets=["KR"],
+                       mode="auto", asset="fo")  # fmt: skip
+    real = AccountConfig(id="real-x", env="real", cano="6", markets=["KR"], mode="off")
+    assert executor.paper_ids([*ectx.accounts, fo, real]) == [
+        a.id for a in ectx.accounts if a.env == "paper"
+    ]

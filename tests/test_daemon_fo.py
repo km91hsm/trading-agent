@@ -138,3 +138,30 @@ def test_status_fo_line(conn, project):
     _held_position(conn, ctx, qty=2)
     text = build_status(conn, Settings(), [], project / "docs" / "TODO.md", now=at(10, 0))
     assert "## 파생(선물옵션)" in text and "105W11" in text
+
+
+def test_daemon_telegram_mode_reaches_fo_account(conn):
+    """데몬 텔레그램 폴링의 /mode 는 파생 계좌도 받는다(주문·승인 실행 목록은 현물 그대로)."""
+    from trader.notify.telegram import Update
+
+    deps = _fo_deps(conn, at(10, 0))
+    sent: list[str] = []
+    deps.notifier = SimpleNamespace(send=lambda t, **k: sent.append(t) or True)
+
+    class Recv:
+        def poll(self, offset=None):
+            return [Update(update_id=1, text="/mode paper-fo off", chat_id="1")]
+
+    deps.receiver = Recv()
+    daemon._telegram_body(deps)
+    assert control.get_account_mode(conn, deps.fo_accounts[0]) == "off"
+    assert not any("알 수 없는" in m for m in sent)
+
+
+def test_status_real_fo_account_mode_is_off(conn, project):
+    from trader.status import build_status
+
+    real = fo_account(env="real", mode="approve")
+    text = build_status(conn, Settings(), [real], project / "docs" / "TODO.md", now=at(10, 0))
+    line = next(x for x in text.splitlines() if x.startswith(f"| {real.id} "))
+    assert "| off" in line and "approve" not in line

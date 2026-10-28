@@ -998,6 +998,7 @@ def _exec_ctx():
         conn=conn,
         brokers={b.account.id: b for b in _build_brokers(secrets, accounts)},
         notifier=make_notifier(secrets),
+        control_accounts=list(boot.all_accounts),  # 텔레그램 /mode·/status 는 파생 계좌도
     ), secrets
 
 
@@ -1543,8 +1544,9 @@ def fills_sync(
     from trader.orchestrator.fills import sync_fills
 
     try:
-        boot = _boot(secrets=True, accounts=True, conn=True)
-        secrets, accounts, conn = boot.secrets, boot.accounts, boot.conn
+        boot = _boot(settings=True, secrets=True, accounts=True, conn=True)
+        # 데몬 fills_sync 와 같은 범위 — 파생 계좌도(체결 반영은 sync_fills 가 asset 으로 나눈다)
+        secrets, accounts, conn = boot.secrets, list(boot.all_accounts), boot.conn
         d = _date.fromisoformat(date) if date else datetime.now(UTC)
     except (config.ConfigError, paths.ProjectRootNotFound, ValueError) as e:
         typer.echo(f"오류: {e}", err=True)
@@ -1552,14 +1554,14 @@ def fills_sync(
     if account:
         accounts = [a for a in accounts if a.id == account]
     try:
-        for b in _build_brokers(secrets, accounts):
+        for b in _build_brokers(secrets, accounts, settings=boot.settings):
             r = sync_fills(conn, b, b.account, d)
             when = r["date"]
             if isinstance(when, dict):
                 when = " ".join(f"{m}:{v}" for m, v in when.items())
+            updated = r.get("orders_updated", r.get("updated", 0))  # 파생은 다리 갱신 수
             typer.echo(
-                f"{r['account_id']} {when}: 체결 {r['inserted']}건 적재, "
-                f"주문 {r['orders_updated']}건 갱신"
+                f"{r['account_id']} {when}: 체결 {r['inserted']}건 적재, 주문 {updated}건 갱신"
             )
     finally:
         conn.close()
@@ -1665,10 +1667,10 @@ def control_show() -> None:
 
         ks = killswitch.reason(conn)
         typer.echo(f"킬스위치: {'켜짐 — ' + ks if ks else '꺼짐'}")
-        from trader.orchestrator.executor import effective_mode
+        from trader.orchestrator.executor import account_mode
 
         for a in accounts:
-            mode, note = effective_mode(conn, a)
+            mode, note = account_mode(conn, a)
             src = "control" if control.get_flag(conn, f"mode:{a.id}") is not None else "yaml"
             suffix = f" — {note}" if note else ""
             typer.echo(f"{a.id} ({a.env}): {mode} [{src}]{suffix}")

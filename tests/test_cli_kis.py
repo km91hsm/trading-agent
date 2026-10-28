@@ -201,7 +201,7 @@ def test_cli_fills_sync(project, monkeypatch):
     _accounts(project)
     market, brokers = _fakes()
 
-    def _brokers(secrets, accounts):
+    def _brokers(secrets, accounts, settings=None):
         bs = brokers(secrets, accounts)
         for b in bs:
             if b.account.id == "paper-main":
@@ -229,3 +229,30 @@ def test_cli_fills_sync(project, monkeypatch):
     db.init_schema(conn)
     assert conn.execute("SELECT COUNT(*) FROM fills").fetchone()[0] == 1
     conn.close()
+
+
+def test_fills_sync_includes_fo_account(project, monkeypatch):
+    """CLI 체결 동기화는 데몬 fills_sync 처럼 파생 계좌도 동기화한다(Phase 26)."""
+    from fo.test_executor import balance
+
+    from trader.broker.fake import FakeFoBroker
+
+    data = {
+        "accounts": [
+            {"id": "paper-main", "env": "paper", "cano": "00000000", "markets": ["KR"],
+             "mode": "auto"},
+            {"id": "paper-fo", "env": "paper", "cano": "00000000", "acnt_prdt_cd": "03",
+             "markets": ["KR"], "mode": "auto", "asset": "fo"},
+        ]
+    }  # fmt: skip
+    (project / "config" / "accounts.yaml").write_text(yaml.safe_dump(data), encoding="utf-8")
+    seen: list[str] = []
+
+    def _brokers(secrets, accounts, settings=None):
+        seen.extend(a.id for a in accounts)
+        return [FakeFoBroker(a, balance=balance()) for a in accounts if a.asset == "fo"]
+
+    monkeypatch.setattr(cli, "_build_brokers", _brokers)
+    r = CliRunner().invoke(app, ["fills", "sync", "--account", "paper-fo"])
+    assert r.exit_code == 0, r.stdout
+    assert seen == ["paper-fo"] and "paper-fo" in r.stdout

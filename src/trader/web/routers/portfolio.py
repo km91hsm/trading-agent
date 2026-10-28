@@ -131,7 +131,7 @@ def overview(request: Request) -> dict:
 
 @router.post("/refresh", dependencies=[Depends(require_token)])
 def refresh(request: Request, account_id: str | None = None, market: str | None = None) -> dict:
-    from trader.orchestrator.executor import build_portfolio
+    from trader.orchestrator.executor import build_portfolio, paper_ids
 
     acct = require_account(request, account_id)
     m = require_market(market, acct)
@@ -149,6 +149,7 @@ def refresh(request: Request, account_id: str | None = None, market: str | None 
                     m,
                     run_store.run_date_for(m, deps.now()),  # executor·monitor 와 같은 운영일
                     memory_settings=deps.settings.memory,
+                    paper_ids=paper_ids(deps.accounts),
                 )
         except (KisApiError, ValueError) as e:
             raise HTTPException(status_code=502, detail=f"잔고 조회 실패: {e}") from None

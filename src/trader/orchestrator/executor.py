@@ -75,6 +75,9 @@ class ExecContext:
     # False 면 판정만 하고 positions_snapshot·킬스위치 기준·메모리 브레이커를 쓰지 않는다 —
     # FAKE 세션의 가짜 브로커 잔고가 성과·기준선을 오염시키지 않게(2-O7)
     record_portfolio: bool = True
+    # 계좌를 가리지 않는 제어(텔레그램 /mode·/status)가 보는 목록 — 현물 + 파생(Phase 26).
+    # None 이면 `accounts`. 주문·승인 실행은 계속 `accounts`(현물)만 본다
+    control_accounts: list[AccountConfig] | None = None
 
 
 def cancel_open_buys(
@@ -215,6 +218,22 @@ def effective_mode(conn: sqlite3.Connection, account: AccountConfig) -> tuple[Mo
     return mode, None
 
 
+REAL_FO_OFF_NOTE = "실전 파생 계좌는 Phase 26 범위 밖(주문 없음)"
+
+
+def account_mode(conn: sqlite3.Connection, account: AccountConfig) -> tuple[Mode, str | None]:
+    """화면·STATUS·텔레그램이 보여 줄 실효 모드 — 현물은 `effective_mode`, **실전 파생 계좌는 항상
+    off**(파생 실행기 `fo_mode` 와 같은 규칙, 설정값이 approve 여도 주문은 나가지 않는다)."""
+    if getattr(account, "asset", "stock") == "fo" and account.env != "paper":
+        return "off", REAL_FO_OFF_NOTE
+    return effective_mode(conn, account)
+
+
+def paper_ids(accounts: list[AccountConfig]) -> list[str]:
+    """메모리 브레이커 합산 대상 — 설정의 모의 **현물** 계좌 id(개수 무관, 파생 제외)."""
+    return [a.id for a in accounts if a.env == "paper" and getattr(a, "asset", "stock") == "stock"]
+
+
 def _update_breaker(
     conn,
     account: AccountConfig,
@@ -222,6 +241,7 @@ def _update_breaker(
     today: date,
     nav: Decimal,
     settings: MemorySettings | None = None,
+    paper_ids: list[str] | None = None,
 ) -> None:
     """모의 계좌 NAV(최근 30일 + 오늘)·최근 VIX 변화로 그 시장의 메모리 서킷브레이커를 갱신한다.
     모의 계좌가 둘 이상이면(Phase 21) 날짜별 NAV 를 합친 한 열로 판정한다 — 한 계좌의 드로다운이
@@ -229,7 +249,7 @@ def _update_breaker(
     from trader.memory import store
 
     try:
-        series = _paper_nav_series(conn, account, market, today, nav)
+        series = _paper_nav_series(conn, account, market, today, nav, paper_ids=paper_ids)
         store.circuit_breaker(
             conn,
             nav_series=series,
@@ -242,19 +262,31 @@ def _update_breaker(
 
 
 def _paper_nav_series(
-    conn, account: AccountConfig, market: str, today: date, nav: Decimal
+    conn,
+    account: AccountConfig,
+    market: str,
+    today: date,
+    nav: Decimal,
+    *,
+    paper_ids: list[str] | None = None,
 ) -> list[tuple[str, Decimal]]:
     """이 계좌의 30일 NAV(오늘은 인자 값) + 다른 모의 계좌들의 같은 시장 NAV 를 날짜별로
     합친다. 다른 계좌는 그 날짜 이하의 마지막 스냅샷(forward-fill)이고 스냅샷이 전혀 없으면
-    더하지 않는다."""
+    더하지 않는다. 대상은 호출자가 준 설정 계좌(`paper_ids`)이고, 없을 때만 원장 계좌 표로
+    대신한다(표는 `trader status` 때만 갱신돼 새 계좌가 빠지거나 지운 계좌가 남을 수 있다)."""
     mine = repo.nav_history(conn, account.id, market, days=30)
     mine = [s for s in mine if s[0] != today.isoformat()] + [(today.isoformat(), nav)]
-    others = [
-        str(r["id"])
-        for r in conn.execute(
-            "SELECT id FROM accounts WHERE env='paper' AND id != ? ORDER BY id", (account.id,)
-        ).fetchall()
-    ]
+    if paper_ids is not None:
+        others = [i for i in dict.fromkeys(paper_ids) if i != account.id]
+    else:
+        others = [
+            str(r["id"])
+            for r in conn.execute(
+                "SELECT id FROM accounts WHERE env='paper' AND asset='stock' AND id != ? "
+                "ORDER BY id",
+                (account.id,),
+            ).fetchall()
+        ]
     if not others:
         return mine
     out: list[tuple[str, Decimal]] = []
@@ -334,6 +366,7 @@ def build_portfolio(
     killswitch_pct: float = 0.0,
     cancel_buys: bool = False,
     record: bool = True,
+    paper_ids: list[str] | None = None,
 ) -> rules.Portfolio:
     """브로커 잔고·현금 + 원장 집계로 Portfolio 를 만들고 positions_snapshot 을 남긴다
     (`record=False` 면 스냅샷·킬스위치 관측·메모리 브레이커를 건너뛴다 — FAKE 세션, 2-O7).
@@ -370,7 +403,7 @@ def build_portfolio(
     prev = repo.latest_nav_before(conn, account.id, today, market=market)
     today_pnl = float(nav / prev - 1) if prev else 0.0
     if account.env == "paper" and record:
-        _update_breaker(conn, account, market, today, nav, memory_settings)
+        _update_breaker(conn, account, market, today, nav, memory_settings, paper_ids)
     if record:
         repo.snapshot_positions(
             conn,
@@ -765,6 +798,7 @@ def _execute_account(
                 killswitch_pct=ctx.settings.risk.killswitch_drawdown_pct,
                 cancel_buys=not dry_run,
                 record=ctx.record_portfolio,
+                paper_ids=paper_ids(ctx.accounts),
             )
             portfolio.theme_of = theme_of  # Phase 25: 오늘 상위 테마(없으면 테마 규칙 생략)
             sized = decision

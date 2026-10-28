@@ -225,14 +225,17 @@ def ops_status(request: Request, live: bool = False) -> dict:
             if cached:
                 return cached | {"headline": health.headline(cached), "source": "daemon"}
         jobs = (
-            build_jobs(deps.schedule, deps.settings, markets=list(deps.settings.markets))
+            build_jobs(
+                deps.schedule, deps.settings, markets=list(deps.settings.markets),
+                fo=bool(deps.fo_accounts),
+            )
             if deps.schedule is not None
             else []
-        )
+        )  # fmt: skip
         result = health.check(
             conn,
             deps.settings,
-            deps.accounts,
+            deps.all_accounts,  # 데몬 ops_check 와 같은 범위(파생 포함)
             now=deps.now(),
             state=deps.state,
             schedule_jobs=jobs,
@@ -278,8 +281,11 @@ def daemon_status(request: Request) -> dict:
     deps = request.app.state.deps
     base = deps.state if deps.state is not None else paths.state_dir()
     jobs = (
-        build_jobs(deps.schedule, deps.settings, markets=list(deps.settings.markets))
+        build_jobs(
+            deps.schedule, deps.settings, markets=list(deps.settings.markets),
+            fo=bool(deps.fo_accounts),
+        )
         if deps.schedule is not None
         else []
-    )
+    )  # fmt: skip
     return heartbeat.read_status(base, deps.now(), jobs)
