@@ -335,3 +335,57 @@ def test_news_plan_uses_whole_once_and_keeps_required_pdf_stream():
             # 리포트 탭이 사라져도 필수 스트림을 조용히 생략하지 않는다.
         finally:
             browser.close()
+
+
+def _route_login(api, html):
+    p = api.sync_playwright().start()
+    browser = launch_or_skip(p)
+    page = browser.new_page()
+    page.set_default_timeout(1000)
+    page.route(
+        "https://www.saveticker.com/**",
+        lambda route: route.fulfill(body=html, content_type="text/html"),
+    )
+    return p, browser, page
+
+
+def test_login_stops_on_verification_screen_before_filling():
+    """사이트가 재확인 화면을 띄우면 로그인 폼을 기다리거나 채우지 않고 바로 멈춘다(합성 화면)."""
+    import pytest
+
+    api = pytest.importorskip("playwright.sync_api")
+    from trader.saveticker.browser import Browser, VerificationRequired
+
+    p, browser, page = _route_login(api, '<meta charset="utf-8"><h2>재확인이 필요합니다</h2>')
+    try:
+        adapter = Browser(page, ("test@example.com", "test-password"))
+        with pytest.raises(VerificationRequired):
+            adapter.login()
+        assert adapter.diagnostics["verification_visible"] is True
+    finally:
+        browser.close()
+        p.stop()
+
+
+def test_login_stops_when_verification_appears_after_submit():
+    import pytest
+
+    api = pytest.importorskip("playwright.sync_api")
+    from trader.saveticker.browser import Browser, VerificationRequired
+
+    html = """<meta charset="utf-8"><button id="email">이메일로 로그인</button>
+    <script>document.querySelector('#email').onclick=()=>{
+      document.body.innerHTML='<h3>이메일로 로그인</h3><input type="email">'
+       +'<input type="password"><button id="submit">로그인</button>';
+      document.querySelector('#submit').onclick=()=>{
+        document.body.innerHTML='<p>보안을 위해 재확인이 필요합니다</p>';
+      };
+    }</script>"""
+    p, browser, page = _route_login(api, html)
+    try:
+        adapter = Browser(page, ("test@example.com", "test-password"))
+        with pytest.raises(VerificationRequired):
+            adapter.login()
+    finally:
+        browser.close()
+        p.stop()

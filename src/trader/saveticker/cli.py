@@ -122,6 +122,20 @@ def select_views(
     return views
 
 
+LOGIN_LOCK = "login.lock"
+LOGIN_LOCK_WAIT_S = 300  # 다른 작업의 로그인을 기다리는 최대 시간
+
+
+def serialized_login(adapter, runtime: Path) -> None:
+    """작업(lane)들이 동시에 로그인하지 않게 같은 잠금 파일로 한 번에 하나씩 — 네 창 동시 로그인이
+    사이트 재확인을 부르던 문제(2026-10-29). 앞 작업이 로그인하면 세션 쿠키가 있어도 창마다 따로라
+    각자 로그인은 하되 겹치지 않는다."""
+    from trader.platform import filelock
+
+    with filelock.locked(runtime / LOGIN_LOCK, timeout=LOGIN_LOCK_WAIT_S, poll_s=0.5):
+        adapter.login()
+
+
 def plan_lanes(planned: list[View], skip: str | None) -> list[str]:
     """수집 계획의 작업(lane) 목록에서 쉬는 작업을 뺀다(서비스가 `--skip-lanes` 로 넘긴다)."""
     skipped = {x.strip() for x in (skip or "").split(",") if x.strip()}
@@ -264,7 +278,7 @@ def run_cmd(
                     max_reports=max_details if once else 2,
                 )
                 heartbeat("logging_in")
-                adapter.login()
+                serialized_login(adapter, run_folder)
                 news_views = adapter.discover_news() if lane in (None, "news", "background") else []
                 if only:
                     known = build_views(start, end) + [
@@ -322,7 +336,7 @@ def run_cmd(
                     due[view.stream] = max(begin + interval, time.monotonic() + 2)
                     if not adapter.authenticated():
                         heartbeat("reauthenticating")
-                        adapter.login()
+                        serialized_login(adapter, run_folder)
             finally:
                 browser.close()
         heartbeat("stopped")

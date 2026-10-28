@@ -31,6 +31,18 @@ class LoginRequired(FatalCollectionError):
     """인증되지 않았거나 재인증에 실패했다."""
 
 
+class VerificationRequired(LoginRequired):
+    """사이트가 재확인(보안·본인 확인)을 요구한다. 우회하지 않고, 사람이 브라우저에서 마칠 때까지
+    자동 재시도하지 않는다(반복 로그인은 계정 잠김을 부른다, 2026-10-29)."""
+
+
+# 재확인·보안 확인 화면의 문구(사이트·Cloudflare). 하나라도 보이면 로그인을 멈춘다
+VERIFY_TEXTS = (
+    "재확인", "본인 확인", "본인확인", "보안 확인", "인증이 필요",
+    "Verify you are human", "Checking your browser", "Just a moment",
+)  # fmt: skip
+
+
 def credentials(path: Path) -> tuple[str, str]:
     values = dotenv_values(path, interpolate=False) if path.is_file() else {}
     email, password = values.get("SAVETICKER_EMAIL"), values.get("SAVETICKER_PASSWORD")
@@ -160,6 +172,21 @@ class Browser:
     def authenticated(self):
         return self.page.get_by_role("button", name="프로필 메뉴", exact=True).count() > 0
 
+    def _verification_visible(self) -> bool:
+        try:
+            body = self.page.locator("body").inner_text(timeout=2000)
+        except Exception:  # noqa: BLE001 — 화면을 못 읽으면 판정 불가(원래 오류를 올린다)
+            return False
+        seen = any(s in body for s in VERIFY_TEXTS)
+        self.diagnostics["verification_visible"] = seen
+        return seen
+
+    def _stop_if_verification(self, exc: Exception) -> None:
+        """로그인 단계가 실패했을 때 재확인 화면 때문이면 VerificationRequired 로 바꿔 올린다."""
+        if self._verification_visible():
+            raise VerificationRequired("verification_required") from None
+        raise exc
+
     def login(self):
         self.stage = "login_profile"
         self.goto("https://www.saveticker.com/profile")
@@ -175,9 +202,14 @@ class Browser:
                 "login_text_visible": "이메일로 로그인" in body,
             }
         )
+        if self._verification_visible():
+            raise VerificationRequired("verification_required")
         self.stage = "login_email_button"
         email_button = self.page.get_by_role("button", name="이메일로 로그인", exact=True)
-        email_button.wait_for(state="visible", timeout=15000)
+        try:
+            email_button.wait_for(state="visible", timeout=15000)
+        except Exception as e:  # noqa: BLE001
+            self._stop_if_verification(e)
         dialog_heading = self.page.get_by_role("heading", name="이메일로 로그인", exact=True)
         self.stage = "login_email_dialog"
         for attempt in range(3):
@@ -187,6 +219,8 @@ class Browser:
                 break
             except Exception:
                 if attempt == 2:
+                    if self._verification_visible():
+                        raise VerificationRequired("verification_required") from None
                     raise LoginRequired("email_dialog_not_ready") from None
         self.stage = "login_email_field"
         self.diagnostics.update(
@@ -222,6 +256,8 @@ class Browser:
                 state="visible", timeout=20000
             )
         except Exception:
+            if self._verification_visible():
+                raise VerificationRequired("verification_required") from None
             raise LoginRequired("login_failed") from None
 
     def discover_news(self) -> list[View]:
