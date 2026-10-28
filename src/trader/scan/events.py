@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 
 from trader.config import EventsConfig
 from trader.control import control
@@ -100,11 +100,26 @@ def detect(
     return out
 
 
-def record(conn: sqlite3.Connection, market: str, today: date, events: list[dict]) -> None:
-    """오늘 감지 결과를 남긴다(웹 표시·게이트의 사건 묶음). 같으면 쓰지 않는다."""
-    value = {"date": today.isoformat(), "events": events}
-    if control.get_flag(conn, _flag(market)) != value:
-        control.set_flag(conn, _flag(market), value)
+def record(
+    conn: sqlite3.Connection,
+    market: str,
+    today: date,
+    events: list[dict],
+    *,
+    now: datetime | None = None,
+) -> None:
+    """오늘 감지 결과를 남긴다(웹 표시·게이트의 사건 묶음). 같으면 쓰지 않는다. `observed_at` 은
+    이 결과를 처음 본 시각 — 트레이더 입력이 기준 시각 뒤 감지를 넣지 않게(결정 19번,
+    `scan/membership`)."""
+    prev = control.get_flag(conn, _flag(market)) or {}
+    if prev.get("date") == today.isoformat() and prev.get("events") == events:
+        return
+    value = {
+        "date": today.isoformat(),
+        "events": events,
+        "observed_at": (now or datetime.now(UTC)).isoformat(),
+    }
+    control.set_flag(conn, _flag(market), value)
 
 
 def today_events(conn: sqlite3.Connection, market: str, today: date) -> list[dict]:
@@ -115,8 +130,14 @@ def today_events(conn: sqlite3.Connection, market: str, today: date) -> list[dic
 def theme_of_map(conn: sqlite3.Connection, market: str, today: date) -> dict[str, list[str]]:
     """오늘 감지된 **shock** 사건의 수혜 종목 → ['사건:<label>'] (테마 안전장치에 합친다).
     structural(몇 달 가는 흐름)은 일반 규칙만 — 단기 보유를 강제하지 않는다."""
+    return shock_members(today_events(conn, market, today))
+
+
+def shock_members(evs: list[dict]) -> dict[str, list[str]]:
+    """이미 읽은 사건 목록에서 shock 수혜 종목 → ['사건:<label>'](다시 읽지 않는다,
+    PR #65 Codex)."""
     out: dict[str, list[str]] = {}
-    for ev in today_events(conn, market, today):
+    for ev in evs or []:
         if ev.get("kind") != "shock":
             continue
         for t in ev.get("tickers") or []:

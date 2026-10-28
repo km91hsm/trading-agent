@@ -290,3 +290,58 @@ def test_detect_dedupes_same_story_and_honors_exclude(conn):
     assert [e["id"] for e in found] == ["war_geopolitics"] and found[0]["hits"] == 2
     titles = [n["title"] for n in found[0]["news"]]
     assert titles[0] == "접경 지역 전쟁 위기 고조" and len(titles) == 2 and "공습" in titles[1]
+
+
+def test_membership_excludes_records_observed_after_asof(conn):
+    """19번(i): 테마·사건 소속 조회는 관측 시각이 기준 시각 뒤면 넣지 않고(after_asof), 관측 시각이
+    없는 옛 기록은 시각을 몰라 넣지 않는다(unknown_time). 기준 시각이 없으면(실행 게이트) 최신."""
+    from datetime import UTC, date, datetime
+
+    from trader.control import control
+    from trader.scan import events, membership
+
+    d = date(2026, 10, 27)
+    ev = [{"id": "e1", "label": "유가 급등", "kind": "shock", "tickers": [{"ticker": "010950"}]}]
+    events.record(conn, "KR", d, ev, now=datetime(2026, 10, 27, 1, 0, tzinfo=UTC))
+    kw = {"theme_top_n": 3, "theme_enabled": True, "events_enabled": True}
+    live = membership.of(conn, "KR", d, **kw)
+    assert live["map"]["010950"] == ["사건:유가 급등"] and live["status"]["events"] == "ok"
+    early = membership.of(conn, "KR", d, asof=datetime(2026, 10, 27, 0, 30, tzinfo=UTC), **kw)
+    assert early["map"] == {} and early["status"]["events"] == "after_asof"
+    control.set_flag(conn, "events:KR", {"date": d.isoformat(), "events": ev})  # 옛 형식
+    old = membership.of(conn, "KR", d, asof=datetime(2026, 10, 27, 2, 0, tzinfo=UTC), **kw)
+    assert old["status"]["events"] == "unknown_time" and old["map"] == {}
+
+
+def test_membership_uses_the_record_it_validated(conn, monkeypatch):
+    """PR #65 Codex: 관측 시각을 검증한 기록에서 소속을 뽑는다 — 검증과 추출 사이에 데몬이 기록을
+    바꿔도 검증하지 않은 새 기록이 들어가지 않게(다시 읽지 않는다)."""
+    from datetime import UTC, date, datetime
+
+    from trader.control import control
+    from trader.scan import events, membership
+
+    d = date(2026, 10, 27)
+    ev = [{"id": "e1", "label": "유가 급등", "kind": "shock", "tickers": [{"ticker": "010950"}]}]
+    events.record(conn, "KR", d, ev, now=datetime(2026, 10, 27, 1, 0, tzinfo=UTC))
+    later = [{"id": "e2", "label": "신규", "kind": "shock", "tickers": [{"ticker": "000660"}]}]
+
+    def flip(*a, **k):  # 소속 추출 시점에 기록이 바뀐다면 — 다시 읽으면 'later' 가 들어간다
+        control.set_flag(
+            conn,
+            "events:KR",
+            {"date": d.isoformat(), "events": later, "observed_at": "2999-01-01T00:00:00+00:00"},
+        )
+        return {}
+
+    monkeypatch.setattr(events, "theme_of_map", flip)
+    got = membership.of(
+        conn,
+        "KR",
+        d,
+        theme_top_n=3,
+        theme_enabled=False,
+        events_enabled=True,
+        asof=datetime(2026, 10, 27, 2, 0, tzinfo=UTC),
+    )
+    assert got["map"] == {"010950": ["사건:유가 급등"]}

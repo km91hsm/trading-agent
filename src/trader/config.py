@@ -1296,6 +1296,10 @@ class CalibrationCfg(BaseModel):
 
     enabled: bool = True
     min_decisions: int = 60
+    # 트레이더 입력(35_calibration)에 넣을지. 기본 false — 현 보정은 역할·이웃 표본 수와 무관하게
+    # 할인을 지시해(이웃 k=20 < n≥30) L12 개선 전에는 넣지 않는다. 만기 min_decisions 도달은 운영
+    # 점검의 재검토 알림이다(2026-10-28 결정 14번)
+    inject: bool = False
 
 
 class RlSizerCfg(BaseModel):

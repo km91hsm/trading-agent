@@ -81,6 +81,7 @@ def shadow_report(request: Request, market: str | None = None) -> dict:
             b: shadow.paired_stats(conn, b=b, market=m)
             for b in ("candidates_1n", "quant_topn", "index_hold", "index_trend")
         }
+        cash = shadow.cash_effect(conn, market=m)
         by_date: dict[str, dict] = {}
         for r in shadow.rows(conn, market=m):
             by_date.setdefault(r["date"], {"date": r["date"]})[r["strategy"]] = r["fwd_ret"]
@@ -89,5 +90,6 @@ def shadow_report(request: Request, market: str | None = None) -> dict:
         "market": m,
         "min_pairs": readiness.MIN_SHADOW_PAIRS,
         "pairs": pairs,
+        "cash_effect": cash,  # LLM 이 현금인 날의 0 − 후보 1/N(2-L3, 선택 효과와 별개)
         "recent": recent,
     }

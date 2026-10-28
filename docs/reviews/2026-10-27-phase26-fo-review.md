@@ -260,3 +260,6 @@ base `1bd0172` → (단계 2 GitHub 리뷰 반영 뒤) `c7bf51e`, head `94e4e3f`
 | G5-1 | P1 | `executor._send_entry` | 시세에 베이시스·기초지수가 모두 없을 때 사이징은 별도 지수로 베이시스를 구하지만 저장되는 `stop_fut` 는 베이시스 0 — 계획 손실보다 느슨한 보호선 | `_send_entry(underlying=fi.underlying)` 로 사이징과 같은 `sizing.basis_of(quote, underlying)`. `test_persisted_stop_fut_uses_same_basis_as_sizing` |
 | G5-2 | P1 | `positions.leg_day` | 복구가 나중에 채운 접수 시각이 거래일을 바꿈 | S5R-4(접수 시각은 전송 시각으로) 에 더해 거래일 계산을 **전송 시각 우선**으로(`leg_day`·`fills._LEG_AT`·`_confirm_leg`·`_apply_position_fills` 모두). `test_leg_day_prefers_original_send_time` |
 | G5-3 | P1 | `positions.recover` prepared 축소 다리 | 취소하면서 활성 연결을 지워 `continue_reduce` 가 의도를 잃고 CLOSE 로 처리(감액이 전량 청산이 되거나 목표 전에 held) | 축소 다리 연결을 남겨 `continue_reduce` 가 끝난 다리의 의도·라운드로 다시 낸다(예약은 살아 있는 다리만 막는다). `test_recover_cancelled_prepared_resize_keeps_intent` |
+
+
+머지 직전 메모(2026-10-28): main 에 #63·#65 가 더 들어와 v30·v31 을 썼으므로 파생 마이그레이션을 다시 **v32**(파생 테이블·asset)·**v33**(다리 `request_id`)로 옮겼다(운영 원장 미적용).

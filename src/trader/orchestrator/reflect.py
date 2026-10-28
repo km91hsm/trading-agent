@@ -62,6 +62,7 @@ def pending(conn: sqlite3.Connection, *, market: str | None = None, limit: int =
                 "direction_score": r["direction_score"],
                 "avoided_loss": r["avoided_loss"],
                 "realized_pnl_pct": r["realized_pnl_pct"],
+                "post_fill_return": r["post_fill_return"],
                 "analyst_signals": signals,
             }
         )

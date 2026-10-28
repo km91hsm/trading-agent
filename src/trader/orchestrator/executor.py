@@ -87,14 +87,16 @@ def cancel_open_buys(
     ticker: str | None = None,
     exchange_of: Callable[[str], str | None] = lambda _t: None,
     keep: frozenset[str] = frozenset(),
+    side: str = "BUY",
 ) -> tuple[int, list[str]]:
     """당일(시장 현지) 미체결 BUY 를 취소한다 — 손절 직전, 결정이 매수에서 돌아섰을 때, 킬스위치가
     켜졌을 때(전체 검토 2026-10-27). (취소 건수, 취소하지 못한 종목들). 응답 없는(번호 없는) 주문·
-    US 거래소를 모르는 주문·KIS 거부는 '못 함' 으로 돌려 호출자가 알린다."""
+    US 거래소를 모르는 주문·KIS 거부는 '못 함' 으로 돌려 호출자가 알린다. `side="SELL"` 은 현금
+    ETF 가 다시 bear 로 들어갈 때 남은 매도를 거둔다(2-O17)."""
     if broker is None:
         return 0, []
     done, left = 0, []
-    for r in repo.open_orders_today(conn, account_id, ticker, "BUY", day, market=market):
+    for r in repo.open_orders_today(conn, account_id, ticker, side, day, market=market):
         t = str(r["ticker"])
         if t in keep:  # 보호용 헤지·현금 운용 ETF
             continue
@@ -112,7 +114,9 @@ def cancel_open_buys(
                 qty=int(r["qty"]),
             )
         except (KisApiError, ValueError) as e:
-            logger.warning("미체결 BUY 취소 실패 %s %s #%s: %s", account_id, t, r["order_no"], e)
+            logger.warning(
+                "미체결 %s 취소 실패 %s %s #%s: %s", side, account_id, t, r["order_no"], e
+            )
             left.append(t)
             continue
         if res.accepted:
@@ -124,29 +128,27 @@ def cancel_open_buys(
 
 
 def _theme_of(ctx: ExecContext, market: str, d: date) -> Callable[[str], list[str] | None] | None:
-    """게이트의 테마 규칙용 종목→오늘 상위 테마(Phase 25, `scan/theme.theme_of_map`) + 오늘 감지된
-    shock 사건의 수혜 묶음('사건:<label>', `scan/events.theme_of_map` — 같은 사건 묶음 비중 상한·
-    단기 보유·익절 필수, 2026-10-27). 둘 다 없으면 None. 실패는 경고만(그 규칙만 빠진다)."""
-    merged: dict[str, list[str]] = {}
-    if ctx.settings.theme.enabled:
-        try:
-            from trader.scan import theme
+    """게이트의 테마 규칙용 종목→오늘 상위 테마(Phase 25) + 오늘 감지된 shock 사건의 수혜 묶음
+    ('사건:<label>', 2026-10-27). 조회는 트레이더 입력과 같은 `scan/membership.of`(실행 시점이라
+    asof 없음 = 오늘 최신). 둘 다 없으면 None. 실패는 경고만(그 규칙만 빠진다)."""
+    from trader.scan import membership
 
-            for t, ths in (
-                theme.theme_of_map(ctx.conn, market, d, ctx.settings.theme.top_n) or {}
-            ).items():
-                merged.setdefault(t, []).extend(ths)
-        except Exception as e:  # noqa: BLE001
-            logger.warning("테마 맵 읽기 실패: %s", e)
     try:
         from trader.config import load_events
-        from trader.scan import events
 
-        if load_events().enabled:  # 끈 뒤에는 그날 기록된 사건도 적용하지 않는다(Codex 리뷰)
-            for t, evs in events.theme_of_map(ctx.conn, market, d).items():
-                merged.setdefault(t, []).extend(evs)
+        events_on = load_events().enabled  # 끈 뒤에는 그날 기록된 사건도 적용하지 않는다
     except Exception as e:  # noqa: BLE001
-        logger.warning("사건 묶음 읽기 실패: %s", e)
+        logger.warning("사건 설정 읽기 실패: %s", e)
+        events_on = False
+    res = membership.of(
+        ctx.conn,
+        market,
+        d,
+        theme_top_n=ctx.settings.theme.top_n,
+        theme_enabled=ctx.settings.theme.enabled,
+        events_enabled=events_on,
+    )
+    merged = res["map"]
     return merged.get if merged else None
 
 
@@ -530,6 +532,7 @@ def execute(
     max_qty: dict[str, int] | None = None,
     trade_block: str | None = None,
     is_park: bool = False,
+    exec_tag: str | None = None,
     park_max_weight: float | None = None,
 ) -> list[dict]:
     """계좌마다 판정·기록·(모드별) 주문. 계좌 하나의 실패가 다른 계좌를 막지 않는다.
@@ -644,6 +647,7 @@ def execute(
                     max_qty=None if max_qty is None else max_qty.get(account.id),
                     trade_block=trade_block,
                     park_max_weight=park_max_weight if is_park else None,
+                    exec_tag=exec_tag,
                 )
             )
         except OrderBookkeepingError as e:  # 접수 뒤 기록 실패: 다른 계좌를 마친 뒤 올린다
@@ -734,6 +738,7 @@ def _execute_account(
     trade_block: str | None = None,
     park_max_weight: float | None = None,
     origin: str = "llm",
+    exec_tag: str | None = None,
 ) -> dict:
     """계좌 하나의 판정·기록·(모드별) 주문. 반환은 results 항목 하나."""
     if True:  # 들여쓰기 유지(execute 루프 본문을 그대로 옮김)
@@ -845,6 +850,7 @@ def _execute_account(
                 date,
                 is_stop_loss=is_stop_loss,
                 qty=int(verdict.adjusted_qty or 0),
+                tag=exec_tag,
             )
             now = ctx.now()
             if not repo.claim_exec_key(
@@ -990,17 +996,22 @@ def _exec_key(
     *,
     is_stop_loss: bool = False,
     qty: int = 0,
+    tag: str | None = None,
 ) -> str:
     """실행 키(검토 O8). 결정 주문은 `결정|계좌|방향|주문단계`, 손절은 `stop|계좌|종목|현지일|q수량`
     (결정과 무관하게 하루 단위 — monitor 의 당일 조건과 같은 단위). 결정 행이 없는 주문(단타·
     리밸런스)은 `주문단계|계좌|종목|방향|운영일`, 단타 청산은 끝에 `|q수량`.
     손절·단타 청산에 수량을 넣는 것은 일부만 체결된 뒤 남은 수량을 같은 날 다시 낼 수 있게 하기
     위해서다(전체 검토 2026-10-27: 키가 하루 하나면 체결된 첫 주문이 잔량 손절을 영구히 막았다).
-    같은 수량의 중복은 키가, 살아 있는 SELL 의 중복은 monitor 의 당일 조건이 막는다."""
+    같은 수량의 중복은 키가, 살아 있는 SELL 의 중복은 monitor 의 당일 조건이 막는다.
+    `tag` 는 결정 행 없는 주문의 세대 꼬리표 — 현금 ETF 가 같은 날 국면이 bear→neutral→bear 로
+    돌면 두 번째 매수가 첫 매수의 키에 막히지 않게(2-O17)."""
     if is_stop_loss:
         return f"stop|{account_id}|{ticker}|{d.isoformat()}|q{qty}"
     if decision_id is None:
         key = f"{order_stage}|{account_id}|{ticker}|{side}|{d.isoformat()}"
+        if tag:
+            key += f"|{tag}"
         return key + f"|q{qty}" if order_stage.startswith("57_order_scalp_exit") else key
     return f"{decision_id}|{account_id}|{side}|{order_stage}"
 

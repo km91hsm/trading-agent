@@ -5,8 +5,11 @@
 - direction_score (전체 검토 L3, 판단 품질의 기준): BUY/ADD = +ret, SELL/TRIM = −ret,
   HOLD 는 결정 시점에 보유 중이었으면 +ret(들고 있기로 한 판단), 아니면 0(관망은 손익 없음).
 - avoided_loss: SELL/TRIM 과 미보유 HOLD 의 max(0, −ret) — 판 뒤·안 산 뒤 떨어진 만큼. 그 외 NULL.
-- realized_pnl_pct: 그 라운드의 실제 체결 평균가 → 만기 종가 수익에 같은 방향 부호(BUY +, SELL −).
-  결정일 종가 대신 체결가라 슬리피지·지정가 차이가 들어간다. 체결이 없으면 NULL.
+- post_fill_return: 그 라운드의 실제 체결 평균가 → 만기 종가 수익에 같은 방향 부호(BUY +, SELL −).
+  매수는 보유 성과, 매도는 판 뒤 회피 성과다. 결정일 종가 대신 체결가라 슬리피지가 들어간다.
+- realized_pnl_pct: **SELL/TRIM 의 실제 실현손익** — 그 라운드 매도 체결을 계좌 전체 체결의 FIFO
+  원가에 맞춰 (매도 대금 − 원가)/원가 − 왕복비용(2-L8: 옛 값은 매도 뒤 전방 수익의 부호 반전이라
+  매입원가와 무관했다). 원가를 모르는 수량(원장 밖 매수)만 있으면 NULL, 매수·HOLD 는 NULL.
 - realized_return·alpha 는 하위 호환(옛 채점: HOLD 0 · 알파 = −벤치마크, SELL 은 가상 공매도).
 
 보유 여부는 엔트리의 held_at_decision(기록 때 잔고 스냅샷), 없으면 결정일 positions_snapshot.
@@ -25,6 +28,7 @@ import pandas as pd
 from trader.config import KST
 from trader.memory import store
 from trader.ml import dataset
+from trader.risk import costs
 
 logger = logging.getLogger("trader.memory")
 WINDOW_LEAD_DAYS = 10  # 결정일 직전 거래일 탐색 여유
@@ -83,13 +87,54 @@ def direction_scores(action: str, ret: float, held: bool | None) -> tuple[float,
     return 0.0, max(0.0, -ret)
 
 
-def _fill_price(conn, r, action: str, next_decided_at: str | None) -> float | None:
-    """그 라운드의 체결 평균가: 같은 결정·계좌·방향 주문 중 엔트리 decided_at 이후, 다음 라운드
-    엔트리 decided_at 이전에 낸 것(decided_at 은 실행 직전 시각이라 라운드 주문이 그 뒤에
-    생긴다)."""
+def _realized_sell_pct(conn, r, fill_ids: set[int], cost_bp: float) -> float | None:
+    """그 라운드 매도 체결의 실제 실현손익률(FIFO 원가, 왕복비용 차감). 원가를 모르면 None."""
+    from decimal import Decimal
+
+    from trader.ledger import lots
+
+    if not fill_ids:
+        return None
+    rows = conn.execute(
+        "SELECT f.id, o.side, f.qty, f.price, f.filled_at FROM fills f JOIN orders o "
+        "ON o.id = f.order_id WHERE f.account_id=? AND o.ticker=? AND o.market=? "
+        "ORDER BY f.filled_at, f.id",
+        (r["account_id"], r["ticker"], r["market"]),
+    ).fetchall()
+    fills = []
+    for x in rows:
+        try:
+            fills.append(
+                lots.FillRow(
+                    ticker=r["ticker"],
+                    side=str(x["side"]),
+                    qty=int(x["qty"]),
+                    price=Decimal(str(x["price"])),
+                    filled_at=datetime.fromisoformat(x["filled_at"]),
+                    fill_id=int(x["id"]),
+                )
+            )
+        except (TypeError, ValueError):
+            continue
+    try:
+        realized = lots.fifo(fills, market=r["market"])["realized"]
+    except TypeError:  # 체결 시각 형식이 섞여(시간대 유무) 정렬할 수 없으면 원가를 모른다고 본다
+        return None
+    got = [z for z in realized if z.sell_fill in fill_ids]
+    cost = sum((z.cost for z in got), Decimal(0))
+    if cost <= 0:
+        return None
+    pnl = sum((z.pnl for z in got), Decimal(0))
+    return float(pnl / cost) - cost_bp / 10_000
+
+
+def _round_fills(conn, r, action: str, next_decided_at: str | None) -> list[tuple[int, int, float]]:
+    """그 라운드의 체결 [(fills.id, 수량, 가격)]: 같은 결정·계좌·방향 주문 중 엔트리 decided_at
+    이후, 다음 라운드 엔트리 decided_at 이전에 낸 것(decided_at 은 실행 직전 시각이라 라운드 주문이
+    그 뒤에 생긴다)."""
     side = ORDER_SIDE.get(action)
     if side is None or r["decision_id"] is None:
-        return None
+        return []
     start = datetime.fromisoformat(r["decided_at"])
     end = datetime.fromisoformat(next_decided_at) if next_decided_at else None
     if end is not None and end <= start:
@@ -102,9 +147,9 @@ def _fill_price(conn, r, action: str, next_decided_at: str | None) -> float | No
             (r["decision_id"], r["account_id"]),
         ).fetchall()
     ]
-    qty, amount = 0, 0.0
+    out: list[tuple[int, int, float]] = []
     for o in conn.execute(
-        "SELECT o.created_at, o.mode, f.qty, f.price FROM orders o "
+        "SELECT o.created_at, o.mode, f.id AS fill_id, f.qty, f.price FROM orders o "
         "JOIN fills f ON f.order_id = o.id WHERE o.decision_id=? AND o.account_id=? AND o.side=?",
         (r["decision_id"], r["account_id"], side),
     ).fetchall():
@@ -119,9 +164,8 @@ def _fill_price(conn, r, action: str, next_decided_at: str | None) -> float | No
                 at = max(took)[1]  # 이 주문을 낸 승인 = 주문 직전에 처리된 것
         if at < start or (end is not None and at >= end):
             continue
-        qty += int(o["qty"])
-        amount += int(o["qty"]) * float(o["price"])
-    return amount / qty if qty > 0 else None
+        out.append((int(o["fill_id"]), int(o["qty"]), float(o["price"])))
+    return out
 
 
 def _decided_date(r) -> date | None:
@@ -197,8 +241,17 @@ def mature(conn, *, state: Path | None, today: date, horizon_default: int = 5) -
         alpha = realized - bench
         direction, avoided = direction_scores(action, ret, _held(conn, r))
         key = (int(r["decision_id"]), int(r["round"])) if r["decision_id"] is not None else None
-        fill = _fill_price(conn, r, action, next_at.get(key) if key else None)
-        pnl = sign * (close1 / fill - 1) if fill else None
+        round_fills = _round_fills(conn, r, action, next_at.get(key) if key else None)
+        fqty = sum(q for _, q, _ in round_fills)
+        fill = sum(q * p for _, q, p in round_fills) / fqty if fqty > 0 else None
+        post = sign * (close1 / fill - 1) if fill else None
+        realized_pnl = (
+            _realized_sell_pct(
+                conn, r, {i for i, _, _ in round_fills}, costs.round_trip_bp(r["market"])
+            )
+            if action in ("SELL", "TRIM")
+            else None
+        )
         outcome_at = datetime.now(UTC).isoformat()
         store.fill_outcome(
             conn,
@@ -209,7 +262,8 @@ def mature(conn, *, state: Path | None, today: date, horizon_default: int = 5) -
             price_return=ret,
             direction_score=direction,
             avoided_loss=avoided,
-            realized_pnl_pct=pnl,
+            realized_pnl_pct=realized_pnl,
+            post_fill_return=post,
         )
         out.append(
             {

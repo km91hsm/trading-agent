@@ -23,6 +23,7 @@ class FillRow:
     qty: int
     price: Decimal
     filled_at: datetime
+    fill_id: int | None = None  # fills.id — 실현 로트를 만든 매도 체결을 가리킨다(2-L8)
 
 
 @dataclass
@@ -44,6 +45,7 @@ class Realized:
     pnl: Decimal
     term: str | None
     wash_sale: bool = False
+    sell_fill: int | None = None  # 이 로트를 실현한 매도 체결의 fills.id
 
 
 def fifo(fills: list[FillRow], *, market: str) -> dict:
@@ -83,6 +85,7 @@ def fifo(fills: list[FillRow], *, market: str) -> dict:
                     term=None
                     if market != "US"
                     else ("long" if held_days > LONG_TERM_DAYS else "short"),
+                    sell_fill=f.fill_id,
                 )
             )
             origin.append(lot_src[id(lot)])

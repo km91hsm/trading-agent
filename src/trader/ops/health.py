@@ -406,6 +406,26 @@ def _jobs(conn, now, state, schedule_jobs) -> list[Item]:
 
 def _llm(conn, settings, now) -> list[Item]:
     out: list[Item] = []
+    try:  # 보정 재검토 시점(결정 14번): 만기 결정이 기준에 닿았는데 주입이 꺼져 있다
+        from trader.config import load_ml
+        from trader.memory import store
+
+        cal = load_ml().models.calibration
+        n = store.matured_count(conn)
+        if cal.enabled and not cal.inject and n >= cal.min_decisions:
+            out.append(
+                Item(
+                    "llm.calibration_review",
+                    "watch",
+                    f"만기 결정 {n}건 — 보정 재검토 시점. L12 개선(벤치마크 대비 부호·Wilson 하한·"
+                    "수축, 역할·이웃 표본 수 조건) 뒤 `ml.yaml calibration.inject` 를 켠다 "
+                    "(`trader calibration build` 로 리포트 확인)",
+                    link="/ml",
+                    count=n,
+                )
+            )
+    except Exception:  # noqa: BLE001 - 점검 보조
+        pass
     cap = settings.llm.daily_session_cap
     n = tools.sessions_today(conn, now)
     if cap and n >= cap:

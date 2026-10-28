@@ -372,6 +372,12 @@ def theme_of_map(
     heat = control.get_flag(conn, f"{FLAG}:{market}")
     if not heat or heat.get("date") != d.isoformat():
         return {}
+    return members_of(heat, top_n)
+
+
+def members_of(heat: dict, top_n: int) -> dict[str, list[str]]:
+    """이미 읽은 기록에서 종목 → 상위 테마들(다시 읽지 않는다 — `scan/membership` 이 시각을 검증한
+    그 기록으로 뽑게, PR #65 Codex)."""
     out: dict[str, list[str]] = {}
     for th in top(heat, top_n):
         for t in th.get("members") or [x["ticker"] for x in th.get("tickers") or []]:

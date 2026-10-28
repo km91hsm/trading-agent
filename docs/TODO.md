@@ -375,12 +375,12 @@
 - [x] L6(P1, 2026-10-28 반영 — 묶음 3): 백필에 없는 수급·뉴스·커뮤니티 건수 열(`COUNT_COLUMNS`·`FLOW_COLUMNS`)을 학습 열에서 제외 — 현재 `dataset.feature_columns` 는 전부 NaN 인 열만 뺀다 (2026-10-26 교차검증 잔여, 2026-10-27 등록 → 2차 2-L13)
 - [x] L7(P1, 부분 반영 → 2-L1·2-P4 로 반영 2026-10-27): 유니버스 밖 발굴·사건 후보의 분석 전 스냅샷은 있음(`daemon._snapshot_listed`, #47·#53). 남은 것 — 보유 종목 + 미만기 memory/shadow 창 종목을 일일 reflect 스냅샷 대상에 포함, 장중은 D−1 완성 봉까지만(현재는 거래량 0 봉만 제외), `shadow.mature` 가 종가 없는 종목을 빼고 재정규화하지 않게 (2026-10-26 잔여 → 2차 2-L1·2-P4, **P1**)
 - [x] L10(P2, 2026-10-28 반영 — 묶음 3 `context.evidence_stats`): 트레이더 묶음이 `drop_evidence=True` 인데 프롬프트는 근거 수를 세라 함 — 역할별 근거 수·`data_gaps`·신호 일치도를 파이썬이 숫자로 (2026-10-26 잔여 → 2차 2-L19)
-- [ ] L12(P2, 미반영): 보정을 벤치마크 대비 부호·이항(Wilson) 신뢰구간 하한·수축으로, 근거 할인은 역할·이웃 n ≥ 30 일 때만 (2026-10-26 잔여 → 2차 2-L14)
+- [ ] L12(P2, 미반영 — 2026-10-28 결정 14번으로 개선 전 주입 차단): 보정을 벤치마크 대비 부호·이항(Wilson) 신뢰구간 하한·수축으로, 근거 할인은 역할·이웃 n ≥ 30 일 때만 (2026-10-26 잔여 → 2차 2-L14)
 - [ ] L13(P2, 부분 반영 2026-10-28 — lesson 승격 n ≥ 3 은 묶음 3): 남은 것 — 메모리 검색 relevance 가중↑(현재 0.4/0.4/0.2), warmup 50 뒤 실제 검색 결과로 결정 (2026-10-26 잔여 → 2차 2-L15)
-- [ ] L14(P2, 부분 반영): PIT 유니버스(원장 v24, #47 — 기록 시작 이후만, 과거 구간은 `pit.strict` 정책)·생존 편향 경고(#44·#45) 반영. 남은 것 — `performance.report` 가 `ranker.current()` 를 과거 창에 적용(평가 시점에 있던 모델 또는 섀도 `quant_topn` 으로), 고정 홀드아웃·비용 차감, 승격 평가와 실제 랭킹 경로 일치 (2026-10-26 잔여 → 2차 2-L16)
+- [x] L14(P2, 2026-10-28 성과 기준선은 섀도로 반영 — 묶음 4, 나머지는 아래 '후속(L14 나머지)'): PIT 유니버스(원장 v24, #47 — 기록 시작 이후만, 과거 구간은 `pit.strict` 정책)·생존 편향 경고(#44·#45) 반영. 남은 것 — `performance.report` 가 `ranker.current()` 를 과거 창에 적용(평가 시점에 있던 모델 또는 섀도 `quant_topn` 으로), 고정 홀드아웃·비용 차감, 승격 평가와 실제 랭킹 경로 일치 (2026-10-26 잔여 → 2차 2-L16)
 - [x] L15(P2, 반영): 10일 모멘텀 스크린의 과거 검증·대조군이 저장소에 없음(리뷰어 2인 grep 확인) — 섀도 `quant_topn − candidates_1n` 전방 비교만. 피처 스토어로 `roc_10` 상위 N vs 유니버스 1/N 백테스트 CLI (2026-10-26 잔여 → 2차 2-L17) — 2026-10-28 `trader screen backtest` 로 반영(묶음 3)
-- [ ] L16(P2, 미반영): 무효화 조건을 구조화 필드 `{metric, op, value, days}` 로 — `parse_price_conditions` 가 US $100 미만 무시·'이하'→`<`·'3일 연속' 을 즉시 조건으로 (2026-10-26 잔여 → 2차 2-L18)
-- [ ] L18(P3, 부분 반영): trader.md 에 테마 안전장치 설명은 있음. 남은 것 — `context.theme`(종목별 테마·사건 소속), 퀀트 5일 확률 vs 결정 기간 정합, 익절 도달 정책과 최소 보유 3일 일치 (2026-10-26 잔여 → 2차 2-L20)
+- [x] L16(P2, 2026-10-28 반영 — 묶음 4 `invalidation_rules`): 무효화 조건을 구조화 필드 `{metric, op, value, days}` 로 — `parse_price_conditions` 가 US $100 미만 무시·'이하'→`<`·'3일 연속' 을 즉시 조건으로 (2026-10-26 잔여 → 2차 2-L18)
+- [x] L18(P3, 2026-10-28 반영 — 묶음 5 `context.theme`·퀀트 기간·`context.holding`, 조기 익절 예외만 보류): trader.md 에 테마 안전장치 설명은 있음. 남은 것 — `context.theme`(종목별 테마·사건 소속), 퀀트 5일 확률 vs 결정 기간 정합, 익절 도달 정책과 최소 보유 3일 일치 (2026-10-26 잔여 → 2차 2-L20)
 
 ## 웹 실시간·시계·업종 비중·사용량 (2026-10-26)
 - [x] 상단 1초 시계(KST·뉴욕·장 상태), 도움말 클릭 팝오버, 업종 비중 자동 분류(KIS 업종·ETF 상표, 표시용), 화면 전체 실시간(SSE 지문 확장·키별 재조회), 데몬 잔고 주기 갱신·접속 즉시 갱신(조회만), Claude 사용량 확인 잡(30분)·초기화 시각 표기 (2026-10-26)
@@ -477,8 +477,11 @@
 - [x] 묶음 2 주문 경로(PR 본문 diff 요약 → 확인 뒤 머지; 2026-10-27 반영, PR #58, 2026-10-28 사용자 확인 뒤 main 머지): **2-O1(P1)** `31_decision_r<n>` upsert 가 `max_stop_since` 의 손절선을 지움(라운드 보존 또는 max 유지), 2-O2 단조 유지가 SELL/TRIM 결정 손절도 바닥으로, 2-O3 US 손절 지정가가 최신 SELL/TRIM 결정 id 로 재호가 후보, 2-O4 종목당 비중 상한에 pending_buys 미포함, 2-O5 재호가 재제출에 등락률·매매 제한 미전달, 2-O6 재평가 ADD `change_pct=None`, 2-O7 FAKE 세션 고정 NAV 가 킬스위치 기준, 2-O8 단타·리밸런스·재호가 주문이 주 2회·5일 실현손익 집계에(`orders.origin`), 2-O9 권리 일정 조회 실패가 이전 일정 삭제, 2-O11 미정리 주문 재조회 7일 창, 2-O13 실행 키 해제 CLI, 2-O15 paused 중 리밸런스 done, 2-P2 재평가가 빠른 레인에서 체결 동기화 점유, 2-P4 장중 미완성 봉 저장(거래량 0 만 제외), **2-L1(P1)** 일일 스냅샷에 보유·미만기 종목 + `shadow.mature` 보류·partial
 - [x] 결정 반영 묶음 3(2026-10-28, 사용자 선택안 + Codex 보완, `docs/reviews/2026-10-28-decision-review.md` → architecture.md 「결정 반영 — 묶음 3」): 2-T2 텔레그램 신뢰할 수 없는 발신자는 조회만, 2-W13 EDGAR User-Agent 를 secrets 로, 2-P13 실시간 시세 양보 사유 + runbook 실전 전용 앱키, 2-O16 입출금 의심 특보(기준 불변), 2-P8 레이트리미터 꺼짐 노출·재시도, 2-W9 Origin/Referer 같은 출처, L6·L10·L13(lesson)·L15
 - [ ] 사용자 실행(묶음 3 머지 뒤): 설정 화면 '연결 키' 의 `EDGAR_USER_AGENT`(이름 + 연락 이메일)를 입력 — `config/sources.yaml` 이 자리표시자라 입력 전까지 EDGAR(미국 공시·재무) 수집이 꺼진다
-- [ ] 결정 반영 묶음 4(설계, 사용자 선택안 + Codex 보완): 2-O17 현금 ETF 전환 세대별 상태, 2-L3·2-L4·2-L5 섀도 공통 후보·현금 효과 분리·시장별 판정, 2-L8 `post_fill_return` 분리·FIFO 실현손익, 2-L21 입장 변경 이유 기반 수렴 판정, L14 성과 퀀트 기준선을 섀도 `quant_topn` 으로, L16 무효화 조건 구조화
-- [ ] 결정 대기(사용자, 2026-10-28 결정 문서 §2·§3·§4): 7번 2-O10 동시 판정 — 최종 재확인 + 원자적 예약(별도 주문 경로 PR) 여부, 19번 L18 — `context.theme`(asof 검증) + 퀀트 기간 해석 한 줄 + 익절·최소 보유 정책 명시, 14번 L12 — 개선 전 보정 자동 활성화(만기 60건) 차단 여부
+- [x] 결정 반영 묶음 4(설계, 2026-10-28, 사용자 선택안 + Codex 보완 → architecture.md 「결정 반영 — 묶음 4 설계」): 2-O17 현금 ETF 전환 세대별 상태, 2-L3·2-L4·2-L5 섀도 공통 후보·현금 효과 분리·시장별 판정, 2-L8 `post_fill_return` 분리·FIFO 실현손익(원장 v30), 2-L21 입장 변경 이유 기반 수렴 판정, L14 성과 퀀트 기준선을 섀도 `quant_topn` 으로, L16 무효화 조건 구조화
+- [ ] 후속(L14 나머지): ML 랭커 자체의 운영일 기록(실제 랭킹 경로·모델 버전)과 학습·튜닝·승격의 고정 홀드아웃 분리
+- [x] 결정 14·19(2026-10-28 사용자 결정 — 권고대로): 14번 보정 자동 주입 차단(`calibration.inject` 기본 false) + 만기 기준 도달 재검토 알림, 19번 `context.theme`(asof 검증, `scan/membership`)·퀀트 기간 해석 한 줄·`context.holding`(최소 보유) → architecture.md 「묶음 5」
+- [ ] 결정 7(2026-10-28 사용자 결정 — 권고대로): 2-O10 동시 판정 — 최종 재확인 + 원자적 예약(별도 주문 경로 PR, 머지 전 사용자 확인)
+- [ ] 보류(결정 19번 iii): 최소 보유 전 조기 익절 예외 — 주문 정책 결정
 - [ ] 실기·격리 확인(사용자 확인 대기): 2-O14 US 부분 체결 취소에 원 수량 전체(KIS 거부 여부), 2-O12 단타 보유를 monitor 가 먼저 팔면 `closing` 반복, 2-P1 수집 기한 뒤 `trader tool collect` 프로세스 종료 지연, 2-L24 `rate_limit_event.utilization` 단위(0~1 vs 0~100), 2-P6·2-P11 Windows 파일 락·빌드, 2-W4 SSE 리더 탭 중복, 2-W12 세이브티커 로그인 입력 범위
 - [ ] 결정 대기(사용자): `AGENTS.md`(untracked, Phase 12 시점 CLAUDE.md 사본)를 현재판으로 갱신해 커밋할지 — Codex 가 구판 계약으로 오판할 수 있다
 
@@ -497,13 +500,13 @@
 ## Phase 26 선물옵션 방향성 레인 (2026-10-27, 사용자 요청 — `docs/superpowers/plans/2026-10-27-phase26-fo.md`, 스펙 `docs/superpowers/specs/2026-10-27-fo-lane-design.md`)
 - [x] 단계 1 계좌·브로커·마스터·설정·가격모형 (`feat/phase26-1-fo-broker`): `AccountConfig.asset`·`FoCfg`·`split_accounts`, FO TR 표·모델, `fo_codes`·`fo_master`, `KisFoBroker`(엄격 파서·`get_order_state`)·`FakeFoBroker`, 파생 시세·체인, FO 장 시간·호가단위·Black-76, CLI `_Boot` 세 목록·`fo verify|contracts|chain|order-test`, 거부 목록
 - [x] 단계 1 Codex·Claude 교차 리뷰 → 수정 → PR(main): Codex P0 3·P1 2·P2 1 + Claude 7 반영(`docs/reviews/2026-10-27-phase26-fo-review.md`) (2026-10-27)
-- [x] 단계 2 저장 계층·상태기계·게이트·실행·원장 (`feat/phase26-2-store-gate-exec`): 원장 v30(main 의 v26~29 뒤), `fo/store`(예약 트랜잭션)·`positions`(복구)·`rules`(대조표·단조)·`sizing`(수명 예산·스트레스·증거금 3겹)·`executor`(진입/축소 분기·회수·청산 절차), 체결·잔고·대조·점검·성과 asset 분기 (2026-10-28)
+- [x] 단계 2 저장 계층·상태기계·게이트·실행·원장 (`feat/phase26-2-store-gate-exec`): 원장 v32(main 의 v26~31 뒤), `fo/store`(예약 트랜잭션)·`positions`(복구)·`rules`(대조표·단조)·`sizing`(수명 예산·스트레스·증거금 3겹)·`executor`(진입/축소 분기·회수·청산 절차), 체결·잔고·대조·점검·성과 asset 분기 (2026-10-28)
 - [x] 단계 2 Codex·Claude 교차 리뷰 → 수정 → PR(`--base feat/phase26-1-fo-broker`): Codex P0 11·P1 2·P2 1 + Claude 10(중복 3) 반영(`docs/reviews/2026-10-27-phase26-fo-review.md` 「단계 2」, `tests/fo/test_review_s2.py`) (2026-10-28)
 - [x] 단계 3 세션·도구·에이전트 (`feat/phase26-3-session`): `fo-trader.md`·orchestrator fo 모드, `FO_AGENTS`, kind `fo|fo_resume`·`usage.RESUME_KINDS`·상한 트랜잭션, `fo/inputs`, `tool fo bundle|write|summarize`·`submit-fo-decision`, `fo session` (2026-10-28)
 - [x] 단계 3 교차 리뷰 → 수정 → PR(`--base feat/phase26-2-store-gate-exec`): Codex exec P0 5·P1 4 + codex review P1 1 + Claude 14(중복 8) 반영(`docs/reviews/2026-10-27-phase26-fo-review.md` 「단계 3」, `tests/fo/test_review_s3.py`) — 국면·시장 뷰 연결, 지연 fo 컨텍스트·오프라인 마스터, kind 별 프롬프트, 입력 날짜 가드·계좌별 예외 격리·재개, 보류 플래그 dry_run·소비자, KST 봉 컷, 현물 헤지 보유 전달, 재평가 요청 재사용·`--round`, 묶음 목록 축소 (2026-10-28)
 - [x] 단계 3 GitHub Codex PR #61 리뷰 4건(G3-1~4) 반영: 제출·재개 시점 신선도, 원장 다리로 재개 판정, 거시 시크릿 전달, 보유 축소는 장중 실행 (2026-10-28)
 - [x] 단계 4 데몬·모니터·재평가·웹 (`feat/phase26-4-daemon-web`): `fo/triggers`·`engine`(보호선 이중 조건·유지 조건·회수)·`reeval`(CAS·REPLACE 다음 틱), 데몬 잡 `kr_fo_session`·`kr_fo_monitor`·큐 kind 3, 소비자별 계좌 목록, CLI `fo status|monitor|adopt|close` + `order-test` 왕복 구현, 텔레그램 `/fo`·STATUS 절, `/api/fo/*`·`/fo` 페이지, E2E 수명 시나리오·현물 회귀 스냅샷 (2026-10-28)
-- [x] 단계 4 교차 리뷰 → 수정 → PR(`--base feat/phase26-3-session`): Codex exec P0 7·P1 6 + codex review P1 1·P2 3 + Claude 10(중복 묶어 S4-1~19) 반영(`docs/reviews/2026-10-27-phase26-fo-review.md` 「단계 4」, `tests/fo/test_review_s4.py`, 원장 v31) (2026-10-28)
+- [x] 단계 4 교차 리뷰 → 수정 → PR(`--base feat/phase26-3-session`): Codex exec P0 7·P1 6 + codex review P1 1·P2 3 + Claude 10(중복 묶어 S4-1~19) 반영(`docs/reviews/2026-10-27-phase26-fo-review.md` 「단계 4」, `tests/fo/test_review_s4.py`, 원장 v33) (2026-10-28)
 - [x] 결정(사용자, 추천대로 2026-10-28): 국면이 bear 로 바뀌어 `leverage_by_regime.bear: 0`(신규 금지)이어도 기존 파생 보유는 자동 감액·청산하지 않는다 — **현행 유지**(신규만 막고 보유는 손절선·만기·유지 조건으로 정리, 국면과 같은 방향의 숏까지 강제 청산하지 않게, S4-19)
 - [ ] 단계 5 문서·전체 교차 리뷰 B·체인 ff 머지 (`feat/phase26-5-docs-review`)
 - [ ] 실기 1(사용자 확인 대기, 조회 전용): `uv run trader fo verify --account paper-fo` → 시세·마스터·주문가능·잔고 필드 확인(빈 잔고면 방향·NAV 미검증으로 남음) → 비식별 fixture 로 미확인 항목 확정

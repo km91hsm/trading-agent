@@ -154,3 +154,14 @@ def test_orders_area_shows_disabled_rate_limiter(conn, monkeypatch):
     items = health._orders(conn, Settings(), [make_account("paper-main", "paper", "auto")], now)
     hit = [i for i in items if i.key == "orders.rate_limiter"]
     assert hit and hit[0].level == "warning" and "real" in hit[0].text
+
+
+def test_llm_area_flags_calibration_review_at_threshold(conn, monkeypatch):
+    """14번: 만기 결정이 기준(60)에 닿았는데 보정 주입이 꺼져 있으면 재검토 알림(watch)."""
+    from helpers_memory import seed_matured
+
+    seed_matured(conn, 60)
+    now = datetime(2026, 10, 27, 3, 0, tzinfo=UTC)
+    items = health._llm(conn, Settings(), now)
+    hit = [i for i in items if i.key == "llm.calibration_review"]
+    assert hit and hit[0].level == "watch" and "inject" in hit[0].text

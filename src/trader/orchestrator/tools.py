@@ -150,7 +150,7 @@ def trader_context(
         "portfolio": _portfolio_context(ctx, market),
         "quant": quant,
         **_memory_context(ctx, inputs, market),
-        "calibration": calibration,
+        "calibration": calibration if calibration_injected() else None,
         "regime": _regime_context(ctx, market),
         "market_view": _market_view_context(ctx, market),
     }
@@ -230,6 +230,7 @@ def _memory_context(ctx: ToolContext, inputs: dict, market: Market) -> dict:
             "direction_score": e["direction_score"],
             "avoided_loss": e["avoided_loss"],
             "realized_pnl_pct": e["realized_pnl_pct"],
+            "post_fill_return": e.get("post_fill_return"),
             "lesson": (e.get("reflection") or {}).get("lesson") if e.get("reflection") else None,
             "score": e["score"],
         }
@@ -238,8 +239,22 @@ def _memory_context(ctx: ToolContext, inputs: dict, market: Market) -> dict:
     return {"memory": entries, "memory_status": {"warmup": r["warmup"], "breaker": r["breaker"]}}
 
 
+def calibration_injected() -> bool:
+    """`ml.yaml calibration.enabled ∧ inject`(결정 14번). 트레이더 입력에 보정을 넣는 모든
+    지점(생성·기존 체크포인트 소비)이 이것을 본다 — 스위치를 끄면 전에 만든 35_calibration 도
+    들어가지 않는다."""
+    try:
+        from trader.config import load_ml
+
+        cfg = load_ml().models.calibration
+        return bool(cfg.enabled and cfg.inject)
+    except Exception:  # noqa: BLE001 - 설정을 못 읽으면 넣지 않는다
+        return False
+
+
 def ensure_calibration(ctx: ToolContext, *, ticker: str, market: Market, date: date) -> dict | None:
-    """결과 엔트리가 min_decisions(60) 이상일 때만 35_calibration 을 쓴다(있으면 그대로)."""
+    """결과 엔트리가 min_decisions(60) 이상이고 `calibration.inject` 가 켜졌을 때만
+    35_calibration 을 쓴다(있으면 그대로)."""
     from trader.calibration import model as cal
     from trader.config import load_ml
     from trader.memory import vector as vec
@@ -248,13 +263,13 @@ def ensure_calibration(ctx: ToolContext, *, ticker: str, market: Market, date: d
     if ctx.conn is None:
         return None
     d = _dir(ctx, ticker, market, date)
+    if not calibration_injected():  # 주입은 L12 개선 뒤 사람이 켠다(결정 14번) — 기존 것도
+        return None
     existing = read_checkpoint(d, "35_calibration")
     if existing is not None:
         return existing.get("data")
     try:
         cfg = load_ml().models.calibration
-        if not cfg.enabled:
-            return None
         row = quant_report.latest_row(ticker, market, ctx.state, asof=date)
         qv = vec.situation_vector(row, market) if row else None
         report = cal.build_calibration(
@@ -555,8 +570,16 @@ def checkpoint_summarize(ctx: ToolContext, *, ticker: str, market: Market, date:
     if 0 not in turns or set(turns[0]) != {"bull", "bear"}:
         return {"ok": False, "error": "라운드 0 의 bull·bear 턴이 모두 필요합니다"}
     final_round = max(r for r, sides in turns.items() if set(sides) == {"bull", "bear"})
+    evidence_ids = {
+        str(e.get("source_id"))
+        for r in _reports(d)
+        for e in (r.get("evidence") or [])
+        if isinstance(e, dict) and e.get("source_id")
+    }
     try:
-        summ = summary_mod.research_summary(turns[0], turns[final_round], rounds=final_round)
+        summ = summary_mod.research_summary(
+            turns[0], turns[final_round], rounds=final_round, evidence_ids=evidence_ids
+        )
     except ValueError as e:
         return {"ok": False, "error": str(e)}
     path = write_checkpoint(d, "25_research_summary", _wrap(summ, None))
@@ -668,6 +691,62 @@ def _shrink(obj: dict, limit: int, *, drop_evidence: bool = False) -> dict:
         if _size(cut) <= limit:
             return cut
     return cut
+
+
+def _theme_context(ctx: ToolContext, inputs: dict, ticker: str, market: Market, d: date) -> dict:
+    """종목의 오늘 상위 테마·shock 사건 소속(결정 19번). 게이트와 같은 조회(`scan/membership`)를
+    입력 기준 시각(`00_inputs.meta.asof`)으로 — 그 뒤 관측은 넣지 않는다."""
+    from trader.scan import membership
+
+    raw = ((inputs or {}).get("data") or inputs or {}).get("meta", {}).get("asof")
+    try:
+        asof = datetime.fromisoformat(str(raw)) if raw else ctx.now()
+    except ValueError:
+        asof = ctx.now()
+    try:
+        from trader.config import load_events
+
+        events_on = load_events().enabled
+    except Exception:  # noqa: BLE001
+        events_on = False
+    if ctx.conn is None:
+        return {"themes": [], "events": [], "status": None, "observed_at": None}
+    res = membership.of(
+        ctx.conn,
+        market,
+        d,
+        theme_top_n=ctx.settings.theme.top_n,
+        theme_enabled=ctx.settings.theme.enabled,
+        events_enabled=events_on,
+        asof=asof,
+    )
+    return membership.for_ticker(res, ticker)
+
+
+def _holding_context(ctx: ToolContext, ticker: str, market: Market, d: date) -> dict:
+    """계좌별 이 종목의 보유 거래일·최소 보유 충족 여부(결정 19번 — 익절가 도달이 최소 보유 전이면
+    SELL/TRIM 이 게이트에서 거부될 수 있다). 보유한 계좌만."""
+    from trader.ledger import repo
+    from trader.orchestrator.executor import _holidays_between
+    from trader.risk import rules
+
+    out: dict[str, dict] = {}
+    if ctx.conn is None:
+        return out
+    for a in ctx.accounts:
+        if market not in a.markets:
+            continue
+        since = repo.held_since(ctx.conn, a.id, [ticker]).get(ticker)
+        if since is None:
+            continue
+        days = rules._trading_days_between(since, d, _holidays_between(ctx.holiday_fn, since, d))
+        out[a.id] = {
+            "held_since": since.isoformat(),
+            "held_trading_days": days,
+            "min_hold_days": rules.MIN_HOLD_TRADING_DAYS,
+            "sell_allowed": days >= rules.MIN_HOLD_TRADING_DAYS,
+        }
+    return out
 
 
 EVIDENCE_ROLES = ("technical", "fundamental", "news_macro", "sentiment")
@@ -801,6 +880,8 @@ def checkpoint_bundle(
             ),
         }
         data["context"]["evidence_stats"] = evidence_stats(reports)  # evidence 를 떼기 전에 센다
+        data["context"]["theme"] = _theme_context(ctx, inputs, ticker, market, date)
+        data["context"]["holding"] = _holding_context(ctx, ticker, market, date)
         return {"ok": True, "data": _shrink(data, BUNDLE_LIMIT_BYTES, drop_evidence=True)}
     return {"ok": False, "error": f"알 수 없는 kind: {kind} (researcher|trader)"}
 
@@ -2267,7 +2348,7 @@ def _fo_account_done(
 ) -> bool:
     """아침 결정 재개 때 이 계좌를 건너뛸지(PR #61 리뷰·단계 4 리뷰). 판정 파일은 다리 예약
     **전에** 쓰이므로 그것만으로는 끝났다고 보지 않는다 — 보류 플래그·주문 체크포인트·**이 결정
-    봉투(request_id)로 만든 원장 다리**(v31 `fo_order_legs.request_id`)가 있거나, 판정이 실행할
+    봉투(request_id)로 만든 원장 다리**(v33 `fo_order_legs.request_id`)가 있거나, 판정이 실행할
     것이 없는 경우(거부·기록만·오류·건너뜀·다리 없음)만 끝난 것이다."""
     if fo_pending_entry(ctx.conn, account_id, day) is not None:
         return True
