@@ -1,0 +1,164 @@
+{
+    "buy": {
+        "checkpoints": {
+            "40_risk_check_paper-main": {
+                "account_id": "paper-main",
+                "adjusted_qty": 14,
+                "approved": true,
+                "dry_run": false,
+                "mode": "auto",
+                "note": null,
+                "order_type": "LIMIT",
+                "price": "71000",
+                "reasons": [],
+                "side": "BUY",
+                "stance": "normal"
+            },
+            "40_risk_check_real-main": {
+                "account_id": "real-main",
+                "adjusted_qty": 14,
+                "approved": true,
+                "dry_run": false,
+                "mode": "off",
+                "note": null,
+                "order_type": "LIMIT",
+                "price": "71000",
+                "reasons": [],
+                "side": "BUY",
+                "stance": "normal"
+            },
+            "50_order_paper-main": {
+                "mode": "auto",
+                "request": {
+                    "exchange": null,
+                    "market": "KR",
+                    "order_type": "LIMIT",
+                    "price": "71000",
+                    "qty": 14,
+                    "side": "BUY",
+                    "ticker": "005930"
+                },
+                "result": {
+                    "accepted": true,
+                    "message": "\uac00\uc9dc \uc811\uc218",
+                    "order_no": "FAKE-1",
+                    "org_no": "00000"
+                },
+                "status": "accepted"
+            }
+        },
+        "results": [
+            {
+                "account_id": "paper-main",
+                "approval_id": null,
+                "approved": true,
+                "dry_run": false,
+                "mode": "auto",
+                "note": null,
+                "order": {
+                    "accepted": true,
+                    "message": "\uac00\uc9dc \uc811\uc218",
+                    "order_id": 1,
+                    "order_no": "FAKE-1",
+                    "org_no": "00000",
+                    "status": "accepted"
+                },
+                "qty": 14,
+                "reasons": [],
+                "stance": "normal"
+            },
+            {
+                "account_id": "real-main",
+                "approval_id": null,
+                "approved": true,
+                "dry_run": false,
+                "mode": "off",
+                "note": null,
+                "order": null,
+                "qty": 14,
+                "reasons": [],
+                "stance": "normal"
+            }
+        ]
+    },
+    "hold": {
+        "checkpoints": {
+            "40_risk_check_paper-main": {
+                "account_id": "paper-main",
+                "adjusted_qty": 0,
+                "approved": false,
+                "dry_run": false,
+                "mode": "auto",
+                "note": null,
+                "order_type": null,
+                "price": null,
+                "reasons": [
+                    "HOLD: \uc8fc\ubb38 \uc5c6\uc74c"
+                ],
+                "side": null,
+                "stance": "normal"
+            },
+            "40_risk_check_real-main": {
+                "account_id": "real-main",
+                "adjusted_qty": 0,
+                "approved": false,
+                "dry_run": false,
+                "mode": "off",
+                "note": null,
+                "order_type": null,
+                "price": null,
+                "reasons": [
+                    "HOLD: \uc8fc\ubb38 \uc5c6\uc74c"
+                ],
+                "side": null,
+                "stance": "normal"
+            },
+            "50_order_paper-main": null
+        },
+        "results": [
+            {
+                "account_id": "paper-main",
+                "approval_id": null,
+                "approved": false,
+                "dry_run": false,
+                "mode": "auto",
+                "note": null,
+                "order": null,
+                "qty": 0,
+                "reasons": [
+                    "HOLD: \uc8fc\ubb38 \uc5c6\uc74c"
+                ],
+                "stance": "normal"
+            },
+            {
+                "account_id": "real-main",
+                "approval_id": null,
+                "approved": false,
+                "dry_run": false,
+                "mode": "off",
+                "note": null,
+                "order": null,
+                "qty": 0,
+                "reasons": [
+                    "HOLD: \uc8fc\ubb38 \uc5c6\uc74c"
+                ],
+                "stance": "normal"
+            }
+        ]
+    },
+    "orders": [
+        {
+            "account_id": "paper-main",
+            "market": "KR",
+            "mode": "auto",
+            "order_no": "FAKE-1",
+            "order_type": "LIMIT",
+            "price": "71000",
+            "qty": 14,
+            "side": "BUY",
+            "status": "accepted",
+            "ticker": "005930"
+        }
+    ],
+    "risk_checks": 4
+}
