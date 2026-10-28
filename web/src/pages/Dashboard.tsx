@@ -12,7 +12,7 @@ import { fmtDate, fmtMoney, fmtPct, fmtTime, marketDate, minutesLeft } from "../
 import { useApp, useEnsureFresh, useEnsureUsageFresh, useLiveQuotes, useLoad, useNow } from "../hooks";
 import { applyQuotes } from "../live";
 import { labelOf } from "../names";
-import { usageChip, type UsageResp } from "../usage";
+import { throttleText, usageChip, type UsageResp } from "../usage";
 import { daemonText, type DaemonStatus } from "../jobs";
 import { proposalText, regimeText, type RegimeResp } from "../sectors";
 import { type ScalpResp, scalpChip } from "../pipeline";
@@ -282,6 +282,11 @@ export function Dashboard() {
             {usage.data?.rate_limits ? usageChip(usage.data.rate_limits) : usage.data ? "관측 없음" : "확인 중"}
           </b>
         </Link>
+        {throttleText(usage.data?.throttle) ? (
+          <Link to="/settings" className="pend" title={usage.data?.throttle?.reason ?? "설정 화면에서 감속을 끌 수 있어요"}>
+            {throttleText(usage.data?.throttle)}
+          </Link>
+        ) : null}
         <span className={pendingApprovals.length ? "pend" : ""}>
           미승인 <b>{pendingApprovals.length}건</b>
           {earliestExpiry !== undefined ? ` (${earliestExpiry}분 뒤 만료)` : ""}

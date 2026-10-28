@@ -1259,3 +1259,90 @@ def test_names_fill_job_fills_unnamed_tickers(conn):
     assert out["filled"] == 1 and repo.ticker_names(conn)[("KR", "777777")] == "합성 종목"
     deps.market_client = None
     assert daemon._names_fill_body(deps) == {"skipped": "시세 클라이언트 없음"}
+
+
+def test_throttle_blocked_is_skipped_not_error(conn, tmp_path):
+    """감속 차단(ThrottleBlocked)은 잡·대기열에서 '생략' — 오류 행·ERROR 로그·운영 점검
+    오류로 쌓이지 않게."""
+    from trader import heartbeat
+    from trader.orchestrator.session import ThrottleBlocked
+
+    hb = heartbeat.Heartbeat(tmp_path / "hb.json")
+
+    def blocked():
+        raise ThrottleBlocked("구독 7일 사용률 84% ≥ 80%")
+
+    daemon.run_job("discover", blocked, conn_factory=lambda: db.connect(), heartbeat=hb)
+    row = conn.execute(
+        "SELECT status, error FROM runs WHERE kind='discover' ORDER BY id DESC"
+    ).fetchone()
+    assert row["status"] == "skipped" and "사용률" in row["error"]
+    job = json.loads((tmp_path / "hb.json").read_text())["jobs"]["discover"]
+    assert job["last_status"] == "skipped"
+
+
+def test_scan_analyze_throttled_skips_and_notifies_once_a_day(conn, monkeypatch):
+    from trader.orchestrator.session import ThrottleBlocked
+
+    sent = []
+    deps = _deps(conn, FakeMarket(), now=lambda: datetime(2026, 10, 28, 22, 30, tzinfo=UTC))
+    deps.notifier = SimpleNamespace(send=lambda t, **k: sent.append(t) or True)
+    monkeypatch.setattr(daemon, "_market_view_body", lambda d, m: None)
+    monkeypatch.setattr(daemon, "_regime_apply_view", lambda d, m: None)
+
+    def scan(d, m):
+        raise ThrottleBlocked("구독 5시간 사용률 85% ≥ 80% — 보유 재평가만 허용(screen 생략)")
+
+    monkeypatch.setattr(daemon, "_scan_body", scan)
+    out = daemon._scan_analyze_body(deps, "KR")
+    assert "skipped" in out and "error" not in out and "사용량 감속" in out["skipped"]
+    daemon._scan_analyze_body(deps, "KR")
+    assert len(sent) == 1 and "사용량 감속" in sent[0]
+
+
+def test_news_reanalyze_not_queued_while_throttled(conn, monkeypatch):
+    """감속 중엔 뉴스 재분석(analyze_ticker)을 큐에 넣지 않는다 — 실행 때 막혀 '오류'로
+    쌓이던 문제."""
+    deps = _deps(conn, FakeMarket(), now=lambda: datetime(2026, 10, 28, 1, 0, tzinfo=UTC))
+    monkeypatch.setattr(
+        daemon, "_session_allowed", lambda d, c, kind: (kind != "analyze", "7일 84%")
+    )
+    uni = SimpleNamespace(kr=["005930"], us=[])
+    rid = daemon._news_reanalyze(
+        deps, conn, "KR", "005930", [{"title": "합성"}], date(2026, 10, 28), uni
+    )
+    assert rid is None
+    assert conn.execute("SELECT COUNT(*) FROM job_requests").fetchone()[0] == 0
+    monkeypatch.setattr(daemon, "_session_allowed", lambda d, c, kind: (True, None))
+    uni = SimpleNamespace(kr=["005930"], us=[])
+    rid = daemon._news_reanalyze(
+        deps, conn, "KR", "005930", [{"title": "합성"}], date(2026, 10, 28), uni
+    )
+    assert isinstance(rid, int)  # 감속이 아니면 큐에 들어간다
+
+
+def test_usage_probe_backs_off_after_two_failures(conn, monkeypatch):
+    """사용량 확인(haiku)이 연속 2번 실패하면 2시간 쉬고, 실패는 잡 오류 대신 생략으로
+    (35회 반복 방지)."""
+    from trader.config import LlmSettings
+    from trader.orchestrator import quick
+
+    now = datetime(2026, 10, 28, 3, 0, tzinfo=UTC)
+    deps = _deps(conn, FakeMarket(), now=lambda: now)
+    deps.settings = Settings(llm=LlmSettings(usage_file=None))
+    called = []
+    monkeypatch.setattr(
+        quick, "probe_usage", lambda *a, **kw: called.append(1) or {"error": "TimeoutExpired"}
+    )
+    out = daemon._usage_probe_body(deps)
+    assert "skipped" in out and "error" not in out and called == [1]
+    for m in (40, 10):
+        conn.execute(
+            "INSERT INTO agent_calls(agent, model, status, error, created_at) "
+            "VALUES ('usage_probe', 'haiku', 'error', 'TimeoutExpired', ?)",
+            ((now - timedelta(minutes=m)).isoformat(),),
+        )
+    conn.commit()
+    assert "연속 실패" in daemon._usage_probe_body(deps)["skipped"] and called == [1]
+    daemon._usage_probe_body(deps, force=True)  # '지금 확인'은 쉬지 않는다
+    assert called == [1, 1]
