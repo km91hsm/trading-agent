@@ -770,6 +770,7 @@ def _fo_tool_ctx(
         dry_run=dry_run,
         spot_accounts=list(boot.accounts or []),
         spot_brokers=dict(spot_brokers or {}),
+        secrets=boot.secrets,
         **context_sources(boot.conn, lambda: datetime.now(UTC)),
     )
 

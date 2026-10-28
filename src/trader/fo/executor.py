@@ -89,6 +89,9 @@ class FoExecContext:
     spot_brokers: dict[str, Any] = field(default_factory=dict)
     # 재평가 결정 적용 훅(단계 4 `fo/reeval.apply`): (봉투, 라운드) → 결과 dict. 없으면 기록만
     reeval_apply: Callable[[FoDecisionEnvelope, int], dict] | None = None
+    # 시크릿(FRED·ECOS 등) — 거시 절(`inputs._news_macro` → `market_view.build_inputs`)이
+    # 거시 지표를 받는 데만 쓴다. 없으면 거시 지표 절이 키 없음으로 빠진다(PR #61 리뷰)
+    secrets: Any | None = None
 
 
 def context_sources(

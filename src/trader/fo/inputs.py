@@ -180,7 +180,7 @@ def _news_macro(
         data = market_view.build_inputs(
             ctx.conn, MARKET, today, settings=ctx.settings, asof=asof,
             market_client=ctx.market_client, accounts=list(spot.values()), brokers=brokers,
-            state=ctx.state, now=now_fn,
+            state=ctx.state, now=now_fn, secrets=ctx.secrets,
         )  # fmt: skip
     except Exception as e:  # noqa: BLE001 — 거시 절 실패도 세션은 띄운다
         return {}, f"{type(e).__name__}: {e}"

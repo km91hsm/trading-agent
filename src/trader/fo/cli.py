@@ -409,7 +409,7 @@ def session_cmd(
         out = fo_session.run(
             settings, conn, fo_accounts=fo_accounts, brokers=brokers, market_client=market,
             master=master, dry_run=dry_run, notifier=make_notifier(boot.secrets), asof=at,
-            spot_accounts=spot_accounts, spot_brokers=spot_brokers,
+            spot_accounts=spot_accounts, spot_brokers=spot_brokers, secrets=boot.secrets,
         )  # fmt: skip  (운영일은 asof 의 KST 날짜)
     finally:
         conn.close()

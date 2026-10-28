@@ -144,3 +144,12 @@ base `1bd0172` → (단계 2 GitHub 리뷰 반영 뒤) `c7bf51e`, head `94e4e3f`
 확인함(리뷰어 공통): 쓰기 허용 목록·경로 탈출 거부, 봉투 대조(아침 계좌·포지션 비움·request_id, 재평가 네 값 + 현재 version), FLAT HOLD·historical·창 밖에서 주문 없음, 두 상한 한 트랜잭션·`RESUME_KINDS`, 옵션 체인 ≤18, fixture 합성·비밀정보 없음.
 
 단계 3 결론: **보완 뒤 진행** — P0 5·P1 4 + Claude 14(중복 8) 전부 반영(S3-2 의 제출 시각 검사와 S3-8 의 DB 예약은 설계대로 부분 반영, 사유는 표). `uv run ruff check`·`uv run pytest` 통과 뒤 PR(`--base feat/phase26-2-store-gate-exec`).
+
+### GitHub Codex PR 리뷰 (G3-1~4, PR #61 head `800ca63`)
+
+| # | 심각도 | 위치 | 문제 | 조치 |
+|---|---|---|---|---|
+| G3-1 | P1 | `submit_fo_decision` 제출·재개 | 입력 신선도를 세션 시작 때만 봐서 늦은 제출이나 몇 시간 뒤 재개가 낡은 결정으로 바로 주문을 냄 | `_fo_submit_stale`: `meta.asof` 가 `llm.timeout_s + fo.max_input_age_s` 보다 오래면 `record_only: stale_submit`(판정만, 주문·보류 없음). 제출과 재개 둘 다 적용. 진입 창 밖 보류는 `run_leg` 가 실행 직전 재조회·재계산하므로 그대로. `test_late_submit_records_only`·`test_resume_hours_later_records_only` |
+| G3-2 | P2 | 재개 분기 계좌 선별 | 판정 파일(`_fo_risk_check_<계좌>`)은 다리 예약 **전에** 쓰이므로, 그 사이에 죽으면 재개가 그 계좌를 끝난 것으로 보고 건너뜀 | `_fo_account_done`: 보류 플래그·`_fo_order_<계좌>`·결정 파일 저장 뒤 생긴 라운드 0 원장 다리(OPEN·RESIZE_UP·RESIZE_DOWN·CLOSE)가 있거나, 판정이 실행할 것이 없을 때(거부·기록만·오류·건너뜀·다리 없음)만 끝난 것. 승인·다리 있는 판정만 남았으면 다시 실행. `test_resume_reruns_account_whose_risk_check_has_no_leg` |
+| G3-3 | P2 | `fo/inputs._news_macro` | `market_view.build_inputs` 에 시크릿을 넘기지 않아 FRED·ECOS 거시 지표가 늘 빠짐 | `FoExecContext.secrets` 추가, `cli._fo_tool_ctx`·`fo/session.run(secrets=)`·`fo session` CLI 가 `boot.secrets` 를 넘김. `test_news_macro_forwards_secrets`·`test_session_run_puts_secrets_on_context`·`test_fo_tool_ctx_carries_boot_secrets` |
+| G3-4 | P2 | `_fo_run_accounts` 창 판정 | RESIZE·REPLACE 를 진입으로 보고 진입 창(cutoff 15:30) 밖이면 보류해, 장중(15:45 까지) 축소·청산이 막힘 | 진입 창은 OPEN 과 보유 없는 RESIZE·REPLACE 만. 보유가 있으면 장중이면 바로 `run_leg`(증액 다리는 게이트가 진입 창 밖이면 거부). `test_replace_with_position_closes_after_entry_cutoff`·`test_resize_with_position_runs_open_without_position_pends`·`test_open_after_entry_cutoff_still_pends` |

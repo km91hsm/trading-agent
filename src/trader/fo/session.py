@@ -51,11 +51,12 @@ def run(
     asof: datetime | None = None,
     spot_accounts: list[AccountConfig] | None = None,
     spot_brokers: dict[str, Any] | None = None,
+    secrets: Any | None = None,
 ) -> dict:
     """{date, inputs_path, session, decision, skipped, dry_run, forced_dry_run}. `skipped` 가 있으면
     세션을 띄우지 않은 사유(오늘 결정 있음·상한·계좌 없음·enabled=false∧보유 없음). 운영일 `date`
     는 생략하면 `asof`(없으면 now)의 KST 날짜(`run_store.run_date_for`). `spot_accounts`·
-    `spot_brokers` 는 거시 절의 현물 헤지 보유 읽기용(현물 주문 없음)."""
+    `spot_brokers` 는 거시 절의 현물 헤지 보유 읽기용(현물 주문 없음), `secrets` 는 거시 지표 키."""
     at = asof or now()
     date = date or run_store.run_date_for(MARKET, at)
     out: dict[str, Any] = {
@@ -82,7 +83,7 @@ def run(
         settings=settings, accounts=accounts, conn=conn, brokers=brokers,
         market_client=market_client, master=master, state=state, now=now, dry_run=dry_run,
         spot_accounts=[a for a in (spot_accounts or []) if a.asset != "fo"],
-        spot_brokers=dict(spot_brokers or {}),
+        spot_brokers=dict(spot_brokers or {}), secrets=secrets,
         **({"notifier": notifier} if notifier is not None else {}),
         **context_sources(conn, now),
     )  # fmt: skip

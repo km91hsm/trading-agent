@@ -2040,13 +2040,12 @@ def submit_fo_decision(
                 return out
             todo = [
                 a for a in fo.accounts
-                if a.asset == "fo" and f"_fo_risk_check_{a.id}" not in stages
-                and fo_pending_entry(ctx.conn, a.id, date) is None
+                if a.asset == "fo" and not _fo_account_done(ctx, d, stage, stages, a.id, date)
             ]  # fmt: skip
             if todo:
                 res = _fo_run_accounts(
                     ctx, date=date, env=env_prev, stage=stage, inputs=inputs, accounts=todo,
-                    record_only=existing.get("record_only"),
+                    record_only=existing.get("record_only") or _fo_submit_stale(ctx, inputs),
                 )  # fmt: skip
                 return out | res | {"resumed_execution": True}
         return out
@@ -2113,6 +2112,8 @@ def submit_fo_decision(
         record_only = "historical"
     elif meta.get("date") and meta.get("date") != date.isoformat():
         record_only = "input_date"
+    elif round_n == 0:
+        record_only = _fo_submit_stale(ctx, inputs)
     data = {
         **env.model_dump(), "resolved": resolved, "stage": stage, "round": round_n,
         "historical": historical, "asof": meta.get("asof"), "record_only": record_only,
@@ -2148,6 +2149,62 @@ def submit_fo_decision(
 
 
 FO_INPUT_DATE_NOTE = "입력 날짜 불일치 — 실행 안 함"
+FO_SUBMIT_STALE_NOTE = "제출·재개 시점 입력 노후 — 실행 안 함"
+# 아침 결정의 계좌 다리(회수·감시 다리 STOP·EXPIRY 등은 제외) — 재개 판정의 원장 근거
+_FO_DECISION_LEG_INTENTS = ("OPEN", "RESIZE_UP", "RESIZE_DOWN", "CLOSE")
+
+
+def _fo_submit_stale(ctx: ToolContext, inputs: dict) -> str | None:
+    """제출·재개 시점 신선도(PR #61 리뷰): `_fo_inputs.meta.asof` 가 세션 한 번의 길이
+    (`llm.timeout_s`) + `fo.max_input_age_s` 보다 오래됐으면 `"stale_submit"`. 진입 창 밖 보류는
+    `run_leg` 가 실행 직전 다시 받아 재계산하므로 이 검사는 늦은 제출·몇 시간 뒤 재개만 막는다."""
+    raw = (inputs.get("meta") or {}).get("asof")
+    if not raw:
+        return None
+    try:
+        at = datetime.fromisoformat(str(raw))
+    except ValueError:
+        return "stale_submit"
+    if at.tzinfo is None:
+        at = at.replace(tzinfo=UTC)
+    limit = ctx.settings.llm.timeout_s + ctx.settings.fo.max_input_age_s
+    return "stale_submit" if (ctx.now() - at).total_seconds() > limit else None
+
+
+def _fo_account_done(
+    ctx: ToolContext, d: Path, stage: str, stages: list[str], account_id: str, day: date
+) -> bool:
+    """아침 결정 재개 때 이 계좌를 건너뛸지(PR #61 리뷰). 판정 파일은 다리 예약 **전에** 쓰이므로
+    그것만으로는 끝났다고 보지 않는다 — 보류 플래그·주문 체크포인트·결정 저장 뒤 생긴 원장 다리
+    (아침 결정 의도, 라운드 0)가 있거나, 판정이 실행할 것이 없는 경우(거부·기록만·오류·건너뜀·
+    다리 없음)만 끝난 것이다. 다리 `created_at` 과 결정 파일 mtime 은 둘 다 벽시계 UTC 다."""
+    if fo_pending_entry(ctx.conn, account_id, day) is not None:
+        return True
+    if f"_fo_order_{account_id}" in stages:
+        return True
+    try:
+        since = datetime.fromtimestamp((d / f"{stage}.json").stat().st_mtime, UTC).isoformat()
+    except OSError:
+        since = None
+    marks = ",".join("?" * len(_FO_DECISION_LEG_INTENTS))
+    if since is not None and ctx.conn.execute(
+        f"SELECT 1 FROM fo_order_legs WHERE account_id = ? AND round = 0 AND intent IN ({marks})"
+        " AND created_at >= ? LIMIT 1",
+        (account_id, *_FO_DECISION_LEG_INTENTS, since),
+    ).fetchone():
+        return True
+    rc_stage = f"_fo_risk_check_{account_id}"
+    if rc_stage not in stages:
+        return False
+    rc = (read_checkpoint(d, rc_stage) or {}).get("data") or {}
+    if rc.get("record_only") or rc.get("error") or rc.get("skipped"):
+        return True
+    if "intent" in rc and "verdict" not in rc:  # CLOSE·REPLACE 판정 — 축소 다리가 아직 없다
+        return False
+    verdict = rc.get("verdict")
+    if verdict is None:  # 관망·거부 기록(`approved`·`legs` 를 직접 담은 형태)
+        return not (rc.get("approved") and rc.get("legs"))
+    return not (verdict.get("approved") and verdict.get("legs"))
 
 
 def _fo_run_accounts(
@@ -2179,7 +2236,10 @@ def _fo_run_accounts(
     executions: dict[str, list[dict]] = {}
     pending: list[str] = []
     notes: list[str] = []
-    stale_note = {"historical": FO_STALE_NOTE, "input_date": FO_INPUT_DATE_NOTE}.get(record_only)
+    stale_note = {
+        "historical": FO_STALE_NOTE, "input_date": FO_INPUT_DATE_NOTE,
+        "stale_submit": FO_SUBMIT_STALE_NOTE,
+    }.get(record_only)  # fmt: skip
     for a in accounts:
         rc_stage = f"_fo_risk_check_{a.id}"
         flag_key = f"{FO_PENDING_FLAG}{a.id}"
@@ -2201,7 +2261,9 @@ def _fo_run_accounts(
                      "request_id": env.request_id, "reasons": [], "legs": []},
                 )  # fmt: skip
                 continue
-            entry = dec.intent in ("OPEN", "RESIZE", "REPLACE")
+            # 진입 창은 새 진입에만. 보유가 있는 RESIZE·REPLACE 는 축소·청산일 수 있어 장중이면
+            # 바로 `run_leg` 로 보낸다(증액 다리는 게이트가 진입 창 밖이면 거부, PR #61 리뷰)
+            entry = dec.intent == "OPEN" or (dec.intent in ("RESIZE", "REPLACE") and not has_pos)
             in_window = fo_rules._in_entry_window(now, cfg) if entry else is_fo_open(now)
             if in_window:
                 executions[a.id] = fo_exec.run_leg(fo, a, env, round=0, source="decision")
