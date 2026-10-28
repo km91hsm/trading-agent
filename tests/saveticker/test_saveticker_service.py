@@ -45,7 +45,7 @@ def test_one_view_failure_does_not_skip_other_views(tmp_path):
         Browser(), store, [View("news_all", "news"), View("market_gain_live", "market")]
     )
     assert [r["status"] for r in results] == ["error", "ok"]
-    assert "private-secret" not in (tmp_path / "status.json").read_text()
+    assert "private-secret" not in (tmp_path / "status.json").read_text(encoding="utf-8")
 
 
 def test_virtual_scroll_accumulates_recycled_rows_and_marks_limit():
