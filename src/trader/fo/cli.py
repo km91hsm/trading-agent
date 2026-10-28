@@ -385,6 +385,15 @@ def session_cmd(
         brokers = {
             b.account.id: b for b in _build_brokers(boot.secrets, fo_accounts, settings=settings)
         }
+        spot_accounts = list(boot.accounts or [])
+        try:  # 현물 브로커는 거시 절의 헤지 보유 읽기용(없어도 세션은 돈다)
+            spot_brokers = {
+                b.account.id: b
+                for b in _build_brokers(boot.secrets, spot_accounts, settings=settings)
+            }
+        except Exception as e:  # noqa: BLE001
+            typer.echo(f"경고: 현물 브로커 없음({type(e).__name__}) — 헤지 보유 생략", err=True)
+            spot_brokers = {}
         try:
             market = _build_market(boot.secrets)
         except Exception as e:  # noqa: BLE001 — 시세 없이도 입력 오류 절로 남기고 세션은 돈다
@@ -399,9 +408,9 @@ def session_cmd(
             master = []
         out = fo_session.run(
             settings, conn, fo_accounts=fo_accounts, brokers=brokers, market_client=market,
-            master=master, date=_today(None), dry_run=dry_run, notifier=make_notifier(boot.secrets),
-            asof=at,
-        )  # fmt: skip
+            master=master, dry_run=dry_run, notifier=make_notifier(boot.secrets), asof=at,
+            spot_accounts=spot_accounts, spot_brokers=spot_brokers,
+        )  # fmt: skip  (운영일은 asof 의 KST 날짜)
     finally:
         conn.close()
     typer.echo(json.dumps(out, ensure_ascii=False, default=str))

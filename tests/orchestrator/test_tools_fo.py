@@ -305,7 +305,7 @@ def test_cli_tool_fo_commands_emit_json(project, conn, monkeypatch):
 
     fo, inp = _fo(conn)
     c = tools.ToolContext(settings=fo.settings, accounts=[], conn=conn, now=lambda: T0, fo=fo)
-    monkeypatch.setattr(cli, "_tool_ctx", lambda: c)
+    monkeypatch.setattr(cli, "_tool_ctx", lambda **kw: c)
     r = CliRunner().invoke(
         cli.app, ["tool", "fo", "bundle", "--market", "KR", "--date", D.isoformat(), "--kind",
                   "analyst", "--role", "technical"],

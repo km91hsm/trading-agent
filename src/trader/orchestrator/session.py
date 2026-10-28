@@ -402,6 +402,8 @@ def run_session(
     같은 도구 함수로 쓰고, 실제 세션은 `trader tool` 서브프로세스가 스스로 만든다."""
     if settings.anonymize:
         raise ConfigError("settings.anonymize=true 는 Phase 6 전까지 지원하지 않습니다")
+    if fo is not None and spec.dry_run:
+        fo.dry_run = True  # 세션 dry-run 은 파생 실행 컨텍스트에도(FAKE 경로, S3 P2)
     bin_override = claude_bin
     ctx = tools.ToolContext(
         settings=settings,
@@ -507,7 +509,7 @@ def run_session(
             json.dumps(registry.agents_json(names, settings, agents_dir), ensure_ascii=False),
             encoding="utf-8",
         )
-        prompt = registry.orchestrator_prompt(settings, agents_dir)
+        prompt = registry.orchestrator_prompt(settings, agents_dir, kind=spec.kind)
         session_id = str(uuid.uuid4())
         cmd = build_command(
             spec, settings, bin_path, agents_file, session_id=session_id, prompt=prompt

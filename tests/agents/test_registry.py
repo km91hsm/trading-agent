@@ -137,7 +137,7 @@ def test_market_agents_and_hedge_proposal_schema():
     assert '"hedge_weight"' in j["strategist"]["prompt"]
     assert j["strategist"]["prompt"].count("스키마:") == 1
     assert j["analyst-market"]["model"] == "sonnet"  # md 기본, settings.models.analyst 가 우선
-    p = orchestrator_prompt(Settings(), REPO_AGENTS)
+    p = orchestrator_prompt(Settings(), REPO_AGENTS, kind="market")
     assert "## market 모드" in p and "HedgeProposal 스키마" in p
     assert "submit-market-view" in p
 

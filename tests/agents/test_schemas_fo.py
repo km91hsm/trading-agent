@@ -87,8 +87,12 @@ def test_fo_decision_validators():
 
 
 def test_orchestrator_prompt_has_fo_mode_and_schema():
-    p = orchestrator_prompt(Settings(), REPO_AGENTS)
-    assert "## fo 모드" in p and "## fo_resume 모드" in p
+    """kind 별 프롬프트(S3 P0): fo 는 `## fo 모드`, fo_resume 은 `## fo_resume 모드` 절만."""
+    p = orchestrator_prompt(Settings(), REPO_AGENTS, kind="fo")
+    pr = orchestrator_prompt(Settings(), REPO_AGENTS, kind="fo_resume")
+    assert "## fo 모드" in p and "## fo_resume 모드" not in p
+    assert "## fo_resume 모드" in pr and "## fo 모드" not in pr
+    p = p + pr
     for token in (
         "tool fo bundle --kind analyst",
         "--role technical",

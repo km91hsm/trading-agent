@@ -699,7 +699,9 @@ checkpoint_app = typer.Typer(help="체크포인트 도구", no_args_is_help=True
 tool_app.add_typer(checkpoint_app, name="checkpoint")
 
 
-def _tool_ctx():
+def _tool_ctx(*, fo: bool = False):
+    """도구 서브프로세스의 컨텍스트. `fo=True`(`tool fo *`·`submit-fo-decision`)일 때만 파생
+    실행 컨텍스트를 만든다 — 현물 도구가 파생 브로커·마스터를 건드리지 않게(S3 P0)."""
     from trader.orchestrator.tools import ToolContext
 
     boot = _boot(secrets=True, accounts=True, conn=True)
@@ -730,16 +732,21 @@ def _tool_ctx():
         dry_run=dry_run,
         holiday_fn=holiday_fn,
         market_client=market_client,
-        fo=_fo_tool_ctx(boot, settings, market_client, notifier, dry_run=dry_run),
+        fo=_fo_tool_ctx(boot, settings, market_client, notifier, dry_run=dry_run,
+                        spot_brokers=brokers) if fo else None,  # fmt: skip
     )
 
 
-def _fo_tool_ctx(boot, settings: config.Settings, market_client, notifier, *, dry_run: bool):
+def _fo_tool_ctx(
+    boot, settings: config.Settings, market_client, notifier, *, dry_run: bool,
+    spot_brokers: dict | None = None,
+):  # fmt: skip
     """파생 세션 도구의 실행 컨텍스트(Phase 26). `asset: fo` 계좌가 없으면 None — `tool fo *`·
-    `submit-fo-decision` 은 그때 거부한다. 과거 asof 세션은 env `TRADER_FO_HISTORICAL=1` 로
-    신규 금지(판정만 기록)."""
+    `submit-fo-decision` 은 그때 거부한다. 마스터는 캐시만(오프라인), 국면·시장 뷰는 원장
+    (`executor.context_sources`), 현물 계좌·브로커는 거시 절의 헤지 보유용. 과거 asof 는
+    `_fo_inputs.meta.historical` 하나가 출처(도구가 읽는다)."""
     from trader.broker import fo_master
-    from trader.fo.executor import FoExecContext
+    from trader.fo.executor import FoExecContext, context_sources
 
     fo_accounts = list(boot.fo_accounts)
     if not fo_accounts:
@@ -748,7 +755,7 @@ def _fo_tool_ctx(boot, settings: config.Settings, market_client, notifier, *, dr
         b.account.id: b for b in _build_brokers(boot.secrets, fo_accounts, settings=settings)
     }
     try:
-        master = fo_master.load(cache_dir=paths.state_dir() / "fo")
+        master = fo_master.load(cache_dir=paths.state_dir() / "fo", offline=True)
     except Exception as e:  # noqa: BLE001 — 마스터 없이도 보유분 처리는 가능(신규는 게이트가 거부)
         logging.getLogger("trader.fo").warning("파생 마스터 적재 실패(빈 목록으로 진행): %s", e)
         master = []
@@ -761,7 +768,9 @@ def _fo_tool_ctx(boot, settings: config.Settings, market_client, notifier, *, dr
         master=master,
         notifier=notifier,
         dry_run=dry_run,
-        historical=os.environ.get("TRADER_FO_HISTORICAL", "0") == "1",
+        spot_accounts=list(boot.accounts or []),
+        spot_brokers=dict(spot_brokers or {}),
+        **context_sources(boot.conn, lambda: datetime.now(UTC)),
     )
 
 
@@ -773,12 +782,12 @@ def _emit(result: dict) -> None:
         raise typer.Exit(code=1)
 
 
-def _tool_run(fn, **kwargs) -> None:
+def _tool_run(fn, *, fo: bool = False, **kwargs) -> None:
     import json
     from datetime import date as _date
 
     try:
-        ctx = _tool_ctx()
+        ctx = _tool_ctx(fo=fo)
         if "date" in kwargs and isinstance(kwargs["date"], str):
             kwargs["date"] = _date.fromisoformat(kwargs["date"])
         if "payload" in kwargs and isinstance(kwargs["payload"], str):
@@ -1887,6 +1896,14 @@ fo_tool_app = typer.Typer(help="파생 세션 도구 (Phase 26)", no_args_is_hel
 tool_app.add_typer(fo_tool_app, name="fo")
 
 
+def _fo_tool_run(fn, *, market: str, **kwargs) -> None:
+    """파생 도구는 시장 `KR` 뿐 — 다른 값은 JSON 오류(S3 P2)."""
+    if market != "KR":
+        _emit({"ok": False, "error": f"파생 도구의 --market 은 KR 뿐입니다: {market!r}"})
+        return
+    _tool_run(fn, fo=True, **kwargs)
+
+
 @fo_tool_app.command("bundle")
 def tool_fo_bundle(
     market: str = typer.Option("KR", "--market"),
@@ -1900,8 +1917,8 @@ def tool_fo_bundle(
 ) -> None:
     from trader.orchestrator import tools
 
-    _tool_run(
-        tools.fo_bundle, date=date, kind=kind, role=role, round=round, side=side,
+    _fo_tool_run(
+        tools.fo_bundle, market=market, date=date, kind=kind, role=role, round=round, side=side,
         position_id=position_id, account=account,
     )  # fmt: skip
 
@@ -1916,7 +1933,10 @@ def tool_fo_write(
 ) -> None:
     from trader.orchestrator import tools
 
-    _tool_run(tools.fo_write, date=date, stage=stage, payload=_payload_arg(json_text), agent=agent)
+    _fo_tool_run(
+        tools.fo_write, market=market, date=date, stage=stage, payload=_payload_arg(json_text),
+        agent=agent,
+    )  # fmt: skip
 
 
 @fo_tool_app.command("summarize")
@@ -1925,7 +1945,7 @@ def tool_fo_summarize(
 ) -> None:
     from trader.orchestrator import tools
 
-    _tool_run(tools.fo_summarize, date=date)
+    _fo_tool_run(tools.fo_summarize, market=market, date=date)
 
 
 @tool_app.command("submit-fo-decision")
@@ -1941,7 +1961,10 @@ def tool_submit_fo_decision(
 ) -> None:
     from trader.orchestrator import tools
 
-    _tool_run(tools.submit_fo_decision, date=date, payload=_payload_arg(json_text), stage=stage)
+    _fo_tool_run(
+        tools.submit_fo_decision, market=market, date=date, payload=_payload_arg(json_text),
+        stage=stage,
+    )  # fmt: skip
 
 
 scan_tool_app = typer.Typer(help="scan 세션 도구 (Phase 19 발굴)", no_args_is_help=True)

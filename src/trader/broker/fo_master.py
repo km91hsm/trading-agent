@@ -108,15 +108,20 @@ def load(
     http: Any = None,
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
     max_age_h: int = 24,
+    offline: bool = False,
 ) -> list[Contract]:
     """캐시(`cache_dir/fo_idx_code_mts.mst`)가 max_age_h 안이면 그것, 아니면 zip 다운로드 뒤 갱신.
-    다운로드 실패 때 오래된 캐시가 있으면 경고 후 그것을 쓴다."""
+    다운로드 실패 때 오래된 캐시가 있으면 경고 후 그것을 쓴다. `offline=True` 는 캐시만(나이 무관,
+    없으면 빈 목록) — 세션 도구 서브프로세스가 쓴다(다운로드는 데몬·CLI 몫, S3 P0)."""
     cache_dir.mkdir(parents=True, exist_ok=True)
     cache = cache_dir / MASTER_NAME
     if cache.exists():
         age = now() - datetime.fromtimestamp(cache.stat().st_mtime, UTC)
-        if age <= timedelta(hours=max_age_h):
+        if offline or age <= timedelta(hours=max_age_h):
             return parse(cache.read_bytes())
+    if offline:
+        logger.warning("선물옵션 마스터 캐시 없음(오프라인) — 빈 목록")
+        return []
     try:
         if http is None:
             import httpx

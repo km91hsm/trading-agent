@@ -16,7 +16,7 @@ from typing import Any
 from trader.config import AccountConfig, Settings
 from trader.fo import inputs as inputs_mod
 from trader.fo import store
-from trader.fo.executor import FoExecContext
+from trader.fo.executor import FoExecContext, context_sources
 from trader.orchestrator import run_store, tools
 from trader.orchestrator import session as session_mod
 from trader.orchestrator.run_store import read_checkpoint
@@ -41,7 +41,7 @@ def run(
     brokers: dict[str, Any],
     market_client: Any | None,
     master: list,
-    date: date,
+    date: date | None = None,
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
     dry_run: bool = False,
     state: Path | None = None,
@@ -49,12 +49,18 @@ def run(
     notifier: Any = None,
     cancel: Any | None = None,
     asof: datetime | None = None,
+    spot_accounts: list[AccountConfig] | None = None,
+    spot_brokers: dict[str, Any] | None = None,
 ) -> dict:
-    """{inputs_path, session, decision, skipped, dry_run, forced_dry_run}. `skipped` 가 있으면
-    세션을 띄우지 않은 사유(오늘 결정 있음·상한·계좌 없음·enabled=false∧보유 없음)."""
+    """{date, inputs_path, session, decision, skipped, dry_run, forced_dry_run}. `skipped` 가 있으면
+    세션을 띄우지 않은 사유(오늘 결정 있음·상한·계좌 없음·enabled=false∧보유 없음). 운영일 `date`
+    는 생략하면 `asof`(없으면 now)의 KST 날짜(`run_store.run_date_for`). `spot_accounts`·
+    `spot_brokers` 는 거시 절의 현물 헤지 보유 읽기용(현물 주문 없음)."""
+    at = asof or now()
+    date = date or run_store.run_date_for(MARKET, at)
     out: dict[str, Any] = {
-        "inputs_path": None, "session": None, "decision": None, "skipped": None,
-        "dry_run": dry_run, "forced_dry_run": False,
+        "date": date.isoformat(), "inputs_path": None, "session": None, "decision": None,
+        "skipped": None, "dry_run": dry_run, "forced_dry_run": False,
     }  # fmt: skip
     accounts = [a for a in fo_accounts if a.asset == "fo"]
     if not accounts:
@@ -72,11 +78,13 @@ def run(
     if tools.sessions_today(conn, now(), kind="fo") >= cap:
         out["skipped"] = f"오늘 fo 세션 상한({cap}) 도달"
         return out
-    at = asof or now()
     ctx = FoExecContext(
         settings=settings, accounts=accounts, conn=conn, brokers=brokers,
         market_client=market_client, master=master, state=state, now=now, dry_run=dry_run,
+        spot_accounts=[a for a in (spot_accounts or []) if a.asset != "fo"],
+        spot_brokers=dict(spot_brokers or {}),
         **({"notifier": notifier} if notifier is not None else {}),
+        **context_sources(conn, now),
     )  # fmt: skip
     inputs = inputs_mod.build_inputs(ctx, today=date, asof=at, accounts=accounts)
     historical = bool((inputs.get("meta") or {}).get("historical"))

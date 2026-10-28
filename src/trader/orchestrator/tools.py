@@ -524,10 +524,14 @@ def _name_payload_mismatch(ctx: ToolContext, stage: str, ticker: str, v: Any) ->
     return None
 
 
-def _load_turns(d: Path) -> dict[int, dict[str, schemas.DebateTurn]]:
+def _load_turns(
+    d: Path, pattern: re.Pattern[str] = _DEBATE_RE
+) -> dict[int, dict[str, schemas.DebateTurn]]:
+    """`<접두>_r<n>_<side>` 토론 턴을 {round: {side: DebateTurn}} 로. 종목(20_debate_*)·시장
+    (_market_debate_*)·파생(_fo_debate_*)이 패턴만 다르게 같은 함수를 쓴다(S3 P2 dedup)."""
     turns: dict[int, dict[str, schemas.DebateTurn]] = {}
     for stage in list_checkpoints(d):
-        m = _DEBATE_RE.match(stage)
+        m = pattern.match(stage)
         if not m:
             continue
         data = read_checkpoint(d, stage) or {}
@@ -627,6 +631,17 @@ def _cut(v: Any, n: int) -> Any:
     return v
 
 
+def _trim_lists(v: Any, keep: int) -> Any:
+    """`keep` 보다 긴 dict 목록은 마지막 `keep` 건만(시계열은 오름차순이라 꼬리가 최신)."""
+    if isinstance(v, list):
+        if len(v) > keep and all(isinstance(x, dict) for x in v):
+            v = v[-keep:]
+        return [_trim_lists(x, keep) for x in v]
+    if isinstance(v, dict):
+        return {k: _trim_lists(x, keep) for k, x in v.items()}
+    return v
+
+
 def _shrink(obj: dict, limit: int, *, drop_evidence: bool = False) -> dict:
     """UTF-8 바이트 한도를 넘으면 리포트의 evidence → 긴 문자열 순으로 줄인다."""
     if drop_evidence and "reports" in obj:
@@ -638,6 +653,13 @@ def _shrink(obj: dict, limit: int, *, drop_evidence: bool = False) -> dict:
         return obj
     if "reports" in obj and any("evidence" in r for r in obj["reports"]):
         return _shrink(obj, limit, drop_evidence=True)
+    # 긴 목록(일봉·분봉 같은 시계열, 오름차순)은 꼬리(최신)만 남긴다 — 문자열을 자르기 전에
+    for keep in (120, 60, 30):
+        trimmed = _trim_lists(obj, keep)
+        if _size(trimmed) <= limit:
+            note = f"묶음이 {limit}바이트를 넘어 긴 목록을 최근 {keep}건으로 줄였습니다"
+            return {**trimmed, "note": note}
+    obj = trimmed
     for n in (300, 200, 140, 100):
         cut = {
             **_cut(obj, n),
@@ -1158,16 +1180,35 @@ _MARKET_WRITABLE = ("_market_analyst", "_market_debate_r<n>_<bull|bear>")
 
 
 def _market_turns(d: Path) -> dict[int, dict[str, schemas.DebateTurn]]:
-    turns: dict[int, dict[str, schemas.DebateTurn]] = {}
-    for stage in list_checkpoints(d):
-        m = _MARKET_DEBATE_RE.match(stage)
-        if not m:
-            continue
-        data = read_checkpoint(d, stage) or {}
-        turns.setdefault(int(m.group(1)), {})[m.group(2)] = schemas.DebateTurn.model_validate(
-            data["data"]
+    return _load_turns(d, _MARKET_DEBATE_RE)
+
+
+def _validate_payload(model: type, payload: dict) -> tuple[Any, dict | None]:
+    """pydantic 검증(HTML 엔티티 되돌림 포함). 실패면 (None, {"ok": False, "error"})."""
+    try:
+        return model.model_validate(_unescape(payload)), None
+    except ValidationError as e:
+        msgs = "; ".join(
+            f"{'.'.join(str(x) for x in err['loc'])}: {err['msg']}" for err in e.errors()
         )
-    return turns
+        return None, {"ok": False, "error": f"스키마 검증 실패({model.__name__}): {msgs}"}
+
+
+def _summarize_turns(d: Path, out_stage: str, pattern: re.Pattern[str]) -> dict:
+    """토론 턴 → 연구 요약(수렴 감시 포함) 체크포인트. 시장·파생 세션 공용."""
+    turns = _load_turns(d, pattern)
+    if 0 not in turns or set(turns[0]) != {"bull", "bear"}:
+        return {"ok": False, "error": "라운드 0 의 bull·bear 턴이 모두 필요합니다"}
+    final_round = max(r for r, sides in turns.items() if set(sides) == {"bull", "bear"})
+    try:
+        summ = summary_mod.research_summary(turns[0], turns[final_round], rounds=final_round)
+    except ValueError as e:
+        return {"ok": False, "error": str(e)}
+    path = write_checkpoint(d, out_stage, _wrap(summ, None))
+    return {
+        "ok": True, "path": str(path), "rounds": final_round,
+        "sycophantic": summ["sycophantic"], "preferred": summ["preferred"],
+    }  # fmt: skip
 
 
 def _market_report(d: Path) -> dict | None:
@@ -1285,13 +1326,9 @@ def market_write(
             "ok": False,
             "error": f"쓸 수 없는 단계: {stage} (허용: {', '.join(_MARKET_WRITABLE)})",
         }
-    try:
-        v = model.model_validate(_unescape(payload))
-    except ValidationError as e:
-        msgs = "; ".join(
-            f"{'.'.join(str(x) for x in err['loc'])}: {err['msg']}" for err in e.errors()
-        )
-        return {"ok": False, "error": f"스키마 검증 실패({model.__name__}): {msgs}"}
+    v, err = _validate_payload(model, payload)
+    if err:
+        return err
     if m and (v.round != int(m.group(1)) or v.side != m.group(2)):
         return {
             "ok": False,
@@ -1312,21 +1349,7 @@ def market_summarize(ctx: ToolContext, *, market: Market, date: date) -> dict:
     if market not in ("KR", "US"):
         return {"ok": False, "error": f"market 은 KR 또는 US: {market!r}"}
     d = market_dir(date, market, ctx.state)
-    turns = _market_turns(d)
-    if 0 not in turns or set(turns[0]) != {"bull", "bear"}:
-        return {"ok": False, "error": "라운드 0 의 bull·bear 턴이 모두 필요합니다"}
-    final_round = max(r for r, sides in turns.items() if set(sides) == {"bull", "bear"})
-    try:
-        summ = summary_mod.research_summary(turns[0], turns[final_round], rounds=final_round)
-    except ValueError as e:
-        return {"ok": False, "error": str(e)}
-    path = write_checkpoint(d, "_market_summary", _wrap(summ, None))
-    return {
-        "ok": True,
-        "path": str(path),
-        "sycophantic": summ["sycophantic"],
-        "preferred": summ["preferred"],
-    }
+    return _summarize_turns(d, "_market_summary", _MARKET_DEBATE_RE)
 
 
 def submit_market_view(
@@ -1625,16 +1648,31 @@ def _fo_reports(d: Path) -> list[dict]:
 
 
 def _fo_turns(d: Path) -> dict[int, dict[str, schemas.DebateTurn]]:
-    turns: dict[int, dict[str, schemas.DebateTurn]] = {}
-    for stage in list_checkpoints(d):
-        m = _FO_DEBATE_RE.match(stage)
-        if not m:
-            continue
-        data = read_checkpoint(d, stage) or {}
-        turns.setdefault(int(m.group(1)), {})[m.group(2)] = schemas.DebateTurn.model_validate(
-            data["data"]
-        )
-    return turns
+    return _load_turns(d, _FO_DEBATE_RE)
+
+
+def _fo_live_request(d: Path, account_id: str, position_id: int) -> tuple[int, dict] | None:
+    """아직 결정이 들어오지 않은 이 포지션의 재평가 요청(라운드, 봉투) — 없으면 None."""
+    decided = {r for r, _ in _fo_decision_stages(d, account_id)}
+    for r, req in reversed(_fo_reeval_requests(d, account_id)):
+        if req.get("position_id") == position_id and r not in decided:
+            return r, req
+    return None
+
+
+def fo_pending_entry(conn: sqlite3.Connection, account_id: str, today: date) -> dict | None:
+    """진입 창 밖에서 보류된 아침 결정(`control.fo_pending_entry:<계좌>`)의 소비자. 오늘 운영일
+    것만 돌려주고 다른 날짜·dry_run 기록은 지운다(어제 보류분이 오늘 실행되지 않게, S3 P0)."""
+    from trader.control import control
+
+    key = f"{FO_PENDING_FLAG}{account_id}"
+    flag = control.get_flag(conn, key)
+    if not isinstance(flag, dict):
+        return None
+    if flag.get("date") != today.isoformat() or flag.get("dry_run"):
+        control.set_flag(conn, key, None)
+        return None
+    return flag
 
 
 def _fo_decision_stages(d: Path, account_id: str | None = None) -> list[tuple[int, str]]:
@@ -1704,7 +1742,9 @@ def fo_bundle(
     account: str | None = None,
 ) -> dict:
     """파생 세션 서브에이전트 입력 묶음. kind=analyst(role) | researcher(round, side) |
-    trader(재평가면 position_id·account → `_fo_reeval_r<n>_<계좌>` 요청의 트리거·request_id)."""
+    trader(재평가면 position_id·account → `_fo_reeval_r<n>_<계좌>` 요청의 트리거·request_id;
+    `round` 를 주면 그 라운드의 요청만 읽고 없으면 오류 — stdin `position.round` 와 묶음이 어긋나지
+    않게(S3 P1))."""
     from trader.fo import inputs as fo_inputs
     from trader.fo import store as fo_store
 
@@ -1753,6 +1793,10 @@ def fo_bundle(
                 return {"ok": False, "error": f"포지션 {position_id} 이 계좌 {account} 에 없음"}
             position = _fo_position_view(ctx, pos)
             reqs = [r for r in _fo_reeval_requests(d, account) if r[1].get("position_id") == pos.id]
+            if round is not None:
+                reqs = [r for r in reqs if r[0] == round]
+                if not reqs:
+                    return {"ok": False, "error": f"재평가 요청 _fo_reeval_r{round}_{account} 없음"}
             if reqs:
                 next_round, req = reqs[-1]
                 trigger = req.get("trigger")
@@ -1805,17 +1849,22 @@ def fo_write(
             "ok": False,
             "error": f"쓸 수 없는 단계: {stage} (허용: {', '.join(_FO_WRITABLE)})",
         }
-    try:
-        v = model.model_validate(_unescape(payload))
-    except ValidationError as e:
-        msgs = "; ".join(
-            f"{'.'.join(str(x) for x in err['loc'])}: {err['msg']}" for err in e.errors()
-        )
-        return {"ok": False, "error": f"스키마 검증 실패({model.__name__}): {msgs}"}
+    v, err = _validate_payload(model, payload)
+    if err:
+        return err
     if ma and v.role != ma.group(1):
         return {
             "ok": False,
             "error": f"파일명 role({ma.group(1)}) 과 페이로드 role({v.role}) 불일치",
+        }
+    inputs = _fo_inputs(ctx, date)
+    if inputs is None:
+        return {"ok": False, "error": f"{FO_INPUTS} 없음 (파생 세션 밖에서는 쓸 수 없다)"}
+    proxy = (inputs.get("meta") or {}).get("proxy")
+    if ma and proxy and v.ticker != proxy:
+        return {
+            "ok": False,
+            "error": f"리포트 ticker 는 입력의 proxy({proxy})여야 합니다: {v.ticker!r}",
         }
     if md and (v.round != int(md.group(1)) or v.side != md.group(2)):
         return {
@@ -1825,8 +1874,6 @@ def fo_write(
                 f"round={v.round} side={v.side} 불일치"
             ),
         }
-    if _fo_inputs(ctx, date) is None:
-        return {"ok": False, "error": f"{FO_INPUTS} 없음 (파생 세션 밖에서는 쓸 수 없다)"}
     d = _fo_dir(ctx, date, create=True)
     path = write_checkpoint(d, stage, _wrap(v.model_dump(), _call(agent, call_meta)))
     invalidated = False
@@ -1838,20 +1885,7 @@ def fo_write(
 
 def fo_summarize(ctx: ToolContext, *, date: date) -> dict:
     """`_fo_debate_*` 를 모아 `_fo_summary`(수렴 감시 포함)를 만든다."""
-    d = _fo_dir(ctx, date)
-    turns = _fo_turns(d)
-    if 0 not in turns or set(turns[0]) != {"bull", "bear"}:
-        return {"ok": False, "error": "라운드 0 의 bull·bear 턴이 모두 필요합니다"}
-    final_round = max(r for r, sides in turns.items() if set(sides) == {"bull", "bear"})
-    try:
-        summ = summary_mod.research_summary(turns[0], turns[final_round], rounds=final_round)
-    except ValueError as e:
-        return {"ok": False, "error": str(e)}
-    path = write_checkpoint(d, FO_SUMMARY, _wrap(summ, None))
-    return {
-        "ok": True, "path": str(path), "rounds": final_round,
-        "sycophantic": summ["sycophantic"], "preferred": summ["preferred"],
-    }  # fmt: skip
+    return _summarize_turns(_fo_dir(ctx, date), FO_SUMMARY, _FO_DEBATE_RE)
 
 
 def fo_reeval_request(
@@ -1865,7 +1899,9 @@ def fo_reeval_request(
     """재평가 요청(파이썬·단계 4 트리거가 세션 앞에서 부른다): `_fo_reeval_r<n>_<계좌>` 에 봉투
     {account_id, position_id, expected_version, request_id, round, trigger} 를 남기고 돌려준다.
     세션 stdin `position` 이 이것이고, `submit-fo-decision --stage _fo_decision_r<n>_<계좌>` 는
-    봉투가 이 요청과 같을 때만 받는다."""
+    봉투가 이 요청과 같을 때만 받는다. 같은 포지션·같은 버전의 **미결 요청이 있으면 새 라운드를
+    만들지 않고 그것을 돌려준다**(`reused: true`, 트리거는 먼저 든 것) — 두 트리거가 라운드
+    번호를 다투지 않게. 버전이 바뀐 미결 요청은 어차피 제출이 거부되므로 새 라운드다(S3 P1)."""
     import uuid
 
     from trader.fo import store as fo_store
@@ -1876,6 +1912,13 @@ def fo_reeval_request(
     if pos is None or pos.account_id != account_id:
         return {"ok": False, "error": f"포지션 {position_id} 이 계좌 {account_id} 에 없음"}
     d = _fo_dir(ctx, date, create=True)
+    live = _fo_live_request(d, account_id, pos.id)
+    if live is not None and live[1].get("expected_version") == pos.version:
+        n, req = live
+        return {
+            "ok": True, "path": str(d / f"_fo_reeval_r{n}_{account_id}.json"),
+            "stage": f"_fo_reeval_r{n}_{account_id}", "round": n, "position": req, "reused": True,
+        }  # fmt: skip
     used = [r for r, _ in _fo_decision_stages(d, account_id)] + [
         r for r, _ in _fo_reeval_requests(d, account_id)
     ]
@@ -1954,12 +1997,8 @@ def submit_fo_decision(
     (`_fo_decision_r<n>_<계좌>`)는 `_fo_reeval_r<n>_<계좌>` 요청과 봉투가 같고 포지션 버전이
     그대로일 때만 받아 저장·`fo_decisions` 행 + `ctx.fo.reeval_apply` 훅. 같은 단계 재제출은
     `already: true`."""
-    from trader.control import control
-    from trader.fo import executor as fo_exec
-    from trader.fo import rules as fo_rules
     from trader.fo import store as fo_store
     from trader.fo.schemas import FoDecisionEnvelope
-    from trader.market_hours import is_fo_open
 
     err = _fo_require_fo(ctx)
     if err:
@@ -1985,17 +2024,37 @@ def submit_fo_decision(
     if stage in stages:
         existing = (read_checkpoint(d, stage) or {}).get("data") or {}
         dec = existing.get("decision") or {}
-        return {
+        out = {
             "ok": True, "already": True, "stage": stage, "path": str(d / f"{stage}.json"),
             "intent": dec.get("intent"), "direction": dec.get("direction"),
             "vehicle": dec.get("vehicle"), "message": f"{stage} 이 이미 있어 기존 결정을 유지함",
         }  # fmt: skip
+        if round_n == 0 and existing.get("decision"):
+            # 저장 뒤 계좌 루프가 끊긴 경우: 판정(`_fo_risk_check_<계좌>`)도 보류 플래그도 없는
+            # 계좌만 재개한다(접수된 계좌는 판정 파일이 있어 다시 내지 않는다, S3 P0)
+            try:
+                env_prev = FoDecisionEnvelope.model_validate(
+                    {k: existing.get(k) for k in FoDecisionEnvelope.model_fields}
+                )
+            except ValidationError:
+                return out
+            todo = [
+                a for a in fo.accounts
+                if a.asset == "fo" and f"_fo_risk_check_{a.id}" not in stages
+                and fo_pending_entry(ctx.conn, a.id, date) is None
+            ]  # fmt: skip
+            if todo:
+                res = _fo_run_accounts(
+                    ctx, date=date, env=env_prev, stage=stage, inputs=inputs, accounts=todo,
+                    record_only=existing.get("record_only"),
+                )  # fmt: skip
+                return out | res | {"resumed_execution": True}
+        return out
     roles = {m.group(1) for s in stages if (m := _FO_ANALYST_RE.match(s))}
     missing: list[str] = []
     if len(roles) < FO_MIN_ROLES:
         missing.append(f"서로 다른 애널리스트 역할 {len(roles)}개 (최소 {FO_MIN_ROLES})")
-    turns = _fo_turns(d)
-    if 0 not in turns or set(turns[0]) != {"bull", "bear"}:
+    if not {"_fo_debate_r0_bull", "_fo_debate_r0_bear"} <= set(stages):
         missing.append("r0 양측 토론 턴 없음")
     if FO_SUMMARY not in stages:
         missing.append(f"{FO_SUMMARY} 없음")
@@ -2048,9 +2107,15 @@ def submit_fo_decision(
             }
     resolved = _fo_resolved(ctx, inputs, env, pos, today=date)
     historical = bool(meta.get("historical")) or bool(getattr(fo, "historical", False))
+    # 기록만 하는 사유(실행 없음): 과거 asof 입력, 다른 운영일의 입력(S3 P0)
+    record_only: str | None = None
+    if historical:
+        record_only = "historical"
+    elif meta.get("date") and meta.get("date") != date.isoformat():
+        record_only = "input_date"
     data = {
         **env.model_dump(), "resolved": resolved, "stage": stage, "round": round_n,
-        "historical": historical, "asof": meta.get("asof"),
+        "historical": historical, "asof": meta.get("asof"), "record_only": record_only,
     }  # fmt: skip
     call = _call(agent, call_meta)
     path = write_checkpoint(d, stage, _wrap(data, call))
@@ -2076,47 +2141,108 @@ def submit_fo_decision(
     if round_n > 0:
         applied = fo.reeval_apply(env, round_n) if fo.reeval_apply is not None else None
         return out | {"applied": applied, "executed": applied is not None}
+    return out | _fo_run_accounts(
+        ctx, date=date, env=env, stage=stage, inputs=inputs,
+        accounts=[a for a in fo.accounts if a.asset == "fo"], record_only=record_only,
+    )  # fmt: skip
 
-    # 아침: 계좌별 실행·보류·기록
+
+FO_INPUT_DATE_NOTE = "입력 날짜 불일치 — 실행 안 함"
+
+
+def _fo_run_accounts(
+    ctx: ToolContext,
+    *,
+    date: date,
+    env: Any,
+    stage: str,
+    inputs: dict,
+    accounts: list[AccountConfig],
+    record_only: str | None,
+) -> dict:
+    """아침 결정의 계좌 루프(제출·재개 공용). 계좌마다: 기록만(과거 asof·입력 날짜) → 관망 →
+    진입 창 안이면 `run_leg`, 밖이면 보류 플래그(dry_run 은 보류하지 않고 기록만). **계좌 하나의
+    예외는 그 계좌의 `_fo_risk_check_<계좌>` 에 error 로 남기고 다음 계좌로**
+    (`OrderBookkeepingError` 는 CRITICAL + 알림 — 접수번호는 사람이 대조). 낡은 보류 플래그는 먼저
+    지운다(S3 P0)."""
+    from trader.control import control
+    from trader.fo import executor as fo_exec
+    from trader.fo import rules as fo_rules
+    from trader.fo import store as fo_store
+    from trader.market_hours import is_fo_open
+    from trader.orchestrator.executor import OrderBookkeepingError
+
+    fo = ctx.fo
+    dec = env.decision
     now = ctx.now()
     cfg = ctx.settings.fo
     executions: dict[str, list[dict]] = {}
     pending: list[str] = []
     notes: list[str] = []
-    accounts = [a for a in fo.accounts if a.asset == "fo"]
+    stale_note = {"historical": FO_STALE_NOTE, "input_date": FO_INPUT_DATE_NOTE}.get(record_only)
     for a in accounts:
         rc_stage = f"_fo_risk_check_{a.id}"
-        if historical:
+        flag_key = f"{FO_PENDING_FLAG}{a.id}"
+        if fo_pending_entry(ctx.conn, a.id, date) is None:
+            control.set_flag(ctx.conn, flag_key, None)  # 낡은 보류 제거(소비자가 지웠을 수도)
+        if stale_note:
             fo_exec._ckpt(
                 fo, date, rc_stage,
-                {"approved": False, "note": FO_STALE_NOTE, "request_id": env.request_id,
-                 "record_only": "historical", "reasons": [FO_STALE_NOTE]},
+                {"approved": False, "note": stale_note, "request_id": env.request_id,
+                 "record_only": record_only, "reasons": [stale_note]},
             )  # fmt: skip
             continue
-        has_pos = bool(fo_store.open_positions(ctx.conn, a.id))
-        if dec.intent == "HOLD" and not has_pos:
+        try:
+            has_pos = bool(fo_store.open_positions(ctx.conn, a.id))
+            if dec.intent == "HOLD" and not has_pos:
+                fo_exec._ckpt(
+                    fo, date, rc_stage,
+                    {"approved": True, "note": "관망(FLAT·HOLD, 보유 없음)",
+                     "request_id": env.request_id, "reasons": [], "legs": []},
+                )  # fmt: skip
+                continue
+            entry = dec.intent in ("OPEN", "RESIZE", "REPLACE")
+            in_window = fo_rules._in_entry_window(now, cfg) if entry else is_fo_open(now)
+            if in_window:
+                executions[a.id] = fo_exec.run_leg(fo, a, env, round=0, source="decision")
+            elif fo.dry_run:
+                fo_exec._ckpt(
+                    fo, date, rc_stage,
+                    {"approved": False, "note": "진입 창 밖 — dry_run 이라 보류하지 않음",
+                     "request_id": env.request_id, "record_only": "dry_run", "reasons": []},
+                )  # fmt: skip
+            else:
+                control.set_flag(
+                    ctx.conn, flag_key,
+                    {"date": date.isoformat(), "stage": stage, "envelope": env.model_dump(),
+                     "request_id": env.request_id, "requested_at": now.isoformat(),
+                     "dry_run": False},
+                )  # fmt: skip
+                pending.append(a.id)
+        except OrderBookkeepingError as e:
+            logger.critical("파생 %s 주문 기록 실패(접수번호 %s): %s", a.id, e.order_no, e)
+            fo_exec._notify(fo, f"[파생 주문 기록 실패] {a.id} 접수번호 {e.order_no or '-'}: {e}")
+            executions[a.id] = [{"error": str(e), "order_no": e.order_no}]
+            if rc_stage not in list_checkpoints(_fo_dir(ctx, date)):
+                fo_exec._ckpt(
+                    fo, date, rc_stage,
+                    {"approved": False, "error": str(e), "order_no": e.order_no,
+                     "request_id": env.request_id, "reasons": [str(e)]},
+                )  # fmt: skip
+        except Exception as e:  # noqa: BLE001 — 계좌 하나의 실패가 다른 계좌를 막지 않는다
+            logger.exception("파생 %s 실행 실패: %s", a.id, e)
+            err = f"{type(e).__name__}: {e}"
             fo_exec._ckpt(
                 fo, date, rc_stage,
-                {"approved": True, "note": "관망(FLAT·HOLD, 보유 없음)",
-                 "request_id": env.request_id, "reasons": [], "legs": []},
+                {"approved": False, "error": err, "request_id": env.request_id, "reasons": [err]},
             )  # fmt: skip
-            continue
-        entry = dec.intent in ("OPEN", "RESIZE", "REPLACE")
-        in_window = fo_rules._in_entry_window(now, cfg) if entry else is_fo_open(now)
-        if in_window:
-            executions[a.id] = fo_exec.run_leg(fo, a, env, round=0, source="decision")
-        else:
-            control.set_flag(
-                ctx.conn, f"{FO_PENDING_FLAG}{a.id}",
-                {"date": date.isoformat(), "stage": stage, "envelope": env.model_dump(),
-                 "requested_at": now.isoformat()},
-            )  # fmt: skip
-            pending.append(a.id)
-    if historical:
-        notes.append(FO_STALE_NOTE)
+            executions[a.id] = [{"error": err}]
+    if stale_note:
+        notes.append(stale_note)
     if pending:
         notes.append(f"진입 창 밖 — 보류 {', '.join(pending)}")
-    return out | {
-        "executed": bool(executions), "executions": executions, "pending": pending,
+    executed = any("error" not in r for rs in executions.values() for r in rs)
+    return {
+        "executed": executed, "executions": executions, "pending": pending,
         "note": "; ".join(notes),
     }  # fmt: skip

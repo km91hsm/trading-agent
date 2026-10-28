@@ -81,10 +81,33 @@ class FoExecContext:
     now: Callable[[], datetime] = field(default=lambda: datetime.now(UTC))
     dry_run: bool = False
     historical: bool = False  # 과거 asof 세션 — 신규 금지(판정은 기록)
+    # 국면·시장 세션 제안 — 운영 경로는 `context_sources(conn, now)` 로 원장에서 읽는다(S3 P0)
     regime_of: Callable[[], str] = field(default=lambda: "neutral")
     view_of: Callable[[], dict | None] = field(default=lambda: None)
+    # 현물 계좌·브로커 — 거시 절의 헤지 ETF 보유(`inputs._news_macro`)만 읽는다(주문 없음)
+    spot_accounts: list[AccountConfig] = field(default_factory=list)
+    spot_brokers: dict[str, Any] = field(default_factory=dict)
     # 재평가 결정 적용 훅(단계 4 `fo/reeval.apply`): (봉투, 라운드) → 결과 dict. 없으면 기록만
     reeval_apply: Callable[[FoDecisionEnvelope, int], dict] | None = None
+
+
+def context_sources(
+    conn: sqlite3.Connection, now: Callable[[], datetime]
+) -> dict[str, Callable[[], Any]]:
+    """`FoExecContext(regime_of=, view_of=)` 운영 기본값: 국면은 `control.regime:KR`, 시장 뷰는
+    오늘(KST 운영일) 제출된 `control.market_view:KR`. 도구 서브프로세스(`cli._fo_tool_ctx`)와
+    `fo/session.run` 이 같은 것을 넘긴다 — 기본 람다(neutral·None)는 테스트용."""
+    from trader.orchestrator import tools
+    from trader.orchestrator.run_store import run_date_for
+    from trader.risk import regime as regime_mod
+
+    def regime_of() -> str:
+        return (regime_mod.load(conn, "KR") or {}).get("state") or "neutral"
+
+    def view_of() -> dict | None:
+        return tools.market_view_today(conn, "KR", run_date_for("KR", now()))
+
+    return {"regime_of": regime_of, "view_of": view_of}
 
 
 @dataclass

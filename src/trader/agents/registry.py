@@ -8,6 +8,7 @@ md 형식: YAML 프런트매터(name, description, model, tools) + 마크다운 
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -139,19 +140,58 @@ def agents_json(names: tuple[str, ...], settings: Settings, base: Path | None = 
     return out
 
 
-def orchestrator_prompt(settings: Settings, base: Path | None = None) -> str:
-    """orchestrator.md 본문 + 런타임 설정(토론 라운드·스키마 요약).
+_MODE_HEADING = re.compile(r'^## \w+ 모드 \(`kind: "(\w+)"`\)')
+FO_KINDS = frozenset({"fo", "fo_resume"})
+
+
+def _body_for_kind(body: str, kind: str) -> str:
+    """orchestrator.md 에서 이 세션 종류의 `## <kind> 모드` 절만 남긴다(다른 모드 절은 뺀다).
+    파생 세션(fo·fo_resume)은 종목 `# 절차` 절도 뺀다 — 현물 도구·단계 이름이 프롬프트에 섞이지
+    않게(S3 P0). 모드 표식이 없는 절(역할·입력·금지·공통 규칙)은 그대로."""
+    out: list[str] = []
+    skip = False
+    for line in body.splitlines(keepends=True):
+        m = _MODE_HEADING.match(line)
+        if m:
+            skip = m.group(1) != kind
+        elif line.startswith("# 절차"):
+            skip = kind in FO_KINDS
+        elif line.startswith("# ") or line.startswith("## "):
+            skip = False
+        if not skip:
+            out.append(line)
+    return "".join(out)
+
+
+def orchestrator_prompt(
+    settings: Settings, base: Path | None = None, *, kind: str = "analyze"
+) -> str:
+    """orchestrator.md 본문(이 `kind` 의 모드 절만) + 런타임 설정(토론 라운드·스키마 요약).
 
     md 의 `python -m trader tool` 은 실제 도구 명령(`bundle.tool_command()`)으로 바꾼다
-    (번들은 `trader tool`) — `--allowedTools` 와 같은 문자열이어야 LLM 이 도구를 부를 수 있다."""
+    (번들은 `trader tool`) — `--allowedTools` 와 같은 문자열이어야 LLM 이 도구를 부를 수 있다.
+    스키마는 그 종류가 쓰는 것만 붙인다(파생은 AnalystReport·DebateTurn·FoDecisionEnvelope)."""
     from trader.platform import bundle
 
-    body = load_agent(ORCHESTRATOR, base).prompt.replace(
+    body = _body_for_kind(load_agent(ORCHESTRATOR, base).prompt, kind).replace(
         "python -m trader tool", bundle.tool_command()
     )
     runtime = (
         "\n# 런타임 설정\n"
         f"- debate_rounds={settings.debate_rounds} (라운드 0 독립 의견 뒤 반박 라운드 수)\n"
+    )
+    if kind in FO_KINDS:
+        runtime += (
+            "- 체크포인트 이름: _fo_analyst_<technical|sentiment|news_macro>, "
+            "_fo_debate_r<n>_<bull|bear>, _fo_summary(파이썬 생성), _fo_decision[_r<n>_<계좌>]\n"
+            "- AnalystReport 스키마: " + schemas.json_schema(schemas.AnalystReport) + "\n"
+            "- DebateTurn 스키마: " + schemas.json_schema(schemas.DebateTurn) + "\n"
+            "- FoDecisionEnvelope 스키마(fo-trader 출력): "
+            + schemas.json_schema(schemas.FoDecisionEnvelope)
+            + "\n"
+        )
+        return body + runtime
+    runtime += (
         "- 체크포인트 이름: 10_analyst_<technical|fundamental|news_macro|sentiment>, "
         "20_debate_r<n>_<bull|bear>, 25_research_summary(파이썬 생성), 30_decision\n"
         "- AnalystReport 스키마: " + schemas.json_schema(schemas.AnalystReport) + "\n"
@@ -163,9 +203,6 @@ def orchestrator_prompt(settings: Settings, base: Path | None = None) -> str:
         + "\n"
         "- HedgeProposal 스키마(market 모드, strategist 출력): "
         + schemas.json_schema(schemas.HedgeProposal)
-        + "\n"
-        "- FoDecisionEnvelope 스키마(fo·fo_resume 모드, fo-trader 출력): "
-        + schemas.json_schema(schemas.FoDecisionEnvelope)
         + "\n"
     )
     return body + runtime

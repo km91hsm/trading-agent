@@ -97,3 +97,50 @@ Claude `/code-review`: 아래 「단계 1 Claude 리뷰」.
 | G2-7 | P1 | `executor.reduce`·`types.TRANSITIONS` | RESIZE_DOWN 재시도 소진 때 `resizing → exit_failed` 가 표에 없어 ValueError, 알림·다음 축소 없음 | 표에 `resizing → exit_failed`·`exit_failed → held`(감액 목표 도달만, `_resize_target_reached`) 추가; `_resume_reduce` 는 감액이면 exit_failed 뒤에도 목표 유지 채 보유 − 목표, 전량 의도는 잔량 전부. `test_resize_down_retry_exhaustion_escalates_to_exit_failed` |
 
 GitHub 7건 전부 반영(`tests/fo/test_review_s2_github.py`), 스레드 답글·해결 처리.
+
+## 단계 3 — 세션·도구·에이전트 (`feat/phase26-3-session`)
+
+base `1bd0172` → (단계 2 GitHub 리뷰 반영 뒤) `c7bf51e`, head `94e4e3f`(리뷰 대상) → 보완 커밋은 이 절 끝. 리뷰 3종: `codex exec --sandbox read-only --ephemeral`(초점 7개: 쓰기 허용 목록·봉투 대조·실행 경로 안전·상한/사용량·입력 룩어헤드·에이전트 계약·현물 회귀), `codex review --base feat/phase26-2-store-gate-exec`, Claude `/code-review` high. 반영 테스트는 `tests/fo/test_review_s3.py`(23건) + 기존 테스트 수정(`test_registry`·`test_schemas_fo`·`test_tools_fo`).
+
+### Codex exec (S3-1~9)
+
+| # | 심각도 | 위치 | 문제 | 조치 |
+|---|---|---|---|---|
+| S3-1 | P0 | `cli._fo_tool_ctx`·`fo/session.run`·`executor.FoExecContext` | 두 생성 경로 모두 `regime_of`·`view_of` 를 넣지 않아 실행 게이트가 항상 neutral·None(국면 상한·역행 대조·옵션 매도 역행 거부 우회) | `executor.context_sources(conn, now)`(원장 `regime:KR`·오늘 `market_view:KR`)를 두 경로가 같이 넘김. `test_fo_tool_ctx_wires_regime_view_and_spot`·`test_session_run_wires_regime_view` |
+| S3-2 | P0 | `submit_fo_decision` | `historical` 은 수집 당시 bool 뿐 — 어제 입력·리포트를 오늘 `--date 어제` 로 제출하면 통과, 120초 지연 제출도 동일 | 입력 `meta.date ≠ --date` 면 기록만(`record_only: input_date`, "입력 날짜 불일치 — 실행 안 함"). **120초는 실행 직전 `run_leg` 의 재시세·재잔고 검사가 본다**(플랜 3차 P1: 아침 결정은 의도, 유효기간은 실행 직전 입력에) — 제출 시각 검사는 두지 않음(세션이 보통 2분을 넘는다). `test_submit_rejects_inputs_from_other_run_date` |
+| S3-3 | P0 | `submit_fo_decision` 아침 분기·`fo/session.run` | 결정 파일 저장 뒤 계좌 루프가 끊기면(예외·프로세스 종료) 재제출 `already`·세션 재실행 생략으로 미실행 계좌가 영구 건너뜀. 계좌별 예외 격리 없음 | `_fo_run_accounts`(제출·재개 공용): 계좌 예외 → 그 계좌 `_fo_risk_check` error + 다음 계좌, `OrderBookkeepingError` 는 CRITICAL + 알림; `already` 재제출은 판정 파일·오늘 보류 플래그 없는 계좌만 재개(`resumed_execution`). `test_submit_isolates_account_exception_then_resumes`·`test_submit_bookkeeping_error_is_critical_and_continues` |
+| S3-4 | P0 | `cli._tool_ctx`·`fo_master.load` | 현물 도구(`tool checkpoint write` 등)도 파생 브로커 생성 + 최대 30초 마스터 다운로드를 먼저 함 | `_tool_ctx(fo=True)` 는 파생 도구(`_fo_tool_run`)만, 마스터는 `fo_master.load(offline=True)`(캐시만, 없으면 빈 목록 — 다운로드는 데몬·CLI). `test_tool_ctx_builds_fo_only_on_request`·`test_master_load_offline_never_downloads`·`test_fo_tool_ctx_none_without_fo_accounts_and_master_failure_empty` |
+| S3-5 | P0 | `registry.orchestrator_prompt`·`session.py` | kind 분기가 없어 현물 세션 프롬프트에도 fo 지침·`FoDecisionEnvelope` 스키마가 들어감("현물 프롬프트 변경 없음" 위반) | `orchestrator_prompt(kind=)` 가 `_body_for_kind` 로 그 종류의 `## <kind> 모드` 절만(파생은 종목 `# 절차` 도 제외)·스키마도 종류별. `run_session` 이 `kind=spec.kind` 전달. `test_orchestrator_prompt_branches_by_kind`·`test_run_session_passes_kind_to_prompt` |
+| S3-6 | P1 | `fo/inputs._technical` | 분봉 필터가 날짜뿐(같은 날 `asof` 뒤 봉 포함 — 룩어헤드), cutoff 가 UTC 날짜라 08:20 KST 는 전날 | 컷은 KST 운영일(`run_date_for`) + 분봉 `time ≤ asof(KST)`. 과거 asof 의 현재가·호가는 재현 불가 → `historical` dry-run 강제가 방어(기록). `test_candles_cut_by_kst_run_date_and_minute_time` |
+| S3-7 | P1 | `fo/cli.session_cmd`·`fo/session.run`·`inputs._news_macro` | 호출자가 fo 계좌·브로커만 넘겨 `spot=[]` — 현물 헤지 ETF 보유가 항상 빈 목록 | `FoExecContext.spot_accounts/spot_brokers`; CLI 는 `boot.accounts` 현물 브로커, 도구는 `_tool_ctx` 의 현물 브로커, `fo/session.run(spot_accounts=, spot_brokers=)`. `test_news_macro_receives_spot_accounts` |
+| S3-8 | P1 | `fo_reeval_request` | 라운드 할당에 잠금이 없어 동시 두 요청이 같은 r1 을 다른 request_id 로 덮음 | 같은 포지션·같은 버전의 미결 요청은 **재사용**(`reused: true`), `fo bundle --kind trader --round <n>` 으로 요청 고정(없으면 거부). 동시 첫 요청 경합은 fail-closed(덮인 봉투의 제출은 request_id 불일치로 거부)이고 운영 요청 주체는 데몬 빠른 레인 한 프로세스(단계 4) — DB 예약은 두지 않음. `test_reeval_request_reused_until_decided_and_bundle_round_pinned` |
+| S3-9 | P1 | `tools._shrink`·`fo_bundle` | 문자열만 줄여 일봉 260·분봉 60 묶음이 24KB 를 넘을 수 있음 | `_shrink` 에 긴 dict 목록 꼬리 유지(120/60/30건) 단계 추가(evidence → 목록 → 문자열). `test_bundle_size_capped_with_long_candle_lists` |
+
+### codex review (R3-1)
+
+| # | 심각도 | 위치 | 문제 | 조치 |
+|---|---|---|---|---|
+| R3-1 | P1 | `cli._fo_tool_ctx` | = S3-1(실행 컨텍스트에 국면·시장 뷰 미연결) | S3-1 과 같음 |
+
+### Claude `/code-review` (C3-1~14)
+
+| # | 분류 | 위치 | 문제 | 조치 |
+|---|---|---|---|---|
+| C3-1 | 정확성 | = S3-1 | | |
+| C3-2 | 정확성 | = S3-3 | | |
+| C3-3 | 정확성 | `submit_fo_decision` 보류 플래그 | dry_run 세션도 `fo_pending_entry` 를 남기고(소비자가 실행할 수 있음), 플래그에 dry_run·요청 정보 없음, 낡은 플래그 미정리 | dry_run 은 보류 없이 기록만(`record_only: dry_run`), 플래그에 `request_id·dry_run` 추가, 계좌 루프 첫머리에서 오늘 것이 아니면 삭제, 소비자 `tools.fo_pending_entry` 는 오늘 운영일만. `test_pending_flag_skipped_in_dry_run_and_consumer_requires_today`·`test_pending_flag_records_requested_context` |
+| C3-4 | 정확성 | `cli._fo_tool_ctx` env `TRADER_FO_HISTORICAL` | 세션이 설정하지 않는 env 를 읽음(이중 경로, 항상 0) | env 제거 — `_fo_inputs.meta.historical` 하나가 출처(`submit-fo-decision` 이 읽음) |
+| C3-5 | 정확성 | = S3-4 | | |
+| C3-6 | 정확성 | = S3-5 | | |
+| C3-7 | 정확성 | = S3-6 | | |
+| C3-8 | 정확성 | = S3-7 | | |
+| C3-9 | 정확성 | = S3-8·S3-9 | | |
+| C3-10 | 정확성 | `fo/session.run`·`fo/cli.session_cmd` | 운영일이 `_today(None)`(now) — `--asof` 가 어제면 디렉터리가 어긋남 | `date` 생략 시 `run_date_for("KR", asof or now)`, 결과에 `date`. `test_session_run_date_from_asof` |
+| C3-11 | 중복 | `_fo_turns`·`fo_write`·`fo_summarize`·`inputs._jsonable` | 현물 `_load_turns`·`market_write`·`market_summarize`·`sources/inputs._jsonable` 복제 | `_load_turns(d, pattern)`·`_validate_payload`·`_summarize_turns` 하나씩, `_jsonable` 은 import |
+| C3-12 | 계약 | `fo-trader.md` 입력 ↔ 코드 | budget 키(`planned` 없음·`remaining` 있음)·계좌 positions 키·`sell_stop_mult` 가 코드와 다름; `fo write` 가 리포트 ticker 를 검사하지 않음 | md 를 코드대로 고치고 `fo write` 는 `ticker == meta.proxy` 검사. `test_fo_trader_md_input_contract_matches_bundle`·`test_fo_write_requires_report_ticker_to_be_proxy` |
+| C3-13 | 효율·전파 | `submit_fo_decision` 전제 검사·`run_session`·`tool fo --market` | 전제 검사가 토론 턴 JSON 을 전부 읽음; 세션 dry_run 이 `fo.dry_run` 에 전파되지 않음; `--market US` 가 무시됨 | 전제는 단계 이름만, `run_session` 이 `fo.dry_run=True`, `_fo_tool_run` 이 `KR` 외 거부. `test_run_session_dry_run_forces_fo_dry_run`·`test_fo_tool_commands_reject_non_kr_market` |
+| C3-14 | 문서 | `CLAUDE.md` | 에이전트 md 수(12)·세션 종류 목록이 낡음 | 16개·kinds 갱신 + kind 별 프롬프트 규칙. `test_claude_md_lists_fo_kinds_and_agent_count` |
+
+확인함(리뷰어 공통): 쓰기 허용 목록·경로 탈출 거부, 봉투 대조(아침 계좌·포지션 비움·request_id, 재평가 네 값 + 현재 version), FLAT HOLD·historical·창 밖에서 주문 없음, 두 상한 한 트랜잭션·`RESUME_KINDS`, 옵션 체인 ≤18, fixture 합성·비밀정보 없음.
+
+단계 3 결론: **보완 뒤 진행** — P0 5·P1 4 + Claude 14(중복 8) 전부 반영(S3-2 의 제출 시각 검사와 S3-8 의 DB 예약은 설계대로 부분 반영, 사유는 표). `uv run ruff check`·`uv run pytest` 통과 뒤 PR(`--base feat/phase26-2-store-gate-exec`).

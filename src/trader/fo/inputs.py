@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 import uuid
 from collections.abc import Callable
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Literal
@@ -20,7 +20,7 @@ from typing import Any, Literal
 from trader.broker import fo_master
 from trader.broker.fo import CONTRACT_VERSION
 from trader.broker.models import drop_incomplete_tail
-from trader.config import AccountConfig, KisCfg
+from trader.config import KST, AccountConfig, KisCfg
 from trader.control import control
 from trader.fo import rules, store
 from trader.fo.executor import VEHICLES, FoExecContext, verified_key
@@ -29,6 +29,7 @@ from trader.orchestrator.run_store import write_checkpoint
 from trader.risk import regime as regime_mod
 from trader.sources import indicators
 from trader.sources.base import Section, run_section, skipped_section
+from trader.sources.inputs import _jsonable
 
 logger = logging.getLogger("trader.fo")
 
@@ -39,20 +40,6 @@ INPUTS_STAGE = "_fo_inputs"
 INDEX_PROXY_TICKER = "069500"  # 수급 절의 지수 proxy ETF(KODEX 200) — 선물 수급 TR 미확정
 
 BundleKind = Literal["analyst", "researcher", "trader"]
-
-
-def _jsonable(obj: Any) -> Any:
-    if hasattr(obj, "model_dump"):
-        return _jsonable(obj.model_dump(mode="json"))
-    if isinstance(obj, Decimal):
-        return str(obj)
-    if isinstance(obj, date | datetime):
-        return obj.isoformat()
-    if isinstance(obj, dict):
-        return {str(k): _jsonable(v) for k, v in obj.items()}
-    if isinstance(obj, list | tuple):
-        return [_jsonable(v) for v in obj]
-    return obj
 
 
 def _wrap_section(data: Any, *, asof: datetime, now: datetime, error: str | None = None) -> dict:
@@ -106,9 +93,17 @@ def _technical(
     if mc is None or front is None:
         why = "no market client" if mc is None else "no front contract"
         return {**{k: skipped_section(why, now=now_fn) for k in keys}, "meta": meta}
-    cutoff = asof.astimezone(UTC).date() if asof.tzinfo else asof.date()
+    # 봉 컷은 KST 운영일·KST 시각(KIS 봉의 날짜·체결시각이 현지, S3 P1) — UTC 날짜로 자르면 KST
+    # 자정 뒤 09:00 전 세션이 오늘 봉을 잃는다
+    cutoff = run_store.run_date_for(MARKET, asof)
+    cutoff_hms = asof.astimezone(KST).strftime("%H%M%S")
     candles: list = []
     code, kind = front.code, front.kind
+
+    def minute_ok(c) -> bool:
+        if c.date < cutoff:
+            return True
+        return c.date == cutoff and (c.time is None or c.time <= cutoff_hms)
 
     def daily() -> list[dict]:
         nonlocal candles
@@ -123,7 +118,7 @@ def _technical(
         "quote": run_section(lambda: _jsonable(mc.get_fo_price(code, kind)), now=now_fn),
         "daily": run_section(daily, now=now_fn),
         "minute": run_section(
-            lambda: _jsonable([c for c in mc.get_fo_minute(code, kind) if c.date <= cutoff]),
+            lambda: _jsonable([c for c in mc.get_fo_minute(code, kind) if minute_ok(c)]),
             now=now_fn,
         ),
         "orderbook": run_section(
@@ -174,15 +169,17 @@ def _news_macro(
     ctx: FoExecContext, *, today: date, asof: datetime, accounts: list[AccountConfig], now_fn
 ) -> tuple[dict, str | None]:
     """시장 세션(`market_view.build_inputs`)의 거시 절을 그대로 재사용한다(국면·지수 proxy 봉·거시
-    지표·거시 뉴스·시장 메모·세이브티커·헤지 보유)."""
+    지표·거시 뉴스·시장 메모·세이브티커·헤지 보유). 헤지 보유는 **현물** 계좌·브로커
+    (`ctx.spot_accounts`·`ctx.spot_brokers`, 호출자가 넘긴 현물 계좌 포함)로만 읽는다 — fo
+    브로커에는 ETF 잔고가 없다(S3 P1)."""
     from trader.orchestrator import market_view
 
-    spot = [a for a in accounts if a.asset != "fo"]  # 헤지 보유는 현물 계좌·브로커만
-    brokers = {a.id: ctx.brokers[a.id] for a in spot if a.id in ctx.brokers}
+    spot = {a.id: a for a in [*ctx.spot_accounts, *accounts] if a.asset != "fo"}
+    brokers = {aid: ctx.spot_brokers[aid] for aid in spot if aid in ctx.spot_brokers}
     try:
         data = market_view.build_inputs(
             ctx.conn, MARKET, today, settings=ctx.settings, asof=asof,
-            market_client=ctx.market_client, accounts=spot, brokers=brokers,
+            market_client=ctx.market_client, accounts=list(spot.values()), brokers=brokers,
             state=ctx.state, now=now_fn,
         )  # fmt: skip
     except Exception as e:  # noqa: BLE001 — 거시 절 실패도 세션은 띄운다
