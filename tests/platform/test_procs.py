@@ -1,12 +1,15 @@
 """데몬 생존 판정의 로캘 차이(전체 검토 2026-10-27)."""
 
+import time
+
+import pytest
+
 from trader.platform import procs
 
 
+@pytest.mark.skipif(not hasattr(time, "tzset"), reason="time.tzset 은 POSIX 만")
 def test_legacy_localized_lock_falls_back_to_pid_alive(monkeypatch):
     monkeypatch.setenv("TZ", "Asia/Seoul")
-    import time
-
     time.tzset()
     monkeypatch.setattr(procs, "process_start", lambda pid: "utc:Tue Oct 27 02:36:26 2026")
     alive = lambda pid: True  # noqa: E731

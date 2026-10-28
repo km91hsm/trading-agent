@@ -40,7 +40,7 @@ def test_non_pdf_and_oversized_downloads_are_not_imported(tmp_path):
     from trader.saveticker.reports import save_pdf
 
     source = tmp_path / "download"
-    source.write_text("<html>로그인 필요</html>")
+    source.write_text("<html>로그인 필요</html>", encoding="utf-8")
     with pytest.raises(ValueError, match="invalid_pdf"):
         save_pdf(source, tmp_path / "feed")
     source.write_bytes(b"%PDF-" + b"0" * 100)

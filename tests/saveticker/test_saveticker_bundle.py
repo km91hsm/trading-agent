@@ -8,6 +8,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from trader.platform import bundle
 from trader.saveticker import automation, chromium
 from trader.saveticker import home as st_home
@@ -143,6 +145,7 @@ def _service_state(home, value):
     (home / "runtime" / "service.json").write_text(json.dumps(value), encoding="utf-8")
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Windows 는 프로세스 목록을 보지 않는다(항상 False)")
 def test_service_elsewhere_reads_process_list(monkeypatch):
     rows = f"  1 /sbin/launchd\n{os.getpid()} python -m trader saveticker service\n"
     monkeypatch.setattr(
@@ -244,7 +247,7 @@ def test_prune_keeps_latest_and_recent(tmp_path):
     assert out["captures"] == 1 and out["day_dirs"] == 1 and out["pdfs"] == 1
     assert not (tmp_path / "2026-09-01").exists() and (tmp_path / "2026-10-25").exists()
     assert txt.exists() and not pdf.exists()  # 추출 텍스트는 작아서 남긴다
-    assert json.loads((tmp_path / "latest" / "news_all.json").read_text())["items"]
+    assert json.loads((tmp_path / "latest" / "news_all.json").read_text(encoding="utf-8"))["items"]
     assert store.prune(today=datetime(2026, 10, 27, tzinfo=UTC).date(), keep_days=30) == {
         "revisions": 0,
         "captures": 0,
@@ -282,7 +285,7 @@ def test_prune_keeps_last_good_capture_and_latest_files(tmp_path):
     out = store.prune(today=datetime(2026, 10, 27, tzinfo=UTC).date(), keep_days=30)
     assert out["captures"] == 1  # 첫 성공만 지운다(마지막 성공·마지막 캡처는 남김)
     store.export(incremental=True)
-    latest = json.loads((tmp_path / "latest" / "news_all.json").read_text())
+    latest = json.loads((tmp_path / "latest" / "news_all.json").read_text(encoding="utf-8"))
     assert latest["items"][0]["title"] == "더 옛 성공"
     assert store.status()["streams"]["news_all"]["status"] == "error"
 

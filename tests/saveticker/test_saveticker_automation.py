@@ -68,7 +68,7 @@ def test_launch_agent_runs_without_ai_or_shell_and_monitor_every_minute():
     assert collector["RunAtLoad"] and not collector.get("KeepAlive", False)
     assert collector["ProgramArguments"] == ["/python", "-m", "trader", "saveticker", "service"]
     assert monitor["StartInterval"] == 60
-    assert monitor["EnvironmentVariables"]["TRADER_HOME"] == "/home"
+    assert monitor["EnvironmentVariables"]["TRADER_HOME"] == str(Path("/home"))
     assert collector["ExitTimeOut"] >= 60
 
 

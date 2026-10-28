@@ -20,5 +20,5 @@ def test_worker_failure_stops_other_lanes_and_preserves_exit_status(tmp_path):
     assert set(workers) == {"news", "background"}
     assert snapshots[-1]["workers"]["background"]["exit_code"] == 2
     for worker in workers.values():
-        with pytest.raises(ProcessLookupError):
+        with pytest.raises(OSError):  # POSIX ProcessLookupError, Windows WinError 87
             os.kill(worker["pid"], 0)
