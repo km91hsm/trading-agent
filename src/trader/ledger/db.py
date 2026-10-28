@@ -512,6 +512,20 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
         # (후보 밖 매수 포함)을 새 선택 효과 통계에 섞지 않는다. 옛 행은 NULL
         ["ALTER TABLE shadow_portfolios ADD COLUMN def_version INTEGER"],
     ),
+    (
+        32,  # 결정 7번(2-O10): 실행 키를 매수 예약으로 — 계좌·시장·종목·방향·금액,
+        # 주문·승인에 묶인 시각.
+        # 키를 잡는 트랜잭션 안에서 다른 경로의 진행 중 예약을 반영해 게이트를 다시 돌린다
+        [
+            "ALTER TABLE exec_keys ADD COLUMN account_id TEXT",
+            "ALTER TABLE exec_keys ADD COLUMN market TEXT",
+            "ALTER TABLE exec_keys ADD COLUMN ticker TEXT",
+            "ALTER TABLE exec_keys ADD COLUMN side TEXT",
+            "ALTER TABLE exec_keys ADD COLUMN amount TEXT",
+            "ALTER TABLE exec_keys ADD COLUMN bound_at TEXT",
+            "CREATE INDEX IF NOT EXISTS idx_exec_keys_acct ON exec_keys(account_id, market)",
+        ],
+    ),
 ]
 
 

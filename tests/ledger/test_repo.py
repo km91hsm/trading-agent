@@ -835,3 +835,45 @@ def test_realized_pnl_cost_basis_uses_all_fills_but_counts_only_llm_sells(conn):
     _origin_order(conn, origin="llm", created_at=t, order_no="l2", fill_price=20)
     _origin_order(conn, origin="llm", side="SELL", created_at=t, order_no="l3", fill_price=30)
     assert repo.realized_pnl_5d(conn, "paper-main", D) == Decimal("0")  # −10 + 10
+
+
+def test_inflight_reservations_cover_approval_transition_and_skip_visible(conn):
+    """결정 7번: 승인은 pending 을 떠났는데 주문 행이 아직 없는 예약(승인 전환 중)은 진행 중이고,
+    판정 스냅샷 전에 pending 승인에 묶인 예약은 스냅샷이 이미 센다(진행 중 아님)."""
+    snap = "2026-10-09T01:00:00+00:00"
+    now = "2026-10-09T01:00:05+00:00"
+    stale = "2026-10-09T00:50:00+00:00"
+
+    def key(k, aid):
+        conn.execute(
+            "INSERT INTO exec_keys(key, created_at, account_id, market, ticker, side, amount, "
+            "approval_id, bound_at) "
+            "VALUES (?, ?, 'paper-main', 'KR', '005930', 'BUY', '1000', ?, ?)",
+            (k, "2026-10-09T00:59:00+00:00", aid, "2026-10-09T00:59:30+00:00"),
+        )
+
+    order = {"ticker": "005930", "market": "KR", "side": "BUY", "qty": 1}
+    a1 = repo.create_approval(
+        conn,
+        decision_id=1,
+        account_id="paper-main",
+        order=order,
+        requested_at="2026-10-09T00:59:00+00:00",
+        expires_at="2026-10-09T01:29:00+00:00",
+    )
+    a2 = repo.create_approval(
+        conn,
+        decision_id=2,
+        account_id="paper-main",
+        order=order,
+        requested_at="2026-10-09T00:59:00+00:00",
+        expires_at="2026-10-09T01:29:00+00:00",
+    )
+    conn.execute("UPDATE approvals SET status='approved' WHERE id=?", (a2,))
+    key("pending|k", a1)
+    key("approved|k", a2)
+    conn.commit()
+    got = repo.inflight_reservations(
+        conn, "paper-main", "KR", snap_at=snap, now=now, stale_before=stale
+    )
+    assert [r["key"] for r in got] == ["approved|k"]

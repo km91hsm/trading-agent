@@ -1264,3 +1264,83 @@ def test_record_portfolio_false_skips_snapshot_and_killswitch(ectx):
     _run(ectx)
     n = ectx.conn.execute("SELECT COUNT(*) AS n FROM positions_snapshot").fetchone()["n"]
     assert n > 0
+
+
+def _inflight(conn, *, ticker="000660", amount="9000000", created_at=None, key="other|k"):
+    """다른 프로세스가 방금 선점했지만 아직 주문 행이 없는 매수 예약(판정 스냅샷에 안 보인다)."""
+    conn.execute(
+        "INSERT INTO exec_keys(key, created_at, account_id, market, ticker, side, amount) "
+        "VALUES (?, ?, 'paper-main', 'KR', ?, 'BUY', ?)",
+        (key, (created_at or T0).isoformat(), ticker, amount),
+    )
+    conn.commit()
+
+
+def test_inflight_reservation_shrinks_concurrent_buy(ectx):
+    """결정 7번(2-O10): 다른 경로가 같은 계좌에서 막 선점한 매수 예약은 이 판정의 스냅샷에 없다 —
+    키를 잡는 트랜잭션 안에서 진행 중 예약을 반영해 게이트를 다시 돌려, 현금이 모자라면 수량을
+    줄이고
+    키와 예약을 함께 남긴다(섹터 상한은 끄고 현금만 보게)."""
+    ectx.sectors = False
+    _inflight(ectx.conn, amount="9500000")
+    by = {r["account_id"]: r for r in _run(ectx)}
+    v = by["paper-main"]
+    assert v["approved"] and 0 < v["qty"] < 14
+    assert any("동시 판정" in x for x in v["reasons"])
+    row = ectx.conn.execute(
+        "SELECT account_id, market, ticker, side, amount FROM exec_keys WHERE key != 'other|k'"
+    ).fetchone()
+    assert (row["account_id"], row["market"], row["ticker"], row["side"]) == (
+        "paper-main",
+        "KR",
+        "005930",
+        "BUY",
+    )
+    assert Decimal(row["amount"]) > 0
+
+
+def test_inflight_reservation_can_reject_when_nothing_fits(ectx):
+    """진행 중 예약을 반영하면 섹터 상한(40%)도 다시 본다 — 같은 섹터 9.9백만 + 이 매수는 거부."""
+    _inflight(ectx.conn, amount="9900000")
+    by = {r["account_id"]: r for r in _run(ectx)}
+    v = by["paper-main"]
+    assert not v["approved"] and any("동시 판정" in x for x in v["reasons"])
+    assert ectx.brokers["paper-main"].orders == []
+
+
+def test_stale_unsent_reservation_is_ignored(ectx):
+    """보내지도 묶이지도 않은 채 오래된 예약(선점 뒤 프로세스가 죽음)은 진행 중으로 보지 않는다."""
+    _inflight(ectx.conn, created_at=T0 - timedelta(hours=1))
+    by = {r["account_id"]: r for r in _run(ectx)}
+    assert by["paper-main"]["qty"] == 14
+
+
+def test_reservation_visible_in_snapshot_is_not_double_counted(ectx):
+    """판정 스냅샷 전에 주문 행이 묶인 예약은 이미 당일 주문금액에 들어 있다 — 다시 더하지
+    않는다."""
+    oid = repo.insert_order(
+        ectx.conn,
+        decision_id=None,
+        account_id="paper-main",
+        ticker="000660",
+        market="KR",
+        side="BUY",
+        qty=10,
+        order_type="LIMIT",
+        price=Decimal("100000"),
+        status="accepted",
+        order_no="9",
+        message="",
+        mode="auto",
+        created_at=(T0 - timedelta(minutes=1)).isoformat(),
+    )
+    _inflight(ectx.conn, amount="1000000", created_at=T0 - timedelta(minutes=1))
+    ectx.conn.execute(
+        "UPDATE exec_keys SET order_id=?, bound_at=? WHERE key='other|k'",
+        (oid, (T0 - timedelta(minutes=1)).isoformat()),
+    )
+    ectx.conn.commit()
+    by = {r["account_id"]: r for r in _run(ectx)}
+    assert by["paper-main"]["qty"] == 14 and not any(
+        "동시 판정" in x for x in by["paper-main"]["reasons"]
+    )

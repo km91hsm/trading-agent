@@ -746,9 +746,14 @@ def _execute_account(
         mode, note = effective_mode(ctx.conn, account)
         broker = ctx.brokers.get(account.id)
         st = stance_mod.decide(repo.realized_pnl_5d(ctx.conn, account.id, date, market=market))
+        portfolio: rules.Portfolio | None = None
+        snap_at = ctx.now().isoformat()
         try:
             if broker is None:
                 raise KisApiError("NO_BROKER", f"계좌 {account.id} 브로커 없음(앱키 미설정)")
+            snap_at = (
+                ctx.now().isoformat()
+            )  # 이 판정이 본 잔고·원장 시각(결정 7번 진행 중 예약 기준)
             portfolio = build_portfolio(
                 ctx.conn,
                 broker,
@@ -769,6 +774,36 @@ def _execute_account(
                 sized, rl_prop, rl_base.value = _rl_size(
                     ctx, account, decision, market, portfolio, rl_base.value
                 )
+            # 재확인(_gate)은 쓰기 트랜잭션 안에서 돈다 — 휴장일 조회(네트워크 가능)는 여기서
+            # 한 번만
+            hol = _holidays_between(ctx.holiday_fn, portfolio.held_since.get(decision.ticker), date)
+            kill = killswitch.reason(ctx.conn, account.id)
+
+            def _gate(pf: rules.Portfolio) -> rules.RiskVerdict:
+                return rules.evaluate(
+                    sized,
+                    pf,
+                    limits=ctx.settings.risk,
+                    stance=st,
+                    market=market,
+                    price=price,
+                    today=date,
+                    is_stop_loss=is_stop_loss,
+                    holidays=hol,
+                    regime=regime,
+                    is_hedge=is_hedge,
+                    hedge_max_weight=(
+                        park_max_weight
+                        if park_max_weight is not None
+                        else (hedge_cfg.max_weight_pct if is_hedge else None)
+                    ),
+                    agent_tilt=agent_tilt,
+                    is_scalp=is_scalp,
+                    change_pct=change_pct,
+                    killswitch=kill,
+                    trade_block=trade_block,
+                )
+
             verdict = rules.evaluate(
                 sized,
                 portfolio,
@@ -853,19 +888,70 @@ def _execute_account(
                 tag=exec_tag,
             )
             now = ctx.now()
-            if not repo.claim_exec_key(
-                ctx.conn,
-                exec_key,
-                now=now.isoformat(),
-                stale_before=(now - EXEC_KEY_STALE).isoformat(),
-            ):
+            race: list[str] = []
+            if verdict.side == "BUY" and portfolio is not None:
+                # 결정 7번(2-O10): 매수는 다른 경로의 진행 중 예약을 반영해 게이트를 다시 돌린
+                # 뒤에만
+                # 키와 예약을 함께 잡는다(한 쓰기 트랜잭션)
+                first = verdict
+
+                def _recheck(inflight: list[dict]) -> str | None:
+                    nonlocal verdict
+                    v = first
+                    if inflight:
+                        pf2 = _with_reservations(portfolio, inflight)
+                        v2 = _gate(pf2)
+                        if not v2.approved or v2.adjusted_qty <= 0:
+                            race.append(
+                                "동시 판정: 진행 중 매수 예약 "
+                                f"{len(inflight)}건 반영 시 거부 — " + "; ".join(v2.reasons)
+                            )
+                            return None
+                        if v2.adjusted_qty < v.adjusted_qty:
+                            v = v.model_copy(
+                                update={
+                                    "adjusted_qty": v2.adjusted_qty,
+                                    "reasons": v.reasons
+                                    + [
+                                        f"동시 판정: 진행 중 매수 예약 {len(inflight)}건 반영으로 "
+                                        f"수량 {v.adjusted_qty}→{v2.adjusted_qty}"
+                                    ],
+                                }
+                            )
+                    verdict = v
+                    px = v.price if v.price is not None else price
+                    return str(Decimal(int(v.adjusted_qty)) * Decimal(str(px)))
+
+                claimed, _seen = repo.claim_exec_key_reserved(
+                    ctx.conn,
+                    exec_key,
+                    now=now.isoformat(),
+                    stale_before=(now - EXEC_KEY_STALE).isoformat(),
+                    account_id=account.id,
+                    market=market,
+                    ticker=decision.ticker,
+                    side="BUY",
+                    snap_at=snap_at,
+                    recheck=_recheck,
+                )
+            else:
+                claimed = repo.claim_exec_key(
+                    ctx.conn,
+                    exec_key,
+                    now=now.isoformat(),
+                    stale_before=(now - EXEC_KEY_STALE).isoformat(),
+                )
+            if not claimed:
                 exec_key = None
                 verdict = verdict.model_copy(
                     update={
                         "approved": False,
                         "adjusted_qty": 0,
                         "reasons": verdict.reasons
-                        + ["다른 프로세스가 같은 주문을 실행 중이거나 이미 냄(실행 키 선점됨)"],
+                        + (
+                            race
+                            or ["다른 프로세스가 같은 주문을 실행 중이거나 이미 냄(실행 키 선점됨)"]
+                        ),
                     }
                 )
         if paused and verdict.approved:
@@ -984,6 +1070,32 @@ def _origin_of(
     if is_park:
         return "park"
     return "llm"
+
+
+def _with_reservations(pf: rules.Portfolio, inflight: list[dict]) -> rules.Portfolio:
+    """진행 중 매수 예약(결정 7번)을 체결 전 매수처럼 더한 예상 포트폴리오 — 현금 차감·종목 수·섹터·
+    테마 합계·당일 중복 매수가 그 예약을 본다."""
+    from dataclasses import replace
+
+    extra = Decimal(0)
+    pending = dict(pf.pending_buys)
+    tickers = set(pf.today_buy_tickers)
+    for r in inflight:
+        try:
+            amt = Decimal(str(r.get("amount") or 0))
+        except ArithmeticError:
+            amt = Decimal(0)
+        t = str(r.get("ticker") or "")
+        extra += amt
+        if t:
+            pending[t] = pending.get(t, Decimal(0)) + amt
+            tickers.add(t)
+    return replace(
+        pf,
+        today_order_amount=pf.today_order_amount + extra,
+        pending_buys=pending,
+        today_buy_tickers=tickers,
+    )
 
 
 def _exec_key(
