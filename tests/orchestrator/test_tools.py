@@ -1596,3 +1596,32 @@ def test_existing_calibration_checkpoint_not_injected_when_switch_off(ctx, proje
     assert tools.ensure_calibration(ctx, ticker="005930", market="KR", date=D) is None
     b = tools.checkpoint_bundle(ctx, ticker="005930", market="KR", date=D, kind="trader")["data"]
     assert b["context"]["calibration"] is None
+
+
+def test_record_memory_held_across_any_paper_account(ctx, project):
+    """결정 당시 보유는 모의 계좌 중 하나라도 보유하면 보유(계좌 수 무관) — 첫 계좌만 보면 다른
+    계좌에만 있는 종목이 '미보유' 로 남는다. 엔트리 계좌는 실제로 보유한 계좌."""
+    import dataclasses
+    from decimal import Decimal
+
+    from trader.ledger import repo
+
+    accounts = [
+        AccountConfig(id="paper-main", env="paper", cano="1", markets=["KR"], mode="auto"),
+        AccountConfig(id="paper-2", env="paper", cano="2", markets=["KR"], mode="auto"),
+        AccountConfig(id="paper-3", env="paper", cano="3", markets=["KR"], mode="auto"),
+        AccountConfig(id="real-main", env="real", cano="4", markets=["KR"], mode="off"),
+    ]
+    c = dataclasses.replace(ctx, accounts=accounts)
+    for acct, held in (("paper-main", False), ("paper-2", False), ("paper-3", True)):
+        positions = []
+        if held:
+            positions = [{"ticker": "005930", "market": "KR", "qty": 3, "avg_price": "70000",
+                          "current_price": "71000", "eval_amount": "213000"}]  # fmt: skip
+        repo.snapshot_positions(c.conn, account_id=acct, d=D, market="KR", nav=Decimal(1),
+                                cash=Decimal(1), positions=positions)  # fmt: skip
+    dec = Decision(**ok_decision())
+    repo.ingest_checkpoint(c.conn, D, "KR", "005930", "30_decision", {"data": dec.model_dump()})
+    tools._record_memory(c, dec, "KR", D)
+    row = c.conn.execute("SELECT account_id, held_at_decision FROM memory_entries").fetchone()
+    assert row["held_at_decision"] == 1 and row["account_id"] == "paper-3"

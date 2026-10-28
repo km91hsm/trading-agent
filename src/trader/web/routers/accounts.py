@@ -7,7 +7,7 @@ from contextlib import closing
 from fastapi import APIRouter, Request
 
 from trader.ledger import views
-from trader.orchestrator.executor import effective_mode
+from trader.orchestrator.executor import account_mode
 from trader.web.routers._common import deps_of, today_kst
 
 router = APIRouter(prefix="/accounts", tags=["accounts"])
@@ -20,7 +20,7 @@ def list_accounts(request: Request) -> list[dict]:
     out = []
     with closing(deps.conn_factory()) as conn:
         for a in deps.all_accounts:
-            mode, note = effective_mode(conn, a)  # 실전 auto 는 확인 기록 없으면 off 로 강등
+            mode, note = account_mode(conn, a)  # 실전 auto 미확인·실전 파생은 off
             out.append(
                 {
                     "id": a.id,

@@ -123,7 +123,10 @@ def run(
     sources: dict[str, dict] = {}
     for a in accounts:
         try:
-            pf = executor.build_portfolio(ctx.conn, ctx.brokers[a.id], a, market, today)
+            pf = executor.build_portfolio(
+                ctx.conn, ctx.brokers[a.id], a, market, today,
+                paper_ids=executor.paper_ids(ctx.accounts),
+            )  # fmt: skip
         except Exception as e:  # noqa: BLE001 - 계좌 하나의 잔고 실패는 그 계좌만 건너뛴다
             logger.warning("리밸런스 잔고 실패 %s: %s", a.id, e)
             continue

@@ -12,7 +12,7 @@ from trader.config import KST, AccountConfig, Settings
 from trader.control.control import is_paused
 from trader.ledger import metrics, repo
 from trader.notify.commands import approval_line
-from trader.orchestrator.executor import effective_mode
+from trader.orchestrator.executor import REAL_FO_OFF_NOTE, account_mode
 from trader.platform import paths
 from trader.risk import regime as regime_mod
 
@@ -256,8 +256,11 @@ def build_status(
     for a in accounts:
         by_market = metrics.stance_by_market(conn, a.id, today, a.markets)
         st = ", ".join(f"{m} {v}" for m, v in by_market.items())
-        mode, note = effective_mode(conn, a)
-        shown = f"{mode} (강등: 확인 기록 없음)" if note else mode
+        mode, note = account_mode(conn, a)
+        if note == REAL_FO_OFF_NOTE:
+            shown = f"{mode} (실전 파생 미지원)"
+        else:
+            shown = f"{mode} (강등: 확인 기록 없음)" if note else mode
         lines.append(f"| {a.id} | {a.env} | {shown} | {','.join(a.markets)} | {st} |")
     lines += ["", "## 마지막 실행"]
     rows = conn.execute(

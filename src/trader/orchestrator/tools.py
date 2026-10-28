@@ -1150,6 +1150,30 @@ def _decided_at(now: datetime, run_date: date, market: Market = "KR") -> datetim
     return datetime.combine(run_date, MARKET_CLOSE["KR"], KST).astimezone(UTC)
 
 
+def _held_at_decision(
+    ctx: ToolContext, market: str, ticker: str, d: date
+) -> tuple[str, bool | None]:
+    """(엔트리 계좌, 결정 당시 보유). 그 시장의 모의 계좌 중 **하나라도** 보유하면 보유이고 그
+    계좌를 엔트리 계좌로 쓴다(계좌 수 무관). 모두 스냅샷이 없으면 None(모름), 아니면 False —
+    엔트리 계좌는 첫 모의 계좌. 모의 계좌가 없으면 첫 계좌."""
+    from trader.memory import store
+
+    papers = [a.id for a in ctx.accounts if a.env == "paper" and market in a.markets]
+    papers = papers or [a.id for a in ctx.accounts if a.env == "paper"]
+    papers = papers or [a.id for a in ctx.accounts[:1]]
+    if not papers:
+        return "", None
+    held: bool | None = None
+    for acct in papers:
+        h = store.held_at(ctx.conn, account_id=acct, market=market, ticker=ticker,
+                          d=d.isoformat())  # fmt: skip
+        if h:
+            return acct, True
+        if h is False:
+            held = False
+    return papers[0], held
+
+
 def _record_memory(
     ctx: ToolContext,
     decision: schemas.Decision,
@@ -1173,14 +1197,8 @@ def _record_memory(
         decision_id = repo.decision_id(ctx.conn, date, market, decision.ticker)
         if decision_id is None:
             return None
-        paper = next(
-            (a.id for a in ctx.accounts if a.env == "paper"),
-            ctx.accounts[0].id if ctx.accounts else "",
-        )
+        paper, held = _held_at_decision(ctx, market, decision.ticker, date)
         row = quant_report.latest_row(decision.ticker, market, ctx.state, asof=date)
-        held = store.held_at(
-            ctx.conn, account_id=paper, market=market, ticker=decision.ticker, d=date.isoformat()
-        )
         return store.record_decision(
             ctx.conn,
             decision_id=decision_id,

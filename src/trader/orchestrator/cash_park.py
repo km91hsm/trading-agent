@@ -141,7 +141,9 @@ def _one(ctx, a, cfg, price, regime, today, dry_run, all_ids, state, out) -> Non
         if left:  # 반대 주문이 남아 있으면 이번 틱은 여기까지 — 다음 틱에 다시 취소
             _set(state, a.id, regime, _bump(state.get(a.id)))
             return
-    pf = executor.build_portfolio(ctx.conn, broker, a, MARKET, today)
+    pf = executor.build_portfolio(
+        ctx.conn, broker, a, MARKET, today, paper_ids=executor.paper_ids(ctx.accounts)
+    )
     held = pf.positions.get(cfg.ticker)
     held_eval = held.eval_amount if held else Decimal(0)
     if regime == "bear":

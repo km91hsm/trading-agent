@@ -91,13 +91,16 @@ def test_portfolio_refresh_passes_memory_settings(client, conn, monkeypatch):
     seen = {}
     real = executor.build_portfolio
 
-    def spy(conn_, broker, acct, market, today, memory_settings=None):
+    def spy(conn_, broker, acct, market, today, memory_settings=None, paper_ids=None):
         seen["memory_settings"] = memory_settings
-        return real(conn_, broker, acct, market, today, memory_settings=memory_settings)
+        seen["paper_ids"] = paper_ids
+        return real(conn_, broker, acct, market, today, memory_settings=memory_settings,
+                    paper_ids=paper_ids)  # fmt: skip
 
     monkeypatch.setattr(executor, "build_portfolio", spy)
     r = client.post("/api/portfolio/refresh?account_id=paper-main&market=KR", headers=AUTH)
     assert r.status_code == 200 and seen["memory_settings"] is not None
+    assert seen["paper_ids"] == ["paper-main"]  # 설정의 모의 현물 계좌(브레이커 합산 대상)
 
 
 def test_refresh_snapshots_under_market_run_date(project, conn):

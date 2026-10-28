@@ -20,9 +20,14 @@ from trader.platform import paths
 logger = logging.getLogger("trader.telegram")
 
 
+def _control_accounts(ectx: Any) -> list:
+    """계좌를 가리지 않는 제어(/mode·/status)의 계좌 — 현물 + 파생. 없으면 현물 목록."""
+    return list(getattr(ectx, "control_accounts", None) or ectx.accounts)
+
+
 def _mode_label(conn, account) -> str:
-    """STATUS·웹과 같은 실효 모드 (실전 auto + 확인 기록 없음 = off, 강등 표시)."""
-    mode, note = executor.effective_mode(conn, account)
+    """STATUS·웹과 같은 실효 모드 (실전 auto + 확인 기록 없음 = off, 실전 파생 = off, 강등 표시)."""
+    mode, note = executor.account_mode(conn, account)
     env = messages.ENV.get(account.env, account.env)
     return f"{account.id}({env}) {messages.MODE.get(mode, mode)}" + (" · 강등" if note else "")
 
@@ -91,7 +96,7 @@ def _control_command(ectx: Any, name: str, arg: str | None) -> str:
         if len(parts) != 2:
             return "사용법: /mode <계좌 id> <auto|approve|off>"
         acct_id, mode = parts
-        acct = next((a for a in ectx.accounts if a.id == acct_id), None)
+        acct = next((a for a in _control_accounts(ectx) if a.id == acct_id), None)
         if acct is None:
             return f"알 수 없는 계좌: {acct_id}"
         if acct.env == "real" and mode != "off":
@@ -249,7 +254,7 @@ def _handle_command(ectx: Any, conn: Any, cmd: tuple[str, str | None], echo: Cal
             return
         if name == "status":
             pending = repo.pending_approvals(conn)
-            modes = ", ".join(_mode_label(conn, a) for a in ectx.accounts)
+            modes = ", ".join(_mode_label(conn, a) for a in _control_accounts(ectx))
             envs = {a.id: a.env for a in ectx.accounts}
             body = "\n".join(approval_line(a, envs.get(a["account_id"])) for a in pending) or "없음"
             paused = "일시정지" if control.is_paused(conn) else "실행 중"

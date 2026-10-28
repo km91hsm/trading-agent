@@ -48,7 +48,7 @@ from trader.ledger import repo
 from trader.ledger.db import now_iso
 from trader.notify import messages
 from trader.notify.telegram import Notifier, NullNotifier
-from trader.orchestrator.executor import OrderBookkeepingError, effective_mode
+from trader.orchestrator.executor import OrderBookkeepingError, account_mode
 from trader.orchestrator.run_store import checkpoint_payload, market_dir, write_checkpoint
 from trader.risk import killswitch
 from trader.risk.ticks import quantize_tick, tick_table_for
@@ -354,9 +354,7 @@ def _notify(ctx: FoExecContext, text: str) -> None:
 def fo_mode(conn: sqlite3.Connection, account: AccountConfig) -> tuple[str, str | None]:
     """파생 계좌의 실효 모드. **실전 파생 계좌는 항상 off**(Phase 26 범위 밖 — 축소·회수·청산도
     주문을 내지 않는다, PR #64 리뷰). 그 외는 현물과 같은 `effective_mode`."""
-    if account.env != "paper":
-        return "off", "실전 파생 계좌는 Phase 26 범위 밖(주문 없음)"
-    return effective_mode(conn, account)
+    return account_mode(conn, account)
 
 
 def _record_only(ctx: FoExecContext, mode: str, paused: bool) -> str | None:

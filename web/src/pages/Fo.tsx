@@ -7,7 +7,7 @@ import { Skeleton } from "../components/Skeleton";
 import { Table, Td, Th } from "../components/Table";
 import { ErrorBox } from "../components/Tables";
 import { Term } from "../components/Term";
-import { decisionLine, intentLabel, legRows, positionRows } from "../fo";
+import { decisionLine, intentLabel, legRows, modeAccountLabel, positionRows } from "../fo";
 import { fmtMoney, fmtPct } from "../format";
 import { useApp, useLoad } from "../hooks";
 import type { FoLeg, FoPosition, FoReport, FoToday } from "../types";
@@ -37,6 +37,7 @@ export function FoPage() {
   }
   const d = today.data;
   const st = d?.accounts.find((a) => a.id === acct);
+  const cfg = foAccounts.find((a) => a.id === acct);
   const rows = positionRows(pos.data ?? []);
   const lrows = legRows(legs.data ?? []);
   const checks = Object.entries(d?.checks ?? {}).filter(([k]) => k.endsWith(acct) || k.includes(`_${acct}_`));
@@ -53,7 +54,7 @@ export function FoPage() {
             <select value={acct} onChange={(e) => setAcct(e.target.value)}>
               {foAccounts.map((a) => (
                 <option key={a.id} value={a.id}>
-                  {a.id}
+                  {modeAccountLabel(a)}
                 </option>
               ))}
             </select>
@@ -64,7 +65,9 @@ export function FoPage() {
         title="오늘 결정"
         aside={
           <>
-            {acct} {st?.halted ? <Badge kind="pending" value="일일 손실 한도 — 신규 금지" /> : null}{" "}
+            {acct} {cfg ? <Badge kind="env" value={cfg.env} /> : null}{" "}
+            {cfg ? <Badge kind="mode" value={cfg.mode} /> : null}{" "}
+            {st?.halted ? <Badge kind="pending" value="일일 손실 한도 — 신규 금지" /> : null}{" "}
             {st?.pending_entry ? <Badge kind="pending" value="진입 창 대기" /> : null}
           </>
         }

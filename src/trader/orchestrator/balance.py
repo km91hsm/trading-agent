@@ -103,7 +103,7 @@ def _refresh(
     cancel_buys=False,
     stale_after=STALE_AFTER,
 ) -> dict:
-    from trader.orchestrator.executor import build_portfolio
+    from trader.orchestrator.executor import build_portfolio, paper_ids
 
     out: dict = {"refreshed": [], "skipped": [], "errors": {}, "sectors": {}}
     tickers: dict[str, str | None] = {}
@@ -143,6 +143,7 @@ def _refresh(
                     # 데몬 잔고 갱신(dry-run 아님)만 킬스위치 미체결 BUY 를 거둔다(웹 조회는 아님)
                     cancel_buys=cancel_buys,
                     hedge_tickers=frozenset(settings.excluded_tickers(market)),
+                    paper_ids=paper_ids(accounts),
                 )
             out["refreshed"].append(a.id)
         except (KisApiError, ValueError) as e:

@@ -121,3 +121,26 @@ def test_settings_mode_and_keys_include_fo_account(project, conn):
     upd = c.post("/api/control/secrets", headers=AUTH, json={"values": {prefix + "HTS_ID": "x"}})
     assert upd.status_code == 200, upd.text
     assert c.get("/api/portfolio", params={"account_id": ACCT}).status_code == 400
+
+
+def test_accounts_real_fo_mode_shown_off(project, conn):
+    deps = make_deps(project)
+    deps.fo_accounts = [fo_account(env="real", mode="approve")]
+    rows = {r["id"]: r for r in TestClient(create_app(deps)).get("/api/accounts").json()}
+    assert rows["real-fo"]["mode"] == "off"
+
+
+def test_live_ops_and_daemon_jobs_include_fo(project, conn):
+    """웹 '지금 점검'·잡 예정표는 데몬 ops_check 와 같은 범위(파생 계좌·파생 잡 포함)."""
+    from test_daemon import SCHED
+
+    c, deps = _client(project)
+    deps.schedule = SCHED
+    ctx = make_ctx(conn)
+    _held_position(conn, ctx, qty=1, premium_stop=None)
+    conn.execute("UPDATE fo_positions SET status='unknown'")
+    conn.commit()
+    r = c.get("/api/system/ops", params={"live": "true"}).json()
+    assert any(i["key"] == "fo.position_blocked" for i in r["items"]), r["items"]
+    jobs = {j["id"] for j in c.get("/api/system/daemon").json()["jobs"]}
+    assert {"kr_fo_session", "kr_fo_monitor"} <= jobs

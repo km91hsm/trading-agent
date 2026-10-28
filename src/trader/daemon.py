@@ -1899,6 +1899,7 @@ def _telegram_body(deps: DaemonDeps) -> dict:
             notifier=deps.notifier,
             state=deps.state,
             now=deps.now,
+            control_accounts=list(deps.all_accounts),  # /mode·/status 는 파생 계좌도
         )
         return poll_once(ectx, deps.receiver, echo=logger.info)
     finally:

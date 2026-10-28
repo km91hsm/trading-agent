@@ -57,6 +57,8 @@ def _rate(conn: sqlite3.Connection, table: str, col: str, bad: tuple, since_iso:
     extra, args = "", []
     if table == "runs":
         extra = f" AND NOT {INTERVAL_KIND_SQL}"
+    elif table == "orders":
+        extra = " AND asset = 'stock'"  # 파생 레인(Phase 26) 주문은 현물 준비도에 섞지 않는다
     row = conn.execute(
         f"SELECT COUNT(*) AS n, SUM(CASE WHEN status IN ({marks}) THEN 1 ELSE 0 END) AS b "
         f"FROM {table} WHERE {col} >= ?{extra}",
