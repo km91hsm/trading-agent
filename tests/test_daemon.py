@@ -1239,3 +1239,23 @@ def test_usage_probe_skips_when_statusline_file_is_recent(conn, monkeypatch, tmp
     deps.settings = Settings(llm=LlmSettings(usage_file=str(f)))
     monkeypatch.setattr(quick, "probe_usage", lambda *a, **kw: pytest.fail("호출하면 안 됨"))
     assert "최근 관측" in daemon._usage_probe_body(deps)["skipped"]
+
+
+def test_names_fill_job_fills_unnamed_tickers(conn):
+    """데몬 names_fill(10분): 원장에 나온 이름 없는 종목을 시세 클라이언트의 종목 기본정보로
+    채운다."""
+    from types import SimpleNamespace
+
+    from trader.ledger import repo
+
+    jobs = {j.id: j for j in daemon.build_jobs(SCHED, Settings(), markets=["KR"])}
+    assert jobs["names_fill"].interval_s == daemon.NAMES_FILL_S
+    repo.snapshot_positions(conn, account_id="paper-main", d=date(2026, 10, 29), market="KR",
+                            nav=Decimal(1), cash=Decimal(1),
+                            positions=[{"ticker": "777777", "market": "KR", "qty": 1}])  # fmt: skip
+    market = SimpleNamespace(get_stock_name=lambda m, t, exchange=None: "합성 종목")
+    deps = _deps(conn, market, now=lambda: datetime(2026, 10, 29, 1, 0, tzinfo=UTC))
+    out = daemon._names_fill_body(deps)
+    assert out["filled"] == 1 and repo.ticker_names(conn)[("KR", "777777")] == "합성 종목"
+    deps.market_client = None
+    assert daemon._names_fill_body(deps) == {"skipped": "시세 클라이언트 없음"}

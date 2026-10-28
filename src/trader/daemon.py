@@ -39,6 +39,7 @@ logger = logging.getLogger("trader.daemon")
 SCALP_INTERVAL_S = 60  # 분 단위 단타 틱 (Phase 23 S)
 OPS_CHECK_S = 1800  # 운영 점검 주기 (Phase 23 A)
 BALANCE_REFRESH_S = 300  # 정규장 잔고 주기 갱신(웹 실시간 — 조회만)
+NAMES_FILL_S = 600  # 이름 없는 종목을 KIS 종목 기본정보로 채우는 주기(빈 이름만 조회)
 TELEGRAM_POLL_S = 30
 QUEUE_JOB_ID = "job_queue"  # 작업 대기열 소비 잡 (jobs.py)
 FAST_QUEUE_JOB_ID = "job_queue_fast"  # 빠른 레인: 가벼운 잡(heavy 락 밖, 전체 검토 P2)
@@ -391,6 +392,7 @@ def build_jobs(
     jobs.append(Job(INFO_QUEUE_JOB_ID, "job_queue_info", interval_s=QUEUE_INTERVAL_S))
     jobs.append(Job("news_collect", "news_collect", interval_s=schedule.news_collect.interval_s))
     jobs.append(Job("ops_check", "ops_check", interval_s=OPS_CHECK_S))  # 운영 점검(Phase 23 A)
+    jobs.append(Job("names_fill", "names_fill", interval_s=NAMES_FILL_S))
     jobs.append(Job("balance_refresh", "balance_refresh", interval_s=BALANCE_REFRESH_S))
     jobs.append(Job("saveticker", "saveticker", interval_s=SAVETICKER_WATCH_S))
     jobs.append(Job("ledger_backup", "ledger_backup", cron={"hour": 17, "minute": 10}))
@@ -1849,6 +1851,24 @@ def _stop_saveticker(deps: DaemonDeps) -> None:
         logger.exception("세이브티커 수집 서비스 정리 실패")
 
 
+def _names_fill_body(deps: DaemonDeps) -> dict:
+    """원장에 나왔지만 이름이 없는 종목을 KIS 종목 기본정보로 채운다(화면 표시 경로는 네트워크를
+    부르지 않으므로 이름 조회는 이 잡만 한다). 시세 클라이언트가 없으면 건너뛴다."""
+    from trader import names
+
+    mc = deps.market_client
+    if mc is None or not hasattr(mc, "get_stock_name"):
+        return {"skipped": "시세 클라이언트 없음"}
+    conn = deps.conn_factory()
+    try:
+        cache = (deps.state if deps.state is not None else paths.state_dir()) / "cache"
+        return names.fill_missing(
+            conn, mc.get_stock_name, cache_dir=cache, today=run_store.run_date_for("KR", deps.now())
+        )
+    finally:
+        conn.close()
+
+
 def _ops_body(deps: DaemonDeps) -> dict:
     """운영 점검(Phase 23 A): 다섯 영역 판정 → 직전보다 나빠졌으면 알림 1건. 결과는
     `control.ops_result` 에 남겨 웹·텔레그램·STATUS 가 같은 것을 본다. 가벼운 잡(heavy 밖)."""
@@ -2813,6 +2833,8 @@ def job_body(
         return lambda: _news_body(deps)
     if job.kind == "ops_check":
         return lambda: _ops_body(deps)
+    if job.kind == "names_fill":
+        return lambda: _names_fill_body(deps)
     if job.kind == "balance_refresh":
         return lambda: _balance_body(deps)
     if job.kind == "usage_probe":

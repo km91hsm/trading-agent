@@ -85,6 +85,33 @@ class KisMarket:
             else None,
         )
 
+    # 해외 종목 기본정보의 상품유형코드(거래소). 거래소를 모르면 이 순서로 찾는다
+    _US_INFO_TYPE = {"NAS": "512", "NYS": "513", "AMS": "529"}
+
+    def get_stock_name(self, market: str, ticker: str, exchange: str | None = None) -> str | None:
+        """KIS 종목 기본정보의 이름(국내 `prdt_abrv_name`, 해외 `prdt_name`). 없거나 실패면 None.
+        데몬 `names_fill` 전용 — 화면 표시 경로는 부르지 않는다(이름은 원장 `ticker_names` 로)."""
+        if market == "KR":
+            tries = [("DOM_STOCK_INFO", "300", "prdt_abrv_name")]
+        else:
+            codes = (
+                [self._US_INFO_TYPE[exchange]]
+                if exchange in self._US_INFO_TYPE
+                else list(self._US_INFO_TYPE.values())
+            )
+            tries = [("OVS_STOCK_INFO", c, "prdt_name") for c in codes]
+        for tr, type_cd, key in tries:
+            try:
+                data = self._client.get(path(tr), tr, {"PRDT_TYPE_CD": type_cd, "PDNO": ticker})
+            except KisApiError as e:
+                logger.debug("종목명 조회 실패 %s %s(%s): %s", market, ticker, type_cd, e)
+                continue
+            out = data.get("output") or {}
+            name = str(out.get(key) or out.get("prdt_name") or "").strip()
+            if name and name != ticker:
+                return name
+        return None
+
     def get_industry_kr(self, ticker: str) -> str | None:
         """KRX 업종명 (현재가 응답 `bstp_kor_isnm`). 섹터 제안(`universe sectors`)용, 없으면 None.
 

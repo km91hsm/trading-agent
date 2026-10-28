@@ -101,6 +101,10 @@ _TR: dict[str, tuple[str, str, str | None]] = {
     ),
     # 해외 시세
     "OVS_PRICE": ("/uapi/overseas-price/v1/quotations/price", "HHDFS00000300", "HHDFS00000300"),
+    # 종목 기본정보(이름) — 데몬 names_fill 만 쓴다(화면 표시 경로는 네트워크 없음).
+    # 2026-10-29 실기 확인
+    "DOM_STOCK_INFO": ("/uapi/domestic-stock/v1/quotations/search-stock-info", "CTPF1002R", None),
+    "OVS_STOCK_INFO": ("/uapi/overseas-price/v1/quotations/search-info", "CTPF1702R", None),
     # 현재가상세: 업종코드(e_icod) — 섹터 제안(universe sectors)에만 쓴다
     "OVS_PRICE_DETAIL": (
         "/uapi/overseas-price/v1/quotations/price-detail",

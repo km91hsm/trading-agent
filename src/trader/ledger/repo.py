@@ -1283,6 +1283,22 @@ def upsert_ticker_name(
     return True
 
 
+def unnamed_tickers(conn: sqlite3.Connection) -> list[tuple[str, str]]:
+    """원장(잔고 스냅샷·결정·주문)에 나왔지만 `ticker_names` 에 이름이 없는 (시장, 종목) — 데몬
+    names_fill 의 조회 대상. 현금 행(`_CASH*`)·파생 주문(asset='fo')은 뺀다."""
+    rows = conn.execute(
+        "SELECT market, ticker FROM ("
+        " SELECT market, ticker FROM positions_snapshot"
+        " WHERE ticker NOT LIKE '\\_CASH%' ESCAPE '\\'"
+        " UNION SELECT market, ticker FROM decisions"
+        " UNION SELECT market, ticker FROM orders WHERE asset = 'stock'"
+        ") AS t WHERE market IN ('KR', 'US') AND NOT EXISTS ("
+        " SELECT 1 FROM ticker_names n WHERE n.market = t.market AND n.ticker = t.ticker"
+        ") ORDER BY market, ticker"
+    ).fetchall()
+    return [(str(r["market"]), str(r["ticker"])) for r in rows]
+
+
 def upsert_ticker_exchange(
     conn: sqlite3.Connection, market: str, ticker: str, exchange: str | None
 ) -> bool:
