@@ -78,8 +78,8 @@ def test_api_performance_shadow_pairs(client, conn):
     for strat, ret in (("llm", 0.03), ("candidates_1n", 0.01), ("quant_topn", 0.02)):
         conn.execute(
             "INSERT INTO shadow_portfolios(market, date, strategy, weights_json, created_at, "
-            "fwd_ret, matured_at) VALUES ('KR', '2026-10-01', ?, '{}', 'x', ?, 'x')",
-            (strat, ret),
+            "fwd_ret, matured_at) VALUES ('KR', '2026-10-01', ?, ?, 'x', ?, 'x')",
+            (strat, '{"A": 1.0}', ret),
         )
     conn.commit()
     r = client.get("/api/performance/shadow?market=KR").json()
@@ -94,3 +94,4 @@ def test_api_performance_shadow_pairs(client, conn):
         "quant_topn": 0.02,
     }
     assert client.get("/api/performance/shadow?market=US").json()["pairs"]["quant_topn"]["n"] == 0
+    assert r["cash_effect"] == {"n": 0, "mean": None}  # 2-L3: 현금일 효과는 따로

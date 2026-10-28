@@ -15,7 +15,8 @@ import pandas as pd
 
 from trader.ledger import metrics as ledger_metrics
 from trader.ledger import repo
-from trader.ml import dataset, features
+from trader.ml import dataset
+from trader.risk import costs
 
 TRADING_DAYS = 252
 COST_BPS = (0, 10, 20, 30)
@@ -118,6 +119,61 @@ def benchmarks(
     }
 
 
+def shadow_quant_benchmark(
+    conn, state: Path | None, market: str, start: date, end: date, *, cost_bp: float
+) -> dict | None:
+    """기록된 섀도 `quant_topn` 바구니를 따른 기준선(L14). 운영일 d 의 바구니를 d 종가에 사서 다음
+    기록까지 들고, 바구니가 바뀌면 바뀐 비중만큼 왕복비용(`0.5 × Σ|Δw| × 왕복`)을 뺀다. 첫 기록 전은
+    없음(N/A) — 기록이 없으면 None. {return, series, source, since}."""
+    import json as _json
+
+    rows = conn.execute(
+        "SELECT date, weights_json FROM shadow_portfolios WHERE market=? AND strategy='quant_topn' "
+        "AND date <= ? ORDER BY date",
+        (market, end.isoformat()),
+    ).fetchall()
+    if not rows:
+        return None
+    baskets = [
+        (date.fromisoformat(r["date"]), _json.loads(r["weights_json"] or "{}")) for r in rows
+    ]
+    first = max(baskets[0][0], start)
+    table = _close_table(state, market, first - timedelta(days=10), end)
+    if table.empty:
+        return None
+    days = [d for d in table.index if first <= d <= end]
+    if len(days) < 2:
+        return None
+    cost = float(cost_bp) / 10_000
+    held: dict[str, float] = {}
+    growth = 1.0
+    points = [(days[0], 1.0)]
+    for prev, cur in zip(days, days[1:], strict=False):
+        todays = [w for d, w in baskets if d <= prev]
+        target = todays[-1] if todays else {}
+        turnover = 0.5 * sum(
+            abs(target.get(t, 0.0) - held.get(t, 0.0)) for t in set(target) | set(held)
+        )
+        held = dict(target)
+        ret = 0.0
+        wsum = 0.0
+        for t, w in held.items():
+            if t in table.columns:
+                p0, p1 = table.at[prev, t], table.at[cur, t]
+                if pd.notna(p0) and pd.notna(p1) and p0 > 0:
+                    ret += w * (float(p1) / float(p0) - 1)
+                    wsum += w
+        ret = ret / wsum if wsum > 0 else 0.0
+        growth *= (1 - turnover * cost) * (1 + ret)
+        points.append((cur, growth))
+    return {
+        "return": round(growth - 1, 6),
+        "series": [{"time": d.isoformat(), "value": round(v, 6)} for d, v in points],
+        "source": "shadow_quant_topn",
+        "since": baskets[0][0].isoformat(),
+    }
+
+
 def _orders_between(
     conn, account_id: str, market: str, start: date, end: date
 ) -> list[sqlite3.Row]:
@@ -181,17 +237,6 @@ def turnover(conn, account_id: str, market: str, start: date, end: date) -> floa
     return _turnover_of(traded, nav)
 
 
-def _universe(market: str) -> list[str] | None:
-    """퀀트 벤치마크 후보 = universe.yaml 의 그 시장 종목. 설정이 없으면 None(전체 읽기)."""
-    try:
-        from trader.config import load_universe
-
-        u = load_universe()
-    except Exception:  # noqa: BLE001 - 유니버스가 없으면 조기 종료 없이 읽는다
-        return None
-    return list(u.kr) if market == "KR" else [x.symbol for x in u.us]
-
-
 def report(conn, state: Path | None, account_id: str, market: str, *, days: int = 30) -> dict:
     series = nav_series(conn, account_id, market, days=days)
     m = metrics_of(series)
@@ -207,20 +252,14 @@ def report(conn, state: Path | None, account_id: str, market: str, *, days: int 
             ).fetchall()
         }
     )
-    quant_top = None
+    # 퀀트 기준선(10-26 검토 L14): 현재 승격 모델을 과거 창에 소급 적용하면 그 창 뒤에 학습한 모델이
+    # 과거를 고른다(룩어헤드) — 그날 기록된 섀도 `quant_topn`(당시 정량 스크린)을 따른다
     try:
-        from trader.ml import ranker
-
-        cur = ranker.current(state, market=market)
-        if cur is not None:
-            # 종목별 최신 행은 latest_rows 로만, 유니버스를 넘겨 파일을 전부 읽지 않는다(이연 회수).
-            # 선택은 **창 시작** 시점 피처로 — 창 끝 피처로 뽑으면 기간 수익을 미리 본 벤치마크다
-            latest = features.latest_rows(state, market, tickers=_universe(market), asof=start)
-            if not latest.empty:
-                ranked = cur[0](latest.reset_index(drop=True))
-                quant_top = list(ranked["ticker"].head(5))
+        quant = shadow_quant_benchmark(
+            conn, state, market, start, end, cost_bp=costs.round_trip_bp(market)
+        )
     except Exception:  # noqa: BLE001 - 퀀트 벤치마크는 선택
-        quant_top = None
+        quant = None
     now = datetime.now(UTC)
     traded, avg_nav = (
         _traded_and_nav(conn, account_id, market, start, end)
@@ -233,9 +272,10 @@ def report(conn, state: Path | None, account_id: str, market: str, *, days: int 
         "days": days,
         "nav": [{"time": d, "value": str(v)} for d, v in series],
         "metrics": m,
-        "benchmarks": benchmarks(
-            state, market, start, end, tickers=held or None, quant_top=quant_top
-        ),
+        "benchmarks": {
+            **benchmarks(state, market, start, end, tickers=held or None),
+            "quant": quant,
+        },
         "cost_sensitivity": _cost_sensitivity_of(traded, avg_nav) if series else {},
         "turnover": _turnover_of(traded, avg_nav) if series else 0.0,
         "decision_distribution": ledger_metrics.decision_distribution(

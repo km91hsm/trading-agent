@@ -4,7 +4,10 @@
 전략(운영일·시장마다 1행씩, 주문 없음):
 - `candidates_1n`: 그날 scan 정량 후보(점수 있는 것) 균등 비중 — LLM 이 이겨야 할 기준선
 - `quant_topn`: 정량 점수 상위 `top_n` 균등 비중 — LLM 없이 정량만 쓴 경우
-- `llm`: 그날 LLM 결정 중 BUY/ADD 의 `target_weight` 를 합 1 로 정규화(헤지 제외, 매수 없으면 현금)
+- `llm`: 그날 LLM 결정 중 **공통 후보(점수 있는 scan 후보) 안의** BUY/ADD `target_weight` 를
+  합 1 로 정규화(헤지 제외, 매수 없으면 현금 `{}`) — 후보 밖(발굴·watch·보유 재분석) 종목은 같은
+  모집단 비교를 흐린다(2-L4)
+- `llm_all`: 후보 밖까지 포함한 LLM 매수 전체(정보용 — 발굴 효과는 `llm_all − llm` 으로 따로 본다)
 - `index_hold`·`index_trend`(Stock D-037~039 교훈 — 규칙 조합이 3년간 지수 보유를 못 이겼다):
   지수 proxy(`hedge.index_proxy`) 보유, 그리고 proxy 가 `TREND_MA` 일선 위면 보유·아래면 현금.
   proxy 는 피처 스토어에 없어 기록·만기 때 KIS 일봉 종가표(`index_table`)를 넘겨 받는다
@@ -12,7 +15,10 @@
 
 만기는 결정일 이후 첫 거래일 종가 → `horizon` 거래일 뒤 종가(메모리 `outcomes.window_return` 과
 같은 창)이고 만기 봉이 today 이하일 때만 채운다(백필 데이터로 미래를 보지 않음). readiness 는
-`paired_stats` 의 llm − candidates_1n 부트스트랩 신뢰구간 하한이 0 보다 큰지를 본다.
+`paired_stats` 의 llm − candidates_1n 부트스트랩 신뢰구간 하한이 0 보다 큰지를 **시장별로**
+본다(2-L5).
+LLM 이 현금(`{}`)인 날은 선택 효과 쌍에서 빼고 `cash_effect`(0 − 후보 1/N)로 따로 잰다(2-L3 —
+하락장 관망의 낮은 베타가 종목 선택 알파로 잡히지 않게).
 """
 
 from __future__ import annotations
@@ -28,7 +34,8 @@ import pandas as pd
 
 logger = logging.getLogger("trader.ledger")
 
-STRATEGIES = ("candidates_1n", "quant_topn", "llm", "index_hold", "index_trend")
+STRATEGIES = ("candidates_1n", "quant_topn", "llm", "llm_all", "index_hold", "index_trend")
+LLM_STRATEGIES = ("llm", "llm_all")
 INDEX_STRATEGIES = ("index_hold", "index_trend")
 TREND_MA = 100
 DEFAULT_TOP_N = 3
@@ -69,12 +76,19 @@ def build(
         f"AND source != 'hedge' AND action IN ({','.join('?' * len(BUY_ACTIONS))})",
         (day.isoformat(), market, *BUY_ACTIONS),
     ).fetchall()
-    llm = {r["ticker"]: float(r["target_weight"] or 0) for r in rows}
-    total = sum(w for w in llm.values() if w > 0)
+    llm_all = {r["ticker"]: float(r["target_weight"] or 0) for r in rows}
+    common = set(tickers)
+    llm = {t: w for t, w in llm_all.items() if t in common}
+
+    def norm(ws: dict[str, float]) -> dict[str, float]:
+        total = sum(w for w in ws.values() if w > 0)
+        return {t: w / total for t, w in ws.items() if w > 0} if total > 0 else {}
+
     return {
         "candidates_1n": _equal(tickers),
         "quant_topn": _equal(tickers[:top_n]),
-        "llm": {t: w / total for t, w in llm.items() if w > 0} if total > 0 else {},
+        "llm": norm(llm),
+        "llm_all": norm(llm_all),
     }
 
 
@@ -272,6 +286,23 @@ def mature(
     return filled
 
 
+def cash_effect(conn: sqlite3.Connection, *, market: str | None = None) -> dict:
+    """LLM 이 공통 후보에서 아무것도 사지 않은(현금) 날의 `0 − 후보 1/N` 평균(2-L3). 양수면 관망이
+    후보 균등보다 나았다 — 종목 선택이 아니라 노출(타이밍) 효과라 `llm_alpha` 와 따로 본다."""
+    sql = (
+        "SELECT 0 - y.fwd_ret AS d FROM shadow_portfolios x JOIN shadow_portfolios y "
+        "ON x.market = y.market AND x.date = y.date WHERE x.strategy='llm' "
+        "AND y.strategy='candidates_1n' AND x.weights_json = '{}' AND y.fwd_ret IS NOT NULL "
+        "AND x.fwd_ret IS NOT NULL AND y.partial = 0"
+    )
+    args: list = []
+    if market:
+        sql += " AND x.market=?"
+        args.append(market)
+    ds = [float(r["d"]) for r in conn.execute(sql, args).fetchall()]
+    return {"n": len(ds), "mean": round(sum(ds) / len(ds), 6) if ds else None}
+
+
 def _block_bootstrap_means(diffs: np.ndarray, *, block: int, n_boot: int, seed: int) -> np.ndarray:
     """이동 블록 부트스트랩: 길이 `block` 의 연속 구간을 복원 추출해 이어 붙이고 n 개로 자른 표본의
     평균 n_boot 개."""
@@ -295,13 +326,16 @@ def paired_stats(
 ) -> dict:
     """같은 (시장, 운영일) 에 둘 다 만기된 쌍의 a − b 평균과 95% 신뢰구간(`partial` 행 제외).
     연속 운영일의 5거래일 수익은 4일씩 겹쳐 독립이 아니다 → 날짜 순서를 지키는 이동 블록
-    부트스트랩(블록 길이 = `HORIZON`)으로 구간을 넓게 잡는다(PR #33 리뷰)."""
+    부트스트랩(블록 길이 = `HORIZON`)으로 구간을 넓게 잡는다(PR #33 리뷰). a 가 LLM 전략이면
+    현금(`{}`)인 날은 뺀다 — 종목 선택 효과만 잰다(2-L3, 현금 효과는 `cash_effect`)."""
     sql = (
         "SELECT x.fwd_ret - y.fwd_ret AS d FROM shadow_portfolios x JOIN shadow_portfolios y "
         "ON x.market = y.market AND x.date = y.date "
         "WHERE x.strategy=? AND y.strategy=? AND x.fwd_ret IS NOT NULL AND y.fwd_ret IS NOT NULL "
         "AND x.partial = 0 AND y.partial = 0"
     )
+    if a in LLM_STRATEGIES:
+        sql += " AND x.weights_json != '{}'"
     order = " ORDER BY x.market, x.date"
     args: list = [a, b]
     if market:

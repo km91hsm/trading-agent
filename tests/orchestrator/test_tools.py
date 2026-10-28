@@ -930,6 +930,7 @@ def test_trader_context_memory_top5_after_warmup(ctx, project):
         "direction_score",
         "avoided_loss",
         "realized_pnl_pct",
+        "post_fill_return",  # 2-L8: 체결가 → 만기 수익(실현손익과 분리)
         "lesson",
         "score",
     }

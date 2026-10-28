@@ -123,23 +123,39 @@ def check(
         items.append(_item("return_vs_benchmark", True, None, 0.0, note))
         items.append(_item("mdd", False, None, MIN_MDD, "NAV 스냅샷 2일 이상 필요"))
 
-    ps = shadow.paired_stats(conn)
+    # 2-L5: 시장을 이어 붙인 부트스트랩은 동시 시장 상관을 무시한다 — 실전 계좌가 거래하는(없으면
+    # 모의 계좌의) 시장마다 따로 20쌍 ∧ 하한 > 0. 현금인 날은 쌍에서 빠지고 현금 효과는 정보로(2-L3)
+    real = sorted({m for a in accounts if a.env == "real" for m in a.markets})
+    markets = real or sorted({m for a in accounts for m in a.markets}) or ["KR"]
+    oks: list[bool] = []
+    lows: list[float] = []
+    notes_a: list[str] = []
+    for m in markets:
+        ps = shadow.paired_stats(conn, market=m)
+        ok_m = ps["n"] >= MIN_SHADOW_PAIRS and (ps["ci_low"] or 0) > 0
+        oks.append(ok_m)
+        if ps["ci_low"] is not None:
+            lows.append(ps["ci_low"])
+        ce = shadow.cash_effect(conn, market=m)
+        detail = (
+            "-"
+            if not ps["n"]
+            else f"평균 {ps['mean_diff']:+.2%}, 구간 없음(쌍 부족)"
+            if ps["ci_low"] is None
+            else (
+                f"평균 {ps['mean_diff']:+.2%}, 95% 구간 [{ps['ci_low']:+.2%}, {ps['ci_high']:+.2%}]"
+            )
+        )
+        cash = f", 현금일 {ce['n']}일 효과 {ce['mean']:+.2%}" if ce["n"] else ""
+        notes_a.append(f"{m} {ps['n']}쌍 {detail}{cash}")
     items.append(
         _item(
             "llm_alpha",
-            ps["n"] >= MIN_SHADOW_PAIRS and (ps["ci_low"] or 0) > 0,
-            ps["ci_low"],
+            bool(oks) and all(oks),
+            min(lows) if lows else None,
             0.0,
-            f"섀도 llm − 후보 1/N 만기 {ps['n']}쌍 (기준 {MIN_SHADOW_PAIRS}), 평균 "
-            + (
-                "-"
-                if not ps["n"]
-                else f"{ps['mean_diff']:+.2%}, 구간 없음(쌍 부족)"
-                if ps["ci_low"] is None
-                else (
-                    f"{ps['mean_diff']:+.2%}, 95% 구간 [{ps['ci_low']:+.2%}, {ps['ci_high']:+.2%}]"
-                )
-            ),
+            f"섀도 llm − 후보 1/N(공통 후보·현금일 제외, 시장별 기준 {MIN_SHADOW_PAIRS}쌍): "
+            + "; ".join(notes_a),
         )
     )
 

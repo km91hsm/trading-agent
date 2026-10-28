@@ -1,14 +1,14 @@
 """장중 모니터 (스펙 §5.2): 손절은 파이썬이 즉시 매도, 그 밖의 신호는 triggers 기록 → 재평가 세션.
 
 - 손절선: 결정의 stop_loss, 없으면 평단 × (1 + settings.risk.stop_loss_pct).
-- 트리거: take_profit 도달, ±7% 급등락(평단 대비), invalidation_conditions 의 가격 조건.
+- 트리거: take_profit 도달, ±7% 급등락(평단 대비), `invalidation_rules`(구조화 조건, L16 — 문자열
+  `invalidation_conditions` 는 설명용이라 자동으로 읽지 않는다).
 - 같은 종목 재평가는 30분에 1회. paused·세션 상한이면 기록만.
 """
 
 from __future__ import annotations
 
 import logging
-import re
 import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -34,7 +34,6 @@ logger = logging.getLogger("trader.monitor")
 
 MOVE_PCT = Decimal("0.07")  # 프로필이 없을 때(mid) 기본 — 정본은 risk.horizon_profiles
 REEVAL_INTERVAL = timedelta(minutes=30)
-_NUM_RE = re.compile(r"(\d[\d,]*(?:\.\d+)?)")
 
 
 @dataclass
@@ -44,34 +43,42 @@ class Signal:
     detail: dict = field(default_factory=dict)
 
 
-_NON_PRICE_WORDS = ("거래량", "시총", "시가총액", "억", "만주", "%", "RSI", "배수", "PER", "PBR")
-
-
 def _label(ctx: MonitorContext, market: str, ticker: str) -> str:
     return names.display(ctx.conn, (ctx.state or paths.state_dir()) / "cache", market, ticker)
 
 
-def parse_price_conditions(conditions: list[str]) -> list[tuple[str, Decimal]]:
-    """'종가 < 65000', '70,000원 이상' 같은 문장에서 (연산자, 가격) 만 뽑는다. 지표 조건은 무시.
+_OPS = {
+    "<": lambda a, b: a < b,
+    "<=": lambda a, b: a <= b,
+    ">": lambda a, b: a > b,
+    ">=": lambda a, b: a >= b,
+}
 
-    거래량·시총·비율 문장은 숫자가 커도 가격이 아니므로 건너뛰고, 한 문장에 숫자가 여럿이면
-    ('3일 연속 종가 65000 이하') 가장 큰 수를 가격으로 본다."""
-    out: list[tuple[str, Decimal]] = []
-    for c in conditions or []:
-        text = str(c)
-        if any(w in text for w in _NON_PRICE_WORDS):
-            continue
-        nums = [Decimal(x.replace(",", "")) for x in _NUM_RE.findall(text)]
-        if not nums:
-            continue
-        num = max(nums)
-        if num < 100:  # RSI·비율 같은 작은 수는 가격이 아니다
-            continue
-        if "<" in text or "이하" in text or "미만" in text or "하회" in text:
-            out.append(("<", num))
-        elif ">" in text or "이상" in text or "초과" in text or "돌파" in text or "상회" in text:
-            out.append((">=", num))
-    return out
+
+def rule_hit(rule: dict, quote: Decimal, closes: list[Decimal] | None) -> bool | None:
+    """구조화 무효화 조건 하나(L16). True/False, 판정할 수 없으면(종가 부족) None.
+    `closes` 는 완성 일봉 종가(오래된 → 최근, 오늘 장중 봉 제외)."""
+    op = _OPS.get(str(rule.get("op")))
+    try:
+        value = Decimal(str(rule.get("value")))
+    except (ArithmeticError, ValueError):
+        return None
+    if op is None or value <= 0:
+        return None
+    if rule.get("metric") == "price":
+        return op(quote, value)
+    if rule.get("metric") == "close":
+        days = int(rule.get("days") or 1)
+        if not closes or len(closes) < days:
+            return None
+        return all(op(c, value) for c in closes[-days:])
+    return None
+
+
+def _rule_text(rule: dict) -> str:
+    days = int(rule.get("days") or 1)
+    tail = f" ({days}일)" if rule.get("metric") == "close" and days > 1 else ""
+    return f"{rule.get('metric')} {rule.get('op')} {rule.get('value'):g}{tail}"
 
 
 def _q2(v: Decimal) -> str:
@@ -86,9 +93,11 @@ def check_position(
     stop_loss_pct: float,
     now: datetime,
     move_pct: Decimal | None = None,
+    closes: list[Decimal] | None = None,
 ) -> list[Signal]:
     """순수 함수. 손절이면 손절 신호만, 아니면 take_profit → move_7pct → invalidation 순.
-    `move_pct` 는 보유기간 프로필의 급등락 임계(Phase 23 T, 없으면 7%)."""
+    `move_pct` 는 보유기간 프로필의 급등락 임계(Phase 23 T, 없으면 7%). `closes` 는 `close`
+    무효화 조건용 완성 일봉 종가(없으면 그 조건은 미판정)."""
     dec = decision or {}
     threshold = move_pct if move_pct is not None else MOVE_PCT
     stop = dec.get("stop_loss")
@@ -109,9 +118,9 @@ def check_position(
                     {"move": _q2(move * 100) + "%", "threshold": _q2(threshold * 100) + "%"},
                 )
             )
-    for op, px in parse_price_conditions(dec.get("invalidation_conditions") or []):
-        if (op == "<" and quote < px) or (op == ">=" and quote >= px):
-            out.append(Signal("invalidation", quote, {"condition": f"{op} {px}"}))
+    for rule in dec.get("invalidation_rules") or []:
+        if rule_hit(rule, quote, closes):
+            out.append(Signal("invalidation", quote, {"rule": _rule_text(rule)}))
             break
     return out
 
@@ -226,6 +235,38 @@ def _can_reevaluate(
     return None
 
 
+_CLOSES: dict[tuple[str, str], object] = {}  # (시장, 운영일) → 완성 일봉 종가표(하루 한 번 읽는다)
+
+
+def _closes_if_needed(
+    ctx: MonitorContext, market: str, ticker: str, today: date, dec: dict | None
+) -> list[Decimal] | None:
+    """`close` 무효화 조건이 있는 결정만 피처 스토어 종가(오늘 전 완성 봉)를 읽는다(L16)."""
+    rules = (dec or {}).get("invalidation_rules") or []
+    if not any(r.get("metric") == "close" for r in rules):
+        return None
+    from datetime import timedelta as _td
+
+    from trader.ml import dataset
+
+    key = (market, today.isoformat())
+    table = _CLOSES.get(key)
+    if table is None:
+        _CLOSES.clear()
+        try:
+            table = dataset.close_table(
+                ctx.state, market, since=today - _td(days=45), until=today - _td(days=1)
+            )
+        except Exception as e:  # noqa: BLE001 - 종가가 없으면 그 조건만 미판정
+            logger.warning("무효화 조건 종가 읽기 실패 %s: %s", market, e)
+            return None
+        _CLOSES[key] = table
+    if getattr(table, "empty", True) or ticker not in table.columns:
+        return None
+    col = table[ticker].dropna()
+    return [Decimal(str(v)) for v in col.tolist()]
+
+
 def monitor_once(ctx: MonitorContext, *, market: str, today: date) -> dict:
     """계좌별 보유종목 1회 점검. 1차: 손절(전 계좌), 2차: 트리거 기록·재평가.
 
@@ -261,6 +302,7 @@ def monitor_once(ctx: MonitorContext, *, market: str, today: date) -> dict:
                 stop_loss_pct=ctx.settings.risk.stop_loss_pct,
                 now=ctx.now(),
                 move_pct=Decimal(str(profile.move_pct)),
+                closes=_closes_if_needed(ctx, market, pos.ticker, today, dec_data),
             )
             if not signals or signals[0].kind != "stop_loss":
                 per = _periodic(ctx, market, pos, quote, profile, today)

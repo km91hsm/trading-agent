@@ -49,7 +49,7 @@ def test_record_builds_three_portfolios(conn):
     _decision(conn, "C", "HOLD", 0.0)
     _decision(conn, "X", "BUY", 0.1, source="hedge")  # 헤지는 LLM 선택이 아니다
     n = shadow.record(conn, market="KR", day=DAYS[0], scan=SCAN, top_n=2)
-    assert n == 3
+    assert n == 4  # candidates_1n·quant_topn·llm·llm_all
     got = {r["strategy"]: r["weights"] for r in shadow.rows(conn, market="KR")}
     assert got["candidates_1n"] == {"A": 1 / 3, "B": 1 / 3, "C": 1 / 3}
     assert got["quant_topn"] == {"A": 0.5, "B": 0.5}
@@ -58,7 +58,7 @@ def test_record_builds_three_portfolios(conn):
     _decision(conn, "A", "ADD", 0.1)
     shadow.record(conn, market="KR", day=DAYS[0], scan=SCAN, top_n=2)
     got = {r["strategy"]: r["weights"] for r in shadow.rows(conn, market="KR")}
-    assert len(shadow.rows(conn, market="KR")) == 3
+    assert len(shadow.rows(conn, market="KR")) == 4
     assert got["llm"] == {"A": 1 / 3, "B": 2 / 3}
 
 
@@ -75,7 +75,7 @@ def test_mature_fills_forward_return_only_after_horizon(conn, project):
     shadow.record(conn, market="KR", day=DAYS[0], scan=SCAN, top_n=2)
     # 만기 봉(DAYS[5]) 전이면 채우지 않는다
     assert shadow.mature(conn, state=project / "state", today=DAYS[4], horizon=5) == 0
-    assert shadow.mature(conn, state=project / "state", today=DAYS[5], horizon=5) == 3
+    assert shadow.mature(conn, state=project / "state", today=DAYS[5], horizon=5) == 4
     got = {r["strategy"]: r["fwd_ret"] for r in shadow.rows(conn, market="KR")}
     assert abs(got["llm"] - 0.10) < 1e-9
     assert abs(got["quant_topn"] - 0.05) < 1e-9
@@ -110,7 +110,7 @@ def test_mature_holds_when_weighted_ticker_has_no_close_then_marks_partial(conn,
     assert all(r["fwd_ret"] is None for r in shadow.rows(conn, market="KR"))
     # 유예(GRACE_DAYS)가 지나면 partial 로 채운다 — 있는 종목만의 비중 평균, 전부 없으면 0
     late = DAYS[5] + timedelta(days=shadow.GRACE_DAYS + 1)
-    assert shadow.mature(conn, state=project / "state", today=late, horizon=5) == 3
+    assert shadow.mature(conn, state=project / "state", today=late, horizon=5) == 4
     got = {r["strategy"]: r for r in shadow.rows(conn, market="KR")}
     assert all(r["partial"] is True for r in got.values())
     assert abs(got["quant_topn"]["fwd_ret"] - 0.10) < 1e-9  # A 만
@@ -121,6 +121,7 @@ def test_mature_holds_when_weighted_ticker_has_no_close_then_marks_partial(conn,
 
 def test_mature_full_rows_are_not_partial(conn, project):
     _store({"A": [100.0] * 7, "B": [100.0] * 7, "C": [100.0] * 7})
+    _decision(conn, "A", "BUY", 0.2)  # 현금인 날은 선택 효과 쌍에서 빠진다(2-L3)
     shadow.record(conn, market="KR", day=DAYS[0], scan=SCAN, top_n=2)
     shadow.mature(conn, state=project / "state", today=DAYS[6], horizon=5)
     assert all(r["partial"] is False for r in shadow.rows(conn, market="KR"))
@@ -134,8 +135,8 @@ def _seed_matured(conn, diffs: list[float]):
         for strat, ret in (("llm", 0.01 + dlt), ("candidates_1n", 0.01)):
             conn.execute(
                 "INSERT INTO shadow_portfolios(market, date, strategy, weights_json, created_at, "
-                "fwd_ret, matured_at) VALUES ('KR', ?, ?, '{}', ?, ?, ?)",
-                (day, strat, day, ret, day),
+                "fwd_ret, matured_at) VALUES ('KR', ?, ?, ?, ?, ?, ?)",
+                (day, strat, '{"A": 1.0}', day, ret, day),
             )
     conn.commit()
 
@@ -190,8 +191,9 @@ def test_index_baselines_hold_and_trend():
 def test_record_and_mature_with_index_table(conn, project):
     _store({"A": [100.0] * 7, "B": [100.0] * 7, "C": [100.0] * 7})
     idx = _index([100, 100, 101, 102, 103, 104, 110.0])
+    _decision(conn, "A", "BUY", 0.2)  # 현금인 날은 선택 효과 쌍에서 빠진다(2-L3)
     n = shadow.record(conn, market="KR", day=DAYS[0], scan=SCAN, top_n=2, index=idx)
-    assert n == 5
+    assert n == 6
     got = {r["strategy"]: r["weights"] for r in shadow.rows(conn, market="KR")}
     assert got["index_hold"] == {"069500": 1.0}
     # 지수 proxy 는 피처 스토어에 없다 → 만기 때 넘겨 준 지수 종가표로 채운다
@@ -199,7 +201,7 @@ def test_record_and_mature_with_index_table(conn, project):
         shadow.mature(
             conn, state=project / "state", today=DAYS[6], horizon=5, index_tables={"KR": idx}
         )
-        == 5
+        == 6
     )
     rets = {r["strategy"]: r["fwd_ret"] for r in shadow.rows(conn, market="KR")}
     assert abs(rets["index_hold"] - 0.04) < 1e-9  # DAYS[0]=100 → 5거래일 뒤 104
@@ -244,3 +246,35 @@ def test_paired_stats_ci_none_below_two_blocks(conn):
     s = shadow.paired_stats(conn)
     assert s["n"] == 9 and abs(s["mean_diff"] - 0.01) < 1e-9
     assert s["ci_low"] is None and s["ci_high"] is None
+
+
+def test_llm_selection_uses_common_candidates_only(conn):
+    """2-L4: LLM 선택 비교는 같은 후보 집합 안에서만 — 발굴·watch·보유 재분석 종목(후보 밖)은
+    `llm` 에서 빼고 정보용 `llm_all` 에만 남긴다."""
+    _decision(conn, "B", "BUY", 0.2)
+    _decision(conn, "Z", "BUY", 0.2)  # 후보 밖(발굴)
+    shadow.record(conn, market="KR", day=DAYS[0], scan=SCAN, top_n=2)
+    got = {r["strategy"]: r["weights"] for r in shadow.rows(conn, market="KR")}
+    assert got["llm"] == {"B": 1.0}
+    assert got["llm_all"] == {"B": 0.5, "Z": 0.5}
+
+
+def test_cash_days_are_excluded_from_selection_pairs_and_reported_separately(conn):
+    """2-L3: 공통 후보 안 BUY/ADD 가 없는 날(현금)은 선택 효과 쌍에서 빼고, 현금 효과(0 − 후보
+    1/N)는 따로 잰다 — 하락장 관망이 종목 선택 알파로 잡히지 않게."""
+    for i, (llm_w, cand) in enumerate([("{}", -0.03), ("{}", -0.02), ('{"A": 1.0}', 0.01)]):
+        day = date(2026, 2, 1 + i).isoformat()
+        for strat, w, ret in (
+            ("llm", llm_w, 0.0 if llm_w == "{}" else 0.02),
+            ("candidates_1n", '{"A": 1.0}', cand),
+        ):
+            conn.execute(
+                "INSERT INTO shadow_portfolios(market, date, strategy, weights_json, created_at, "
+                "fwd_ret, matured_at) VALUES ('KR', ?, ?, ?, ?, ?, ?)",
+                (day, strat, w, day, ret, day),
+            )
+    conn.commit()
+    s = shadow.paired_stats(conn)
+    assert s["n"] == 1 and abs(s["mean_diff"] - 0.01) < 1e-9
+    ce = shadow.cash_effect(conn, market="KR")
+    assert ce["n"] == 2 and abs(ce["mean"] - 0.025) < 1e-9

@@ -373,6 +373,39 @@ Claude 리뷰어 4 + Codex 2 교차검증 결과 중 비주문 항목. 표의 �
 - **같은 값 다시 쓰기**: `control.set_flag` 는 저장된 JSON 과 같으면 쓰지 않는다(upsert `WHERE control.value IS NOT excluded.value`, updated_at 불변). 메모리 브레이커·`ops_level` 의 `at` 은 '그 상태가 된 시각'이라 상태가 같으면 유지한다. SSE `positions` 지문은 created_at(마지막 관측 시각 — 신선도 판단용이라 upsert 는 계속 갱신) 대신 최근 사흘 행의 값 해시.
 - **단타 판정자**: `ScalpJudge` 제출 기록은 `JUDGE_TTL_S`(30분) 지나면 회수 여부와 무관하게 버린다(후보에서 빠진 종목의 키가 쌓이지 않게).
 
+## 전체 검토 2차 결정 반영 — 묶음 4 설계 (2026-10-28, `docs/reviews/2026-10-28-decision-review.md`)
+
+사용자 선택안 + Codex 보완. 주문 경로(현금 ETF·실행 키·무효화 트리거)를 건드린다.
+
+- **현금 ETF 전환 세대(2-O17).** `cash_park` 상태는 `{계좌: {regime, status, gen}}` 이고 목표 행동(bear
+  면 매수, 아니면 매도)이 바뀔 때마다 `gen` 이 오른다. 새 세대는 반대 방향 당일 미체결 주문을 먼저
+  취소하고(`executor.cancel_open_buys(side=)`, 못 하면 진행 중으로 남겨 다음 틱에), 주문은
+  `execute(exec_tag="g<gen>")` 로 실행 키 `58_order_park|…|<방향>|<날짜>|g<gen>` 을 써서 같은 날 다시
+  들어가도 첫 주문의 키에 막히지 않는다. `exec_tag` 는 결정 행 없는 주문의 키에만 붙는다.
+- **섀도 대조군(2-L3·L4·L5).** `llm` 은 공통 후보(점수 있는 scan 후보) 안 BUY/ADD 만, 후보 밖까지 포함한
+  `llm_all` 은 정보용(발굴 효과 = `llm_all − llm`). `paired_stats(a=llm*)` 는 LLM 이 현금(`{}`)인 날을
+  빼고, `cash_effect` 가 그날들의 `0 − 후보 1/N` 을 따로 잰다(웹 `/api/performance/shadow.cash_effect`).
+  readiness `llm_alpha` 는 실전 계좌가 거래하는(없으면 모의 계좌의) **시장마다** 20쌍 ∧ 하한 > 0.
+- **post_fill_return·실현손익(2-L8, 원장 v30).** 옛 `realized_pnl_pct`(체결가 → 만기 종가 수익의 부호
+  반영)는 `memory_entries.post_fill_return` 으로 옮겼다(v30 이 기존 값을 옮기고 비운다). 새
+  `realized_pnl_pct` 는 SELL/TRIM 라운드 매도 체결(`fills.id`)을 그 계좌·종목 전체 체결의 FIFO 원가
+  (`ledger/lots.fifo`, `Realized.sell_fill`)에 맞춘 (대금 − 원가)/원가 − 왕복비용이고, 원가를 모르면
+  null, 매수·HOLD 는 null. 트레이더·복기 입력에 둘 다 싣는다.
+- **수렴 판정(2-L21).** `DebateTurn.stance_change`({from_stance, reason, evidence: [source_id]}) — 입장을
+  바꾸면 필수. `summary.research_summary(evidence_ids=)` 는 차이 붕괴(0.2 초과 → 이하) 안에서 바꾼 쪽의
+  근거가 리포트 source_id 에 있으면 `justified`, 없거나 이유가 없으면 `unjustified`(= sycophantic,
+  round0 우선), 근거 목록을 모르면(시장 세션) `unverified`, 양측이 입장을 지킨 채 확신만 낮췄으면
+  `uncertainty` — 뒤 둘은 `convergence_review` 플래그만. 약세 리서처의 BULLISH 금지를 풀었다.
+- **퀀트 기준선(L14).** 성과 페이지 `benchmarks.quant` 는 현재 승격 모델을 과거 창에 소급 적용하지 않고
+  기록된 섀도 `quant_topn`(당시 정량 스크린)을 따른다(`performance.shadow_quant_benchmark`: 운영일 d 의
+  바구니를 d 종가에 사서 다음 기록까지, 교체 때 `0.5 × Σ|Δw| × 왕복비용`). 첫 기록 전은 없음. ML 랭커
+  자체의 기록·고정 홀드아웃은 후속.
+- **무효화 조건 구조화(L16).** `Decision.invalidation_rules`(최대 5): `{metric: price|close, op: <|<=|>|>=,
+  value > 0 유한, days 1~20}` — `days ≥ 2` 는 close 만. monitor `check_position(closes=)` 는 이것만 읽고
+  (`rule_hit`), close 조건은 피처 스토어 완성 일봉 종가(오늘 전, 운영일당 한 번 읽음)로 연속 일수를 본다.
+  문자열 `invalidation_conditions` 는 설명용이라 자동으로 읽지 않는다(옛 파서가 US $100 미만을 버리고 '3일
+  연속' 을 즉시 조건으로 읽었다).
+
 ## 전체 검토 2차 결정 반영 — 묶음 3 (2026-10-28, `docs/reviews/2026-10-28-decision-review.md`)
 
 사용자가 고른 결정 대기 선택안을 Codex 가 다시 읽고 보완한 것을 반영했다(7·19·14번은 결정 대기로 남김).

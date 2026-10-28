@@ -57,17 +57,64 @@ def test_check_position_stop_loss_from_decision_and_default():
     assert kinds == ["move_7pct"]
 
 
-def test_parse_price_conditions():
-    conds = ["20일선 이탈", "종가 < 65000", "70,000원 이상 돌파 시", "RSI > 80"]
-    assert monitor.parse_price_conditions(conds) == [
-        ("<", Decimal("65000")),
-        (">=", Decimal("70000")),
+def test_invalidation_rules_schema_validates_metric_op_value_days():
+    """L16: 무효화 조건은 구조화 필드 — 허용 목록 밖·0 이하·무한대·price 의 days>1 은 거부."""
+    import pytest
+    from pydantic import ValidationError
+
+    from trader.agents.schemas import InvalidationRule
+
+    InvalidationRule(metric="close", op="<=", value=65000, days=3)
+    for bad in (
+        {"metric": "rsi", "op": "<", "value": 30},
+        {"metric": "price", "op": "==", "value": 1},
+        {"metric": "price", "op": "<", "value": 0},
+        {"metric": "price", "op": "<", "value": float("inf")},
+        {"metric": "price", "op": "<", "value": 10, "days": 3},
+        {"metric": "close", "op": "<", "value": 10, "days": 0},
+    ):
+        with pytest.raises(ValidationError):
+            InvalidationRule(**bad)
+
+
+def test_string_conditions_no_longer_trigger_automatically():
+    """L16: 문자열 조건은 설명으로만 남는다 — 옛 파서가 US $100 미만을 버리고 '3일 연속' 을 즉시
+    조건으로 읽었다."""
+    pos = _pos(avg="70000", cur="65000")
+    dec = ok_decision(stop_loss=None, invalidation_conditions=["종가 < 66000"])
+    kinds = [
+        s.kind
+        for s in monitor.check_position(pos, dec, Decimal("65500"), stop_loss_pct=-0.15, now=NOW)
     ]
+    assert kinds == []
+
+
+def test_close_rule_needs_consecutive_completed_closes_and_price_rule_handles_small_prices():
+    pos = _pos(avg="66000", cur="65000")  # 급등락(±7%) 신호가 섞이지 않게 평단을 가깝게
+    rule = {"metric": "close", "op": "<=", "value": 65000, "days": 3}
+    dec = ok_decision(stop_loss=None, invalidation_rules=[rule])
+    kw = {"stop_loss_pct": -0.15, "now": NOW}
+    two_of_three = [Decimal("64000"), Decimal("66000"), Decimal("64500")]
+    three = [Decimal("64000"), Decimal("64900"), Decimal("64500")]
+    q = Decimal("64000")
+    assert monitor.check_position(pos, dec, q, closes=two_of_three, **kw) == []
+    (sig,) = monitor.check_position(pos, dec, q, closes=three, **kw)
+    assert sig.kind == "invalidation" and sig.detail["rule"] == "close <= 65000 (3일)"
+    assert monitor.check_position(pos, dec, q, closes=None, **kw) == []  # 종가 없음 = 미판정
+    us = _pos(avg="19", cur="18.5")
+    dec_us = ok_decision(
+        stop_loss=None, invalidation_rules=[{"metric": "price", "op": "<", "value": 18.5}]
+    )
+    (s2,) = monitor.check_position(us, dec_us, Decimal("18.4"), **kw)  # $100 미만도 본다
+    assert s2.kind == "invalidation"
 
 
 def test_take_profit_move_and_invalidation_signals():
     pos = _pos(avg="70000", cur="80000")
-    dec = ok_decision(take_profit=80000.0, invalidation_conditions=["종가 < 60000"])
+    dec = ok_decision(
+        take_profit=80000.0,
+        invalidation_rules=[{"metric": "price", "op": "<", "value": 60000}],
+    )
     kinds = [
         s.kind
         for s in monitor.check_position(pos, dec, Decimal("80000"), stop_loss_pct=-0.15, now=NOW)
@@ -78,7 +125,9 @@ def test_take_profit_move_and_invalidation_signals():
         for s in monitor.check_position(pos, dec, Decimal("74000"), stop_loss_pct=-0.15, now=NOW)
     ]
     assert kinds == []  # +5.7%: 아무 신호 없음
-    dec2 = ok_decision(stop_loss=None, invalidation_conditions=["종가 < 66000"])
+    dec2 = ok_decision(
+        stop_loss=None, invalidation_rules=[{"metric": "price", "op": "<", "value": 66000}]
+    )
     kinds = [
         s.kind
         for s in monitor.check_position(pos, dec2, Decimal("65500"), stop_loss_pct=-0.15, now=NOW)
@@ -498,16 +547,6 @@ def test_us_position_exchange_from_broker_used_for_quote_and_sell(conn):
     assert order.exchange == "NYS" and order.side == "SELL"
 
 
-def test_parse_price_conditions_ignores_volume_and_picks_price_number():
-    conds = [
-        "거래량 10,000,000 미만",  # 거래량은 가격 조건이 아니다
-        "시총 5000억 하회",
-        "3일 연속 종가 65000 이하",  # 첫 숫자(3)가 아니라 가격(65000)
-        "RSI 80 초과 과열",
-    ]
-    assert monitor.parse_price_conditions(conds) == [("<", Decimal("65000"))]
-
-
 def test_stop_loss_refreshes_fill_status_before_dedupe(conn):
     """원장 status 는 fills sync(마감 뒤)만 바꾸므로 오전에 체결된 TRIM 이 장중엔 accepted 로 남아
     손절을 막는다 → 막힐 때 그 계좌의 체결을 한 번 동기화해 filled 면 손절을 낸다."""
@@ -724,8 +763,8 @@ def test_long_horizon_holding_uses_wider_threshold_and_longer_interval(conn):
     assert r2["triggers"] == 1 and r2["reevaluated"] == 1
     # 장기 간격 60분: 45분 뒤 다른 종류(무효화)가 와도 재평가는 보류된다
     conn.execute(
-        "UPDATE decisions SET json=json_set(json, '$.invalidation_conditions', json(?))",
-        ('["종가 < 60000"]',),
+        "UPDATE decisions SET json=json_set(json, '$.invalidation_rules', json(?))",
+        ('[{"metric": "price", "op": "<", "value": 60000}]',),
     )
     ctx.market_client.prices["005930"] = Decimal("59000")
     ctx.now = lambda: NOW + timedelta(minutes=45)
