@@ -498,3 +498,16 @@ def test_require_same_origin_checks_origin_and_referer_without_fetch_metadata():
         with pytest.raises(HTTPException) as e:
             require_same_origin(_req({**host, **bad}))
         assert e.value.status_code == 403, bad
+
+
+def test_usage_throttle_toggle_api(client, conn):
+    """설정 화면: 사용량 감속 켜기·끄기(토큰), /api/system/usage 가 실효 값과 출처를 보인다."""
+    from helpers_web import AUTH
+
+    assert client.post("/api/control/usage-throttle", json={"enabled": False}).status_code == 401
+    r = client.post("/api/control/usage-throttle", json={"enabled": False}, headers=AUTH)
+    assert r.status_code == 200 and r.json() == {"enabled": False, "source": "control"}
+    t = client.get("/api/system/usage").json()["throttle"]
+    assert t["enabled"] is False and t["source"] == "control"
+    r = client.post("/api/control/usage-throttle", json={"enabled": None}, headers=AUTH)
+    assert r.json() == {"enabled": True, "source": "yaml"}

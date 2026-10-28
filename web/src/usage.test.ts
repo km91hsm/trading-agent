@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { agoText, barPct, observationStale, resetsIn, sourceText, throttleText, usageLevel } from "./usage";
+import { agoText, barPct, observationStale, resetsIn, sourceText, throttleSetting, throttleText, usageLevel } from "./usage";
 
 describe("usage", () => {
   it("agoText", () => {
@@ -70,5 +70,14 @@ describe("usageChip", () => {
     const base = { observed_at: null, age_s: null, spend_limit: null };
     expect(usageChip({ ...base, five_hour: null, seven_day: { used_pct: 54, resets_at: null } })).toBe("5h — · 7d 54%");
     expect(usageChip({ ...base, five_hour: { used_pct: 12.4, resets_at: null }, seven_day: null })).toBe("5h 12% · 7d —");
+  });
+  it("throttleSetting: 켜짐·꺼짐·출처", () => {
+    expect(throttleSetting({ enabled: true, source: "yaml", soft_pct: 0.8, hard_pct: 0.95, state: "ok", reason: null })).toBe(
+      "켜짐 · 80% 부터 보유 재평가만, 95% 부터 새 세션 중지 · 설정 파일 값",
+    );
+    expect(throttleSetting({ enabled: false, source: "control", soft_pct: 0.8, hard_pct: 0.95, state: "ok", reason: null })).toBe(
+      "꺼짐 · 사용률과 무관하게 세션을 띄움(하루 세션 상한은 그대로) · 설정 화면에서 바꿈",
+    );
+    expect(throttleSetting(undefined)).toBe("상태 모름");
   });
 });

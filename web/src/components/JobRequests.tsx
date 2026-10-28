@@ -24,6 +24,24 @@ const BADGE: Record<RequestRowView["state"], "neutral" | "pending" | "ok"> = {
   skipped: "neutral",
 };
 
+const LONG_DETAIL = 60; // 이보다 긴 진행·사유는 두 줄로 접고 '더 보기' 로 펼친다
+
+/** 진행·사유: 말줄임으로 자르지 않는다(마우스를 못 올리는 모바일에서도 끝까지 읽게). */
+function Detail({ text }: { text: string }) {
+  const [open, setOpen] = useState(false);
+  const long = text.length > LONG_DETAIL;
+  return (
+    <span className="progress-cell">
+      <span className={`progress-text${long && !open ? " clamp" : ""}`}>{text}</span>
+      {long ? (
+        <button type="button" className="btn btn-sm btn-ghost" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
+          {open ? "접기" : "더 보기"}
+        </button>
+      ) : null}
+    </span>
+  );
+}
+
 /** 순수 표 (스모크 테스트용). onCancel 이 없으면 취소 열을 비활성으로 그린다. */
 export function JobRequestsTable({ rows, now, onCancel }: { rows: RequestRowView[]; now: Date; onCancel?: (id: number) => void }) {
   if (!rows.length) return <EmptyState title="대기·실행 중인 작업이 없어요" hint="잡 표의 '지금 실행' 이나 데이터·ML 페이지의 버튼이 여기에 요청을 넣어요." />;
@@ -54,7 +72,7 @@ export function JobRequestsTable({ rows, now, onCancel }: { rows: RequestRowView
             <Td num className="muted">
               {when(r.when, now)}
             </Td>
-            <Td>{r.detail ? <span className="progress-text" title={r.detail}>{r.detail}</span> : <span className="muted">—</span>}</Td>
+            <Td>{r.detail ? <Detail text={r.detail} /> : <span className="muted">—</span>}</Td>
             <Td>
               {r.cancellable ? (
                 <button type="button" className="btn btn-sm btn-ghost" disabled={!onCancel} title={onCancel ? undefined : "토큰이 필요해요"} onClick={() => onCancel?.(r.id)}>

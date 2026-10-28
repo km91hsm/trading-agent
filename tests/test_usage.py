@@ -163,3 +163,17 @@ def test_reset_window_no_longer_throttles(conn):
     assert usage.session_allowance(conn, _settings(), kind="resume", now=NOW)[0] is False
     later = NOW + timedelta(minutes=2)
     assert usage.session_allowance(conn, _settings(), kind="resume", now=later) == (True, None)
+
+
+def test_throttle_runtime_flag_overrides_yaml(conn):
+    """설정 화면 켜기·끄기(control `usage_throttle`)가 yaml `enabled` 보다 우선, 지우면 yaml 로."""
+    from trader.control import control
+
+    usage.record_rate_limit(conn, _info(0.2, 0.96), now=NOW)
+    s = _settings()
+    assert usage.throttle_enabled(conn, s) == (True, "yaml")
+    control.set_flag(conn, usage.THROTTLE_FLAG, False)
+    assert usage.throttle_enabled(conn, s) == (False, "control")
+    assert usage.session_allowance(conn, s, kind="analyze", now=NOW) == (True, None)
+    control.set_flag(conn, usage.THROTTLE_FLAG, None)
+    assert not usage.session_allowance(conn, s, kind="analyze", now=NOW)[0]

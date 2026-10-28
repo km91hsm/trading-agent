@@ -240,6 +240,16 @@ describe("작업 대기열 표", () => {
   it("비어 있으면 빈 상태", () => {
     expect(html(<JobRequestsTable rows={[]} now={now} />)).toContain("대기·실행 중인 작업이 없어요");
   });
+  it("긴 사유는 잘리지 않고 전체 문장 + '더 보기'(말줄임 없음)", () => {
+    const long = "실패: " + "구독 5시간 사용률 85% 이상이라 보유 재평가만 허용합니다 ".repeat(4) + "끝문장";
+    const rows = requestRows([
+      { id: 3, kind: "ml_train", params: {}, status: "error", source: "web", requested_at: "2026-10-24T00:59:30+00:00", started_at: null, finished_at: "2026-10-24T01:00:00+00:00", progress: null, error: long },
+    ]);
+    const out = html(<JobRequestsTable rows={rows} now={now} />);
+    expect(out).toContain("끝문장");
+    expect(out).toContain("더 보기");
+    expect(out).toContain('aria-expanded="false"');
+  });
 });
 
 describe("섹터 비중 표", () => {
