@@ -290,3 +290,24 @@ def test_detect_dedupes_same_story_and_honors_exclude(conn):
     assert [e["id"] for e in found] == ["war_geopolitics"] and found[0]["hits"] == 2
     titles = [n["title"] for n in found[0]["news"]]
     assert titles[0] == "접경 지역 전쟁 위기 고조" and len(titles) == 2 and "공습" in titles[1]
+
+
+def test_membership_excludes_records_observed_after_asof(conn):
+    """19번(i): 테마·사건 소속 조회는 관측 시각이 기준 시각 뒤면 넣지 않고(after_asof), 관측 시각이
+    없는 옛 기록은 시각을 몰라 넣지 않는다(unknown_time). 기준 시각이 없으면(실행 게이트) 최신."""
+    from datetime import UTC, date, datetime
+
+    from trader.control import control
+    from trader.scan import events, membership
+
+    d = date(2026, 10, 27)
+    ev = [{"id": "e1", "label": "유가 급등", "kind": "shock", "tickers": [{"ticker": "010950"}]}]
+    events.record(conn, "KR", d, ev, now=datetime(2026, 10, 27, 1, 0, tzinfo=UTC))
+    kw = {"theme_top_n": 3, "theme_enabled": True, "events_enabled": True}
+    live = membership.of(conn, "KR", d, **kw)
+    assert live["map"]["010950"] == ["사건:유가 급등"] and live["status"]["events"] == "ok"
+    early = membership.of(conn, "KR", d, asof=datetime(2026, 10, 27, 0, 30, tzinfo=UTC), **kw)
+    assert early["map"] == {} and early["status"]["events"] == "after_asof"
+    control.set_flag(conn, "events:KR", {"date": d.isoformat(), "events": ev})  # 옛 형식
+    old = membership.of(conn, "KR", d, asof=datetime(2026, 10, 27, 2, 0, tzinfo=UTC), **kw)
+    assert old["status"]["events"] == "unknown_time" and old["map"] == {}

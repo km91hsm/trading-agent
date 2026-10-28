@@ -237,7 +237,8 @@ def _memory_context(ctx: ToolContext, inputs: dict, market: Market) -> dict:
 
 
 def ensure_calibration(ctx: ToolContext, *, ticker: str, market: Market, date: date) -> dict | None:
-    """결과 엔트리가 min_decisions(60) 이상일 때만 35_calibration 을 쓴다(있으면 그대로)."""
+    """결과 엔트리가 min_decisions(60) 이상이고 `calibration.inject` 가 켜졌을 때만
+    35_calibration 을 쓴다(있으면 그대로)."""
     from trader.calibration import model as cal
     from trader.config import load_ml
     from trader.memory import vector as vec
@@ -251,7 +252,7 @@ def ensure_calibration(ctx: ToolContext, *, ticker: str, market: Market, date: d
         return existing.get("data")
     try:
         cfg = load_ml().models.calibration
-        if not cfg.enabled:
+        if not cfg.enabled or not cfg.inject:  # 주입은 L12 개선 뒤 사람이 켠다(결정 14번)
             return None
         row = quant_report.latest_row(ticker, market, ctx.state, asof=date)
         qv = vec.situation_vector(row, market) if row else None
@@ -654,6 +655,62 @@ def _shrink(obj: dict, limit: int, *, drop_evidence: bool = False) -> dict:
     return cut
 
 
+def _theme_context(ctx: ToolContext, inputs: dict, ticker: str, market: Market, d: date) -> dict:
+    """종목의 오늘 상위 테마·shock 사건 소속(결정 19번). 게이트와 같은 조회(`scan/membership`)를
+    입력 기준 시각(`00_inputs.meta.asof`)으로 — 그 뒤 관측은 넣지 않는다."""
+    from trader.scan import membership
+
+    raw = ((inputs or {}).get("data") or inputs or {}).get("meta", {}).get("asof")
+    try:
+        asof = datetime.fromisoformat(str(raw)) if raw else ctx.now()
+    except ValueError:
+        asof = ctx.now()
+    try:
+        from trader.config import load_events
+
+        events_on = load_events().enabled
+    except Exception:  # noqa: BLE001
+        events_on = False
+    if ctx.conn is None:
+        return {"themes": [], "events": [], "status": None, "observed_at": None}
+    res = membership.of(
+        ctx.conn,
+        market,
+        d,
+        theme_top_n=ctx.settings.theme.top_n,
+        theme_enabled=ctx.settings.theme.enabled,
+        events_enabled=events_on,
+        asof=asof,
+    )
+    return membership.for_ticker(res, ticker)
+
+
+def _holding_context(ctx: ToolContext, ticker: str, market: Market, d: date) -> dict:
+    """계좌별 이 종목의 보유 거래일·최소 보유 충족 여부(결정 19번 — 익절가 도달이 최소 보유 전이면
+    SELL/TRIM 이 게이트에서 거부될 수 있다). 보유한 계좌만."""
+    from trader.ledger import repo
+    from trader.orchestrator.executor import _holidays_between
+    from trader.risk import rules
+
+    out: dict[str, dict] = {}
+    if ctx.conn is None:
+        return out
+    for a in ctx.accounts:
+        if market not in a.markets:
+            continue
+        since = repo.held_since(ctx.conn, a.id, [ticker]).get(ticker)
+        if since is None:
+            continue
+        days = rules._trading_days_between(since, d, _holidays_between(ctx.holiday_fn, since, d))
+        out[a.id] = {
+            "held_since": since.isoformat(),
+            "held_trading_days": days,
+            "min_hold_days": rules.MIN_HOLD_TRADING_DAYS,
+            "sell_allowed": days >= rules.MIN_HOLD_TRADING_DAYS,
+        }
+    return out
+
+
 EVIDENCE_ROLES = ("technical", "fundamental", "news_macro", "sentiment")
 EVIDENCE_DEFINITION = (
     "리포트가 낸 근거 항목 수(evidence)·고유 출처 수(source_id)·data_gaps·counter_evidence·"
@@ -785,6 +842,8 @@ def checkpoint_bundle(
             ),
         }
         data["context"]["evidence_stats"] = evidence_stats(reports)  # evidence 를 떼기 전에 센다
+        data["context"]["theme"] = _theme_context(ctx, inputs, ticker, market, date)
+        data["context"]["holding"] = _holding_context(ctx, ticker, market, date)
         return {"ok": True, "data": _shrink(data, BUNDLE_LIMIT_BYTES, drop_evidence=True)}
     return {"ok": False, "error": f"알 수 없는 kind: {kind} (researcher|trader)"}
 
