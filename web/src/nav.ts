@@ -13,6 +13,7 @@ export const NAV: NavGroup[] = [
       { to: "/orders", label: "주문/승인", purpose: "승인 대기·주문·판정·결정 추적", key: "o" },
       { to: "/account", label: "계좌", purpose: "보유·업종·주문·승인", key: "a" },
       { to: "/compare", label: "계좌 비교", purpose: "모의·실전 나란히" },
+      { to: "/fo", label: "파생", purpose: "선물·옵션 포지션·결정·주문 다리", key: "f" },
     ],
   },
   {
@@ -43,6 +44,7 @@ export type Feature = { since: string; title: string; what: string; to: string }
 
 /** 최근 추가 기능(새 것이 위). 화면·기능을 더하면 여기 한 줄. */
 export const FEATURES: Feature[] = [
+  { since: "Phase 26", title: "선물옵션 레인(모의)", what: "코스피200 선물 롱/숏·옵션 매수/매도를 별도 세션·게이트·모니터로, 배수는 한도 안에서 LLM 이 정한다", to: "/fo" },
   { since: "2026-10-27", title: "사건 수혜", what: "전쟁·유가·AI 메모리 부족 등 사건 31종을 뉴스로 감지하고 수혜 묶음에서 발굴, 단기 사건은 안전장치", to: "/data" },
   { since: "2026-10-27", title: "시스템 현황", what: "Claude 사용량(5시간·7일 초기화 시각)·모델·작업 대기열·데몬 잡을 대시보드에서 분리", to: "/system" },
   { since: "Phase 23", title: "장중 뉴스 발굴", what: "30분마다 새 뉴스(유사 기사 제외)가 있으면 종목 재분석·scout 발굴 세션", to: "/today" },
@@ -118,7 +120,8 @@ export function paletteItems(query: string, names: Record<string, string> = {}, 
       }
     }
   }
-  return out.slice(0, 12);
+  // 빈 검색에서는 화면 전부가 보이게(화면이 12개를 넘어도 잘리지 않음, Phase 26 '파생' 추가)
+  return out.slice(0, Math.max(12, q ? 0 : flatNav().length));
 }
 
 /** 'g' 뒤 한 키 → 경로. 없으면 null. */

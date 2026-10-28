@@ -6,10 +6,13 @@ import { applyTheme, themeStore, watchSystemTheme, type Theme } from "./theme";
 import { CLOSED_RECHECK_MS, LIVE_INTERVAL_MS, nextDelay, type QuotesResp } from "./live";
 import type { SearchHit } from "./nav";
 import { ALL_ACCOUNTS } from "./overview";
+import { splitAccounts } from "./fo";
 import type { Account } from "./types";
 
 export type AppState = {
+  /** 현물 계좌(현물 화면·계좌 선택기·'전체' 합산). 파생 계좌는 `foAccounts` 로 따로 (Phase 26). */
   accounts: Account[];
+  foAccounts: Account[];
   /** 고른 계좌 id. '전체' 를 고르면 "" (계좌 단위 API 는 부르지 않는다). */
   accountId: string;
   /** 계좌 선택기 값: "all"(전체 합산) 또는 계좌 id (Phase 24). */
@@ -50,6 +53,7 @@ export const LIVENESS_MS = 60_000;
 
 export function useAppState(): AppState {
   const [accounts, setAccounts] = useState<Account[]>([]);
+  const [foAccounts, setFoAccounts] = useState<Account[]>([]);
   const [accountId, setAccountIdRaw] = useState<string>(() => {
     try {
       return localStorage.getItem(ACCOUNT_KEY) || ALL_ACCOUNTS;
@@ -112,11 +116,16 @@ export function useAppState(): AppState {
   const reloadAccounts = useCallback(() => {
     getJson<Account[]>("/api/accounts")
       .then((rows) => {
-        setAccounts(rows);
-        // 기본은 '전체'. 사라진 계좌를 고른 채였으면 전체로 돌린다
-        setAccountIdRaw((cur) => (cur === ALL_ACCOUNTS || rows.some((a) => a.id === cur) ? cur : ALL_ACCOUNTS));
+        const { stock, fo } = splitAccounts(rows);
+        setAccounts(stock);
+        setFoAccounts(fo);
+        // 기본은 '전체'. 사라진(또는 파생) 계좌를 고른 채였으면 전체로 돌린다
+        setAccountIdRaw((cur) => (cur === ALL_ACCOUNTS || stock.some((a) => a.id === cur) ? cur : ALL_ACCOUNTS));
       })
-      .catch(() => setAccounts([]));
+      .catch(() => {
+        setAccounts([]);
+        setFoAccounts([]);
+      });
   }, []);
 
   useEffect(() => {
@@ -196,6 +205,7 @@ export function useAppState(): AppState {
     ticks,
     tickOf,
     accounts,
+    foAccounts,
     accountId: accountId === ALL_ACCOUNTS ? "" : accountId,
     selection: accountId,
     setAccountId, token, setToken, events, connected, tick, reloadAccounts, theme, setTheme, names, ensureNames };

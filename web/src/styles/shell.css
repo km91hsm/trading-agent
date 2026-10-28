@@ -187,6 +187,10 @@ main {
   gap: var(--s-5);
   align-items: start;
 }
+/* 절 다음에 오는 두 칸 묶음도 절과 같은 위 간격(안의 절은 첫 자식이라 margin-top 0) */
+.sec + .cols-2 {
+  margin-top: var(--s-5);
+}
 
 @media (max-width: 1023px) {
   .shell {

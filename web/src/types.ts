@@ -11,7 +11,96 @@ export type Account = {
   stance_by_market: Record<string, string>;
   nav_by_market: Record<string, string | null>;
   pending_approvals: number;
+  /** 계좌 종류(Phase 26): 현물 stock, 파생 fo. 현물 화면은 stock 만 본다. */
+  asset?: "stock" | "fo";
 };
+
+/** 파생 포지션(`/api/fo/positions`, Phase 26). 가격·금액은 문자열(Decimal). */
+export type FoPosition = {
+  id: number;
+  code: string;
+  kind: "FUTURES" | "CALL" | "PUT";
+  contract_side: "LONG" | "SHORT";
+  direction: "LONG" | "SHORT" | "FLAT";
+  vehicle: "FUTURES" | "OPTION_BUY" | "OPTION_SELL";
+  status: string;
+  qty_held: number;
+  qty_target: number;
+  leverage_used: number | null;
+  stop_pt: string | null;
+  stop_fut: string | null;
+  tp_pt: string | null;
+  premium_stop: string | null;
+  entry_premium: string | null;
+  approved_mult: number | null;
+  last_trade_date: string | null;
+  horizon_until: string | null;
+  opened_at: string | null;
+  avg: string | null;
+  current: string | null;
+  eval: string | null;
+  budget_used: string | null;
+  budget_limit: string | null;
+  live_legs: number;
+  note: string | null;
+};
+
+export type FoLeg = {
+  id: number;
+  position_id: number;
+  code: string;
+  intent: string;
+  round: number;
+  attempt: number;
+  status: string;
+  order_no: string | null;
+  qty: number;
+  filled_qty: number;
+  price: string | null;
+  order_type: string | null;
+  sent_at: string | null;
+  created_at: string;
+};
+
+export type FoDecisionRow = {
+  id: number;
+  date: string;
+  account_id: string | null;
+  position_id: number | null;
+  round: number;
+  intent: string;
+  direction: string;
+  vehicle: string;
+  target_leverage: number | null;
+  confidence: number | null;
+  index_at_decision: string | null;
+  stop_pt: number | null;
+  take_profit_pt: number | null;
+  horizon_days: number | null;
+  rationale: string | null;
+  vs_spot: string | null;
+  record_only: string | null;
+  created_at: string;
+};
+
+export type FoCheck = {
+  approved: boolean | null;
+  reasons: string[];
+  note: string | null;
+  status: string | null;
+  record_only: string | null;
+  error: string | null;
+};
+
+export type FoToday = {
+  date: string;
+  decision: FoDecisionRow | null;
+  reevals: FoDecisionRow[];
+  accounts: { id: string; env: string; halted: boolean; pending_entry: boolean }[];
+  checks: Record<string, FoCheck>;
+};
+
+export type FoReport = { account_id: string; days: number; nav: { date: string; nav: string }[]; return: number | null };
 
 export type Position = {
   ticker: string;

@@ -99,6 +99,7 @@ function fakeState(over: Partial<AppState> = {}): AppState {
       { id: "paper-main", env: "paper", markets: ["KR", "US"], mode: "auto", yaml_mode: "auto", stance_by_market: {}, nav_by_market: {}, pending_approvals: 0 },
       { id: "real-main", env: "real", markets: ["KR"], mode: "off", yaml_mode: "off", stance_by_market: {}, nav_by_market: {}, pending_approvals: 2 },
     ],
+    foAccounts: [],
     accountId: "paper-main",
     selection: "paper-main",
     setAccountId: () => {},

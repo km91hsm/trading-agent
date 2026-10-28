@@ -6,6 +6,7 @@ import { ToastProvider } from "./components/Toast";
 import { AppContext, useAppState } from "./hooks";
 import { AccountPage } from "./pages/Account";
 import { ComparePage } from "./pages/Compare";
+import { FoPage } from "./pages/Fo";
 import { Dashboard } from "./pages/Dashboard";
 import { DataPage } from "./pages/Data";
 import { HowItWorksPage } from "./pages/HowItWorks";
@@ -33,6 +34,7 @@ export default function App() {
                 <Route path="/" element={<Dashboard />} />
                 <Route path="/account" element={<AccountPage />} />
                 <Route path="/compare" element={<ComparePage />} />
+                <Route path="/fo" element={<FoPage />} />
                 <Route path="/today" element={<TodayPage />} />
                 <Route path="/orders" element={<OrdersPage />} />
                 <Route path="/chart" element={<ChartPage />} />
