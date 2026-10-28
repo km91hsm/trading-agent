@@ -657,21 +657,33 @@ def bind_exec_key(
     conn.commit()
 
 
+def ledger_marks(conn: sqlite3.Connection) -> dict:
+    """포트폴리오가 원장을 읽는 순간의 표시 {order_id, approval_id, at}(그때의 최대 id·시각) —
+    진행 중 예약(결정 7번)이 '포트폴리오가 이미 센 주문·승인' 을 시각 추정이 아니라 이것으로 가린다
+    (PR #67 Codex: 잔고 조회 도중 묶인 주문을 두 번 셌다)."""
+    o = conn.execute("SELECT COALESCE(MAX(id), 0) FROM orders").fetchone()[0]
+    a = conn.execute("SELECT COALESCE(MAX(id), 0) FROM approvals").fetchone()[0]
+    return {"order_id": int(o), "approval_id": int(a), "at": now_iso()}
+
+
 def inflight_reservations(
     conn: sqlite3.Connection,
     account_id: str,
     market: str,
     *,
-    snap_at: str,
+    marks: dict,
     now: str,
     stale_before: str,
     exclude_key: str | None = None,
 ) -> list[dict]:
-    """판정 스냅샷(`snap_at`)에 보이지 않은 살아 있는 매수 예약 [{key, ticker, amount}](결정 7번).
+    """판정 포트폴리오에 들어가지 않은 살아 있는 매수 예약 [{key, ticker, amount}](결정 7번).
 
-    스냅샷은 체결 전 주문·pending 승인을 이미 센다 — 그래서 진행 중 = (a) 아직 주문·승인에 묶이지
-    않았거나, (b) 승인이 pending 을 떠났는데 주문 행이 없거나(승인 전환 중), (c) 스냅샷 뒤에 묶였다.
-    죽은 주문·닫힌·만료 승인·보내지도 묶이지도 않은 채 오래된 키(선점 뒤 죽은 프로세스)는 뺀다."""
+    포트폴리오는 원장을 읽을 때(`marks` — `ledger_marks`) 있던 체결 전 주문과 pending 승인을 센다.
+    그래서 이미 센 것 = 묶인 주문 id ≤ 표시, 또는 묶인 승인 id ≤ 표시이고 그때 pending 이었다(아직
+    pending 이거나 표시 시각 뒤에 결정됐다). 그 밖의 살아 있는 예약은 진행 중이다(미묶음·읽기 전에
+    승인됐는데 주문 행이 없음·읽은 뒤 생긴 주문). 죽은 주문·닫힌 승인·만료 승인·보내지도 묶이지도
+    않은 채 오래된 키는 빼되, **브로커로 보낸 키(sent_at)는 승인이 닫혀도 남긴다** — 접수 뒤 주문 행
+    기록이 실패한 주문은 KIS 에 살아 있을 수 있다(PR #67 Codex, 대조·수동 해제 전까지)."""
     rows = conn.execute(
         "SELECT k.key, k.ticker, k.amount FROM exec_keys k "
         "LEFT JOIN orders o ON o.id = k.order_id "
@@ -679,13 +691,24 @@ def inflight_reservations(
         "WHERE k.account_id=? AND k.market=? AND k.side='BUY' AND k.amount IS NOT NULL "
         "AND k.key != ? "
         f"AND (o.id IS NULL OR o.status NOT IN ({dead_status_sql()})) "
-        "AND (a.id IS NULL OR (a.status NOT IN ('rejected','expired','failed') "
-        "AND NOT (a.status='pending' AND a.expires_at <= ?))) "
+        "AND (a.id IS NULL OR k.sent_at IS NOT NULL OR (a.status NOT IN "
+        "('rejected','expired','failed') AND NOT (a.status='pending' AND a.expires_at <= ?))) "
         "AND NOT (k.order_id IS NULL AND k.approval_id IS NULL AND k.sent_at IS NULL "
         "AND k.created_at < ?) "
-        "AND ((k.order_id IS NULL AND (k.approval_id IS NULL OR a.status != 'pending')) "
-        "OR k.bound_at > ?)",
-        (account_id, market, exclude_key or "", now, stale_before, snap_at),
+        "AND NOT ("
+        "(k.order_id IS NOT NULL AND k.order_id <= ?) "
+        "OR (k.approval_id IS NOT NULL AND k.approval_id <= ? "
+        "AND (a.decided_at IS NULL OR a.decided_at > ?)))",
+        (
+            account_id,
+            market,
+            exclude_key or "",
+            now,
+            stale_before,
+            int(marks.get("order_id") or 0),
+            int(marks.get("approval_id") or 0),
+            str(marks.get("at") or ""),
+        ),
     ).fetchall()
     return [{"key": r["key"], "ticker": r["ticker"], "amount": r["amount"]} for r in rows]
 
@@ -700,7 +723,7 @@ def claim_exec_key_reserved(
     market: str,
     ticker: str,
     side: str,
-    snap_at: str,
+    marks: dict,
     recheck: Callable[[list[dict]], str | None],
 ) -> tuple[bool, list[dict]]:
     """매수 예약으로 실행 키를 잡는다(결정 7번, 2-O10). 한 쓰기 트랜잭션(BEGIN IMMEDIATE) 안에서
@@ -717,7 +740,7 @@ def claim_exec_key_reserved(
             conn,
             account_id,
             market,
-            snap_at=snap_at,
+            marks=marks,
             now=now,
             stale_before=stale_before,
             exclude_key=key,

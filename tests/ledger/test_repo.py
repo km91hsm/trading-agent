@@ -873,7 +873,41 @@ def test_inflight_reservations_cover_approval_transition_and_skip_visible(conn):
     key("pending|k", a1)
     key("approved|k", a2)
     conn.commit()
+    marks = {"order_id": 0, "approval_id": a2, "at": snap}  # 두 승인 모두 읽을 때 있었다
+    conn.execute("UPDATE approvals SET decided_at=? WHERE id=?", ("2026-10-09T00:59:40+00:00", a2))
     got = repo.inflight_reservations(
-        conn, "paper-main", "KR", snap_at=snap, now=now, stale_before=stale
+        conn, "paper-main", "KR", marks=marks, now=now, stale_before=stale
     )
+    # pending 승인은 포트폴리오가 이미 셌다. 읽기 전에 승인됐는데 주문 행이 없는 것만 진행 중
     assert [r["key"] for r in got] == ["approved|k"]
+
+
+def test_sent_reservation_survives_failed_approval_bookkeeping(conn):
+    """PR #67 Codex: 승인 주문을 보냈는데(sent_at) 주문 행 기록이 실패해 승인이 failed 로 닫혀도
+    KIS 에는 주문이 살아 있을 수 있다 — 대조·수동 해제 전까지 예약을 계속 센다."""
+    order = {"ticker": "005930", "market": "KR", "side": "BUY", "qty": 1}
+    aid = repo.create_approval(
+        conn,
+        decision_id=1,
+        account_id="paper-main",
+        order=order,
+        requested_at="2026-10-09T00:59:00+00:00",
+        expires_at="2026-10-09T01:29:00+00:00",
+    )
+    conn.execute("UPDATE approvals SET status='failed' WHERE id=?", (aid,))
+    conn.execute(
+        "INSERT INTO exec_keys(key, created_at, account_id, market, ticker, side, amount, "
+        "approval_id, sent_at) VALUES ('sent|k', '2026-10-09T00:59:00+00:00', 'paper-main', 'KR', "
+        "'005930', 'BUY', '1000', ?, '2026-10-09T00:59:50+00:00')",
+        (aid,),
+    )
+    conn.commit()
+    got = repo.inflight_reservations(
+        conn,
+        "paper-main",
+        "KR",
+        marks={"order_id": 0, "approval_id": 0, "at": "2026-10-09T01:00:00+00:00"},
+        now="2026-10-09T01:00:05+00:00",
+        stale_before="2026-10-09T00:50:00+00:00",
+    )
+    assert [r["key"] for r in got] == ["sent|k"]

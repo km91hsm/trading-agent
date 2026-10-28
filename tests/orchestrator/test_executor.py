@@ -1344,3 +1344,36 @@ def test_reservation_visible_in_snapshot_is_not_double_counted(ectx):
     assert by["paper-main"]["qty"] == 14 and not any(
         "동시 판정" in x for x in by["paper-main"]["reasons"]
     )
+
+
+def test_reservation_bound_during_balance_read_is_not_double_counted(ectx):
+    """PR #67 Codex: 판정이 잔고를 읽는 동안 다른 경로가 주문 행을 묶으면(묶인 시각은 판정 시작 뒤)
+    그 주문은 이미 포트폴리오의 당일 주문금액에 들어 있다 — 시각이 아니라 포트폴리오가 실제로 읽은
+    원장 표시(최대 주문 id)로 가려 다시 더하지 않는다(두 번 세면 현금이 모자라 수량이 준다)."""
+    ectx.sectors = False
+    oid = repo.insert_order(
+        ectx.conn,
+        decision_id=None,
+        account_id="paper-main",
+        ticker="000660",
+        market="KR",
+        side="BUY",
+        qty=10,
+        order_type="LIMIT",
+        price=Decimal("460000"),
+        status="accepted",
+        order_no="9",
+        message="",
+        mode="auto",
+        created_at=T0.isoformat(),
+    )
+    _inflight(ectx.conn, amount="4600000")
+    ectx.conn.execute(
+        "UPDATE exec_keys SET order_id=?, bound_at=? WHERE key='other|k'",
+        (oid, (T0 + timedelta(minutes=1)).isoformat()),
+    )
+    ectx.conn.commit()
+    by = {r["account_id"]: r for r in _run(ectx)}
+    assert by["paper-main"]["qty"] == 14 and not any(
+        "동시 판정" in x for x in by["paper-main"]["reasons"]
+    )

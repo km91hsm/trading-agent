@@ -399,6 +399,7 @@ def build_portfolio(
         invested = sum((p.eval_amount for p in pos_list), Decimal(0))
         sizing_nav = Decimal(cap)
         available = max(Decimal(0), min(cash.available, Decimal(cap) - invested))
+    marks = repo.ledger_marks(conn)  # 아래 원장 집계가 본 주문·승인의 경계(결정 7번)
     return rules.Portfolio(
         account_id=account.id,
         market=market,
@@ -427,6 +428,7 @@ def build_portfolio(
         trades_this_week=repo.trades_this_week(conn, account.id, today, market=market),
         sector_of=sector_of,
         hedge_tickers=hedge_tickers,
+        ledger_marks=marks,
     )
 
 
@@ -747,13 +749,9 @@ def _execute_account(
         broker = ctx.brokers.get(account.id)
         st = stance_mod.decide(repo.realized_pnl_5d(ctx.conn, account.id, date, market=market))
         portfolio: rules.Portfolio | None = None
-        snap_at = ctx.now().isoformat()
         try:
             if broker is None:
                 raise KisApiError("NO_BROKER", f"계좌 {account.id} 브로커 없음(앱키 미설정)")
-            snap_at = (
-                ctx.now().isoformat()
-            )  # 이 판정이 본 잔고·원장 시각(결정 7번 진행 중 예약 기준)
             portfolio = build_portfolio(
                 ctx.conn,
                 broker,
@@ -931,7 +929,7 @@ def _execute_account(
                     market=market,
                     ticker=decision.ticker,
                     side="BUY",
-                    snap_at=snap_at,
+                    marks=portfolio.ledger_marks,
                     recheck=_recheck,
                 )
             else:
