@@ -196,3 +196,46 @@ base `1bd0172` → (단계 2 GitHub 리뷰 반영 뒤) `c7bf51e`, head `94e4e3f`
 | G4-6 | P2 | `engine._decision_ref` | 라운드가 날마다 1부터라 어제 r5 가 오늘 r1 보다 앞서 기준 지수·무효화 조건이 낡음 | `ORDER BY date DESC, round DESC, id DESC`. `test_decision_ref_prefers_latest_date_over_round` |
 
 체인 병합 메모(2026-10-28): main 에 전체 검토 2차(#58·#59·#62)가 먼저 들어와 원장 v26~v29 를 썼으므로, 파생 마이그레이션을 v26 → **v30**, 다리 `request_id` 를 v27 → **v31** 로 옮겼다(둘 다 아직 운영 원장에 적용된 적 없음). main 의 `orders.origin` 에 파생 주문은 `fo`(체결 동기화의 원장 밖 주문은 `external`), 파생 재평가는 main 의 재평가 레인(`jobs.REEVAL_KINDS`), 텔레그램 `/fo` 는 조회라 미확인 발신자 허용 목록(main 은 조회만 허용으로 좁힘)에 둔다.
+
+## 단계 5 — 전체 교차 리뷰 B (`feat/phase26-5-docs-review`)
+
+리뷰 base `a39e102`(main), head `e946193`. Codex exec 2회(① 주문 안전·프로세스 P0 5·P1 1, ② 투자 방식·화면 P0 2·P1 5·P2 1)와 Claude 리뷰어 2명(서로 모른 채: 주문 다리 수명 P0 3·P1 5·P2 4, 위험 규칙·화면 P1 6·P2 5)을 같은 범위로 돌렸다. 리뷰 도중 main 에 전체 검토 2차(#58·#59·#62)가 먼저 들어와 체인을 병합했고(원장 v30·v31, 단계 4 표 끝 메모), PR #64 의 GitHub Codex 6건(G4)도 같은 시기에 반영했다. 겹치는 지적을 묶어 S5-n 으로 적는다(출처 XA·XB = Codex ①②, CA·CB = Claude ①②).
+
+| # | 심각도 | 위치 | 문제 | 조치 |
+|---|---|---|---|---|
+| S5-1 | P0 | `executor._transmit` (XA1·CA5) | 응답 대기 중 체결 동기화가 다리를 묶으면 전송기가 두 번째 주문 행을 만들고 끝난 다리를 accepted 로 되돌려 경제값이 이중 반영 | 응답 반영을 한 트랜잭션으로: 다리를 다시 읽어 이미 묶였으면 그 주문을 재사용하고 `sending` 일 때만 상태를 바꾼다(주문 행 삽입도 같은 트랜잭션). `test_transmit_reuses_order_bound_by_sync_during_send` |
+| S5-2 | P0 | `positions.recover`·`continue_reduce` (XA2) | 예약 뒤 전송 전에 죽은 `prepared` 다리가 영구히 청산·재개를 막음 | 복구가 120초 넘은 prepared 다리를 조건부 취소(진입은 빈 포지션 해제, 축소는 활성 연결 해제), `continue_reduce` 는 prepared 축소 다리를 취소하고 다시 낸다, 재개 판정은 '전송 없이 취소된 다리' 를 실행 증거로 보지 않는다. `test_prepared_reduce_leg_is_cancelled_and_resent`·`test_recover_cancels_stale_prepared_entry_only` |
+| S5-3 | P0 | 실전 파생 계좌 (XA3) | 공통 축소 경로로 실전 주문 가능 | G4-4 의 `executor.fo_mode`(실전 파생은 항상 off)로 해결됨 |
+| S5-4 | P0 | `_confirm_leg`·`recall_entries`·`continue_reduce` (XA4·CA4·CA12) | 지난 날 다리를 오늘 날짜·번호로 조회·취소(주문번호는 날마다 재시작) | `positions.leg_day` 로 다리마다 **자기 거래일**에 조회, 묶인 번호 집합도 그날만, 지난 날 다리는 취소 요청을 내지 않고 살아 있다고 나오면 당일 소멸(expired). `test_yesterday_accepted_leg_not_cancelled_today_and_expires` |
+| S5-5 | P0 | `.claude/settings.json` (XA5) | 주문이 나갈 수 있는 `fo session` 이 거부 목록에 없음 | `fo session*` 두 표기 추가. `test_settings_denies_fo_session` |
+| S5-6 | P1 | `engine._settle` (XA6·CB9) | 체결 조회 실패에도 잔고 부재만으로 정산 확정, 손실만(또는 0)을 정산 손익으로 알림 | 그 틱 체결 조회가 성공했을 때만, `qty_held=0` 과 함께 CAS, 알림은 손익을 추정하지 않고 'HTS 로 확인' 안내. `test_settle_requires_fills_ok_and_zeroes_qty` |
+| S5-7 | P0 | `engine` 보호선·유지 대상 (CA1) | 증액 다리 대기 중(`resizing`) 포지션이 손절·유지 검사에서 빠짐 | 대상에 `resizing`(활성 축소 다리 없음) 포함. `test_resizing_up_position_is_stop_protected`. 감액 다리 재시도 중의 손절 우선(취소 후 STOP)은 범위 밖으로 남김(감액이 1~3틱 안에 끝남, 미확인 항목에 적음) |
+| S5-8 | P0 | `recover`·`continue_reduce` (CA2) | 다른 프로세스가 응답 대기 중인 sending 다리를 복구가 '확정 불가' 로 보고 unknown, 다음 틱 청산 주문 취소 | sending 은 `SENDING_GRACE_S`(60초) 동안 복구가 건드리지 않고(deferred), `continue_reduce` 는 unknown 포지션의 다리를 취소하지 않는다. `test_recover_defers_inflight_sending_leg` |
+| S5-9 | P0 | `executor.reduce` 시도 횟수 (CA3) | 시도 횟수가 날짜와 무관하게 쌓여 넷째 감액에서 전이 오류로 계좌 틱 중단, 다음 날 첫 축소가 시장가 | 시도는 **오늘의** 같은 (의도·라운드) 다리만 세고, `exit_failed` 는 전이표가 허용할 때만. `test_reduce_attempts_count_today_only` |
+| S5-10 | P1 | `reeval.apply`·`continue_replace` (CA6·CB7) | REPLACE 새 진입 봉투가 청산 성공과 무관하게 남아 다른 경로로 닫혀도 자동 진입, 갈아타기로 수명 예산 재충전 | 청산이 실제로 나갔을 때만 봉투를 남기고, 이 라운드의 CLOSE 다리가 체결로 보유 0 을 만든 경우에만 진입(아니면 폐기), 새 포지션은 옛 포지션의 사용 예산을 승계. `test_replace_flag_only_when_close_sent_and_discarded_after_stop` |
+| S5-11 | P1 | `_send_entry`·`adopt` (CA7) | 최종거래일이 시세 필드에만 의존, adopt 는 비움 → 만기 강제 청산·정산 전환이 꺼짐 | 마스터 규칙(`fo_master.last_trade_date`) 대체, `fo adopt` 가 마스터로 채운다 |
+| S5-12 | P1 | `executor.reduce` 잔고 실패 (CA8) | 잔고 조회 실패 시 원장 잔량 전부로 축소 → 외부 청산 뒤 반대 포지션 위험 | 마지막 `fo_positions_snapshot` 수량으로 상한(없으면 보류) |
+| S5-13 | P2 | `run_leg` HOLD·RESIZE↓ (CA9) | CAS 실패를 무시해 손절 강화·감액 목표가 조용히 사라짐 | 실패면 `conflict` 로 돌려준다 |
+| S5-14 | P2 | `continue_reduce` (CA10) | 방금 낸 지정가 축소를 다음 틱이 바로 취소 | 먼저 상태를 조회하고, 살아 있으면 접수 뒤 `REDUCE_MIN_AGE_S`(50초)는 기다린다 |
+| S5-15 | P2 | `_transmit` 기록 실패 (CA11) | 원장 기록 실패 시 접수번호가 다리에 남지 않음 | 예외 전에 다리에 접수번호만 따로 기록 |
+| S5-16 | P0 | `engine.maintain` 계좌 총노출 (XB1) | 포지션별 배수 검사 | **변경 없음**: `max_positions` 가 설정에서 1 로 고정(`le=1`)이라 포지션별 = 계좌 총량. 복수 포지션은 Phase 27 |
+| S5-17 | P0 | `engine.maintain` 미체결 계획 손실 (XB2) | 미체결 진입을 보유 평균가로 계산 | 그 다리 가격으로(진입 사이징과 같은 식) |
+| S5-18 | P1 | `engine.maintain` 스트레스 평가 불가 (XB3) | 시세가 없으면 검사가 조용히 빠짐 | '스트레스 평가 불가(시세 없음)' 경고 |
+| S5-19 | P1 | `rules` 일일 손실 (XB4) | 게이트는 실현만, 엔진은 오늘 변화분 | `executor.pnl_today` 하나(엔진이 기준을 남기고 게이트는 읽기만). `test_gate_daily_loss_uses_today_change` |
+| S5-20 | P1 | 웹·LLM 예산 (XB5) | 남은 예산에서 보유분 계획 손실이 빠짐 | `sizing.position_budget` {used, planned, limit, free}, 웹 `budget_planned·budget_free`, 묶음 `budget.remaining`=free(모르면 null). `test_position_budget_free_includes_planned` |
+| S5-21 | P1 | `fo-trader.md` (XB6) | 역사적 변동성 입력 경로가 틀림 | `technical.quote.data.hist_vol`(없으면 매도 금지)로 고치고 RESIZE 는 계약 수도 늘지 않음을 명시 |
+| S5-22 | P1 | `/fo` 재평가 목록 (XB7) | 다른 계좌 재평가가 섞임 | 선택 계좌로 거름 |
+| S5-23 | P2 | 배수 표시 (XB8) | 승인 배수를 현재 노출처럼 표시 | 용어 '승인 배수' 와 설명(실제 노출은 엔진이 매 분 확인) |
+| S5-24 | P1 | `triggers.check`·세션 상한 (CB1) | 실패한 유료 재평가가 간격 없이 매 틱 다시 뜸 | 간격은 처리된 모든 행 기준, 하루 상한은 세션이 뜬 것(성공 + '실패:')을 센다, 운영일 1회는 성공만. `test_failed_session_waits_interval_then_retries` |
+| S5-25 | P1 | `sizing.size` RESIZE (CB2) | 같은 배수라도 델타·지수가 내리면 계약을 더 사는 물타기 | 보유 포지션은 계약 수를 늘리지 않는다(`max(qty_target, 보유+미체결)` 상한). `test_resize_never_adds_contracts_to_existing_position` |
+| S5-26 | P1 | `rules` HOLD·감액 손절, 재평가 익절 (CB3) | 오타(3520) 손절선이 저장돼 다음 틱 전량 청산, 익절 부호 미검증 | 손절선은 기초지수 기준 부호·최소 거리일 때만 바꾸고 아니면 기존 유지, 재평가 HOLD 익절선도 현재 지수 기준 부호 확인. `test_hold_stop_typo_rejected_keeps_existing`·`test_reeval_hold_tp_on_wrong_side_ignored` |
+| S5-27 | P1 | `sizing` 선물 손절가 (CB4) | 베이시스 공란을 0 으로, 진입가가 손절가 반대편이어도 승인 | `sizing.basis_of`(공란이면 가격 − 기초지수), `부호×(진입가 − 손절가) ≤ 0` 거부. `test_futures_basis_missing_is_derived_not_zero`·`test_futures_entry_on_wrong_side_of_stop_rejected` |
+| S5-28 | P1 | `_send_entry` 증액 (CB5) | 증액이 `stop_fut` 를 단조 병합 없이 덮어씀 | `_stop_fut_change` 로 병합 |
+| S5-29 | P1 | `rules` roll 판정 (CB6) | 게이트는 달력일 잔존, 엔진은 휴장 반영 영업일 → 진입 직후 강제 청산 | `GateInput.entry_block_day`(엔진과 같은 `triggers.force_close_day` + KIS 휴장일의 직전 운영일)부터 신규 금지. `test_entry_blocked_on_day_before_forced_close` |
+| S5-30 | P2 | 장중 전용 옵션 매도 스트레스 (CB8) | `hold_overnight=false` 면 스트레스 검사 꺼짐 | 옵션 매도는 항상 시나리오 한도(진입·유지) |
+| S5-31 | P2 | 알림·STATUS 문구 (CB10) | 방향·콜풋 없이 '매도' 만 → 풋 매도가 숏처럼 읽힘, 상태 영문, '손절' 단위 모호 | `messages.fo_what`('롱(상승) · 풋 매도') 를 주문 알림에, STATUS·`/fo` 는 한글 상태·'지수 손절'·'프리미엄 보호선', `resizing` = '수량 조정 중' |
+| S5-32 | P2 | 증거금 버퍼 기준 (CB11) | 진입은 주문 전 현금, 유지 조건은 주문 뒤 현금 | 진입도 주문 뒤 잔여 현금 ≥ NAV × buffer |
+
+확인함(네 리뷰어 공통): 방향 × 수단 6조합 매핑, 대조표, 배수 상승·손절 불리 이동 금지, 프리미엄 보호선 단조, 수명 예산 비재충전, Black-76·IV 단위, 지수 보호선 시간·신선도, `store.reserve` 한 트랜잭션·실행 키 유일성, `claim_leg`·`cancel_prepared` 조건부 갱신, `record_fill_progress` 누적값, unknown 비자동, 신규 차단 상태, 보류 진입 소비 규칙, 늦은 재평가 CAS, 데몬 배선, 웹 계좌 검증·합산 분리, 설정 두 파일 일치, 합성 fixture.
+
+단계 5 결론: **보완 뒤 진행** — P0 9·P1 15·P2 7 반영(S5-16 은 설정상 해당 없음, S5-7 의 감액 중 손절 우선은 미확인 항목). 재리뷰 1회는 아래.

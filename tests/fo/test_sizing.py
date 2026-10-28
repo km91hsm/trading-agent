@@ -172,7 +172,9 @@ def test_margin_buffer_from_ord_qty():
         max_age_days=30,
         today=TODAY,
     )
-    assert (n, reasons) == (7, [])  # 10 × (1 − 0.3) = 7
+    # floor(10 × (1 − 0.3)) = 7 이지만 주문 뒤 잔여 현금도 NAV × 0.3 이상이어야 한다(단계 5 리뷰):
+    # (현금 5천만 − 1억 × 0.3) ÷ 계약당 500만 = 4
+    assert (n, reasons) == (4, [])
 
 
 @pytest.mark.parametrize(

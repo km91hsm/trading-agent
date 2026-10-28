@@ -550,9 +550,19 @@ def adopt_cmd(
         broker = next(iter(_build_brokers(boot.secrets, [acct], settings=boot.settings)), None)
         if broker is None:
             raise config.ConfigError("앱키가 없어 파생 브로커를 만들지 못했습니다")
+        from trader.fo import store
+
+        pos = store.get_position(boot.conn, position)
+        contract = None
+        try:
+            contract = next((c for c in _master(boot.settings) if pos and c.code == pos.code), None)
+        except Exception as e:  # noqa: BLE001 — 마스터 없으면 최종거래일 없이 승계(경고)
+            typer.echo(f"경고: 마스터 없음({type(e).__name__}) — 최종거래일 미기록", err=True)
+        ltd = fo_master.last_trade_date(contract, None) if contract is not None else None
         ok = positions.adopt(
             boot.conn, position_id=position, side=side, kind=kind, qty=qty,
             stop_pt=Decimal(str(stop_pt)), balance=broker.get_balance(), account_id=acct.id,
+            last_trade_date=ltd,
         )  # fmt: skip
         boot.conn.commit()
     finally:

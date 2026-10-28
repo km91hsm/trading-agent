@@ -61,7 +61,9 @@
       "Bash(python -m trader fo close*)",
       "Bash(uv run trader fo close*)",
       "Bash(python -m trader fo monitor*)",
-      "Bash(uv run trader fo monitor*)"
+      "Bash(uv run trader fo monitor*)",
+      "Bash(python -m trader fo session*)",
+      "Bash(uv run trader fo session*)"
     ]
   }
 }

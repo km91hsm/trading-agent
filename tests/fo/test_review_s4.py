@@ -155,7 +155,7 @@ def test_discarded_trigger_not_counted(conn):
     tid = triggers.record(conn, pos, t, now=at(10, 0))
     repo.mark_trigger_handled(conn, tid, "폐기: 포지션 변경", handled_at=at(10, 1).isoformat())
     again = triggers.check(conn, position=pos, underlying=Decimal("365"), iv=None, cfg=cfg,
-                           profile=prof, now=at(10, 2), today=DAY,
+                           profile=prof, now=at(10, 32), today=DAY,
                            ref_index=Decimal("350"))  # fmt: skip
     assert again is not None and again.kind == "move"
 

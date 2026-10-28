@@ -74,21 +74,7 @@ def _hold(ctx: FoExecContext, account: AccountConfig) -> str | None:
 
 
 def _holiday_fn(ctx: FoExecContext) -> Callable[[date], bool] | None:
-    """시세 클라이언트의 KIS 휴장일(`is_holiday`)을 틱 안에서 캐시한다. 조회 실패는 개장으로."""
-    fn = getattr(ctx.market_client, "is_holiday", None)
-    if fn is None:
-        return None
-    cache: dict[date, bool] = {}
-
-    def is_holiday(d: date) -> bool:
-        if d not in cache:
-            try:
-                cache[d] = bool(fn(d))
-            except Exception:  # noqa: BLE001
-                cache[d] = False
-        return cache[d]
-
-    return is_holiday
+    return executor.holiday_fn_of(ctx)  # 진입 게이트의 강제 청산일과 같은 달력
 
 
 def _notify_once(ctx: FoExecContext, account_id: str, key: str, text: str, today: date) -> None:
@@ -203,11 +189,11 @@ def maintain(
     first = ordered[0]
     # 살아 있는 진입 다리의 남은 수량 — 체결되면 보유가 된다(노출·예산·스트레스에 합산, 위반이면
     # `_risk_reduce` 가 먼저 회수한다)
-    pending = {
-        p.id: sum(x.remaining for x in store.live_legs(ctx.conn, position_id=p.id)
-                  if is_entry(x.intent))
+    entry_legs = {
+        p.id: [x for x in store.live_legs(ctx.conn, position_id=p.id) if is_entry(x.intent)]
         for p in held
     }  # fmt: skip
+    pending = {pid: sum(x.remaining for x in legs) for pid, legs in entry_legs.items()}
 
     def eff(p: FoPositionRow) -> int:
         return p.qty_held + pending[p.id]
@@ -242,24 +228,32 @@ def maintain(
         ref = pos.entry_premium if pos.kind != "FUTURES" else (row.avg_price if row else None)
         if ref is None or pos.nav_at_open is None:
             continue
-        try:
-            per_loss = sizing.planned_loss_per_contract(
-                pos.vehicle, pos.kind, ref_price=ref, stop_fut=pos.stop_fut,
+        def loss_at(price: Decimal, pos: FoPositionRow = pos) -> Decimal:
+            return sizing.planned_loss_per_contract(
+                pos.vehicle, pos.kind, ref_price=price, stop_fut=pos.stop_fut,
                 premium_stop=pos.premium_stop, multiplier=mult,
             )  # fmt: skip
+
+        try:
+            held_loss = loss_at(ref) * pos.qty_held
+            # 미체결 진입은 그 다리 가격으로(진입 사이징과 같은 식, 단계 5 리뷰)
+            pend_loss = sum((loss_at(x.price if x.price is not None else ref) * x.remaining
+                             for x in entry_legs[pos.id]), Decimal(0))  # fmt: skip
         except ValueError:
             continue
         b = sizing.lifetime_budget(pos, nav_at_open=pos.nav_at_open, r=cfg.risk_per_trade_pct,
-                                   held_loss=per_loss * pos.qty_held,
-                                   pending_loss=per_loss * pending[pos.id])  # fmt: skip
+                                   held_loss=held_loss, pending_loss=pend_loss)  # fmt: skip
         if not b["ok"]:
             want(pos, minus_one(pos), f"수명 예산 {b['used'] + b['planned']} > {b['limit']}")
-    if cfg.hold_overnight:  # 스윙 유지 조건: 시나리오 최악 손실
+    # 스윙 유지 조건: 시나리오 최악 손실(옵션 매도는 장중 전용이어도 — 스펙 §0, 단계 5 리뷰)
+    if cfg.hold_overnight or any(p.vehicle == "OPTION_SELL" for p in held):
         items = []
+        missing: list[str] = []
         for pos in held:
             q = quotes.get(pos.id)
             dl = executor._days_left(q, None, today)
             if q is None or dl is None:
+                missing.append(pos.code)
                 continue
             sign = 1 if pos.contract_side == "LONG" else -1
             items.append(sizing.StressItem(quote=q, signed_qty=sign * eff(pos), days_left=dl))
@@ -272,6 +266,8 @@ def maintain(
                     want(first, minus_one(first), why)
                 else:
                     warnings.append(why)
+        if missing:  # 평가 불가는 '통과' 가 아니다 — 알린다(단계 5 리뷰)
+            warnings.append(f"스트레스 평가 불가(시세 없음): {', '.join(missing)}")
     out = [(p, targets[p.id][0], "; ".join(targets[p.id][1])) for p in ordered if p.id in targets]
     return out, warnings
 
@@ -348,19 +344,25 @@ def _novel_news(conn: sqlite3.Connection, now: datetime, minutes: int) -> int:
 
 
 def _settle(ctx: FoExecContext, account: AccountConfig, pos: FoPositionRow, bal: FoBalance | None,
-            today: date) -> dict[str, Any] | None:  # fmt: skip
+            today: date, fills_ok: bool = True) -> dict[str, Any] | None:  # fmt: skip
     """정산 대기 → 최종거래일 다음 운영일 이후 잔고에 없으면 `settled`(정산 손익은 체결 동기화가
     적은 실현 손실 기준). 잔고에 남아 있으면 그대로 두고 운영 점검이 지연을 알린다."""
-    if bal is None or not pos.last_trade_date or today <= date.fromisoformat(pos.last_trade_date):
+    if bal is None or not fills_ok:  # 이번 틱 체결 조회가 실패했으면 확정하지 않는다
+        return None
+    if not pos.last_trade_date or today <= date.fromisoformat(pos.last_trade_date):
         return None
     if executor.broker_row(bal, pos) is not None:
         return None
     with store.tx(ctx.conn):
-        store.transition(ctx.conn, pos.id, expected_version=pos.version, status="settled",
-                         closed_at=now_iso(), note="정산 확인(잔고 없음)")  # fmt: skip
+        ok = store.transition(ctx.conn, pos.id, expected_version=pos.version, status="settled",
+                              qty_held=0, closed_at=now_iso(),
+                              note="정산 확인(잔고 없음, 손익은 체결·잔고로 확인)")  # fmt: skip
+    if not ok:
+        return None
+    # 정산 손익은 이 레인이 계산하지 않는다(정산가·행사 내역 미확인) — 알림에 추정치를 싣지 않음
     executor._notify(ctx, messages.fo_settlement(account=account.id, code=pos.code,
                                                  name=executor._name_of(ctx, pos.code),
-                                                 pnl=-pos.realized_loss))  # fmt: skip
+                                                 pnl=None))  # fmt: skip
     return {"position_id": pos.id, "status": "settled"}
 
 
@@ -426,9 +428,12 @@ def _tick_account(
             res["errors"].append(f"balance: {type(e).__name__}: {e}")
     # ① 체결 동기화 → 복구. 접수된(accepted) 진입 다리의 체결은 복구가 다루지 않으므로 매 틱
     # 체결 조회로 수량을 반영한다(정기 동기화를 기다리면 체결된 보유가 보호선 밖에 남는다, PR #64)
+    fills_ok = False
     if broker is not None:
         try:
-            fo_fills.sync(conn, broker, a, today, cfg=cfg, now=ctx.now, notifier=ctx.notifier)
+            fr = fo_fills.sync(conn, broker, a, today, cfg=cfg, now=ctx.now,
+                               notifier=ctx.notifier)  # fmt: skip
+            fills_ok = not fr.get("failed_markets")
         except Exception as e:  # noqa: BLE001 — 동기화 실패는 다음 틱에 다시
             res["errors"].append(f"fills: {type(e).__name__}: {e}")
     if bal is not None and broker is not None:
@@ -448,13 +453,14 @@ def _tick_account(
         elif pos.status == "entering" and not store.live_legs(conn, position_id=pos.id):
             executor.finalize(ctx, pos)
         elif pos.status == "awaiting_settlement" and not ctx.dry_run:
-            s = _settle(ctx, a, pos, bal, today)
+            s = _settle(ctx, a, pos, bal, today, fills_ok)
             if s:
                 res["reduced"].append(s)
     # ② 보호선
     quotes: dict[int, FoQuote | None] = {}
     for pos in store.open_positions(conn, a.id):
-        if pos.status not in ("held", "entering") or pos.qty_held <= 0:
+        # 증액 다리 대기 중(resizing, 축소 다리 없음)도 보호선 대상(단계 5 리뷰)
+        if pos.status not in ("held", "entering", "resizing") or pos.qty_held <= 0:
             continue
         if pos.active_reduce_leg_id:
             continue
@@ -475,7 +481,7 @@ def _tick_account(
         res["exits"].append({"position_id": pos.id, "intent": intent, "reason": why, **r})
     # ③ 유지 조건
     held = [p for p in store.open_positions(conn, a.id)
-            if p.status in ("held", "entering") and p.qty_held > 0
+            if p.status in ("held", "entering", "resizing") and p.qty_held > 0
             and not p.active_reduce_leg_id]  # fmt: skip
     if bal is not None and held:
         for p in held:
@@ -491,13 +497,8 @@ def _tick_account(
     # ④ 일일 손실·진입 회수
     halted_key = executor.halted_key(a.id)
     if bal is not None and bal.cash.nav:
-        # 평가손익은 진입 이후 누적이라 오늘 첫 관측값을 기준으로 뺀다(오늘 변화분만, 리뷰 C3)
-        base_key = f"fo_day_open:{a.id}"
-        base = control.get_flag(conn, base_key)
-        if not isinstance(base, dict) or base.get("date") != today.isoformat():
-            base = {"date": today.isoformat(), "unrealized": str(bal.cash.unrealized)}
-            control.set_flag(conn, base_key, base)
-        pnl = bal.cash.realized_today + bal.cash.unrealized - Decimal(base["unrealized"])
+        # 오늘 손익(실현 + 평가 변화분) — 진입 게이트와 같은 함수(단계 5 리뷰), 기준은 여기서 남긴다
+        pnl = executor.pnl_today(conn, a.id, bal.cash, today, write=True) or Decimal(0)
         limit = bal.cash.nav * Decimal(str(cfg.daily_loss_stop_pct))
         res["daily_pnl"] = str(pnl)
         if (

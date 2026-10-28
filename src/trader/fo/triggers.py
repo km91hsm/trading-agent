@@ -52,6 +52,18 @@ def _business_days_before(d: date, n: int, holiday_fn: Callable[[date], bool] | 
     return out
 
 
+def force_close_day(
+    vehicle: str,
+    cfg: FoCfg,
+    *,
+    last_trade_date: date,
+    holiday_fn: Callable[[date], bool] | None = None,
+) -> date:
+    """강제 청산일 = 최종거래일 D 에서 `roll_days`(옵션 매도 +1) 운영일 앞(엔진·게이트 공용)."""
+    n = cfg.roll_days + (1 if vehicle == "OPTION_SELL" else 0)
+    return _business_days_before(last_trade_date, n, holiday_fn)
+
+
 def force_close_day_of(
     position: FoPositionRow,
     cfg: FoCfg,
@@ -59,9 +71,8 @@ def force_close_day_of(
     last_trade_date: date,
     holiday_fn: Callable[[date], bool] | None = None,
 ) -> date:
-    """강제 청산일 = 최종거래일 D 에서 `roll_days`(옵션 매도 +1) 운영일 앞."""
-    n = cfg.roll_days + (1 if position.vehicle == "OPTION_SELL" else 0)
-    return _business_days_before(last_trade_date, n, holiday_fn)
+    return force_close_day(position.vehicle, cfg, last_trade_date=last_trade_date,
+                           holiday_fn=holiday_fn)  # fmt: skip
 
 
 def opinion_day_of(force_close_day: date, holiday_fn: Callable[[date], bool] | None = None) -> date:
@@ -171,9 +182,13 @@ def check(
     if _fo_rows(conn, acct, code, lo, hi, "AND handled_at IS NULL"):
         return None  # 대기 중인 재평가가 있다
     done = _fo_rows(conn, acct, code, lo, hi, f"AND handled_at IS NOT NULL AND {_OK}")
-    if len(done) >= cfg.reeval.max_per_day:
+    handled = _fo_rows(conn, acct, code, lo, hi, "AND handled_at IS NOT NULL")
+    # 하루 상한은 세션이 실제로 뜬 것(성공 + '실패:')을 센다 — 실패한 유료 세션이 상한 밖에서
+    # 반복되지 않게. 간격은 처리된 모든 행 기준(현물 `last_trigger_handled_at` 과 같은 규칙)
+    spent = [r for r in handled if not str(r["session_id"] or "").startswith("폐기:")]
+    if len(spent) >= cfg.reeval.max_per_day:
         return None
-    last = max((r["handled_at"] for r in done), default=None)
+    last = max((r["handled_at"] for r in handled), default=None)
     if last is not None:
         gap = now - datetime.fromisoformat(last)
         if gap < timedelta(minutes=cfg.reeval.interval_min):

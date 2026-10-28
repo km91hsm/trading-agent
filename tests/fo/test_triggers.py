@@ -71,11 +71,13 @@ def test_pending_suppresses_new(conn):
     assert _check(conn, now=at(11, 0), novel_news=5) is None
 
 
-def test_failed_session_not_counted(conn):
+def test_failed_session_waits_interval_then_retries(conn):
     t = _check(conn, now=at(10, 0), underlying=Decimal("365"))
     _fire(conn, t, now=at(10, 0), session="실패: 상한")
-    again = _check(conn, now=at(10, 5), underlying=Decimal("365"))
-    assert again is not None and again.kind == "move"  # 간격·1회 모두 실패는 세지 않음
+    # 실패도 간격은 지킨다(실패한 유료 세션이 매 틱 다시 뜨지 않게, 단계 5 리뷰)
+    assert _check(conn, now=at(10, 5), underlying=Decimal("365")) is None
+    again = _check(conn, now=at(10, 31), underlying=Decimal("365"))
+    assert again is not None and again.kind == "move"  # 운영일 1회는 성공만 센다
 
 
 def test_interval_and_daily_max(conn):

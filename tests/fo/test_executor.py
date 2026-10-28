@@ -259,7 +259,7 @@ def test_sending_leg_never_resent_after_restart(conn):
 
     rep = positions.recover(conn, account_id=ACCT, balance=balance([holding(qty=4)]),
                             order_state_of=broker.get_order_state, fills_of=broker.get_fills,
-                            today=TODAY, now=T0)  # fmt: skip
+                            today=TODAY, now=T0 + timedelta(minutes=5))  # fmt: skip — 재시작 뒤
     conn.commit()
     assert rep.legs_fixed == 1 and len(broker.orders) == 1
     leg = store.get_leg(conn, leg.id)

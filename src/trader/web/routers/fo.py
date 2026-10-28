@@ -14,7 +14,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 
 from trader.config import AccountConfig
 from trader.control import control
-from trader.fo import store
+from trader.fo import sizing, store
 from trader.ledger import performance, repo
 from trader.orchestrator import run_store
 from trader.web.routers._common import deps_of, today_kst
@@ -108,7 +108,10 @@ def positions(request: Request, account_id: str = Query(...)) -> list[dict]:
                 "code = ? ORDER BY date DESC LIMIT 1",
                 (acct.id, p.code),
             ).fetchone()
-            limit = p.nav_at_open * Decimal(str(r)) if p.nav_at_open is not None else None
+            avg = Decimal(snap["avg"]) if snap and snap["avg"] else None
+            budget = sizing.position_budget(
+                p, ref_price=avg, multiplier=deps.settings.fo.product_cfg().multiplier, r=r
+            )
             live = store.live_legs(conn, position_id=p.id)
             out.append({
                 "id": p.id, "code": p.code, "kind": p.kind, "contract_side": p.contract_side,
@@ -121,7 +124,8 @@ def positions(request: Request, account_id: str = Query(...)) -> list[dict]:
                 "horizon_until": p.horizon_until, "opened_at": p.opened_at,
                 "avg": snap["avg"] if snap else None, "current": snap["current"] if snap else None,
                 "eval": snap["eval"] if snap else None,
-                "budget_used": _s(p.realized_loss + p.fees), "budget_limit": _s(limit),
+                "budget_used": _s(budget["used"]), "budget_planned": _s(budget["planned"]),
+                "budget_limit": _s(budget["limit"]), "budget_free": _s(budget["free"]),
                 "live_legs": len(live), "note": p.note,
             })  # fmt: skip
     return out

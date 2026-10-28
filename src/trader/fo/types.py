@@ -196,6 +196,8 @@ class FoPortfolio:
     halted: bool = False
     verified: dict[str, bool] = field(default_factory=dict)
     realized_today: Decimal = Decimal(0)
+    # 오늘 손익(실현 + 평가 변화분, `executor.pnl_today`). None 이면 실현만(기준 관측 전)
+    pnl_today: Decimal | None = None
 
 
 @dataclass
@@ -219,6 +221,8 @@ class GateInput:
     contract: Contract | None = None
     days_left: int | None = None
     position: FoPositionRow | None = None
+    # 이 날부터 신규 금지(만기 강제 청산일의 직전 운영일, 휴장 반영 — 엔진의 강제 청산과 같은 달력)
+    entry_block_day: date | None = None
 
 
 @dataclass

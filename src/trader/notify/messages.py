@@ -610,19 +610,40 @@ def fo_order(
     leverage: Any = None,
     stop_pt: Any = None,
     dry_run: bool = False,
+    direction: str | None = None,
+    vehicle: str | None = None,
+    kind: str | None = None,
 ) -> str:
-    """파생 주문 접수·기록 알림. `status` 는 accepted|dry_run|rejected|failed."""
+    """파생 주문 접수·기록 알림. `status` 는 accepted|dry_run|rejected|failed. 방향(시장 뷰)·
+    수단·콜/풋을 함께 적어 '매도' 가 숏으로 읽히지 않게 한다(풋 매도 = 상승 베팅)."""
     tag = "파생 주문" if not dry_run else f"파생 주문 · {DRY_RUN}"
     px = "시장가" if order_type == "MARKET" else f"{price}pt 지정가"
+    what = fo_what(direction, vehicle, kind)
     lines = [
+        *([what] if what else []),
         f"{FO_INTENT.get(intent, intent)} · {SIDE.get(side, side)} {qty}계약 · {px}",
         f"상태 {status}" + (f" · 접수번호 {order_no}" if order_no else ""),
     ]
     if leverage is not None:
         lines.append(f"배수 {float(leverage):.2f}")
     if stop_pt is not None:
-        lines.append(f"손절선 {stop_pt}pt")
+        lines.append(f"지수 손절선 {stop_pt}")
     return render(tag, f"{account} · {fo_label(code, name)}", lines)
+
+
+FO_KIND = {"FUTURES": "선물", "CALL": "콜", "PUT": "풋"}
+
+
+def fo_what(direction: str | None, vehicle: str | None, kind: str | None) -> str:
+    """'롱(상승) · 풋 매도' 처럼 시장 방향과 수단·종류를 한 줄로. 모르면 빈 문자열."""
+    if not direction or not vehicle:
+        return ""
+    d = {"LONG": "롱(상승)", "SHORT": "숏(하락)"}.get(direction, direction)
+    if vehicle == "FUTURES":
+        return f"{d} · 선물"
+    k = FO_KIND.get(kind or "", "옵션")
+    act = "매수" if vehicle == "OPTION_BUY" else "매도"
+    return f"{d} · {k} {act}"
 
 
 def fo_reject(*, account: str, code: str, name: str | None, intent: str, reasons: list[str]) -> str:
@@ -688,11 +709,13 @@ def fo_recall(*, account: str, code: str, name: str | None, reason: str, cancell
 
 
 def fo_settlement(*, account: str, code: str, name: str | None, pnl: Any) -> str:
-    return render(
-        "파생 정산",
-        f"{account} · {fo_label(code, name)}",
-        [f"만기 정산 손익 {money(pnl, 'KR')}"],
+    """만기 정산 확인. `pnl` 이 None 이면 손익 미확정(정산가·행사 내역은 체결·잔고로 확인)."""
+    line = (
+        f"만기 정산 손익 {money(pnl, 'KR')}"
+        if pnl is not None
+        else "만기로 잔고에서 사라졌어요 — 정산 손익은 HTS 체결·잔고로 확인하세요"
     )
+    return render("파생 정산", f"{account} · {fo_label(code, name)}", [line])
 
 
 def fo_fill_anomaly(

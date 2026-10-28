@@ -40,7 +40,11 @@ export type FoPosition = {
   current: string | null;
   eval: string | null;
   budget_used: string | null;
+  /** 보유분의 손절까지 계획 손실(모르면 null) */
+  budget_planned?: string | null;
   budget_limit: string | null;
+  /** 추가로 쓸 수 있는 위험 = 한도 − 사용 − 계획(모르면 null) */
+  budget_free?: string | null;
   live_legs: number;
   note: string | null;
 };

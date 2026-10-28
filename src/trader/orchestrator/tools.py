@@ -1771,12 +1771,17 @@ def _fo_reeval_requests(d: Path, account_id: str) -> list[tuple[int, dict]]:
 
 def _fo_position_view(ctx: ToolContext, pos: Any) -> dict:
     """fo-trader 입력의 `context.position`(재평가): 현재 손절·배수·수명 예산 잔여."""
+    from trader.fo import sizing as fo_sizing
+
     cfg = ctx.settings.fo
-    used = (pos.realized_loss or Decimal(0)) + (pos.fees or Decimal(0))
-    limit = (
-        pos.nav_at_open * Decimal(str(cfg.risk_per_trade_pct))
-        if pos.nav_at_open is not None
-        else None
+    snap = ctx.conn.execute(
+        "SELECT avg FROM fo_positions_snapshot WHERE account_id = ? AND code = ? "
+        "ORDER BY date DESC LIMIT 1",
+        (pos.account_id, pos.code),
+    ).fetchone() if ctx.conn is not None else None  # fmt: skip
+    avg = Decimal(snap["avg"]) if snap and snap["avg"] else None
+    budget = fo_sizing.position_budget(
+        pos, ref_price=avg, multiplier=cfg.product_cfg().multiplier, r=cfg.risk_per_trade_pct
     )
     out = {
         k: getattr(pos, k)
@@ -1787,11 +1792,12 @@ def _fo_position_view(ctx: ToolContext, pos: Any) -> dict:
             "last_trade_date", "decision_date", "round", "opened_at",
         )
     }  # fmt: skip
+    # remaining = 한도 − 실현·비용 − 보유분 계획 손실(추가로 쓸 수 있는 위험). 계획 손실을 모르면
+    # None(확정값으로 주지 않는다, 단계 5 리뷰)
     out["budget"] = {
-        "used": used,
-        "limit": limit,
-        "remaining": (limit - used) if limit is not None else None,
-    }
+        "used": budget["used"], "planned": budget["planned"], "limit": budget["limit"],
+        "remaining": budget["free"],
+    }  # fmt: skip
     return json.loads(json.dumps(out, default=str, ensure_ascii=False))
 
 
@@ -2268,7 +2274,8 @@ def _fo_account_done(
     if f"_fo_order_{account_id}" in stages:
         return True
     if ctx.conn.execute(
-        "SELECT 1 FROM fo_order_legs WHERE account_id = ? AND request_id = ? LIMIT 1",
+        "SELECT 1 FROM fo_order_legs WHERE account_id = ? AND request_id = ? "
+        "AND NOT (status = 'cancelled' AND order_no IS NULL AND sent_at IS NULL) LIMIT 1",
         (account_id, request_id),
     ).fetchone():
         return True

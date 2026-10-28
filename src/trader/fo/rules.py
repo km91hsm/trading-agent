@@ -226,12 +226,16 @@ def evaluate(gi: GateInput) -> FoVerdict:
     if gi.paused:
         reasons.append("일시정지(paused) — 기록만")
 
-    # HOLD: 다리 없음, 손절 단조만
+    # HOLD: 다리 없음, 손절 단조만(새 손절선은 기초지수의 올바른 쪽·최소 거리일 때만)
     if d.intent == "HOLD":
         stop = monotone_stop(pos.stop_pt if pos else None, _d(d.stop_pt) if d.stop_pt else None,
                              pos.direction if pos else d.direction)  # fmt: skip
+        note = "관망"
+        if pos is not None and stop != pos.stop_pt and not _stop_ok(gi, stop, pos.direction):
+            note = f"관망 — 손절선 {stop} 거부(기초지수 기준 부호·거리), 기존 {pos.stop_pt} 유지"
+            stop = pos.stop_pt
         return FoVerdict(
-            approved=not reasons, reasons=reasons, note="관망", stop_pt=stop,
+            approved=not reasons, reasons=reasons, note=note, stop_pt=stop,
             leverage_used=(pos.leverage_used or 0.0) if pos else 0.0,
             approved_mult=pos.approved_mult if pos else None,
             premium_stop=pos.premium_stop if pos else None,
@@ -284,6 +288,10 @@ def evaluate(gi: GateInput) -> FoVerdict:
     stop_new = monotone_stop(pos.stop_pt if pos else None, _d(d.stop_pt), d.direction)
     if pos is not None and stop_new != _d(d.stop_pt):
         notes.append(f"손절선 불리한 이동 거부 {d.stop_pt}→{stop_new}")
+    if pos is not None and stop_new != pos.stop_pt and not _stop_ok(gi, stop_new, pos.direction):
+        # 감액 경로는 진입 사유를 무시하므로 여기서 막는다(오타 3520 → 즉시 손절 방지, 단계 5 리뷰)
+        notes.append(f"손절선 {stop_new} 거부(기초지수 기준 부호·거리) — 기존 {pos.stop_pt} 유지")
+        stop_new = pos.stop_pt
     _stop_rejections(gi, stop_new, entry)
 
     # §4.4 배수(상승 금지). 국면 cap 0 은 진입 거부 사유(위)이지 감액 목표를 0 으로 만들지 않는다
@@ -420,7 +428,10 @@ def _entry_rejections(gi: GateInput, reasons: list[str]) -> None:
             reasons.append(f"옵션 잔존일 {gi.days_left} < {cfg.option.min_days_left}")
     if port.halted:
         reasons.append("당일 손실 한도(halted)")
-    if port.nav is not None and port.realized_today <= -(port.nav * _d(cfg.daily_loss_stop_pct)):
+    if gi.entry_block_day is not None and gi.today >= gi.entry_block_day:
+        reasons.append(f"만기 강제 청산 직전({gi.entry_block_day} 부터 신규 금지)")
+    today_pnl = port.pnl_today if port.pnl_today is not None else port.realized_today
+    if port.nav is not None and today_pnl <= -(port.nav * _d(cfg.daily_loss_stop_pct)):
         reasons.append("당일 손실 한도 초과")
     if gi.killswitch:
         reasons.append("킬스위치")
@@ -453,6 +464,17 @@ def _entry_rejections(gi: GateInput, reasons: list[str]) -> None:
     )  # fmt: skip
     if cf == 0.0:
         reasons.append(f"대조 차단(국면 {gi.regime} 역행 {d.direction}/{d.vehicle})")
+
+
+def _stop_ok(gi: GateInput, stop: Decimal | None, direction: str) -> bool:
+    """손절선이 기초지수의 올바른 쪽에 최소 거리 이상 떨어져 있는가(기초지수를 모르면 판단 보류 —
+    True)."""
+    if stop is None or gi.underlying is None:
+        return True
+    gap = _d(gi.cfg.min_stop_pt)
+    if direction == "LONG":
+        return stop <= gi.underlying - gap
+    return stop >= gi.underlying + gap
 
 
 def _stop_rejections(gi: GateInput, stop_new: Decimal | None, reasons: list[str]) -> None:

@@ -38,6 +38,18 @@ def stop_fut_of(
     return stop_pt + (basis or _ZERO) - sign * slippage_pt
 
 
+def basis_of(quote, underlying: Decimal | None) -> Decimal | None:
+    """선물 베이시스: 시세 필드가 비면 같은 시세의 `가격 − 기초지수`(0 으로 두지 않는다)."""
+    if quote is None:
+        return None
+    if quote.basis is not None:
+        return quote.basis
+    base = underlying if underlying is not None else quote.underlying
+    if base is None or not quote.price:
+        return None
+    return quote.price - base
+
+
 def planned_loss_per_contract(
     vehicle: str,
     kind: str,
@@ -94,6 +106,28 @@ def lifetime_budget(
     limit = nav_at_open * _d(r)
     planned = held_loss + pending_loss
     return {"used": used, "planned": planned, "limit": limit, "ok": used + planned <= limit}
+
+
+def position_budget(
+    pos: FoPositionRow, *, ref_price: Decimal | None, multiplier: int, r: float
+) -> dict:
+    """보유 포지션의 수명 예산 현황 {used, planned, limit, free}. `planned` 는 보유분의 손절까지
+    계획 손실(선물은 평균가, 옵션은 진입 프리미엄 기준), 계산할 수 없으면 None 이고 그때 `free` 도
+    None(확정값으로 보이지 않게, 단계 5 리뷰)."""
+    used = pos.realized_loss + pos.fees
+    limit = pos.nav_at_open * _d(r) if pos.nav_at_open is not None else None
+    planned: Decimal | None = None
+    ref = pos.entry_premium if pos.kind != "FUTURES" else ref_price
+    if ref is not None:
+        try:
+            planned = planned_loss_per_contract(
+                pos.vehicle, pos.kind, ref_price=ref, stop_fut=pos.stop_fut,
+                premium_stop=pos.premium_stop, multiplier=multiplier,
+            ) * pos.qty_held  # fmt: skip
+        except ValueError:
+            planned = None
+    free = (limit - used - planned) if limit is not None and planned is not None else None
+    return {"used": used, "planned": planned, "limit": limit, "free": free}
 
 
 @dataclass(frozen=True)
@@ -178,6 +212,9 @@ def margin_check(
     if reasons:
         return 0, reasons
     allowed = int(math.floor(q * (1 - buffer_pct))) - max(reserved_qty, 0)
+    # 주문 **뒤** 남는 현금도 NAV × buffer 이상(유지 조건과 같은 기준, 단계 5 리뷰)
+    room = cash - local_reserved - nav * buf
+    allowed = min(allowed, int(math.floor(room / per)) if per > 0 else 0)
     return min(n, max(allowed, 0)), []
 
 
@@ -222,6 +259,13 @@ def size(
         if is_entry(x.intent) and x.live and (pos is None or x.position_id != pos.id)
     )
     n_target = _floor(nav * _d(L) / dn)
+    if pos is not None:
+        # 보유 중에는 계약 수를 늘리지 않는다 — 같은 배수라도 델타·지수가 내리면 계약 수가 늘어
+        # 손실 포지션에 물타기가 된다(단계 5 리뷰). 늘리려면 새 결정으로 청산 뒤 새로 연다
+        ceiling = max(pos.qty_target, held + live)
+        if n_target > ceiling:
+            notes.append(f"보유 중 계약 수 증가 금지 {n_target}→{ceiling}")
+            n_target = ceiling
     cap = cfg.max_contracts - others
     if n_target > cap:
         notes.append(f"계약 수 한도로 {n_target}→{max(cap, 0)}")
@@ -241,10 +285,14 @@ def size(
     # 계획 손실/계약 — 이번 다리는 기준가, 보유는 평균체결가, 미체결 다리는 그 다리 가격(시장가는
     # 기준가)으로 각각 센다(단계 2 리뷰 S2-7: 하나의 단가로 보유 전체를 재평가하면 과소계산)
     stop_fut = (
-        stop_fut_of(stop_pt, q.basis, d.direction, _d(cfg.slippage_pt))
+        stop_fut_of(stop_pt, basis_of(q, gi.underlying), d.direction, _d(cfg.slippage_pt))
         if d.vehicle == "FUTURES"
         else None
     )
+    if stop_fut is not None:
+        side = 1 if d.direction == "LONG" else -1
+        if side * (ref_price - stop_fut) <= 0:
+            reasons.append(f"진입가 {ref_price} 가 선물 손절가 {stop_fut} 반대편(즉시 손절)")
 
     def loss_at(price: Decimal) -> Decimal:
         return planned_loss_per_contract(
@@ -297,7 +345,8 @@ def size(
         return SizeResult(
             0, 0, _ZERO, per_loss, _ZERO, _ZERO, budget, ref_price, [f"스트레스 재평가 불가: {e}"]
         )
-    if cfg.hold_overnight and per_stress > 0:
+    # 옵션 매도는 장중 전용이어도 시나리오 한도를 쓴다(1차 민감도로 사이징하지 않는다, 스펙 §0)
+    if (cfg.hold_overnight or d.vehicle == "OPTION_SELL") and per_stress > 0:
         n_stress = _floor(nav * _d(cfg.overnight_risk_pct) / per_stress)
         if n_stress < held + live:
             reasons.append(f"시나리오 최악 손실이 NAV × {cfg.overnight_risk_pct} 초과(보유분)")

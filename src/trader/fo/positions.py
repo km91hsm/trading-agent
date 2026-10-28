@@ -31,6 +31,17 @@ log = logging.getLogger("trader.fo")
 __all__ = ["TRANSITIONS", "can_transition", "RecoveryReport", "recover", "adopt"]
 
 ConfirmResult = Literal["confirmed", "unconfirmed", "error"]
+STALE_PREPARED_S = 120  # 이만큼 넘게 전송되지 않은 prepared 다리는 죽은 예약으로 본다(벽시계)
+# 전송 중(sending) 다리는 이만큼 지나야 복구가 확정을 시도(다른 프로세스가 응답 대기 중일 수 있다)
+SENDING_GRACE_S = 60
+
+
+def leg_day(leg: FoLegRow) -> date:
+    """다리의 거래일(KST) — 접수·전송·생성 시각 순. KIS 주문번호·체결 조회는 날짜 단위다."""
+    from trader.config import KST
+
+    at = leg.accepted_at or leg.sent_at or leg.created_at
+    return datetime.fromisoformat(at).astimezone(KST).date()
 
 
 @dataclass
@@ -75,11 +86,16 @@ def _confirm_leg(
         if fills is None:
             return "error"  # 체결 조회 실패 — 후보를 셀 수 없다
         side = "BUY" if (is_entry(leg.intent) == (pos.contract_side == "LONG")) else "SELL"
+        from trader.ledger import repo
+
+        lo, hi = repo.day_bounds(today, "KR")  # 같은 거래일의 연결만(주문번호는 날마다 재시작)
         bound = {
             r["order_no"]
             for r in conn.execute(
-                "SELECT order_no FROM fo_order_legs WHERE order_no IS NOT NULL AND account_id = ?",
-                (leg.account_id,),
+                "SELECT order_no FROM fo_order_legs WHERE order_no IS NOT NULL AND account_id = ? "
+                "AND COALESCE(accepted_at, sent_at, created_at) >= ? "
+                "AND COALESCE(accepted_at, sent_at, created_at) < ?",
+                (leg.account_id, lo, hi),
             )
         }
         cands = [
@@ -129,17 +145,47 @@ def recover(
     """재시작·첫 틱 복구. 다리 확정·unknown 표시는 짧은 트랜잭션으로 그때그때 commit 하고(브로커
     조회 중 쓰기 잠금을 쥐지 않게), 나머지 쓰기는 호출자가 commit 한다."""
     rep = RecoveryReport()
-    fills: list[FoFill] | None
-    try:
-        fills = fills_of(today)
-    except Exception as e:  # noqa: BLE001
-        log.warning("파생 체결 조회 실패(주문번호 없는 다리는 보류): %s", e)
-        fills = None
-    # ① 미확정 다리
+    cache: dict[date, list[FoFill] | None] = {}
+
+    def fills_for(d: date) -> list[FoFill] | None:
+        if d not in cache:
+            try:
+                cache[d] = fills_of(d)
+            except Exception as e:  # noqa: BLE001
+                log.warning("파생 체결 조회 실패 %s(주문번호 없는 다리는 보류): %s", d, e)
+                cache[d] = None
+        return cache[d]
+
+    # ⓪ 예약 뒤 전송 전에 죽은 prepared 다리: 조건부 취소(전송기가 선점했으면 실패) — 진입이면
+    # 빈 포지션 해제, 축소면 활성 연결을 풀어 다음 틱이 다시 낸다(단계 5 리뷰 A2)
+    wall = datetime.now(now.tzinfo)
+    for leg in store.live_legs(conn, account_id=account_id):
+        if leg.status != "prepared" or leg.sent_at is not None:
+            continue
+        if (wall - datetime.fromisoformat(leg.created_at)).total_seconds() < STALE_PREPARED_S:
+            continue
+        with store.tx(conn):
+            if not store.cancel_prepared(conn, leg.id):
+                continue
+            if is_entry(leg.intent):
+                store.release_if_empty(conn, leg.position_id, f"복구: 전송 전 예약 {leg.id} 취소")
+            else:
+                pos0 = store.get_position(conn, leg.position_id)
+                if pos0 is not None and pos0.active_reduce_leg_id == leg.id:
+                    store.transition(conn, pos0.id, expected_version=pos0.version,
+                                     active_reduce_leg_id=None)  # fmt: skip
+        rep.legs_fixed += 1
+    # ① 미확정 다리(다리마다 **자기 거래일**로 조회 — 어제 다리를 오늘 주문에 묶지 않는다, A4)
     for leg in store.live_legs(conn, account_id=account_id):
         if leg.status not in ("sending", "unknown"):
             continue
-        res = _confirm_leg(conn, leg, order_state_of, fills, today)
+        if leg.status == "sending" and leg.sent_at is not None and (
+            now - datetime.fromisoformat(leg.sent_at)
+        ).total_seconds() < SENDING_GRACE_S:
+            rep.deferred.append(leg.id)  # 다른 프로세스가 아직 응답을 기다리는 중일 수 있다(CA2)
+            continue
+        d = leg_day(leg)
+        res = _confirm_leg(conn, leg, order_state_of, fills_for(d), d)
         if res == "confirmed":
             rep.legs_fixed += 1
         elif res == "error":
@@ -247,6 +293,7 @@ def adopt(
     stop_pt: Decimal,
     balance: FoBalance,
     account_id: str | None = None,
+    last_trade_date: date | None = None,
 ) -> bool:
     """사람의 승계: 브로커 행(코드·방향·종류·수량)과 **대조 일치할 때만** `held` 로 올린다.
     `account_id` 를 주면 그 계좌의 포지션일 때만(다른 계좌 잔고로 승계 금지)."""
@@ -269,6 +316,8 @@ def adopt(
         qty_target=qty,
         stop_pt=stop_pt,
         note="adopt",
+        # 만기 강제 청산·정산 전환이 꺼지지 않게 마스터로 채운 최종거래일(단계 5 리뷰)
+        **({"last_trade_date": last_trade_date.isoformat()} if last_trade_date else {}),
     )
 
 

@@ -475,8 +475,8 @@ def test_fo_trader_md_input_contract_matches_bundle(project, conn):
     pos = store.open_positions(conn, ACCT)[0]
     b = tools.fo_bundle(ctx, date=D, kind="trader", position_id=pos.id, account=ACCT)["data"]
     md = (REPO_AGENTS / "fo-trader.md").read_text(encoding="utf-8")
-    assert set(b["context"]["position"]["budget"]) == {"used", "limit", "remaining"}
-    assert "budget: {used, limit, remaining}" in md
+    assert set(b["context"]["position"]["budget"]) == {"used", "planned", "limit", "remaining"}
+    assert "budget: {used, planned, limit, remaining}" in md
     assert set(b["context"]["limits"]["option"]["sell_stop_mult"]) == {"min", "default", "max"}
     assert "sell_stop_mult: {min, default, max}" in md
     row, err = inputs_mod._account_summary(fo, fo.accounts[0], today=D)

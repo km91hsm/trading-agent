@@ -40,6 +40,7 @@ from trader.fo.types import (
     FoVerdict,
     GateInput,
     Leg,
+    can_transition,
     is_entry,
     is_reduce,
 )
@@ -208,6 +209,53 @@ def fetch_fresh(
     return fi
 
 
+DAY_OPEN_FLAG = "fo_day_open:"
+
+
+def pnl_today(
+    conn: sqlite3.Connection, account_id: str, cash: Any, today: date, *, write: bool = False
+) -> Decimal | None:
+    """오늘 손익 = 당일 실현 + (평가손익 − 오늘 첫 관측 평가손익). 평가손익은 진입 이후 누적이라
+    기준을 빼야 '일일' 이 된다(단계 4 C3·단계 5 리뷰 — 엔진 halt 와 진입 게이트가 같은 함수).
+    `write` 면 오늘 기준이 없을 때 지금 값을 기준으로 남긴다(엔진만). 기준이 없으면 None."""
+    if cash is None:
+        return None
+    key = f"{DAY_OPEN_FLAG}{account_id}"
+    base = control.get_flag(conn, key)
+    if not isinstance(base, dict) or base.get("date") != today.isoformat():
+        if not write:
+            return None
+        base = {"date": today.isoformat(), "unrealized": str(cash.unrealized)}
+        control.set_flag(conn, key, base)
+    return cash.realized_today + cash.unrealized - Decimal(str(base["unrealized"]))
+
+
+def holiday_fn_of(ctx: FoExecContext) -> Callable[[date], bool] | None:
+    """시세 클라이언트의 KIS 휴장일(`is_holiday`)을 캐시해 돌려준다. 조회 실패는 개장으로."""
+    fn = getattr(ctx.market_client, "is_holiday", None)
+    if fn is None:
+        return None
+    cache: dict[date, bool] = {}
+
+    def is_holiday(d: date) -> bool:
+        if d not in cache:
+            try:
+                cache[d] = bool(fn(d))
+            except Exception:  # noqa: BLE001
+                cache[d] = False
+        return cache[d]
+
+    return is_holiday
+
+
+def _last_trade_date_of(ctx: FoExecContext, code: str, quote: FoQuote | None) -> date | None:
+    """시세 필드 우선, 없으면 마스터의 월물 규칙(둘째 목요일 추정). 모르면 None."""
+    if quote is not None and quote.last_trade_date is not None:
+        return quote.last_trade_date
+    c = next((x for x in ctx.master if x.code == code), None)
+    return fo_master.last_trade_date(c, quote) if c is not None else None
+
+
 def build_portfolio(
     ctx: FoExecContext, account: AccountConfig, balance: FoBalance | None, today: date
 ) -> FoPortfolio:
@@ -230,6 +278,7 @@ def build_portfolio(
         halted=halted,
         verified=verified,
         realized_today=balance.cash.realized_today if balance is not None else Decimal(0),
+        pnl_today=pnl_today(conn, account.id, balance.cash, today) if balance is not None else None,
     )
 
 
@@ -377,40 +426,49 @@ def _transmit(
         status, msg = "rejected", str(e)
     leg_status = {"accepted": "accepted", "unknown": "unknown"}.get(status, "rejected")
     order_id: int | None = None
-    if status in ("accepted", "unknown"):
-        try:
-            order_id = repo.insert_order(
-                conn,
-                decision_id=None,
-                account_id=account.id,
-                ticker=req.code,
-                market="KR",
-                side=req.side,
-                qty=req.qty,
-                order_type=req.order_type,
-                price=req.price,
-                status=status,
-                order_no=order_no,
-                message=msg,
-                mode=mode,
-                amount=Decimal(req.qty) * ref_price * multiplier,
-                asset="fo",
-                origin="fo",
-            )
-        except Exception as e:  # noqa: BLE001
+    # 응답 반영은 한 트랜잭션: 그사이 체결 동기화가 이 다리를 주문에 묶었으면(응답 대기 중 체결)
+    # 새 주문 행을 만들지 않고 그 연결을 쓰며, 이미 끝난(terminal) 다리 상태를 되돌리지 않는다 —
+    # 같은 체결의 비용·실현손실이 두 주문 행에 이중 반영되지 않게(단계 5 리뷰 A1)
+    try:
+        with store.tx(conn):
+            cur = store.get_leg(conn, leg_id)
+            if cur is not None and cur.order_id is not None:
+                order_id = cur.order_id
+                if cur.status == "sending":
+                    store.set_leg(conn, leg_id, status=leg_status,
+                                  order_no=cur.order_no or order_no,
+                                  accepted_at=ctx.now().isoformat()
+                                  if status == "accepted" else None)  # fmt: skip
+            else:
+                if status in ("accepted", "unknown"):
+                    order_id = repo.insert_order(
+                        conn, decision_id=None, account_id=account.id, ticker=req.code,
+                        market="KR", side=req.side, qty=req.qty, order_type=req.order_type,
+                        price=req.price, status=status, order_no=order_no, message=msg,
+                        mode=mode, amount=Decimal(req.qty) * ref_price * multiplier,
+                        asset="fo", origin="fo", commit=False,
+                    )  # fmt: skip
+                store.set_leg(
+                    conn,
+                    leg_id,
+                    status=leg_status,
+                    order_id=order_id,
+                    order_no=order_no,
+                    accepted_at=ctx.now().isoformat() if status == "accepted" else None,
+                )
+                if leg_status == "rejected" and is_entry(intent):
+                    store.release_if_empty(conn, position_id, f"진입 거부: {msg}")
+    except Exception as e:  # noqa: BLE001 — 다리는 sending 으로 남아 복구가 확정한다
+        if status in ("accepted", "unknown"):
             log.critical("파생 주문 기록 실패(접수번호 %s): %s", order_no, e)
+            if order_no:  # 접수번호는 다리에라도 남겨 복구가 번호로 확정하게(단계 5 리뷰)
+                try:
+                    with store.tx(conn):
+                        store.set_leg(conn, leg_id, order_no=order_no)
+                except Exception as e2:  # noqa: BLE001
+                    log.critical("파생 다리 %s 접수번호 기록도 실패: %s", leg_id, e2)
             raise OrderBookkeepingError(order_no, e) from e
-    with store.tx(conn):
-        store.set_leg(
-            conn,
-            leg_id,
-            status=leg_status,
-            order_id=order_id,
-            order_no=order_no,
-            accepted_at=ctx.now().isoformat() if status == "accepted" else None,
-        )
-        if leg_status == "rejected" and is_entry(intent):
-            store.release_if_empty(conn, position_id, f"진입 거부: {msg}")
+        raise
     result = {
         "leg_id": leg_id,
         "position_id": position_id,
@@ -433,9 +491,13 @@ def _transmit(
             ),
         )
     else:
+        posr = store.get_position(conn, position_id)
         _notify(
             ctx,
             messages.fo_order(
+                direction=posr.direction if posr else None,
+                vehicle=posr.vehicle if posr else None,
+                kind=posr.kind if posr else None,
                 account=account.id,
                 code=req.code,
                 name=name,
@@ -473,14 +535,16 @@ def _send_entry(
     stop_fut = None
     if leg.kind == "FUTURES" and verdict.stop_pt is not None and quote is not None:
         stop_fut = sizing.stop_fut_of(
-            verdict.stop_pt, quote.basis or Decimal(0), d.direction, Decimal(str(cfg.slippage_pt))
-        )
+            verdict.stop_pt, sizing.basis_of(quote, None) or Decimal(0), d.direction,
+            Decimal(str(cfg.slippage_pt)),
+        )  # fmt: skip
     nav_at_open = pos.nav_at_open if pos is not None else port.nav
     budget_limit = (
         nav_at_open * Decimal(str(cfg.risk_per_trade_pct)) if nav_at_open is not None else None
     )
     if pos is None:
-        ltd = quote.last_trade_date.isoformat() if quote and quote.last_trade_date else None
+        ltd_d = _last_trade_date_of(ctx, leg.code, quote)
+        ltd = ltd_d.isoformat() if ltd_d is not None else None
         new_position = dict(
             account_id=account.id, code=leg.code, kind=leg.kind,
             contract_side=verdict.contract_side, direction=d.direction, vehicle=d.vehicle,
@@ -497,9 +561,11 @@ def _send_entry(
     else:
         new_position = None
         changes = dict(
-            qty_target=verdict.n_target, stop_pt=verdict.stop_pt, stop_fut=stop_fut,
+            qty_target=verdict.n_target, stop_pt=verdict.stop_pt,
             leverage_used=verdict.leverage_used, approved_mult=verdict.approved_mult,
             premium_stop=verdict.premium_stop,
+            # 선물 손절가는 단조 병합(그 순간 베이시스로 다시 계산해 느슨해지지 않게, 단계 5 리뷰)
+            **_stop_fut_change(cfg, pos, quote, verdict.stop_pt),
         )  # fmt: skip
         new_status = "resizing" if pos.status != "resizing" else None
     plan = store.ReservePlan(
@@ -682,6 +748,7 @@ def run_leg(
         inputs_fresh=_inputs_fresh(fi, now, cfg.max_input_age_s),
         historical=ctx.historical, contract=contract,
         days_left=_days_left(fi.quote, contract, today), position=pos,
+        entry_block_day=_entry_block_day(ctx, d.vehicle, code, fi.quote),
     )  # fmt: skip
     v = rules.evaluate(gi)
     if fi.errors:
@@ -724,7 +791,10 @@ def run_leg(
         if pos is not None and hold is None and v.stop_pt is not None and v.stop_pt != pos.stop_pt:
             changes = {"stop_pt": v.stop_pt, **_stop_fut_change(cfg, pos, fi.quote, v.stop_pt)}
             with store.tx(conn):
-                store.transition(conn, pos.id, expected_version=pos.version, **changes)
+                ok = store.transition(conn, pos.id, expected_version=pos.version, **changes)
+            if not ok:  # 그사이 체결 등으로 버전이 바뀜 — 조용히 잃지 않고 알린다(단계 5 리뷰)
+                return [{"stage": rc_stage, "approved": False, "legs": [], "status": "conflict",
+                         "note": "버전 경합 — 손절선 갱신 안 됨(다음 판단에서 다시)"}]  # fmt: skip
         return [{"stage": rc_stage, "approved": v.approved, "legs": [], "note": v.note}]
     if not v.approved or not v.legs:
         if hold is not None:
@@ -804,7 +874,11 @@ def run_leg(
                 **_stop_fut_change(cfg, pos, fi.quote, v.stop_pt),
             )  # fmt: skip
             with store.tx(conn):
-                store.transition(conn, pos.id, expected_version=pos.version, **changes)
+                ok = store.transition(conn, pos.id, expected_version=pos.version, **changes)
+            if not ok:
+                results.append({"stage": od_stage, "status": "conflict", "intent": "RESIZE_DOWN",
+                                "note": "버전 경합 — 감액 목표 저장 안 됨(다음 판단에서 다시)"})
+                continue
             cur = store.get_position(conn, pos.id)
             assert cur is not None
             results.append(
@@ -851,6 +925,34 @@ def _reject(
 # --- 진입 회수·축소·재시도 -----------------------------------------------------------------
 
 
+REDUCE_MIN_AGE_S = 50  # 방금 접수된 축소 지정가는 최소 이만큼 기다린 뒤 취소·재시도
+
+
+def _state_on(broker: Any, order_no: str, lday: date, today: date):
+    """주문 상태를 **주문한 날**로 조회한다. 지난 날 주문이 아직 살아 있다고 나오면(그날 장은 이미
+    끝났다) 당일 주문 소멸로 보고 만료 상태로 바꿔 돌려준다."""
+    st = broker.get_order_state(order_no, min(lday, today))
+    if lday < today and not st.terminal:
+        return st.model_copy(update={"terminal": True, "state": "expired",
+                                     "remaining_qty": 0})  # fmt: skip
+    return st
+
+
+def _entry_block_day(ctx: FoExecContext, vehicle: str, code: str | None, quote) -> date | None:
+    """신규 진입을 막기 시작하는 날 = 엔진의 강제 청산일(휴장 반영) 직전 운영일."""
+    if code is None:
+        return None
+    ltd = _last_trade_date_of(ctx, code, quote)
+    if ltd is None:
+        return None
+    from trader.fo import triggers
+
+    hol = holiday_fn_of(ctx)
+    force = triggers.force_close_day(vehicle, ctx.settings.fo, last_trade_date=ltd,
+                                     holiday_fn=hol)  # fmt: skip
+    return triggers.opinion_day_of(force, hol)
+
+
 def recall_entries(
     ctx: FoExecContext, account: AccountConfig, position_id: int, *, reason: str
 ) -> RecallResult:
@@ -892,12 +994,14 @@ def recall_entries(
         if leg.order_no is None:
             rr.pending += 1
             continue
+        lday = positions.leg_day(leg)
+        if lday >= today:  # 지난 날 번호로 오늘 다른 주문을 취소하지 않는다(번호는 날마다 재시작)
+            try:
+                broker.cancel_order(leg.order_no, qty=0)
+            except Exception as e:  # noqa: BLE001 — 취소 거부여도 상태 조회로 확정한다
+                rr.errors.append(f"취소 {leg.order_no}: {type(e).__name__}: {e}")
         try:
-            broker.cancel_order(leg.order_no, qty=0)
-        except Exception as e:  # noqa: BLE001 — 취소 거부여도 상태 조회로 확정한다
-            rr.errors.append(f"취소 {leg.order_no}: {type(e).__name__}: {e}")
-        try:
-            st = broker.get_order_state(leg.order_no, today)
+            st = _state_on(broker, leg.order_no, lday, today)
         except Exception as e:  # noqa: BLE001
             rr.errors.append(f"상태 {leg.order_no}: {type(e).__name__}: {e}")
             rr.pending += 1
@@ -1020,11 +1124,13 @@ def reduce(
     # 반영하고(수량은 다리 진행으로만 바뀐다 — 잔고 수량 덮어쓰기는 뒤의 체결 동기화가 이중
     # 차감한다, 단계 2 리뷰 S2-11) 그래도 다르면 unknown(스펙 §5 재시작 복구와 같다)
     broker = ctx.brokers.get(account.id)
+    bal_failed = broker is None
     if broker is not None:
         try:
             bal = broker.get_balance()
         except Exception as e:  # noqa: BLE001 — 잔고 실패면 마지막 확정 잔량으로 간다
-            log.warning("파생 잔고 재조회 실패(원장 잔량으로 진행): %s", e)
+            log.warning("파생 잔고 재조회 실패(원장 잔량·스냅샷 상한으로 진행): %s", e)
+            bal_failed = True
         else:
             held = _broker_qty(bal, cur)
             if (held or 0) != cur.qty_held:
@@ -1060,8 +1166,28 @@ def reduce(
     n = min(want, cur.qty_held)
     if n <= 0:
         return finalize(ctx, cur)
-    attempt = store.next_attempt(conn, cur.id, intent, round)
-    if attempt > cfg.exit_retry_max and cur.status != "exit_failed":
+    if bal_failed:  # 잔고를 못 받았으면 마지막 확정 잔고 스냅샷으로 상한(반대 포지션 방지)
+        snap = conn.execute(
+            "SELECT qty FROM fo_positions_snapshot WHERE account_id = ? AND code = ? "
+            "ORDER BY date DESC LIMIT 1",
+            (account.id, cur.code),
+        ).fetchone()
+        if snap is not None:
+            n = min(n, int(snap["qty"]))
+        if n <= 0:
+            return {"position_id": pos.id, "intent": intent, "status": "blocked",
+                    "note": "잔고 조회 실패 — 확정 잔량 없음"}  # fmt: skip
+    # 시도 횟수는 **오늘의 이 축소 시퀀스**만 센다(실행 키 attempt 는 전 기간 고유라 날마다 쌓인다)
+    tries = sum(
+        1 for x in store.legs_of(conn, cur.id)
+        if x.intent == intent and x.round == round and positions.leg_day(x) >= today
+    )  # fmt: skip
+    attempt = tries + 1
+    if (
+        attempt > cfg.exit_retry_max
+        and cur.status != "exit_failed"
+        and can_transition(cur.status, "exit_failed")
+    ):
         with store.tx(conn):
             store.transition(conn, cur.id, expected_version=cur.version, status="exit_failed")
         cur = store.get_position(conn, pos.id)
@@ -1158,6 +1284,19 @@ def continue_reduce(
         return _resume_reduce(ctx, account, cur, leg)
     if hold is not None:
         return {"position_id": cur.id, "status": "recorded", "record_only": hold, "leg_id": leg.id}
+    if leg.status == "prepared":
+        # 예약 뒤 전송 전에 죽은 축소 다리: 조건부로 취소하고 활성 연결을 풀어 다시 낸다(전송기가
+        # 그사이 선점했으면 취소가 실패하고 다음 틱이 조회로 확정한다 — 단계 5 리뷰 A2)
+        with store.tx(conn):
+            ok = store.cancel_prepared(conn, leg.id)
+            if ok:
+                store.transition(conn, cur.id, expected_version=cur.version,
+                                 active_reduce_leg_id=None)  # fmt: skip
+        if not ok:
+            return {"position_id": cur.id, "status": "pending", "leg_id": leg.id}
+        cur = store.get_position(conn, pos.id)
+        assert cur is not None
+        return _resume_reduce(ctx, account, cur, store.get_leg(conn, leg.id))
     broker = ctx.brokers.get(account.id)
     if broker is None:
         return {"position_id": cur.id, "status": "blocked", "note": "broker 없음"}
@@ -1166,7 +1305,8 @@ def continue_reduce(
             fills = broker.get_fills(today)
         except Exception:  # noqa: BLE001
             fills = None
-        res = positions._confirm_leg(conn, leg, broker.get_order_state, fills, today)
+        res = positions._confirm_leg(conn, leg, broker.get_order_state, fills,
+                                     positions.leg_day(leg))  # fmt: skip
         if res != "confirmed":
             return {"position_id": cur.id, "status": "blocked", "note": f"미확정 다리 {leg.id}"}
         leg = store.get_leg(conn, leg.id)
@@ -1175,15 +1315,30 @@ def continue_reduce(
             cur = store.get_position(conn, pos.id)
             assert cur is not None
             return _resume_reduce(ctx, account, cur, leg)
-    # accepted·미체결: 취소 → 확정
-    try:
-        broker.cancel_order(leg.order_no, qty=0)
-    except Exception as e:  # noqa: BLE001
-        log.warning("파생 축소 다리 %s 취소 요청 실패(상태 조회로 확정): %s", leg.id, e)
-    try:
-        st = broker.get_order_state(leg.order_no, today)
+    # accepted·미체결: 취소 → 확정. unknown 포지션은 사람 몫이라 건드리지 않고, 방금 낸 지정가는
+    # 한 틱(`REDUCE_MIN_AGE_S`)은 기다린다(단계 5 리뷰)
+    if cur.status == "unknown":
+        return {"position_id": cur.id, "status": "blocked", "note": "unknown 포지션 — 사람이 정리"}
+    lday = positions.leg_day(leg)
+    try:  # 먼저 조회 — 이미 끝났으면 취소하지 않는다
+        st = _state_on(broker, leg.order_no, lday, today)
     except Exception as e:  # noqa: BLE001
         return {"position_id": cur.id, "status": "pending", "note": f"상태 조회 실패: {e}"}
+    if not st.terminal:
+        now_dt, _ = _today(ctx)
+        if leg.accepted_at and (
+            now_dt - datetime.fromisoformat(leg.accepted_at)
+        ).total_seconds() < REDUCE_MIN_AGE_S:
+            return {"position_id": cur.id, "status": "pending", "leg_id": leg.id, "note": "대기"}
+        if lday >= today:
+            try:
+                broker.cancel_order(leg.order_no, qty=0)
+            except Exception as e:  # noqa: BLE001
+                log.warning("파생 축소 다리 %s 취소 요청 실패(상태 조회로 확정): %s", leg.id, e)
+        try:
+            st = _state_on(broker, leg.order_no, lday, today)
+        except Exception as e:  # noqa: BLE001
+            return {"position_id": cur.id, "status": "pending", "note": f"상태 조회 실패: {e}"}
     with store.tx(conn):
         if st.filled_qty > leg.filled_qty:
             store.record_fill_progress(conn, leg.id, st.filled_qty)

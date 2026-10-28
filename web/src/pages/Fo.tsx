@@ -119,7 +119,7 @@ export function FoPage() {
                 </Th>
                 <Th>손절·<Term k="fo.premium_stop">보호선</Term></Th>
                 <Th num>
-                  <Term k="fo.lifetime_budget">예산 사용/한도</Term>
+                  <Term k="fo.lifetime_budget">예산 사용+계획/한도</Term>
                 </Th>
                 <Th core>상태</Th>
               </tr>
@@ -177,9 +177,9 @@ export function FoPage() {
           )}
         </Section>
         <Section title="재평가·순자산" aside="30일">
-          {d?.reevals.length ? (
+          {d?.reevals.filter((r) => r.account_id === acct).length ? (
             <ul>
-              {d.reevals.map((r) => (
+              {d.reevals.filter((r) => r.account_id === acct).map((r) => (
                 <li key={r.id}>
                   {r.round}차 {intentLabel(r.intent)} — {decisionLine(r)}
                 </li>

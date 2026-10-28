@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -89,7 +89,7 @@ def _recover(conn, balance, *, states=None, fills=None, raise_state=False):
         order_state_of=order_state_of,
         fills_of=lambda d: list(fills or []),
         today=TODAY,
-        now=NOW,
+        now=NOW + timedelta(minutes=5),  # 전송 뒤 유예(SENDING_GRACE_S)가 지난 복구
     )
 
 
@@ -264,7 +264,7 @@ def test_fo_messages_shape():
         "진입 · 매수 2계약 · 350.5pt 지정가\n"
         "상태 accepted · 접수번호 A1\n"
         "배수 1.50\n"
-        "손절선 345pt"
+        "지수 손절선 345"
     )
     assert M.fo_unknown_holding(account=ACCT, code="105W11", side="SHORT", qty=1).startswith(
         "[파생 잔고 출처 불명] paper-fo · 105W11\n매도 1계약"

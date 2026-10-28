@@ -43,7 +43,7 @@ export type PositionRow = {
   dir: "up" | "dn" | "flat"; // 적청 데이터 색(base.css .up·.dn)
   leverage: string;
   stop: string; // 손절선(지수)·보호선
-  budget: string; // "사용 12만 / 한도 200만"
+  budget: string; // "12만 + 계획 50만 / 200만 · 여유 138만"
   status: string;
   attention: boolean;
 };
@@ -71,7 +71,11 @@ export function positionRows(ps: FoPosition[]): PositionRow[] {
       dir: p.direction === "LONG" ? "up" : p.direction === "SHORT" ? "dn" : "flat",
       leverage: p.leverage_used === null ? "—" : `${p.leverage_used.toFixed(2)}배`,
       stop: stops || "—",
-      budget: `${won(p.budget_used)} / ${won(p.budget_limit)}`,
+      budget:
+        `${won(p.budget_used)}` +
+        (p.budget_planned ? ` + 계획 ${won(p.budget_planned)}` : "") +
+        ` / ${won(p.budget_limit)}` +
+        (p.budget_free ? ` · 여유 ${won(p.budget_free)}` : p.budget_planned === undefined ? "" : " · 여유 미확인"),
       status: statusLabel(p.status),
       attention: ATTENTION.has(p.status),
     };

@@ -20,6 +20,7 @@ from trader.control import control
 from trader.fo import executor, rules, store
 from trader.fo.executor import FoExecContext
 from trader.fo.schemas import FoDecisionEnvelope
+from trader.fo.types import is_reduce
 from trader.ledger import repo
 
 log = logging.getLogger("trader.fo")
@@ -153,25 +154,65 @@ def apply(ctx: FoExecContext, env: FoDecisionEnvelope, *, round_n: int) -> dict[
             "decision": new_dec, "account_id": None, "position_id": None,
             "expected_version": None,
         })  # fmt: skip
-        if d.direction != "FLAT":
+        close_env = env.model_copy(update={"decision": d.model_copy(update={"intent": "CLOSE"})})
+        out = executor.run_leg(ctx, account, close_env, round=round_n, source="reeval")
+        # 새 진입 봉투는 이 청산이 **실제로 나갔을 때만** 남기고, 다음 틱은 이 라운드의 CLOSE
+        # 다리가 체결로 보유 0 을 만든 경우에만 진입한다(손절·사람 청산이면 버림, 단계 5 리뷰)
+        sent = any(isinstance(r, dict) and r.get("status") in ("accepted", "unknown")
+                   for r in out)  # fmt: skip
+        pending = d.direction != "FLAT" and sent
+        if pending:
             control.set_flag(
                 conn, replace_key(account.id, pos.id),
                 {"date": today.isoformat(), "round": round_n,
                  "envelope": new_env.model_dump(mode="json")},
             )  # fmt: skip
-        close_env = env.model_copy(update={"decision": d.model_copy(update={"intent": "CLOSE"})})
-        out = executor.run_leg(ctx, account, close_env, round=round_n, source="reeval")
-        return {"applied": "REPLACE", "results": out, "replace_pending": d.direction != "FLAT"}
+        return {"applied": "REPLACE", "results": out, "replace_pending": pending}
     out = executor.run_leg(ctx, account, env, round=round_n, source="reeval")
     mode, _ = executor.fo_mode(conn, account)
     hold = executor._record_only(ctx, mode, control.is_paused(conn))
+    note = None
     if d.intent == "HOLD" and d.take_profit_pt is not None and hold is None:
         cur = store.get_position(conn, pos.id)
         tp = rules._d(d.take_profit_pt)
         if cur is not None and cur.tp_pt != tp and cur.status == "held":
-            with store.tx(conn):
-                store.transition(conn, cur.id, expected_version=cur.version, tp_pt=tp)
-    return {"applied": d.intent, "results": out}
+            if _tp_ok(ctx, cur.direction, tp):
+                with store.tx(conn):
+                    store.transition(conn, cur.id, expected_version=cur.version, tp_pt=tp)
+            else:
+                note = f"익절선 {tp} 거부(기초지수 기준 부호) — 기존 {cur.tp_pt} 유지"
+    return {"applied": d.intent, "results": out, **({"note": note} if note else {})}
+
+
+def _tp_ok(ctx: FoExecContext, direction: str, tp) -> bool:
+    """익절선이 현재 기초지수의 올바른 쪽인가(LONG 위·SHORT 아래). 지수를 모르면 보류(False)."""
+    try:
+        idx, _ = ctx.market_client.get_kospi200() if ctx.market_client else (None, None)
+    except Exception:  # noqa: BLE001
+        idx = None
+    if idx is None:
+        return False
+    return tp > idx if direction == "LONG" else tp < idx
+
+
+def _inherit_budget(conn, old: Any, results: list) -> None:
+    """교체 진입의 새 포지션은 옛 포지션의 사용 예산(실현 손실 + 비용)을 이어받는다 — 손실 난
+    포지션을 갈아타 같은 날 2% 수명 예산이 새로 생기지 않게(단계 5 리뷰)."""
+    used = (old.realized_loss or 0) + (old.fees or 0)
+    if not used:
+        return
+    for r in results:
+        pid = r.get("position_id") if isinstance(r, dict) else None
+        if not pid or pid == old.id:
+            continue
+        new = store.get_position(conn, pid)
+        if new is None:
+            continue
+        with store.tx(conn):
+            store.transition(conn, new.id, expected_version=new.version,
+                             realized_loss=new.realized_loss + used,
+                             note=f"교체 이전 포지션 {old.id} 손실 승계 {used}")  # fmt: skip
+        return
 
 
 def _replace_flags(conn, account_id: str) -> list[tuple[str, dict]]:
@@ -204,6 +245,13 @@ def continue_replace(ctx: FoExecContext, account: AccountConfig) -> list[dict[st
             continue
         if pos.qty_held > 0 or store.live_legs(conn, position_id=pid):
             continue  # 청산이 아직 진행 중
+        reduces = [x for x in store.legs_of(conn, pid) if is_reduce(x.intent)]
+        last = reduces[-1] if reduces else None
+        if not (last is not None and last.intent == "CLOSE" and last.status == "filled"
+                and last.round == int(flag.get("round") or 0)):  # fmt: skip
+            control.set_flag(conn, key, None)
+            out.append({"position_id": pid, "discarded": "이 재평가의 청산으로 닫히지 않음"})
+            continue
         if not rules._in_entry_window(now, ctx.settings.fo):
             from trader.config import KST
 
@@ -216,5 +264,6 @@ def continue_replace(ctx: FoExecContext, account: AccountConfig) -> list[dict[st
         env = FoDecisionEnvelope.model_validate(flag["envelope"])
         res = executor.run_leg(ctx, account, env, round=int(flag.get("round") or 0),
                                source="replace")  # fmt: skip
+        _inherit_budget(conn, pos, res)
         out.append({"position_id": pid, "opened": res})
     return out

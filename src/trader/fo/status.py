@@ -12,6 +12,11 @@ from trader.notify.messages import FO_INTENT
 
 _VEHICLE = {"FUTURES": "선물", "OPTION_BUY": "옵션 매수", "OPTION_SELL": "옵션 매도"}
 _DIRECTION = {"LONG": "롱", "SHORT": "숏", "FLAT": "관망"}
+_KIND = {"FUTURES": "", "CALL": "콜 ", "PUT": "풋 "}
+_STATUS = {
+    "entering": "진입 중", "held": "보유", "resizing": "수량 조정 중", "closing": "청산 중",
+    "exit_failed": "청산 실패", "awaiting_settlement": "정산 대기", "unknown": "대조 필요",
+}  # fmt: skip
 
 
 def lines(conn: sqlite3.Connection, now: datetime) -> list[str]:
@@ -22,12 +27,18 @@ def lines(conn: sqlite3.Connection, now: datetime) -> list[str]:
         "ORDER BY account_id, id"
     ).fetchall()
     for r in rows:
-        lev = f" · 배수 {float(r['leverage_used']):.2f}" if r["leverage_used"] is not None else ""
-        stop = f" · 손절 {r['stop_pt']}" if r["stop_pt"] else ""
+        lev = (
+            f" · 승인 배수 {float(r['leverage_used']):.2f}"
+            if r["leverage_used"] is not None
+            else ""
+        )
+        stop = f" · 지수 손절 {r['stop_pt']}" if r["stop_pt"] else ""
+        ps = f" · 프리미엄 보호선 {r['premium_stop']}" if r["premium_stop"] else ""
+        side = "매수" if r["contract_side"] == "LONG" else "매도"
         out.append(
-            f"- {r['account_id']} {r['code']} {_DIRECTION.get(r['direction'], r['direction'])} "
-            f"{_VEHICLE.get(r['vehicle'], r['vehicle'])} {r['qty_held']}계약 [{r['status']}]"
-            f"{lev}{stop}"
+            f"- {r['account_id']} {r['code']} {_DIRECTION.get(r['direction'], r['direction'])} · "
+            f"{_KIND.get(r['kind'], '')}{_VEHICLE.get(r['vehicle'], r['vehicle'])} · "
+            f"{side} {r['qty_held']}계약 [{_STATUS.get(r['status'], r['status'])}]{lev}{stop}{ps}"
         )
     if not rows:
         out.append("- 보유 없음")
