@@ -132,9 +132,13 @@ def check(
             0.0,
             f"섀도 llm − 후보 1/N 만기 {ps['n']}쌍 (기준 {MIN_SHADOW_PAIRS}), 평균 "
             + (
-                f"{ps['mean_diff']:+.2%}, 95% 구간 [{ps['ci_low']:+.2%}, {ps['ci_high']:+.2%}]"
-                if ps["n"]
-                else "-"
+                "-"
+                if not ps["n"]
+                else f"{ps['mean_diff']:+.2%}, 구간 없음(쌍 부족)"
+                if ps["ci_low"] is None
+                else (
+                    f"{ps['mean_diff']:+.2%}, 95% 구간 [{ps['ci_low']:+.2%}, {ps['ci_high']:+.2%}]"
+                )
             ),
         )
     )

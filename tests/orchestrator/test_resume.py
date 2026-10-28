@@ -307,3 +307,50 @@ def test_resume_records_separate_memory_entry_and_keeps_morning_entry(conn):
     assert r["memory_entry_id"] == rows[1]["id"]
     # 아침엔 보유 없음(판정 때 잔고), 결정 시점 보유가 기록된다
     assert rows[0]["held_at_decision"] == 0
+
+
+def test_resume_change_pct_is_trigger_price_vs_previous_close(conn):
+    """전체 검토 2차 2-O6: 트리거 가격 재평가의 당일 등락률은 트리거 가격 ÷ 직전 완성 봉 종가 − 1.
+    아침 시세의 등락률을 버리고 None 으로 두면 장중 +12% 급등을 쫓는 BUY 가 추격 금지를 지난다."""
+    from trader.orchestrator import run_store
+    from trader.orchestrator.run_store import read_checkpoint
+
+    ctx, accounts, brokers = _prepare(conn)
+    d = run_dir(D, "KR", "005930")
+    inputs = read_checkpoint(d, "00_inputs")
+    inputs["technical"]["quote"]["data"]["change_pct"] = 0.12  # 아침 시세(쓰지 않는다)
+    inputs["technical"]["daily"] = {
+        "data": [
+            {"date": "2026-10-07", "close": "60000"},
+            {"date": "2026-10-08", "close": "65000"},
+            {"date": "2026-10-09", "close": "71500"},  # 오늘 봉(미완성)은 제외
+        ],
+        "received_at": "",
+        "error": None,
+    }
+    run_store.write_checkpoint(d, "00_inputs", inputs)
+    did = repo.decision_id(conn, D, "KR", "005930")
+    for n, price in ((1, "66000"), (2, "73000")):  # +1.5% / +12.3% (65000 기준)
+        repo.insert_trigger(
+            conn,
+            market="KR",
+            ticker="005930",
+            kind="move",
+            detail={},
+            price=Decimal(price),
+            decision_id=did,
+            account_id="paper-main",
+            created_at=NOW.isoformat(),
+        )
+        r = tools.submit_decision(
+            ctx,
+            ticker="005930",
+            market="KR",
+            date=D,
+            stage=f"31_decision_r{n}",
+            payload=ok_decision(),
+        )
+        assert r["ok"] and r["price"] == price
+        reasons = r["executions"][0]["reasons"]
+        chased = any("당일 등락률 +12.3%" in s for s in reasons)
+        assert chased is (n == 2), reasons

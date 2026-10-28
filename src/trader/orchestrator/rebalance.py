@@ -112,6 +112,9 @@ def run(
         return {"skipped": "rebalance.enabled=false"}
     if control.get_flag(ctx.conn, done_key(market, today)):
         return {"skipped": "오늘 이미 실행"}
+    if control.is_paused(ctx.conn):
+        # 판정·플래그 없이 건너뛴다 — 재개 뒤 그 주 리밸런스 유지(2-O15)
+        return {"skipped": "일시정지"}
     hedge = frozenset(ctx.settings.excluded_tickers(market))
     exclude = set(hedge) | _scalp_open(ctx, market, today)
     accounts = [a for a in ctx.accounts if market in a.markets and a.id in ctx.brokers]

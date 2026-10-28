@@ -30,6 +30,7 @@ LABEL = {"ok": "정상", "watch": "관심", "warning": "주의", "critical": "�
 LOSS_WATCH = Decimal("-0.02")
 LOSS_WARNING = Decimal("-0.05")
 LOSS_CRITICAL_5D = Decimal("-0.10")
+FLOW_SHOW_DAYS = 2  # 입출금 의심(2-O16)을 기록 뒤 며칠(운영일) 보일지
 LLM_CAP_WATCH = 0.8
 RECONCILE_GRACE = timedelta(minutes=30)
 MARKET_CLOSE: dict[str, time] = {"KR": time(15, 30), "US": time(16, 0)}
@@ -140,6 +141,20 @@ def _loss(conn, settings, accounts, now) -> list[Item]:
     for a in accounts:
         for m in a.markets:
             d = run_date_for(m, now)
+            flow = killswitch.flow_suspicion(conn, a.id, m)
+            if flow and (d - date.fromisoformat(str(flow.get("date")))).days <= FLOW_SHOW_DAYS:
+                out.append(
+                    Item(
+                        f"loss.flow.{a.id}.{m}",
+                        "warning",
+                        f"{a.id} {m} 입출금 의심 — 가격으로 설명되지 않는 NAV 변화 "
+                        f"{flow.get('residual')} ({flow.get('date')}). 킬스위치 기준이 그대로라 "
+                        "출금은 손실로, 입금은 손실 은폐로 보입니다. 확인 뒤 "
+                        "`trader control killswitch off --note` 로 기준을 다시 잡으세요"
+                        "(모든 계좌·시장의 기준을 최근 NAV 로 다시 잡습니다)",
+                        link="/settings",
+                    )
+                )
             nav = repo.latest_nav_before(conn, a.id, d + timedelta(days=1), market=m)
             if not nav or nav <= 0:
                 continue
@@ -166,7 +181,19 @@ def _loss(conn, settings, accounts, now) -> list[Item]:
 
 
 def _orders(conn, settings, accounts, now) -> list[Item]:
+    from trader.broker import rate_store
+
     out: list[Item] = []
+    for d in rate_store.disabled_status():  # 같은 프로세스(데몬)의 리미터만 보인다(2-P8)
+        out.append(
+            Item(
+                "orders.rate_limiter",
+                "warning",
+                f"KIS 교차 프로세스 레이트리미터 꺼짐({d['env']}, {d['error']}) — 데몬과 "
+                "분석 도구가 초당 한도를 나누지 못해 EGW00201 이 날 수 있음. "
+                "state/kis_rate.db 권한·디스크 확인",
+            )
+        )
     n_unknown = int(
         conn.execute(
             "SELECT COUNT(*) FROM orders WHERE status='unknown' AND asset='stock'"

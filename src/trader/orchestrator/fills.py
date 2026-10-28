@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 import sqlite3
 from collections.abc import Callable
-from datetime import UTC, date, datetime, time, timedelta
+from datetime import UTC, date, datetime, time
 from decimal import Decimal
 from typing import Any
 
@@ -88,6 +88,7 @@ def _order_id_for(
         mode="external",
         created_at=f.filled_at.isoformat(),
         asset="stock",
+        origin="external",
     )
 
 
@@ -113,23 +114,34 @@ def _day_for(market: str, d: date | datetime) -> date:
     return d
 
 
-LOOKBACK_DAYS = 7  # 정리되지 않은 지난 주문을 다시 조회하는 범위(현지 날짜)
+# 정리되지 않은 지난 주문을 다시 조회하는 날짜 수 상한(실행당, 오래된 순). 범위 제한은 없다 —
+# 8일 넘게 꺼져 있던 뒤의 접수·unknown 주문도 다시 조회해 마감 뒤 expired 로 정리한다(2-O11).
+# 상한 밖 날짜는 앞의 주문이 정리된 다음 실행이 이어 본다
+STALE_QUERY_CAP = 10
 
 
 def stale_open_days(
     conn: sqlite3.Connection, account_id: str, market: str, today: date
 ) -> list[date]:
-    """오늘(현지) 이전 LOOKBACK_DAYS 안에 아직 살아 있는(접수·부분체결·응답없음) 주문이 있는 현지
-    날짜들. 그날 체결 동기화가 실패하거나 놓치면 다음 날부터는 오늘만 조회해 영구히 '접수' 로
-    남던 주문을 다시 조회한다(전체 검토 2026-10-27)."""
-    lo, _ = repo.day_bounds(today - timedelta(days=LOOKBACK_DAYS), market)
+    """오늘(현지) 이전에 아직 살아 있는(접수·부분체결·응답없음) 주문이 있는 현지 날짜들(오래된 순,
+    실행당 `STALE_QUERY_CAP` 개). 그날 체결 동기화가 실패하거나 놓치면 다음 날부터는 오늘만 조회해
+    영구히 '접수' 로 남던 주문을 다시 조회한다(전체 검토 2026-10-27, 범위 제한 삭제 2-O11)."""
     hi, _ = repo.day_bounds(today, market)
     rows = conn.execute(
         "SELECT DISTINCT created_at FROM orders WHERE account_id=? AND market=? "
-        "AND status IN ('accepted','partial','unknown') AND created_at >= ? AND created_at < ?",
-        (account_id, market, lo, hi),
+        "AND status IN ('accepted','partial','unknown') AND created_at < ?",
+        (account_id, market, hi),
     ).fetchall()
-    return sorted({_day_for(market, datetime.fromisoformat(r[0])) for r in rows})
+    days = sorted({_day_for(market, datetime.fromisoformat(r[0])) for r in rows})
+    if len(days) > STALE_QUERY_CAP:
+        logger.warning(
+            "미정리 주문 날짜 %d개 중 %d개만 이번에 조회 %s %s (나머지는 다음 실행)",
+            len(days),
+            STALE_QUERY_CAP,
+            account_id,
+            market,
+        )
+    return days[:STALE_QUERY_CAP]
 
 
 def _session_closed(market: str, day: date, now: datetime) -> bool:

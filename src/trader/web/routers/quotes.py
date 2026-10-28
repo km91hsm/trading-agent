@@ -156,6 +156,8 @@ def quotes(request: Request, market: str, tickers: str = "") -> dict:
         "asof": now.isoformat(),
         "quotes": out,
         "stream": bool(is_open and hub is not None and hub.status()["connected"]),
+        # 허브가 붙지 않는 이유(2-P13): 실전 체결통보가 앱키를 쓰는 중이면 실전 전용 앱키를 권한다
+        "hub_yield": (hub.status().get("yield") if is_open and hub is not None else None),
     }
 
 

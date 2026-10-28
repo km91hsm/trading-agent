@@ -3,7 +3,7 @@ import { getJson, postJson, subscribeEvents, tokenStore, type EventSnapshot } fr
 import { changedKeys } from "./events";
 import { groupByMarket, missingKeys, type NameMap } from "./names";
 import { applyTheme, themeStore, watchSystemTheme, type Theme } from "./theme";
-import { CLOSED_RECHECK_MS, LIVE_INTERVAL_MS, nextDelay, type QuotesResp } from "./live";
+import { CLOSED_RECHECK_MS, degradeQuotes, LIVE_INTERVAL_MS, nextDelay, QUOTE_TTL_MS, type QuotesResp } from "./live";
 import type { SearchHit } from "./nav";
 import { ALL_ACCOUNTS } from "./overview";
 import type { Account } from "./types";
@@ -381,6 +381,9 @@ export function useLiveQuotes(market: string, tickers: string[]): QuotesResp | n
     if (!key) return;
     let alive = true;
     let timer: number | undefined;
+    let ttl: number | undefined;
+    // 2-W1: 요청이 실패하거나 TTL 안에 새 응답이 없으면 이전 시세를 '실시간' 으로 두지 않는다
+    const degrade = () => setResp((prev) => (prev && !prev.degraded ? degradeQuotes(prev) : prev));
     const run = () => {
       if (typeof document !== "undefined" && document.visibilityState === "hidden") {
         timer = window.setTimeout(run, LIVE_INTERVAL_MS);
@@ -390,17 +393,22 @@ export function useLiveQuotes(market: string, tickers: string[]): QuotesResp | n
         .then(mergeQuotes)
         .then((r) => {
           if (!alive) return;
+          if (ttl !== undefined) window.clearTimeout(ttl);
           setResp(r);
+          if (r.session === "open") ttl = window.setTimeout(degrade, QUOTE_TTL_MS);
           timer = window.setTimeout(run, nextDelay(r));
         })
         .catch(() => {
-          if (alive) timer = window.setTimeout(run, CLOSED_RECHECK_MS); // 서버 오류면 천천히
+          if (!alive) return;
+          degrade();
+          timer = window.setTimeout(run, CLOSED_RECHECK_MS); // 서버 오류면 천천히
         });
     };
     run();
     return () => {
       alive = false;
       if (timer !== undefined) window.clearTimeout(timer);
+      if (ttl !== undefined) window.clearTimeout(ttl);
     };
   }, [market, key]);
   return resp;

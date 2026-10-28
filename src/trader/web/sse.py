@@ -133,7 +133,12 @@ def snapshot(conn: sqlite3.Connection, state: Path | None = None, now=None) -> d
         "approvals": _fingerprint(conn, "approvals", status=True),
         "runs": _fingerprint(conn, "runs", status=True),
         # agent_calls 는 분석 세션 중 서브에이전트 호출마다 늘어 change 가 쏟아지므로 넣지 않는다
-        "decisions": _max("decisions"),
+        # 같은 날 재평가는 행을 더하지 않고 json 만 바꾼다(손절·익절) → updated_at 도 본다(2-W2)
+        "decisions": _q(
+            conn,
+            "SELECT COUNT(*) AS n, COALESCE(MAX(id), 0) AS m, COALESCE(MAX(updated_at), '') AS u "
+            "FROM decisions",
+        ),
         "triggers": _max("triggers"),
         "watchlist": ",".join(control.get_watchlist(conn)),
         "paused": control.is_paused(conn),

@@ -42,7 +42,7 @@ def build_inputs(
 
     kst_today = now.astimezone(KST).date()  # 07:20 KST 는 UTC 로 아직 전날이다(Codex 리뷰)
     us = None
-    idx = shadow.index_table(market_client, settings.hedge, "US", days=5)
+    idx = shadow.index_table(market_client, settings.hedge, "US", days=5, now=now)
     if not idx.empty and len(idx) >= 2:
         sym = str(idx.columns[0])
         c0, c1 = float(idx[sym].iloc[-2]), float(idx[sym].iloc[-1])

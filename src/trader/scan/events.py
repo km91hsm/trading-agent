@@ -44,6 +44,27 @@ def _matches(text: str, keywords: list[str]) -> bool:
     return False
 
 
+def _hits(items: list[dict], keywords: list[str], exclude: list[str]) -> list[dict]:
+    """키워드가 든 뉴스(최신순). 제외 패턴이 든 것은 세지 않고, 같은 기사가 매체마다 따로 적재된
+    것(세이브티커 22스트림·네이버·구글이 같은 통신 기사를 각각)은 정규화 제목으로 1건만 센다 —
+    기사 1건이 `min_news` 를 넘기던 것(2-L10)."""
+    from trader.sources import news_store
+
+    seen: set[str] = set()
+    out: list[dict] = []
+    for n in items:
+        title = str(n.get("title") or "")
+        text = f"{title} {n.get('summary') or ''}"
+        if not _matches(text, keywords) or (exclude and _matches(text, exclude)):
+            continue
+        key = news_store.normalize_title(title) or f"id:{n.get('id')}"
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(n)
+    return out
+
+
 def detect(
     conn: sqlite3.Connection, cfg: EventsConfig, *, market: str, asof: datetime
 ) -> list[dict]:
@@ -59,11 +80,7 @@ def detect(
         tickers = ev.beneficiaries.get(market) or []  # type: ignore[call-overload]
         if not tickers:
             continue
-        hits = [
-            n
-            for n in items
-            if _matches(f"{n.get('title') or ''} {n.get('summary') or ''}", ev.keywords)
-        ]
+        hits = _hits(items, ev.keywords, ev.exclude)
         if len(hits) < ev.min_news:
             continue
         out.append(

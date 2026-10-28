@@ -349,6 +349,7 @@ def _transmit(
                 mode=mode,
                 amount=Decimal(req.qty) * ref_price * multiplier,
                 asset="fo",
+                origin="fo",
             )
         except Exception as e:  # noqa: BLE001
             log.critical("파생 주문 기록 실패(접수번호 %s): %s", order_no, e)
