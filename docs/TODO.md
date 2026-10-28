@@ -506,4 +506,12 @@
 - [ ] 실기 1(사용자 확인 대기, 조회 전용): `uv run trader fo verify --account paper-fo` → 시세·마스터·주문가능·잔고 필드 확인(빈 잔고면 방향·NAV 미검증으로 남음) → 비식별 fixture 로 미확인 항목 확정
 - [ ] 실기 2(사용자 실행, 거부 목록): `uv run trader fo order-test --account paper-fo --vehicle FUTURES` → `OPTION_BUY` → `OPTION_SELL` 1계약 왕복 → 수단별 `fo_verified` 플래그
 - [ ] 실기 3(사용자 확인 대기, 약 $1~2): `fo.enabled: true` 뒤 `FAKE_CLAUDE` 없이 `uv run trader fo session` 1회 → 결정·배수·진입·재평가·청산 로그
+- [ ] 해외선물옵션 (Phase 26 이연): KIS 해외선물 모의 미지원(`OTFM3001U` 모의 분기 없음) — 실전 전환 뒤 재검토
+- [ ] 야간 세션·야간 손절 (Phase 26 이연): 모의 야간 TR 없음, 스윙은 시나리오 스트레스 유지 조건으로만 — 실전 파생 Phase
+- [ ] 실전 파생 계좌 (Phase 26 이연): paper 전용 게이트·승인 모드·야간 미구현 — 별도 Phase(`docs/runbook-live-transition.md` §7)
+- [ ] 위클리·스프레드·합성 포지션 (Phase 26 이연): 결정 1개 = 단일 수단 1 포지션 — Phase 27
+- [ ] 선물 숏으로 현물 헤지 대체 (Phase 26 이연): 계좌 분리라 경고만 — 파생 적중률이 쌓인 뒤
+- [ ] 파생 메모리·reflector 연동 (Phase 26 이연): `fo_decisions` 채점(만기·방향 적중)부터 — 20건 뒤
+- [ ] 체결통보 `H0IFCNI0`·실시간 파생 호가 (Phase 26 이연): 지금은 `fills_sync`·REST — Phase 27
+- [ ] 파생 백테스트·ML/RL 사이징 (Phase 26 이연): 신호가 LLM 이라 보류
 - [ ] 완료 기준: 단계 5 머지 뒤 `uv run pytest`·`ruff`·web 게이트 통과, `FAKE_CLAUDE=1 uv run trader fo session --dry-run`·`fo monitor --once --dry-run` 체크포인트 확인, 현물 기본 동작 회귀 없음(스냅샷 테스트)

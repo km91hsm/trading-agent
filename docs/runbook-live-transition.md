@@ -63,3 +63,10 @@ uv run trader control resume           # 모의만 계속 돌릴 때
 - 레버리지(−2x)는 3지표가 모두 켜졌을 때만 쓰며 변동성 끌림이 있다. 실전에서 끄려면 `config/settings.yaml` 의 `hedge.leverage: false`, 헤지 자체를 끄려면 `hedge.enabled: false`(국면 판정·게이트도 함께 꺼진다).
 - 헤지 ETF 는 monitor 손절·트리거 대상이 아니라 국면 해제(지표 ≤ 1 이 `exit_streak_days` 연속)로만 팔린다. 급히 정리하려면 `trader control pause` 뒤 HTS 로 매도한다(일시정지면 헤지 진입도 보류).
 - 현재 국면은 `uv run trader regime show`, 대시보드 상태줄 '국면' 칩, 텔레그램 `/status` 에서 본다.
+
+## 7. 파생(선물옵션) 레인과 실전 (Phase 26)
+
+- Phase 26 파생 레인(코스피200 선물·옵션)은 **모의 선물옵션 계좌(`asset: fo`, 상품코드 `03`) 전용**이다. 실전 파생 계좌는 실행기가 `skipped`(실전 파생은 Phase 26 범위 밖)로 기록만 하고 주문을 내지 않는다. 이 안내서의 1~4단계는 현물 계좌용이며 파생 실전 전환 절차가 아니다.
+- 실전 파생은 **별도 Phase** 에서 다룬다: 야간 세션 TR·야간 손절, 실전 승인 모드, 실전 증거금 산식 검증, 체결통보(`H0IFCNI0`)가 그 Phase 의 전제다. 그 전에는 코드·설정·텔레그램 어느 경로로도 실전 파생 주문 경로를 열지 않는다.
+- 모의 파생도 수단별 실기 검증(`trader fo verify`, `trader fo order-test --vehicle …` — 사용자 실행) 뒤 `fo_verified` 플래그가 있어야 신규 진입이 열린다. `fo.enabled: false` 면 신규 진입만 막고 보유분 감시·축소는 계속한다.
+- 급히 멈추려면 `trader control pause`(파생 모니터도 쉰다 — 보호선 주문도 나가지 않으므로 HTS 로 직접 정리) 또는 `fo.enabled: false`(신규만 금지, 보유 보호는 계속).
