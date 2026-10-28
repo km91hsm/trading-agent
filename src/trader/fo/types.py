@@ -223,6 +223,8 @@ class GateInput:
     position: FoPositionRow | None = None
     # 이 날부터 신규 금지(만기 강제 청산일의 직전 운영일, 휴장 반영 — 엔진의 강제 청산과 같은 달력)
     entry_block_day: date | None = None
+    # 새 포지션이 이어받는 사용 예산(REPLACE 교체 — 옛 포지션의 실현 손실 + 비용)
+    carry_used: Decimal = Decimal(0)
 
 
 @dataclass

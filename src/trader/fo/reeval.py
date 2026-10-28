@@ -121,7 +121,8 @@ def run(
             notifier=ctx.notifier, fo=ctx, **extra,
         )  # fmt: skip
     except session_mod.PipelineError as e:
-        repo.mark_trigger_handled(conn, tid, f"실패: {e}"[:200], handled_at=ctx.now().isoformat())
+        # 세션 상한 등으로 세션이 뜨지 않음 — 빈도 상한에 세지 않는다
+        repo.mark_trigger_handled(conn, tid, f"보류: {e}"[:200], handled_at=ctx.now().isoformat())
         return {"skipped": str(e), "trigger_id": tid}
     # 처리 시각은 세션이 **끝난** 시각(간격 제한이 세션 길이만큼 짧아지지 않게)
     repo.mark_trigger_handled(
@@ -195,26 +196,6 @@ def _tp_ok(ctx: FoExecContext, direction: str, tp) -> bool:
     return tp > idx if direction == "LONG" else tp < idx
 
 
-def _inherit_budget(conn, old: Any, results: list) -> None:
-    """교체 진입의 새 포지션은 옛 포지션의 사용 예산(실현 손실 + 비용)을 이어받는다 — 손실 난
-    포지션을 갈아타 같은 날 2% 수명 예산이 새로 생기지 않게(단계 5 리뷰)."""
-    used = (old.realized_loss or 0) + (old.fees or 0)
-    if not used:
-        return
-    for r in results:
-        pid = r.get("position_id") if isinstance(r, dict) else None
-        if not pid or pid == old.id:
-            continue
-        new = store.get_position(conn, pid)
-        if new is None:
-            continue
-        with store.tx(conn):
-            store.transition(conn, new.id, expected_version=new.version,
-                             realized_loss=new.realized_loss + used,
-                             note=f"교체 이전 포지션 {old.id} 손실 승계 {used}")  # fmt: skip
-        return
-
-
 def _replace_flags(conn, account_id: str) -> list[tuple[str, dict]]:
     import json
 
@@ -262,8 +243,8 @@ def continue_replace(ctx: FoExecContext, account: AccountConfig) -> list[dict[st
             continue
         control.set_flag(conn, key, None)
         env = FoDecisionEnvelope.model_validate(flag["envelope"])
+        carry = (pos.realized_loss or 0) + (pos.fees or 0)
         res = executor.run_leg(ctx, account, env, round=int(flag.get("round") or 0),
-                               source="replace")  # fmt: skip
-        _inherit_budget(conn, pos, res)
+                               source="replace", carry_used=carry)  # fmt: skip
         out.append({"position_id": pid, "opened": res})
     return out

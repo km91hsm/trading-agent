@@ -100,9 +100,10 @@ def lifetime_budget(
     r: float,
     held_loss: Decimal,
     pending_loss: Decimal,
+    carry: Decimal = _ZERO,
 ) -> dict:
-    """수명 예산 집계. `ok` 는 사용 + 계획 ≤ 한도."""
-    used = (position.realized_loss + position.fees) if position is not None else _ZERO
+    """수명 예산 집계. `ok` 는 사용 + 계획 ≤ 한도. `carry` 는 새 포지션이 이어받는 사용분."""
+    used = (position.realized_loss + position.fees) if position is not None else carry
     limit = nav_at_open * _d(r)
     planned = held_loss + pending_loss
     return {"used": used, "planned": planned, "limit": limit, "ok": used + planned <= limit}
@@ -315,7 +316,7 @@ def size(
     nav_at_open = pos.nav_at_open if pos is not None and pos.nav_at_open is not None else nav
     budget = lifetime_budget(
         pos, nav_at_open=nav_at_open, r=cfg.risk_per_trade_pct,
-        held_loss=held_loss, pending_loss=pending_loss,
+        held_loss=held_loss, pending_loss=pending_loss, carry=gi.carry_used,
     )  # fmt: skip
     if per_loss > 0:
         room = budget["limit"] - budget["used"] - existing

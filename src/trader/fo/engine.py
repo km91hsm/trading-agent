@@ -529,10 +529,10 @@ def _tick_account(
             if rq.get("ok"):
                 # 대기열 등록 실패 → '실패:' 로 닫아 다음 간격에 다시 시도
                 if request_reeval(ctx, rq["params"]) is False:
-                    repo.mark_trigger_handled(conn, tid, "실패: 대기열 등록",
+                    repo.mark_trigger_handled(conn, tid, "보류: 대기열 등록",
                                               handled_at=now.isoformat())  # fmt: skip
             else:
-                repo.mark_trigger_handled(conn, tid, f"실패: {rq.get('error')}"[:200],
+                repo.mark_trigger_handled(conn, tid, f"보류: {rq.get('error')}"[:200],
                                           handled_at=now.isoformat())  # fmt: skip
             res["triggers"].append({"position_id": pos.id, "kind": t.kind, "trigger_id": tid,
                                     "request": rq.get("params")})  # fmt: skip

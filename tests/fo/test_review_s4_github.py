@@ -71,7 +71,7 @@ def test_skipped_queued_reevaluation_releases_trigger(conn):
     assert "skipped" in out
     row = conn.execute("SELECT session_id, handled_at FROM triggers WHERE id = ?",
                        (tid,)).fetchone()  # fmt: skip
-    assert row["handled_at"] and row["session_id"].startswith("실패")
+    assert row["handled_at"] and row["session_id"].startswith("보류")
 
 
 def test_real_fo_account_never_orders_from_monitor(conn):

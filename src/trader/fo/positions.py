@@ -36,6 +36,15 @@ STALE_PREPARED_S = 120  # 이만큼 넘게 전송되지 않은 prepared 다리�
 SENDING_GRACE_S = 60
 
 
+def in_send_grace(leg: FoLegRow, now: datetime) -> bool:
+    """전송 중(sending) 다리가 아직 응답 유예 안인가 — 복구·축소 재개가 같은 판정을 쓴다."""
+    return (
+        leg.status == "sending"
+        and leg.sent_at is not None
+        and (now - datetime.fromisoformat(leg.sent_at)).total_seconds() < SENDING_GRACE_S
+    )
+
+
 def leg_day(leg: FoLegRow) -> date:
     """다리의 거래일(KST) — 접수·전송·생성 시각 순. KIS 주문번호·체결 조회는 날짜 단위다."""
     from trader.config import KST
@@ -125,7 +134,9 @@ def _confirm_leg(
             store.record_fill_progress(conn, leg.id, st.filled_qty)
         store.set_leg(
             conn, leg.id, status=status, order_no=order_no,
-            accepted_at=leg.accepted_at or (None if st.terminal else store.now_iso()),
+            # 거래일을 보존: 접수 시각이 없으면 전송 시각(복구 시점 벽시계로 오늘이 되지 않게)
+            accepted_at=leg.accepted_at
+            or (None if st.terminal else (leg.sent_at or store.now_iso())),
         )  # fmt: skip
         if st.terminal and is_entry(leg.intent):
             store.release_if_empty(conn, leg.position_id, f"진입 다리 {leg.id} {status}(체결 0)")
@@ -179,9 +190,7 @@ def recover(
     for leg in store.live_legs(conn, account_id=account_id):
         if leg.status not in ("sending", "unknown"):
             continue
-        if leg.status == "sending" and leg.sent_at is not None and (
-            now - datetime.fromisoformat(leg.sent_at)
-        ).total_seconds() < SENDING_GRACE_S:
+        if in_send_grace(leg, now):
             rep.deferred.append(leg.id)  # 다른 프로세스가 아직 응답을 기다리는 중일 수 있다(CA2)
             continue
         d = leg_day(leg)

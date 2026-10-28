@@ -167,7 +167,7 @@ def test_enqueue_failure_marks_trigger_failed(conn):
     tid = out["accounts"][ACCT]["triggers"][0]["trigger_id"]
     row = conn.execute("SELECT session_id, handled_at FROM triggers WHERE id = ?",
                        (tid,)).fetchone()  # fmt: skip
-    assert row["handled_at"] and row["session_id"].startswith("실패")
+    assert row["handled_at"] and row["session_id"].startswith("보류")
 
 
 # --- C7: 뉴스 트리거는 종목 태그 없는 뉴스만 --------------------------------------------------

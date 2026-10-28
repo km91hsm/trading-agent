@@ -239,3 +239,16 @@ base `1bd0172` → (단계 2 GitHub 리뷰 반영 뒤) `c7bf51e`, head `94e4e3f`
 확인함(네 리뷰어 공통): 방향 × 수단 6조합 매핑, 대조표, 배수 상승·손절 불리 이동 금지, 프리미엄 보호선 단조, 수명 예산 비재충전, Black-76·IV 단위, 지수 보호선 시간·신선도, `store.reserve` 한 트랜잭션·실행 키 유일성, `claim_leg`·`cancel_prepared` 조건부 갱신, `record_fill_progress` 누적값, unknown 비자동, 신규 차단 상태, 보류 진입 소비 규칙, 늦은 재평가 CAS, 데몬 배선, 웹 계좌 검증·합산 분리, 설정 두 파일 일치, 합성 fixture.
 
 단계 5 결론: **보완 뒤 진행** — P0 9·P1 15·P2 7 반영(S5-16 은 설정상 해당 없음, S5-7 의 감액 중 손절 우선은 미확인 항목). 재리뷰 1회는 아래.
+
+### 재리뷰 1회 (Codex exec, `e946193..d88ce45` 파생 변경분)
+
+| # | 심각도 | 위치 | 문제 | 조치 |
+|---|---|---|---|---|
+| S5R-1 | P1 | `executor.reduce` 잔고 실패 상한 | 스냅샷이 없으면 원장 잔량, 최신 날짜에 행이 없어도 옛 날짜 행을 씀 | 계좌의 **최신 스냅샷 날짜**의 같은 코드·보유 방향 행만, 없으면 0(축소 보류). `test_reduce_without_snapshot_after_balance_failure_is_blocked` |
+| S5R-2 | P1 | `reeval` 교체 예산 승계 | 새 진입을 낸 **뒤** 승계해 판정이 새 한도 전체로 수량을 정함 | `run_leg(carry_used=)` → `GateInput.carry_used` 가 수명 예산의 사용분에 들어가고, 새 포지션 생성 행에 `realized_loss` 로 같이 기록 |
+| S5R-3 | P1 | `executor._transmit` | `order_id` 없이 복구가 먼저 끝낸 다리를 응답이 accepted 로 되돌림 | 주문 연결과 상태를 분리: sending 이 아니면 상태는 그대로 두고 주문 행만 연결. `test_transmit_keeps_terminal_status_without_order_link` |
+| S5R-4 | P1 | `positions._confirm_leg` | 비종결 확정 때 접수 시각을 복구 시점(오늘)으로 적어 다리 거래일이 바뀜 | 접수 시각이 없으면 전송 시각을 쓴다. `test_recover_keeps_sent_day_for_nonterminal_leg` |
+| S5R-5 | P1 | `continue_reduce` | 오늘 체결로 어제 다리 후보를 찾고, 복구의 sending 유예를 우회 | 다리 거래일의 체결로 조회, 유예 판정은 `positions.in_send_grace` 하나 |
+| S5R-6 | P2 | `triggers` 하루 상한 | 세션이 뜨지 않은 해제(일시정지·대기열 실패·세션 상한)도 '실패:' 라 상한을 소비 | 그런 해제는 **'보류:'** 로 적고 하루 상한·운영일 1회에서 뺀다(간격에는 포함). `test_unstarted_session_release_not_counted_in_daily_cap` |
+
+재리뷰 결론: 6건 모두 반영 → **진행 가능**(재리뷰는 플랜대로 1회).

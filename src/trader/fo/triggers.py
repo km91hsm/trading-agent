@@ -28,7 +28,11 @@ EXPIRY_OPINION_AT = time(9, 5)
 SESSION_OPEN = time(8, 45)  # 파생 정규장 시작 — periodic 버킷의 기준
 # 실제로 재평가가 끝난 처리만 센다 — 기동 실패('실패:')·세션 없이 버린 것('폐기:')은 빼서 다음
 # 간격에 다시 시도한다(단계 4 리뷰)
-_OK = "(session_id IS NULL OR (session_id NOT LIKE '실패:%' AND session_id NOT LIKE '폐기:%'))"
+# '보류:' 는 세션을 띄우지 못한 해제(일시정지·대기열 등록 실패·세션 상한)
+_OK = (
+    "(session_id IS NULL OR (session_id NOT LIKE '실패:%' AND session_id NOT LIKE '폐기:%' "
+    "AND session_id NOT LIKE '보류:%'))"
+)
 
 
 @dataclass(frozen=True)
@@ -185,7 +189,8 @@ def check(
     handled = _fo_rows(conn, acct, code, lo, hi, "AND handled_at IS NOT NULL")
     # 하루 상한은 세션이 실제로 뜬 것(성공 + '실패:')을 센다 — 실패한 유료 세션이 상한 밖에서
     # 반복되지 않게. 간격은 처리된 모든 행 기준(현물 `last_trigger_handled_at` 과 같은 규칙)
-    spent = [r for r in handled if not str(r["session_id"] or "").startswith("폐기:")]
+    spent = [r for r in handled
+             if not str(r["session_id"] or "").startswith(("폐기:", "보류:"))]  # fmt: skip
     if len(spent) >= cfg.reeval.max_per_day:
         return None
     last = max((r["handled_at"] for r in handled), default=None)

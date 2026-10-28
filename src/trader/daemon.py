@@ -2937,7 +2937,7 @@ def _release_fo_trigger(deps: DaemonDeps, p: dict, why: str) -> None:
     try:
         trig = repo.get_trigger(conn, int(tid))
         if trig is not None and not trig.get("handled_at"):
-            repo.mark_trigger_handled(conn, int(tid), f"실패: {why}"[:200],
+            repo.mark_trigger_handled(conn, int(tid), f"보류: {why}"[:200],
                                       handled_at=deps.now().isoformat())  # fmt: skip
     finally:
         conn.close()

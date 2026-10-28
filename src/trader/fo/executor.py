@@ -439,6 +439,18 @@ def _transmit(
                                   order_no=cur.order_no or order_no,
                                   accepted_at=ctx.now().isoformat()
                                   if status == "accepted" else None)  # fmt: skip
+            elif cur is not None and cur.status != "sending":
+                # 복구·회수가 먼저 상태를 확정했다(주문 행 없이) — 상태는 그대로, 주문 행만 연결
+                if status in ("accepted", "unknown"):
+                    order_id = repo.insert_order(
+                        conn, decision_id=None, account_id=account.id, ticker=req.code,
+                        market="KR", side=req.side, qty=req.qty, order_type=req.order_type,
+                        price=req.price, status=status, order_no=order_no, message=msg,
+                        mode=mode, amount=Decimal(req.qty) * ref_price * multiplier,
+                        asset="fo", origin="fo", commit=False,
+                    )  # fmt: skip
+                    store.set_leg(conn, leg_id, order_id=order_id,
+                                  order_no=cur.order_no or order_no)  # fmt: skip
             else:
                 if status in ("accepted", "unknown"):
                     order_id = repo.insert_order(
@@ -529,6 +541,7 @@ def _send_entry(
     stage: str,
     mode: str,
     today: date,
+    carry_used: Decimal = Decimal(0),
 ) -> dict[str, Any]:
     d, cfg = env.decision, ctx.settings.fo
     per_contract = (leg.planned_loss / leg.qty) if leg.qty else Decimal(0)
@@ -556,6 +569,9 @@ def _send_entry(
             horizon_until=(today + timedelta(days=d.horizon_days)).isoformat(),
             last_trade_date=ltd, decision_date=today.isoformat(), round=round, opened_at=now_iso(),
         )  # fmt: skip
+        if carry_used > 0:  # 교체 진입: 옛 포지션의 사용 예산을 생성 트랜잭션에서 승계(단계 5)
+            new_position["realized_loss"] = carry_used
+            new_position["note"] = f"교체 이전 포지션 손실 승계 {carry_used}"
         changes: dict[str, Any] = {}
         new_status = None
     else:
@@ -665,6 +681,7 @@ def run_leg(
     round: int = 0,
     source: str = "decision",
     _recalled: bool = False,
+    carry_used: Decimal = Decimal(0),
 ) -> list[dict[str, Any]]:
     """결정 봉투를 이 계좌에서 실행한다. 반환은 다리별 결과(기록만 한 경우도 1건). `_recalled` 는
     미체결 진입 회수 뒤의 재계산 호출(한 번만)."""
@@ -749,6 +766,7 @@ def run_leg(
         historical=ctx.historical, contract=contract,
         days_left=_days_left(fi.quote, contract, today), position=pos,
         entry_block_day=_entry_block_day(ctx, d.vehicle, code, fi.quote),
+        carry_used=carry_used if pos is None else Decimal(0),
     )  # fmt: skip
     v = rules.evaluate(gi)
     if fi.errors:
@@ -785,7 +803,8 @@ def run_leg(
             env if env.expected_version is None
             else env.model_copy(update={"expected_version": cur.version})
         )
-        return run_leg(ctx, account, env2, round=round, source=source, _recalled=True)
+        return run_leg(ctx, account, env2, round=round, source=source, _recalled=True,
+                       carry_used=carry_used)  # fmt: skip
 
     if d.intent == "HOLD":
         if pos is not None and hold is None and v.stop_pt is not None and v.stop_pt != pos.stop_pt:
@@ -858,6 +877,7 @@ def run_leg(
                     port=port,
                     quote=fi.quote,
                     round=round,
+                    carry_used=carry_used if pos is None else Decimal(0),
                     stage=od_stage,
                     mode=mode,
                     today=today,
@@ -1167,13 +1187,18 @@ def reduce(
     if n <= 0:
         return finalize(ctx, cur)
     if bal_failed:  # 잔고를 못 받았으면 마지막 확정 잔고 스냅샷으로 상한(반대 포지션 방지)
-        snap = conn.execute(
-            "SELECT qty FROM fo_positions_snapshot WHERE account_id = ? AND code = ? "
-            "ORDER BY date DESC LIMIT 1",
-            (account.id, cur.code),
+        last = conn.execute(
+            "SELECT MAX(date) AS d FROM fo_positions_snapshot WHERE account_id = ?", (account.id,)
         ).fetchone()
-        if snap is not None:
-            n = min(n, int(snap["qty"]))
+        snap = None
+        if last is not None and last["d"]:
+            snap = conn.execute(
+                "SELECT qty FROM fo_positions_snapshot WHERE account_id = ? AND date = ? "
+                "AND code = ? AND contract_side = ?",
+                (account.id, last["d"], cur.code, cur.contract_side),
+            ).fetchone()
+        # 스냅샷이 없으면 보류, 최신 스냅샷에 행이 없으면 0(외부 청산 뒤 반대 포지션 방지)
+        n = min(n, int(snap["qty"])) if snap is not None else 0
         if n <= 0:
             return {"position_id": pos.id, "intent": intent, "status": "blocked",
                     "note": "잔고 조회 실패 — 확정 잔량 없음"}  # fmt: skip
@@ -1301,12 +1326,15 @@ def continue_reduce(
     if broker is None:
         return {"position_id": cur.id, "status": "blocked", "note": "broker 없음"}
     if leg.status in ("sending", "unknown") or leg.order_no is None:
+        now_dt, _ = _today(ctx)
+        if positions.in_send_grace(leg, now_dt):  # 다른 프로세스가 응답 대기 중일 수 있다
+            return {"position_id": cur.id, "status": "pending", "leg_id": leg.id}
+        lday = positions.leg_day(leg)
         try:
-            fills = broker.get_fills(today)
+            fills = broker.get_fills(lday)  # 다리 거래일의 체결로만 후보를 찾는다
         except Exception:  # noqa: BLE001
             fills = None
-        res = positions._confirm_leg(conn, leg, broker.get_order_state, fills,
-                                     positions.leg_day(leg))  # fmt: skip
+        res = positions._confirm_leg(conn, leg, broker.get_order_state, fills, lday)
         if res != "confirmed":
             return {"position_id": cur.id, "status": "blocked", "note": f"미확정 다리 {leg.id}"}
         leg = store.get_leg(conn, leg.id)

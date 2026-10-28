@@ -264,3 +264,68 @@ def test_position_budget_free_includes_planned():
     b = sizing.position_budget(pos, ref_price=Decimal("350.5"), multiplier=50000, r=0.02)
     assert b["planned"] == Decimal("510000.0") or b["planned"] == Decimal("510000")
     assert b["free"] == b["limit"] - b["used"] - b["planned"]
+
+
+# --- 재리뷰(S5R-1~6) --------------------------------------------------------------------------
+
+
+def test_reduce_without_snapshot_after_balance_failure_is_blocked(conn):
+    ctx = make_ctx(conn)
+    pos = _held_position(conn, ctx, qty=2)
+    ctx.brokers[ACCT].fail = {"get_balance"}
+    out = executor.reduce(ctx, account(), pos, intent="CLOSE", qty=None, reason="t")
+    assert out["status"] == "blocked" and ctx.brokers[ACCT].orders == []
+
+
+def test_transmit_keeps_terminal_status_without_order_link(conn):
+    ctx = make_ctx(conn)
+
+    def scenario(name, *args):
+        if name == "place_order":  # 응답 대기 중 복구가 order_id 없이 filled 로 확정
+            leg = store.live_legs(conn, account_id=ACCT)[0]
+            store.set_leg(conn, leg.id, status="filled", order_no="FAKE-1")
+            conn.commit()
+        return None
+
+    ctx.brokers[ACCT].scenario = scenario
+    executor.run_leg(ctx, account(), env(decision()))
+    leg = store.legs_of(conn, store.open_positions(conn, ACCT)[0].id)[0]
+    assert leg.status == "filled" and leg.order_id is not None
+
+
+def test_recover_keeps_sent_day_for_nonterminal_leg(conn):
+    yday = (T0 - timedelta(days=1)).isoformat()
+    with store.tx(conn):
+        pid = store.insert_position(conn, account_id=ACCT, code="105W11", kind="FUTURES",
+                                    contract_side="LONG", direction="LONG", vehicle="FUTURES",
+                                    status="entering", qty_target=2)  # fmt: skip
+        lid = store.insert_leg(conn, position_id=pid, account_id=ACCT, intent="OPEN", round=0,
+                               attempt=1, qty=2, price=Decimal("350.5"), order_type="LIMIT")
+        store.set_leg(conn, lid, status="unknown", order_no="0042", sent_at=yday)
+    positions.recover(conn, account_id=ACCT, balance=balance(),
+                      order_state_of=lambda no, d: state(no, order_qty=2, filled=0, remaining=2,
+                                                         terminal=False),
+                      fills_of=lambda d: [], today=TODAY, now=T0)  # fmt: skip
+    leg = store.get_leg(conn, lid)
+    assert leg.status == "accepted" and positions.leg_day(leg) == (T0 - timedelta(days=1)).date()
+
+
+def test_unstarted_session_release_not_counted_in_daily_cap(conn):
+    from trader.config import HorizonProfile
+    from trader.fo import triggers
+
+    ctx = make_ctx(conn)
+    pos = _held_position(conn, ctx, qty=2)
+    prof = HorizonProfile(move_pct=0.04, reeval_interval_min=15, periodic_check_min=60,
+                          news_min_novel=1, daily_reanalyze_every=1)  # fmt: skip
+    c = ctx.settings.fo.model_copy(update={"reeval": ctx.settings.fo.reeval.model_copy(
+        update={"max_per_day": 1, "interval_min": 5, "periodic_max_per_day": 4})})  # fmt: skip
+    t = triggers.check(conn, position=pos, underlying=Decimal("350"), iv=None, cfg=c,
+                       profile=prof, now=at(10, 0), today=TODAY,
+                       ref_index=Decimal("350"))  # fmt: skip
+    tid = triggers.record(conn, pos, t, now=at(10, 0))
+    repo.mark_trigger_handled(conn, tid, "보류: 일시정지", handled_at=at(10, 0).isoformat())
+    again = triggers.check(conn, position=pos, underlying=Decimal("350"), iv=None, cfg=c,
+                           profile=prof, now=at(10, 6), today=TODAY,
+                           ref_index=Decimal("350"))  # fmt: skip
+    assert again is not None  # 세션이 뜨지 않은 해제는 하루 상한(1)에 세지 않는다
