@@ -202,3 +202,17 @@ def test_shadow_quant_benchmark_holds_drifted_weights_between_records(conn, proj
     _shadow_quant(conn, DAYS[0], {"A": 0.5, "B": 0.5})
     q = performance.shadow_quant_benchmark(conn, None, "KR", DAYS[0], DAYS[2], cost_bp=30)
     assert q["return"] == pytest.approx(0.9985 - 1, abs=1e-9)
+
+
+def test_metrics_ignore_zero_nav_days():
+    """NAV 0 은 '그 통화로 가진 돈이 없음'(예: 원화만 있는 모의 계좌의 US) — 전액 손실(−100%)로
+    세지 않는다. 0 인 날을 빼고 남은 양수 NAV 로만 계산한다."""
+    from decimal import Decimal
+
+    m = performance.metrics_of([("2026-10-20", Decimal("10000")), ("2026-10-28", Decimal("0"))])
+    assert m["return"] is None and m["mdd"] is None
+    m = performance.metrics_of(
+        [("2026-10-20", Decimal("0")), ("2026-10-21", Decimal("10000")),
+         ("2026-10-22", Decimal("0")), ("2026-10-23", Decimal("10100"))]
+    )  # fmt: skip
+    assert m["return"] == 0.01 and m["mdd"] == 0.0 and m["start"] == "2026-10-21"
