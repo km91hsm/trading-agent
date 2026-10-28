@@ -69,6 +69,13 @@ describe("폴링 주기·표기", () => {
     expect(nextDelay({ session: "closed", asof: "", quotes: {} })).toBe(CLOSED_RECHECK_MS);
     expect(nextDelay(null)).toBe(CLOSED_RECHECK_MS);
     expect(liveLabel({ session: "closed", asof: "", quotes: {} }, 0)).toBe("장 밖 · 마지막 잔고 기준");
+    // 2-P13: 허브 양보 사유
+    expect(liveLabel({ session: "open", asof: "", quotes: {}, hub_yield: "fills_listener" }, 2)).toBe(
+      "실시간 2종목 · 10초마다 (실전 체결통보가 앱키 사용 중)",
+    );
+    expect(liveLabel({ session: "open", asof: "", quotes: {}, hub_yield: "appkey_in_use" }, 2)).toBe(
+      "실시간 2종목 · 10초마다 (다른 연결이 앱키 사용 중)",
+    );
     expect(liveLabel({ session: "open", asof: "", quotes: {} }, 2)).toBe("실시간 2종목 · 10초마다");
   });
 });

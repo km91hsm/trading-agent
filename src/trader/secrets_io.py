@@ -176,6 +176,7 @@ CATALOG: tuple[tuple[str, str, str], ...] = (
     ("NAVER_CLIENT_SECRET", "데이터", "네이버 API Client Secret"),
     ("FRED_API_KEY", "데이터", "FRED(미국 거시) API 키"),
     ("ECOS_API_KEY", "데이터", "ECOS(한국은행) API 키"),
+    ("EDGAR_USER_AGENT", "데이터", "SEC EDGAR User-Agent(이름 + 연락 이메일)"),
     ("REDDIT_CLIENT_ID", "데이터", "Reddit Client ID"),
     ("REDDIT_CLIENT_SECRET", "데이터", "Reddit Client Secret"),
     ("REDDIT_USER", "데이터", "Reddit 사용자명"),

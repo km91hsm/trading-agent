@@ -185,16 +185,55 @@ def _opt(x: float | None) -> float | None:
     return None if x is None else float(x)
 
 
+LESSON_MIN_DECISIONS = 3  # lesson 승격에 필요한 같은 상황의 서로 다른 결정 수(10-26 검토 L13)
+LESSON_SIMILARITY = 0.9  # "같은 상황" = 같은 시장 + 상황 벡터 코사인 ≥ 이 값
+
+
+def _similar_lesson_decisions(conn: sqlite3.Connection, e: dict) -> int:
+    """이 엔트리와 같은 상황(같은 시장·코사인 ≥ 기준)에서 만기 결과와 lesson 이 있는 **서로 다른
+    결정** 수(이 엔트리의 결정 포함). 같은 결정의 재평가 라운드는 한 건으로 센다."""
+    me = e["situation_vector"] or []
+    ids = {e["decision_id"]}
+    for row in conn.execute(
+        "SELECT decision_id, situation_vector, reflection FROM memory_entries "
+        "WHERE market=? AND outcome_at IS NOT NULL AND reflection IS NOT NULL AND id<>?",
+        (e["market"], e["id"]),
+    ):
+        if row["decision_id"] in ids:
+            continue
+        try:
+            refl = json.loads(row["reflection"] or "{}") or {}
+        except ValueError:
+            continue
+        if not refl.get("lesson"):
+            continue
+        if vec.cosine(me, json.loads(row["situation_vector"] or "[]")) >= LESSON_SIMILARITY:
+            ids.add(row["decision_id"])
+    return len(ids)
+
+
 def set_reflection(conn: sqlite3.Connection, entry_id: int, reflection: dict) -> None:
-    """반성 저장. lesson 이 있으면 한 층 승격."""
+    """반성 저장. lesson 이 있고 같은 상황의 서로 다른 결정 `LESSON_MIN_DECISIONS` 건 이상이 lesson
+    을 냈으면 한 층 승격(10-26 검토 L13 — lesson 하나로 승격하면 우연한 한 건이 오래 남는다).
+    승격은 엔트리당 한 번(`reflection.lesson_promoted`)."""
     e = get_entry(conn, entry_id)
     if e is None:
         return
     tier = e["tier"]
     importance = float(e["importance"] or 0.0)
-    if reflection.get("lesson"):
+    before = e.get("reflection") or {}
+    if isinstance(before, str):
+        try:
+            before = json.loads(before) or {}
+        except ValueError:
+            before = {}
+    reflection = dict(reflection)
+    if before.get("lesson_promoted"):
+        reflection["lesson_promoted"] = True
+    elif reflection.get("lesson") and _similar_lesson_decisions(conn, e) >= LESSON_MIN_DECISIONS:
         tier = _next_tier(tier)
         importance = min(1.0, importance + 0.2)
+        reflection["lesson_promoted"] = True
     conn.execute(
         "UPDATE memory_entries SET reflection=?, tier=?, importance=? WHERE id=?",
         (json.dumps(reflection, ensure_ascii=False, default=str), tier, importance, entry_id),

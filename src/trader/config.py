@@ -443,7 +443,6 @@ class MemorySettings(BaseModel):
     top_k: int = 5
 
 
-
 # --- 선물옵션 방향성 레인 (Phase 26) ------------------------------------------------
 
 
@@ -915,6 +914,8 @@ class Secrets(BaseModel):
     NAVER_CLIENT_SECRET: str | None = None
     FRED_API_KEY: str | None = None
     ECOS_API_KEY: str | None = None
+    # SEC EDGAR User-Agent(이름 + 연락 이메일, 2-W13 — 공개 저장소의 sources.yaml 에 두지 않는다)
+    EDGAR_USER_AGENT: str | None = None
     WEB_TOKEN: str | None = None
     REDDIT_CLIENT_ID: str | None = None
     REDDIT_CLIENT_SECRET: str | None = None

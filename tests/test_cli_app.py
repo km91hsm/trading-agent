@@ -141,11 +141,29 @@ def test_templates_mirror_config_except_account_numbers(project):
         if src.name == "accounts.yaml":
             for acct in a["accounts"]:
                 acct["cano"] = "00000000"
-        if src.name == "sources.yaml":
-            a["edgar"]["user_agent"] = "trading-agent <your-email@example.com>"
         assert a == b, src.name
-    tmpl_sources = (repo / "templates" / "config" / "sources.yaml").read_text(encoding="utf-8")
-    assert not re.search(r"[A-Za-z0-9._%+-]+@gmail\.com", tmpl_sources)  # 개인 이메일 금지
+    for d in ("config", "templates/config"):  # 2-W13: 공개 저장소의 추적 파일엔 개인 이메일 금지
+        text = (repo / d / "sources.yaml").read_text(encoding="utf-8")
+        assert not re.search(r"[A-Za-z0-9._%+-]+@gmail\.com", text), d
+
+
+def test_edgar_user_agent_prefers_secret(project, monkeypatch):
+    """2-W13: EDGAR User-Agent 는 Secrets `EDGAR_USER_AGENT` 가 yaml 자리표시자보다 우선."""
+    from trader import cli, config
+
+    (project / "secrets" / ".env").write_text(
+        "EDGAR_USER_AGENT=trading-agent me@example.org\n", encoding="utf-8"
+    )
+    cfg = config.SourcesConfig.model_validate(
+        {"edgar": {"user_agent": "trading-agent <your-email@example.com>"}}
+    )
+    client = cli._build_edgar(cfg)
+    assert client._headers["User-Agent"] == "trading-agent me@example.org"
+    # 자리표시자만 있으면 SEC 에 보내지 않는다 — EDGAR 를 끈다(Codex 보완)
+    (project / "secrets" / ".env").write_text("", encoding="utf-8")
+    assert cli._build_edgar(cfg) is None
+    real = config.SourcesConfig.model_validate({"edgar": {"user_agent": "acme ops@acme.test"}})
+    assert cli._build_edgar(real)._headers["User-Agent"] == "acme ops@acme.test"
 
 
 def test_selfcheck_reports_optional_modules(project):

@@ -373,6 +373,48 @@ Claude 리뷰어 4 + Codex 2 교차검증 결과 중 비주문 항목. 표의 �
 - **같은 값 다시 쓰기**: `control.set_flag` 는 저장된 JSON 과 같으면 쓰지 않는다(upsert `WHERE control.value IS NOT excluded.value`, updated_at 불변). 메모리 브레이커·`ops_level` 의 `at` 은 '그 상태가 된 시각'이라 상태가 같으면 유지한다. SSE `positions` 지문은 created_at(마지막 관측 시각 — 신선도 판단용이라 upsert 는 계속 갱신) 대신 최근 사흘 행의 값 해시.
 - **단타 판정자**: `ScalpJudge` 제출 기록은 `JUDGE_TTL_S`(30분) 지나면 회수 여부와 무관하게 버린다(후보에서 빠진 종목의 키가 쌓이지 않게).
 
+## 전체 검토 2차 결정 반영 — 묶음 3 (2026-10-28, `docs/reviews/2026-10-28-decision-review.md`)
+
+사용자가 고른 결정 대기 선택안을 Codex 가 다시 읽고 보완한 것을 반영했다(7·19·14번은 결정 대기로 남김).
+
+- **텔레그램 신뢰(2-T2).** 신뢰할 수 없는 발신자(그룹 채팅에서 허용 목록 없음·허용 목록 밖, 채팅 종류가
+  빠진 응답)는 조회(`/status`·`/daily`)만 — `/pause`·`/kill` 도 거부한다(킬스위치 해제는 CLI 로만 되므로
+  구성원 한 명의 실수가 매매 중단으로 이어졌다). 모르는 `/xxx` 의 도움말은 `control.telegram_help_at` 기준
+  분당 1회(억제해도 오프셋은 전진).
+- **EDGAR User-Agent(2-W13).** `Secrets.EDGAR_USER_AGENT`(설정 화면 '연결 키' 데이터 묶음)가
+  `sources.yaml edgar.user_agent` 보다 우선이고, 자리표시자(`@example.com`)만 있으면 `cli._build_edgar` 가
+  SEC 에 보내지 않고 EDGAR 를 끈다(경고 1회). `config/sources.yaml` 은 templates 와 같은 자리표시자이고
+  패리티 테스트가 두 파일에 개인 이메일이 없는지 본다. 공개 git 이력의 옛 값은 그대로다.
+- **실시간 시세 양보 사유(2-P13).** `QuoteHub.status().yield` 가 `fills_listener`(같은 프로세스의 실전
+  체결통보가 앱키 세션을 씀)·`appkey_in_use`(다른 연결이 쥐고 있어 백오프)를 알리고 `/api/quotes.hub_yield`
+  → 표 머리 '10초마다 (… 앱키 사용 중)'. 처방은 runbook §0 의 실전 계좌 전용 앱키(시세 공용 키와 분리).
+- **입출금 의심(2-O16).** `killswitch.observe(positions=)` 가 잔고를 볼 때마다 직전 관측(`control.
+  killswitch_obs:<계좌>:<시장>`: NAV·종목별 수량·가격)과 비교해, 양쪽에 보유한 종목의 `직전 수량 × 가격
+  변화` 로 설명되지 않는 NAV 변화가 직전 NAV 의 5%(`FLOW_SUSPECT_PCT`) 이상이면 `killswitch_flow:<계좌>:
+  <시장>` 에 기록한다. 기준·판정은 바꾸지 않는다(잔차는 추정). 운영 점검 loss 영역이 2운영일 동안 warning
+  으로 보이고 `killswitch off --note` 가 **모든 계좌·시장 기준**을 다시 잡으며 의심 기록을 지운다.
+- **레이트리미터 꺼짐 노출(2-P8).** 공유 파일을 못 열면 프로세스 안 리미터로 내려가되 `RETRY_S`(300초)
+  뒤 다시 열어 보고, 꺼진 동안 `rate_store.disabled_status()` 가 운영 점검 orders 영역 warning 이 된다
+  (같은 프로세스 — 데몬의 리미터만 보인다). 초기화 중 실패한 연결은 닫는다. 끝난 스레드의 연결은
+  `threading.local` 정리로 해제된다.
+- **같은 출처 검사(2-W9).** `require_same_origin` 은 `Sec-Fetch-Site` 가 없으면 Origin → Referer 의
+  host·port 를 요청 Host 와 비교한다(`null`·깨진 값 거부). 셋 다 없으면 통과 — 이 검사는 토큰 없는 갱신
+  요청에만 쓰이고, 세 헤더를 모두 빼는 브라우저 요청은 잔여 위험으로 받아들였다.
+- **학습 열(L6).** `dataset.feature_columns` 는 `features.FLOW_COLUMNS`·`COUNT_COLUMNS` 를 뺀다(백필에
+  없어 "값이 있음" 이 최근 날짜를 알리는 누출). 이미 승격된 모델은 재학습 전까지 저장된 열을 쓴다.
+- **근거 수 집계(L10).** 트레이더 묶음은 evidence 를 떼기 전 원본 리포트에서 `context.evidence_stats`
+  (역할별 근거 항목·고유 출처·data_gaps·counter_evidence·key_risks 수와 방향, `directions`·`agreement`·
+  `missing_roles`)를 센다. 검증된 근거 수가 아니라는 정의를 함께 싣고 trader.md 판단 규칙 1 이 이것을
+  개수의 출처로 쓴다.
+- **lesson 승격(L13).** `memory/store.set_reflection` 은 같은 시장·상황 벡터 코사인 ≥ 0.9 에서 만기 결과와
+  lesson 이 있는 **서로 다른 결정** 3건 이상일 때만 승격하고 엔트리당 한 번(`reflection.lesson_promoted`).
+  같은 결정의 재평가 라운드는 한 건으로 센다. 검색 가중치(0.4/0.4/0.2)는 warmup 뒤 실제 검색 결과를 보고
+  정한다(보류).
+- **정량 스크린 검증(L15).** `trader screen backtest`(`scan/backtest.run`, 순수 함수)가 피처 스토어로
+  `roc_10` 상위 N·실제 `quant.score` 상위 N·필터 통과 1/N 을 다음 거래일 종가 진입·horizon 거래일 보유·같은
+  왕복비용·겹치지 않는 창으로 비교한다(가격 없는 종목은 채우지 않고 `missing`). 시점 유니버스
+  (`universe_pit.apply`) 기록 이전 구간의 생존 편향을 `note`·`pit` 로 함께 보인다. 읽기 전용.
+
 ## 전체 검토 2차 교차검증 보완 — 묶음 1 즉시 비주문 (2026-10-28, `docs/reviews/2026-10-27-full-review-2.md` §6)
 - **알림 보관함과 호출부 재시도(2-T1).** `TelegramNotifier.send` 는 전송 실패분을 outbox 에 보관하는 데 성공하면 **True** 를 돌려준다 — 재전송 책임은 `flush_outbox`(telegram_poll 틱) 하나이고, 호출부(단타 묶음 `_send_digest`·watchdog)가 False 를 보고 스스로 다시 보내는 것은 보관함이 없는 notifier 뿐이다. 예전엔 보관하고도 False 라 같은 알림이 두 번 갔다.
 - **시세 요청 실패 뒤 '실시간' 표시(2-W1, `web/src/live.ts`·`hooks.ts`).** `useLiveQuotes` 는 `/api/quotes` 가 실패하거나 `QUOTE_TTL_MS`(30초) 안에 새 응답이 없으면 `degradeQuotes` 로 모든 시세를 `stale` 로 내리고 `degraded` 를 세운다 → `applyQuotes` 가 스냅샷 값으로 돌아가고 표 머리는 '시세 지연 · 마지막 HH:MM 기준'(KST). 서버·SSE 가 살아 있어도 시세 API 만 죽으면 오래된 현재가·NAV·손절 거리가 실시간으로 보이던 것.

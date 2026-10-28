@@ -355,6 +355,7 @@ def build_portfolio(
             nav=nav,
             today=today,
             limit_pct=killswitch_pct,
+            positions=[(p.ticker, p.qty, p.current_price) for p in pos_list],
         )
     # 킬스위치가 켜져 있으면(자동·/kill·CLI 어느 경로든) 이 계좌·시장의 당일 미체결 BUY 를 거둔다 —
     # 게이트는 새 주문만 막는다. 주문을 낼 수 있는 호출(cancel_buys: 실제 실행·데몬 잔고 갱신)만 —
