@@ -61,7 +61,9 @@ def _returns(values: list[Decimal]) -> list[float]:
 
 
 def metrics_of(series: list[tuple[str, Decimal]]) -> dict:
-    """{return, mdd, sortino, days, start, end}. 2개 미만이면 지표 None."""
+    """{return, mdd, sortino, days, start, end}. 2개 미만이면 지표 None. NAV 0 이하인 날은 뺀다 —
+    '그 통화로 가진 돈이 없음'(원화만 있는 모의 계좌의 US 등)이지 전액 손실이 아니다."""
+    series = [(d, v) for d, v in series if Decimal(str(v)) > 0]
     if not series:
         return {"return": None, "mdd": None, "sortino": None, "days": 0, "start": None, "end": None}
     values = [Decimal(str(v)) for _, v in series]
