@@ -178,7 +178,7 @@ base `1bd0172` → (단계 2 GitHub 리뷰 반영 뒤) `c7bf51e`, head `94e4e3f`
 | S4-16 | P2 | `engine` 틱 (C8) | 틱마다 잔고 조회 2회 | `fo.balance.refresh(balance=)` 로 같은 틱의 잔고 재사용 |
 | S4-17 | P2 | `engine._held_row` (C9) | `executor._broker_qty` 와 같은 매칭 중복 | `executor.broker_row` 하나로(`_broker_qty` 도 그것을 쓴다); 복구 알림 키는 프로세스마다 같은 sha1 |
 | S4-18 | P1 | 테스트 범위 (X13) | 수명 시나리오가 진입 중 손절·취소 중 체결을 안 봄, 현물 스냅샷은 KR BUY·HOLD 실행만 | `test_stop_while_entering_recalls_and_counts_fill_during_cancel` 추가. 현물 스냅샷은 execute 경로의 회귀 방어일 뿐이며 계좌 목록·데몬 소비자는 `tests/test_daemon_fo.py` 가 따로 본다(한계를 문서에 명시) |
-| S4-19 | P1 | `engine.maintain` 국면 cap 0·대조 0 (X8) | 스펙 §4.4 '배수 한도는 유지 조건' 과 달리 cap 0·대조 0 을 최대 한도로 바꿔 감액하지 않음 | **설계 유지(문서 명시)**: 설정 의미가 '그 국면 신규 금지'(N4)라 보유를 0 으로 강제 청산하지 않는다 — 게이트 `rules.evaluate` 와 같은 해석. 국면 전환 시 청산을 원하면 별도 설정으로 다룬다(실기 3 뒤 판단, TODO 결정 대기) |
+| S4-19 | P1 | `engine.maintain` 국면 cap 0·대조 0 (X8) | 스펙 §4.4 '배수 한도는 유지 조건' 과 달리 cap 0·대조 0 을 최대 한도로 바꿔 감액하지 않음 | **설계 유지(문서 명시)**: 설정 의미가 '그 국면 신규 금지'(N4)라 보유를 0 으로 강제 청산하지 않는다 — 게이트 `rules.evaluate` 와 같은 해석. 국면 전환 시 청산을 원하면 별도 설정으로 다룬다 — 2026-10-28 사용자 결정: 현행 유지 |
 
 확인함(리뷰어 공통): 지수 보호선의 시간·신선도 조건, 옵션 손절의 저장선 단독 발동, 옵션 매도 +1운영일, `hold_overnight=false` 마감 시각, 스트레스 15:00 확정, 진입 다리만 회수, halted 날짜, 보류 진입 실행 전 플래그 삭제·cutoff 폐기, 늦은 재평가 CAS·REPLACE 다음 틱, 현물·파생 계좌 목록 분리와 소비자별 전달, 파생 시계 게이트, order-test 실전 거부·통과 수단만 플래그, 거부 목록, 웹 계좌 검증·합산 분리·SSE 지문, 합성 fixture·비밀정보 없음.
 
