@@ -711,3 +711,46 @@ def fo_position_mismatch(
         f"{account} · {fo_label(code, name)}",
         [f"원장 {ledger_qty}계약 ≠ {seen}", "unknown 으로 두고 사람이 adopt·close 로 정리"],
     )
+
+
+def fo_exit(
+    *, account: str, code: str, name: str | None, intent: str, reason: str, qty: int
+) -> str:
+    """보호선·만기·마감 청산 발동(엔진). 주문 접수는 `fo_order` 가 따로 알린다."""
+    return render(
+        f"파생 {FO_INTENT.get(intent, intent)}",
+        f"{account} · {fo_label(code, name)}",
+        [f"사유: {reason}", f"보유 {qty}계약 청산 다리를 냅니다"],
+    )
+
+
+def fo_halted(*, account: str, loss: Any, limit: Any) -> str:
+    """일일 손실 한도 도달 — 오늘 신규 진입 금지 + 살아 있는 진입 다리 회수."""
+    return render(
+        "파생 일일 손실 한도",
+        account,
+        [
+            f"오늘 손익 {money(loss, 'KR')} ≤ 한도 −{money(limit, 'KR')}",
+            "오늘은 신규 진입을 막고 미체결 진입을 회수해요. 보유분 감시·청산은 계속해요.",
+        ],
+    )
+
+
+def fo_risk_reduce(
+    *, account: str, code: str, name: str | None, reason: str, held: int, target: int
+) -> str:
+    """유지 조건(스트레스·배수·증거금·수명 예산·현금 버퍼) 위반으로 축소."""
+    return render(
+        "파생 위험 축소",
+        f"{account} · {fo_label(code, name)}",
+        [f"사유: {reason}", f"{held}계약 → {target}계약"],
+    )
+
+
+def fo_maintain_warning(*, account: str, reasons: list[str]) -> str:
+    """15:00 전 스트레스 초과 — 아직 줄이지 않고 알리기만(15:00 확정 검사에서 축소)."""
+    return render(
+        "파생 유지 조건 주의",
+        account,
+        [*reasons[:4], "15:00 확정 검사에서도 넘으면 축소해요."],
+    )
