@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+from collections.abc import Callable
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
@@ -640,13 +641,142 @@ def bind_exec_key(
     *,
     order_id: int | None = None,
     approval_id: int | None = None,
+    at: str | None = None,
 ) -> None:
-    """키를 주문 행(접수·unknown) 또는 승인 요청에 묶는다."""
+    """키를 주문 행(접수·unknown) 또는 승인 요청에 묶는다. `bound_at` 은 묶인 시각 — 그 뒤에 잔고를
+    본 판정은 이 주문·요청을 스냅샷으로 보지만 그 전에 본 판정에는 진행 중 예약이다(결정 7번)."""
+    when = at or now_iso()
     if order_id is not None:
-        conn.execute("UPDATE exec_keys SET order_id=? WHERE key=?", (order_id, key))
+        conn.execute(
+            "UPDATE exec_keys SET order_id=?, bound_at=? WHERE key=?", (order_id, when, key)
+        )
     if approval_id is not None:
-        conn.execute("UPDATE exec_keys SET approval_id=? WHERE key=?", (approval_id, key))
+        conn.execute(
+            "UPDATE exec_keys SET approval_id=?, bound_at=? WHERE key=?", (approval_id, when, key)
+        )
     conn.commit()
+
+
+def ledger_marks(conn: sqlite3.Connection) -> dict:
+    """포트폴리오가 원장을 읽는 순간의 표시 {order_id, approval_id, at}(그때의 최대 id·시각) —
+    진행 중 예약(결정 7번)이 '포트폴리오가 이미 센 주문·승인' 을 시각 추정이 아니라 이것으로 가린다
+    (PR #67 Codex: 잔고 조회 도중 묶인 주문을 두 번 셌다)."""
+    o = conn.execute("SELECT COALESCE(MAX(id), 0) FROM orders").fetchone()[0]
+    a = conn.execute("SELECT COALESCE(MAX(id), 0) FROM approvals").fetchone()[0]
+    return {"order_id": int(o), "approval_id": int(a), "at": now_iso()}
+
+
+def inflight_reservations(
+    conn: sqlite3.Connection,
+    account_id: str,
+    market: str,
+    *,
+    marks: dict,
+    now: str,
+    stale_before: str,
+    exclude_key: str | None = None,
+) -> list[dict]:
+    """판정 포트폴리오에 들어가지 않은 살아 있는 매수 예약 [{key, ticker, amount}](결정 7번).
+
+    포트폴리오는 원장을 읽을 때(`marks` — `ledger_marks`) 있던 체결 전 주문과 pending 승인을 센다.
+    그래서 이미 센 것 = 묶인 주문 id ≤ 표시, 또는 묶인 승인 id ≤ 표시이고 그때 pending 이었다(아직
+    pending 이거나 표시 시각 뒤에 결정됐다). 그 밖의 살아 있는 예약은 진행 중이다(미묶음·읽기 전에
+    승인됐는데 주문 행이 없음·읽은 뒤 생긴 주문). 죽은 주문·닫힌 승인·만료 승인·보내지도 묶이지도
+    않은 채 오래된 키는 빼되, **브로커로 보낸 키(sent_at)는 승인이 닫혀도 남긴다** — 접수 뒤 주문 행
+    기록이 실패한 주문은 KIS 에 살아 있을 수 있다(PR #67 Codex, 대조·수동 해제 전까지)."""
+    rows = conn.execute(
+        "SELECT k.key, k.ticker, k.amount FROM exec_keys k "
+        "LEFT JOIN orders o ON o.id = k.order_id "
+        "LEFT JOIN approvals a ON a.id = k.approval_id "
+        "WHERE k.account_id=? AND k.market=? AND k.side='BUY' AND k.amount IS NOT NULL "
+        "AND k.key != ? "
+        f"AND (o.id IS NULL OR o.status NOT IN ({dead_status_sql()})) "
+        "AND (a.id IS NULL OR k.sent_at IS NOT NULL OR (a.status NOT IN "
+        "('rejected','expired','failed') AND NOT (a.status='pending' AND a.expires_at <= ?))) "
+        "AND NOT (k.order_id IS NULL AND k.approval_id IS NULL AND k.sent_at IS NULL "
+        "AND k.created_at < ?) "
+        "AND NOT ("
+        "(k.order_id IS NOT NULL AND k.order_id <= ?) "
+        "OR (k.approval_id IS NOT NULL AND k.approval_id <= ? "
+        "AND (a.decided_at IS NULL OR a.decided_at > ?)))",
+        (
+            account_id,
+            market,
+            exclude_key or "",
+            now,
+            stale_before,
+            int(marks.get("order_id") or 0),
+            int(marks.get("approval_id") or 0),
+            str(marks.get("at") or ""),
+        ),
+    ).fetchall()
+    return [{"key": r["key"], "ticker": r["ticker"], "amount": r["amount"]} for r in rows]
+
+
+def claim_exec_key_reserved(
+    conn: sqlite3.Connection,
+    key: str,
+    *,
+    now: str,
+    stale_before: str,
+    account_id: str,
+    market: str,
+    ticker: str,
+    side: str,
+    marks: dict,
+    recheck: Callable[[list[dict]], str | None],
+) -> tuple[bool, list[dict]]:
+    """매수 예약으로 실행 키를 잡는다(결정 7번, 2-O10). 한 쓰기 트랜잭션(BEGIN IMMEDIATE) 안에서
+    진행 중 예약을 읽어 `recheck` 에 넘기고, 예약 금액(문자열)을 받으면 키·예약을 함께 쓴다 —
+    None 이면 잡지 않는다. 같은 계좌의 다른 경로(분석·재평가·단타·리밸런스·헤지·승인)가 서로의
+    예약을 본 뒤에만 키를 잡으므로, 둘 다 같은 여유를 쓰는 경합이 닫힌다. 넘겨받기 규칙은
+    `claim_exec_key` 와 같다.
+    (잡았나, 본 진행 중 예약)."""
+    if conn.in_transaction:
+        conn.commit()
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        inflight = inflight_reservations(
+            conn,
+            account_id,
+            market,
+            marks=marks,
+            now=now,
+            stale_before=stale_before,
+            exclude_key=key,
+        )
+        amount = recheck(inflight)
+        if amount is None:
+            conn.rollback()
+            return False, inflight
+        try:
+            conn.execute(
+                "INSERT INTO exec_keys(key, created_at, account_id, market, ticker, side, amount) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (key, now, account_id, market, ticker, side, amount),
+            )
+        except sqlite3.IntegrityError:
+            cur = conn.execute(
+                "UPDATE exec_keys SET created_at=?, order_id=NULL, approval_id=NULL, sent_at=NULL, "
+                "bound_at=NULL, account_id=?, market=?, ticker=?, side=?, amount=? "
+                "WHERE key=? AND ("
+                f"(order_id IS NOT NULL AND order_id IN (SELECT id FROM orders WHERE status IN "
+                f"({dead_status_sql()}))) "
+                "OR (order_id IS NULL AND sent_at IS NULL AND ("
+                "(approval_id IS NULL AND created_at < ?) "
+                "OR approval_id IN (SELECT id FROM approvals WHERE status IN "
+                "('rejected','expired','failed') OR (status='pending' AND expires_at <= ?)))))",
+                (now, account_id, market, ticker, side, amount, key, stale_before, now),
+            )
+            if cur.rowcount != 1:
+                conn.rollback()
+                return False, inflight
+        conn.commit()
+        return True, inflight
+    except BaseException:
+        if conn.in_transaction:
+            conn.rollback()
+        raise
 
 
 def mark_exec_key_sent(conn: sqlite3.Connection, key: str, *, sent_at: str) -> None:

@@ -480,7 +480,7 @@
 - [x] 결정 반영 묶음 4(설계, 2026-10-28, 사용자 선택안 + Codex 보완 → architecture.md 「결정 반영 — 묶음 4 설계」): 2-O17 현금 ETF 전환 세대별 상태, 2-L3·2-L4·2-L5 섀도 공통 후보·현금 효과 분리·시장별 판정, 2-L8 `post_fill_return` 분리·FIFO 실현손익(원장 v30), 2-L21 입장 변경 이유 기반 수렴 판정, L14 성과 퀀트 기준선을 섀도 `quant_topn` 으로, L16 무효화 조건 구조화
 - [ ] 후속(L14 나머지): ML 랭커 자체의 운영일 기록(실제 랭킹 경로·모델 버전)과 학습·튜닝·승격의 고정 홀드아웃 분리
 - [x] 결정 14·19(2026-10-28 사용자 결정 — 권고대로): 14번 보정 자동 주입 차단(`calibration.inject` 기본 false) + 만기 기준 도달 재검토 알림, 19번 `context.theme`(asof 검증, `scan/membership`)·퀀트 기간 해석 한 줄·`context.holding`(최소 보유) → architecture.md 「묶음 5」
-- [ ] 결정 7(2026-10-28 사용자 결정 — 권고대로): 2-O10 동시 판정 — 최종 재확인 + 원자적 예약(별도 주문 경로 PR, 머지 전 사용자 확인)
+- [x] 결정 7(2026-10-28 사용자 결정 — 권고대로): 2-O10 동시 판정 — 최종 재확인 + 원자적 예약(원장 v32 `exec_keys` 예약, `repo.claim_exec_key_reserved`) → architecture.md 「묶음 6」(주문 경로 PR — 머지 전 사용자 확인)
 - [ ] 보류(결정 19번 iii): 최소 보유 전 조기 익절 예외 — 주문 정책 결정
 - [ ] 실기·격리 확인(사용자 확인 대기): 2-O14 US 부분 체결 취소에 원 수량 전체(KIS 거부 여부), 2-O12 단타 보유를 monitor 가 먼저 팔면 `closing` 반복, 2-P1 수집 기한 뒤 `trader tool collect` 프로세스 종료 지연, 2-L24 `rate_limit_event.utilization` 단위(0~1 vs 0~100), 2-P6·2-P11 Windows 파일 락·빌드, 2-W4 SSE 리더 탭 중복, 2-W12 세이브티커 로그인 입력 범위
 - [ ] 결정 대기(사용자): `AGENTS.md`(untracked, Phase 12 시점 CLAUDE.md 사본)를 현재판으로 갱신해 커밋할지 — Codex 가 구판 계약으로 오판할 수 있다
