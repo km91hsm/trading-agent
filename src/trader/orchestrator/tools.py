@@ -2348,7 +2348,7 @@ def _fo_account_done(
 ) -> bool:
     """아침 결정 재개 때 이 계좌를 건너뛸지(PR #61 리뷰·단계 4 리뷰). 판정 파일은 다리 예약
     **전에** 쓰이므로 그것만으로는 끝났다고 보지 않는다 — 보류 플래그·주문 체크포인트·**이 결정
-    봉투(request_id)로 만든 원장 다리**(v33 `fo_order_legs.request_id`)가 있거나, 판정이 실행할
+    봉투(request_id)로 만든 원장 다리**(v34 `fo_order_legs.request_id`)가 있거나, 판정이 실행할
     것이 없는 경우(거부·기록만·오류·건너뜀·다리 없음)만 끝난 것이다."""
     if fo_pending_entry(ctx.conn, account_id, day) is not None:
         return True

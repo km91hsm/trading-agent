@@ -513,10 +513,24 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
         ["ALTER TABLE shadow_portfolios ADD COLUMN def_version INTEGER"],
     ),
     (
+        32,  # 결정 7번(2-O10): 실행 키를 매수 예약으로 — 계좌·시장·종목·방향·금액,
+        # 주문·승인에 묶인 시각.
+        # 키를 잡는 트랜잭션 안에서 다른 경로의 진행 중 예약을 반영해 게이트를 다시 돌린다
+        [
+            "ALTER TABLE exec_keys ADD COLUMN account_id TEXT",
+            "ALTER TABLE exec_keys ADD COLUMN market TEXT",
+            "ALTER TABLE exec_keys ADD COLUMN ticker TEXT",
+            "ALTER TABLE exec_keys ADD COLUMN side TEXT",
+            "ALTER TABLE exec_keys ADD COLUMN amount TEXT",
+            "ALTER TABLE exec_keys ADD COLUMN bound_at TEXT",
+            "CREATE INDEX IF NOT EXISTS idx_exec_keys_acct ON exec_keys(account_id, market)",
+        ],
+    ),
+    (
         # Phase 26 선물옵션 방향성 레인: 주문·계좌 asset, 포지션 상태기계, 주문 다리(실행 키 =
         # (position, intent, round, attempt) UNIQUE), 파생 결정(계좌·포지션·라운드 단위),
         # NAV·보유 스냅샷
-        32,
+        33,
         [
             "ALTER TABLE orders ADD COLUMN asset TEXT NOT NULL DEFAULT 'stock'",
             "ALTER TABLE accounts ADD COLUMN asset TEXT NOT NULL DEFAULT 'stock'",
@@ -581,7 +595,7 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
     (
         # Phase 26 단계 4 리뷰: 주문 다리 ↔ 결정 봉투(request_id) 연결 — 제출 재개가 '이 결정의
         # 다리가 이미 있는가' 를 시각 추정 없이 판정한다
-        33,
+        34,
         [
             "ALTER TABLE fo_order_legs ADD COLUMN request_id TEXT",
             "CREATE INDEX IF NOT EXISTS ix_fo_legs_request "

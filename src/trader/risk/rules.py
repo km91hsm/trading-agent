@@ -48,6 +48,8 @@ class Portfolio:
     # 검토 O10: 오늘 체결 전 BUY 주문 + pending 승인의 종목별 금액(예상 포트폴리오). 종목 수·섹터·
     # 테마 합계에서 보유처럼 더한다. 현금 차감은 today_order_amount 가 이미 하므로 여기서 빼지 않음
     pending_buys: dict[str, Decimal] = field(default_factory=dict)
+    # 결정 7번: 원장을 읽은 순간의 표시(`repo.ledger_marks`) — 진행 중 예약이 이미 센 것을 가린다
+    ledger_marks: dict = field(default_factory=dict)
 
     def equity_positions(self) -> dict[str, Position]:
         """헤지 ETF 를 뺀 일반 보유 종목."""

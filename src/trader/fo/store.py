@@ -184,7 +184,7 @@ def insert_leg(
     request_id: str | None = None,
 ) -> int:
     """`prepared` 다리 삽입. 실행 키 충돌은 `sqlite3.IntegrityError` 그대로. `request_id` 는 이
-    다리를 만든 결정 봉투(원장 v33, 제출 재개 판정의 근거)."""
+    다리를 만든 결정 봉투(원장 v34, 제출 재개 판정의 근거)."""
     if qty <= 0:
         raise ValueError("다리 수량은 1 이상")
     cur = conn.execute(
