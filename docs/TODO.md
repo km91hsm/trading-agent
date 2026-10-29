@@ -406,6 +406,16 @@
 - [ ] 실기(사용자 확인 대기, Windows): Chromium 자동 설치·일반 창 로그인·앱 종료 때 `taskkill /T` 로 브라우저까지 닫히는지
 - [x] 결정(사용자 2026-10-27): 이 맥의 launchd 수집기(`com.user.saveticker.collector`·`monitor`)를 내리고 앱(데몬)이 수집을 맡는다 — plist 는 `~/Library/LaunchAgents/disabled-saveticker/` 로 옮김(되돌리려면 제자리로 옮겨 `launchctl bootstrap`). 앱이 꺼져 있는 동안은 수집이 멈춘다
 
+## SaveTicker 일반 Chrome 독립 수집 (2026-10-29)
+- [x] 확장 + Native Messaging, 원래 전체 범위 20개 화면, 기존 parser/Store·리더 연동. AI·브로커 호출 없음
+- [x] 선택 상태·인증 확인, 전용 탭 복원·중복 작업 방지·뉴스 상단 갱신, PDF 정확한 URL 연결, 부분 수집 명시
+- [x] 검토 패키지 준비와 별도 설치/제거, 기존 자동 로그인 억제·계정 파일 이름 변경/복원, 번들 자체 runtime 포함
+- [x] 독립 리뷰 지적 수정, 관련 Python 188개·웹 270개·확장 23개 통과
+- [x] 전체 Python 2,639 passed·1 skipped, 새 macOS 번들·독립 frozen Native 프로세스 20개 작업/PDF/EOF/등록 복원 검증
+- [ ] PR/CI
+- [ ] 설치 승인 후 실제 Chrome 전체 화면·PDF·여러 주기·Chrome 재시작 확인. 설치 전 운영 완료로 보지 않음
+- [ ] Windows 실제 Chrome/번들 설치·로그온 재개, macOS 재부팅 실기
+
 ## 국내 실시간 시세 웹소켓 (2026-10-27, 사용자 요청 — Stock 프로젝트 중단·이 프로젝트로 일원화)
 - [x] `broker/kis_ws`(프레임 묶음·부호·핑퐁·제어)·`KisAuth.approval_key`·`web/live_quotes.QuoteHub`(임차·백오프·거절)·`/api/quotes` 허브 우선 + `stream`·프런트 1초 주기, 실기: 접속키 발급·`SUBSCRIBE SUCCESS`/`UNSUBSCRIBE SUCCESS` 확인(장 밖) (2026-10-27)
 - [ ] 실기(사용자 확인 대기, 장중): 대시보드를 열어 둔 채 국내 보유·관심 종목 현재가가 1초 단위로 바뀌는지, 표 머리 '실시간 n종목 · 체결 즉시', `state/logs` 에 '실시간 시세 접속'·끊김 재접속 로그

@@ -537,3 +537,28 @@ def test_saveticker_status_and_restart_api(project, deps):
     r = c.post("/api/control/saveticker/restart", headers=AUTH)
     assert r.status_code == 200 and r.json()["blocked"] is False
     assert (automation.read(st.home() / "runtime" / "service.json") or {})["state"] == "stopped"
+
+
+def test_saveticker_extension_is_configured_without_account_env(project, deps):
+    from fastapi.testclient import TestClient
+
+    from trader import saveticker as st
+    from trader.saveticker.store import atomic_json
+    from trader.web.app import create_app
+
+    atomic_json(st.home() / "runtime/bridge-config.json", {"backend": "extension"})
+    assert not st.credentials_path().exists()
+    response = TestClient(create_app(deps)).get("/api/system/saveticker").json()
+    assert response["configured"] is True
+    assert response["backend"] == "extension"
+
+
+def test_saveticker_extension_restart_uses_popup_instead_of_legacy_reset(project, deps):
+    from trader import saveticker as st
+    from trader.saveticker.store import atomic_json
+
+    atomic_json(st.home() / "runtime/bridge-config.json", {"backend": "extension"})
+    c = TestClient(create_app(deps), client=("127.0.0.1", 50000), base_url="http://127.0.0.1")
+    response = c.post("/api/control/saveticker/restart", headers=AUTH)
+    assert response.status_code == 409
+    assert "Chrome" in response.json()["detail"]

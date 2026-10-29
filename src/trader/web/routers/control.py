@@ -168,6 +168,8 @@ def saveticker_restart(request: Request) -> dict:
     from trader.saveticker import automation
 
     home = st.home()
+    if automation.status(home).get("backend") == "extension":
+        raise HTTPException(409, "일반 Chrome 확장 아이콘에서 재개해 주세요")
     automation.clear_blocks(home)
     logging.getLogger("trader.web").info("세이브티커 다시 시작 요청(웹)")
     return {"configured": st.credentials_path().is_file(), **automation.status(home)}

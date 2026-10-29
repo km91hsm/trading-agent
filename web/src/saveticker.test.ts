@@ -33,3 +33,11 @@ describe("세이브티커 상태(설정 화면)", () => {
     expect(laneRows(s)[0]).toEqual({ lane: "news", label: "뉴스", state: "오류", note: "사이트 재확인 필요" });
   });
 });
+
+it("일반 Chrome 연결 해제와 사용자 확인 대기를 수집 중으로 표시하지 않는다", () => {
+  const s = { ...base, backend: "extension" as const, lane_blocks: {}, service: { ...base.service, state: "paused", reason: "extension_disconnected" } };
+  expect(savetickerBadge(s)).toEqual({ label: "Chrome 연결 대기", kind: "pending" });
+  expect(savetickerBadge({ ...s, service: { ...s.service, state: "collecting", reason: null }, lanes: { news: { state: "waiting_verification", error_type: null, stage: null, updated_at: null } } })).toEqual({ label: "사용자 확인 필요", kind: "pending" });
+  expect(savetickerBadge({ ...s, service: { ...s.service, state: "error" } })).toEqual({ label: "수집 오류", kind: "danger" });
+  expect(savetickerBadge({ ...s, service: { ...s.service, state: "collecting" }, lanes: { news: { state: "error", error_type: null, stage: null, updated_at: null } } })).toEqual({ label: "수집 오류", kind: "danger" });
+});

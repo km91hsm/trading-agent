@@ -25,11 +25,9 @@ trader/                ← 이 폴더가 TRADER_HOME. 폴더째 다른 PC 로 �
    한 번 로그인(구독 인증)해 둡니다. 터미널에서 `claude --version` 이 나오면 됩니다.
 2. **KIS Open API 앱키** (모의·실전), **DART**·**FRED** 키, **네이버 API HUB** 앱의 Client ID/Secret
    (NCP 콘솔 > NAVER API HUB > Application), **텔레그램** 봇 토큰·chat_id.
-3. (선택) **세이브티커 수집** — 세이브티커 계정을 `secrets/saveticker.env` 에
-   `SAVETICKER_EMAIL='…'`·`SAVETICKER_PASSWORD='…'` 두 줄로 적어 두면, 앱(데몬)이 켜져 있는 동안 수집기가
-   돕니다. 처음 한 번 Chromium(약 150MB)을 내려받으므로 인터넷이 필요하고, 수집 중에는 브라우저 창이
-   몇 개 뜹니다(사이트가 창 없는 접속을 막아 일반 창을 씁니다 — 최소화해 두면 됩니다). 파일이 없으면
-   수집기는 돌지 않고 나머지는 그대로입니다.
+3. (선택) **세이브티커 수집** — 일반 Chrome 확장과 로컬 Native host를 사용하면
+   Claude/Codex·트레이딩 앱이 꺼져 있어도 수집합니다. Chrome에서 직접 로그인해야 하고,
+   컴퓨터가 깨어 있어야 합니다. 설치 전 아래의 패키지·권한을 확인하세요.
 4. (선택) 번들은 scikit-learn 백엔드로 돕니다. LightGBM·PPO 백엔드는 소스 설치(`uv sync --extra lightgbm --extra rl`,
    macOS 는 `brew install libomp`)에서만 쓸 수 있고 설정 `backend: auto` 는 없으면 자동으로 폴백합니다.
    소스 설치에서 LightGBM 으로 학습·승격한 모델(`ml models` 의 backend)은 번들이 로드하지 못해 경고 뒤 ML 없이
@@ -67,12 +65,27 @@ trader/                ← 이 폴더가 TRADER_HOME. 폴더째 다른 PC 로 �
 - 웹 UI 제어(일시정지·승인·모드·관심종목)는 `secrets/.env` 의 `WEB_TOKEN` 을 설정/제어 페이지에 넣어야 됩니다. 토큰이 없으면 조회 전용입니다.
 - 스캔→분석·종목 분석·피처 백필·퀀트/RL 학습·복기·체결 동기화는 터미널 없이 **웹 대시보드 '데몬 잡' 표의 '지금 실행'** 과 데이터·ML 페이지의 버튼으로 돌릴 수 있습니다(`WEB_TOKEN` 필요, 데몬이 켜져 있어야 함 — Trader.app 이 켜져 있으면 됩니다). 요청은 '작업 대기열' 블록에 대기→실행 중→완료로 보이고 진행 문구도 보여요. 피처 스토어가 비어 있으면 데몬이 처음 켜질 때 3년 백필과 퀀트 학습을 자동으로 넣습니다.
 - **하락장 대응**: 매일 스캔 앞에 지수 proxy(KODEX 200·SPY)로 시장 국면(상승/중립/하락)을 판정해 대시보드 상태줄에 보여 주고, 하락이면 신규 매수를 막고 인버스 ETF(KODEX 인버스·SH, 3지표 모두면 2배)를 계좌의 최대 20% 로 사서 들다가 국면이 풀리면 팝니다. 계좌 모드(off/approve/auto)·일시정지는 그대로 적용됩니다. 설정은 `config/settings.yaml` 의 `hedge:`.
-- **세이브티커 수집**: 계정 파일이 있으면 데몬이 1분마다 수집 서비스를 확인해 없으면 띄우고(죽으면 다시),
-  앱을 종료하면 함께 닫습니다. 수집 폴더는 `state/external/saveticker/`(`config/sources.yaml`
-  `news.saveticker_dir`, 다른 곳의 수집기를 함께 쓰려면 그 절대경로)이고 장애·복구는 텔레그램
-  `[세이브티커 수집]` 으로 옵니다. 로그인 실패로 멈추면 계정 파일을 고칠 때까지 다시 시도하지 않습니다.
-  변경 이력·날짜별 파일·PDF 원본은 `news.saveticker_retention_days`(30일) 뒤 지웁니다. 상태 확인:
-  `./trader saveticker status`, Chromium 만 미리 받기: `./trader saveticker install-browser`.
+- **세이브티커 수집**: Chrome 확장의 팝업에서 시작·중지·직접 확인 후 재개를 제어합니다.
+  로그인 만료·보안 재확인은 해당 전용 탭에서 직접 완료해야 합니다. Chrome 종료·절전 중에는
+  수집하지 못하며 Chrome을 다시 열면 활성화 상태를 복구합니다. 자동 부팅 실기는 별도 확인이 필요합니다.
+  저장 폴더는 `state/external/saveticker/`(`config/sources.yaml news.saveticker_dir`)이고
+  기존 리더와 같은 SQLite·JSONL·최신 JSON·PDF 형식을 사용합니다.
+  뉴스·SAVE 리포트·커뮤니티 TOP5/지수/상승/하락·증시 거래대금/상승/하락의 실시간/정규장·
+  이전 달부터 3개월 뒤 캘린더를 순환합니다. DOM 가상 목록은 두 번 스크롤하고 뉴스 본문은 작업당 두 건까지
+  확인하므로 `partial`을 표시합니다. 모든 과거 기사·본문의 완전 수집을 뜻하지 않습니다.
+  리포트 PDF는 해당 클릭의 정확한 다운로드 URL을 확인할 수 있을 때만 저장하고, 확인 불가 시 미수집으로 남깁니다.
+- **Chrome 수집기 설치**: 먼저 `./trader saveticker extension prepare --destination <새 패키지 경로>`로
+  검토용 패키지를 만듭니다. 이 명령은 Chrome이나 backend를 변경하지 않습니다.
+  `REVIEW.md`·`extension/manifest.json`을 확인한 뒤
+  `./trader saveticker extension install-host <패키지 경로>`로 로컬 host를 등록하고,
+  `chrome://extensions` 개발자 모드에서 패키지의 `extension/`을 압축해제된 확장으로 로드합니다.
+  권한은 SaveTicker 사이트 접근, 알람, 로컬 저장, Native Messaging, 다운로드입니다.
+  설치는 기존 수집기만 중지하고 `secrets/saveticker.env`를 `.extension-backup`으로 이름 변경하여
+  구버전 앱의 자동 로그인 재시작도 막습니다. 새 비밀번호 파일이 있으면 복원 시 덮어쓰지 않습니다.
+  제거는 확장을 Chrome에서 지운 뒤 `./trader saveticker extension uninstall-host <패키지 경로>`입니다.
+  번들로 준비한 패키지는 실행 파일을 자체 포함하므로 작업 폴더·가상환경에 의존하지 않습니다.
+  소스 준비는 개발용이며 Windows는 번들 준비만 지원합니다. 설치 패키지 폴더는 제거 전까지 유지하세요.
+  상태: `./trader saveticker extension status`. 기존 Chromium 수집기는 확장 모드에서 자동 시작하지 않습니다.
 - 터미널 명령은 개발 환경과 같습니다(`uv run trader …` 대신 `./trader …`):
   `status`, `scan`, `analyze`, `monitor --once`, `fills sync`, `approvals list`, `control show|pause|resume`,
   `features backfill --years 3`, `ml train`, `readiness`, `backtest --since YYYY-MM-DD`.

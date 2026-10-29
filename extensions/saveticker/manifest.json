@@ -1,0 +1,33 @@
+{
+  "manifest_version": 3,
+  "name": "SaveTicker 수집",
+  "version": "1.0.0",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA3WeKbuemZizg+F+9q1VmyQPIJ639KzMlycxI33pcMvITzLWUNTt4jTI62Wgh2/bMbM6Zgya1J27bmAYn5Wfd5AFc2NQwscNvzx0d6d3zYm3q+S2C19RbOneLa7bW3JOCSn0JPw1cXPJfSDKzXer9whZprisEx0/bmKPjOmveFl1axpXZMIG0CaqC2FBT/fgcSxKsMNP7MOTlelNoQN+JklWrAw4BBvqtyYklWnIYe+xF1ZZShtdeLHEs4HhpvVLekPs44g6FWnoxEFAFnbgkuj3jw4OlTnxjWI1bvCgcIo2cOtGbpkJwxirmMLU77V+lpDUR7ZjAMsxdbE/nRzRJjQIDAQAB",
+  "permissions": [
+    "alarms",
+    "storage",
+    "nativeMessaging",
+    "downloads"
+  ],
+  "host_permissions": [
+    "https://www.saveticker.com/*"
+  ],
+  "background": {
+    "service_worker": "worker.js",
+    "type": "module"
+  },
+  "action": {
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.saveticker.com/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}

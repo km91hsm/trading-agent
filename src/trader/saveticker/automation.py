@@ -53,7 +53,14 @@ def collector_alive(pid):
     result = subprocess.run(
         ["ps", "-p", str(pid), "-o", "command="], capture_output=True, text=True, timeout=5
     )
-    return result.returncode == 0 and "trader saveticker run" in result.stdout
+    return result.returncode == 0 and (
+        "trader saveticker run" in result.stdout
+        or "trader saveticker native-host" in result.stdout
+        or (
+            "trader" in result.stdout
+            and "chrome-extension://gfchfnjghmjiidifohjglpodaakdphho/" in result.stdout
+        )
+    )
 
 
 def evaluate(runners, status, previous, *, now, alive=collector_alive):
@@ -263,10 +270,13 @@ _REASON_TEXT = {
 def status(home):
     """웹·운영 점검용 요약: 서비스 상태·멈춘 이유·작업별 상태·쉬는 작업·마지막 수집 시각."""
     runtime = home / "runtime"
+    backend = (read(runtime / "bridge-config.json") or {}).get("backend", "playwright")
     service_state = read(runtime / "service.json") or {}
     lanes = {}
     for lane in LANES:
         row = read(runtime / f"runner-{lane}.json") or {}
+        if backend == "extension" and row.get("backend") != "extension":
+            row = {}
         lanes[lane] = {k: row.get(k) for k in ("state", "error_type", "stage", "updated_at")}
     monitor = read(runtime / "alert-monitor.json") or {}
     success = monitor.get("last_success_at") or {}
@@ -275,15 +285,46 @@ def status(home):
         if isinstance(success, dict)
         else None
     )
+    if backend == "extension":
+        from trader.daemon import Lock
+        from trader.platform.procs import pid_alive
+
+        bridge = read(runtime / "bridge.json") or {}
+        try:
+            at = datetime.fromisoformat(bridge["updated_at"])
+            fresh = 0 <= (datetime.now(UTC) - at).total_seconds() <= 120
+        except (KeyError, ValueError, TypeError):
+            fresh = False
+        alive = (
+            fresh and pid_alive(bridge.get("pid", 0)) and Lock(runtime / "bridge-host.lock").held()
+        )
+        service_state = (
+            bridge
+            if alive
+            else {
+                "state": "waiting_chrome",
+                "reason": "extension_disconnected",
+                "at": bridge.get("updated_at"),
+            }
+        )
+        data_status = read(home / "data/status.json") or {}
+        stamps = [v.get("last_success_at") for v in data_status.get("streams", {}).values()]
+        last = max((v for v in stamps if isinstance(v, str)), default=None)
+        if not alive:
+            for row in lanes.values():
+                row["state"] = "paused"
+                row["error_type"] = None
+        monitor = {"health": "healthy" if alive else "waiting_chrome"}
     blocked = service_state.get("state") == "blocked"
     return {
+        "backend": backend,
         "service": {k: service_state.get(k) for k in ("state", "reason", "at", "exit_code")},
         "blocked": blocked,
         "reason_text": _REASON_TEXT.get(service_state.get("reason"), service_state.get("reason"))
         if blocked
         else None,
         "lanes": lanes,
-        "lane_blocks": lane_blocks(home),
+        "lane_blocks": {} if backend == "extension" else lane_blocks(home),
         "last_success_at": last,
         "health": monitor.get("health"),
     }
@@ -355,6 +396,8 @@ def should_start(home, credentials, *, now):
     뒤에 다시 띄운다 — 실패한 로그인을 1분마다 반복하면 계정이 잠길 수 있다."""
     from trader.daemon import Lock
 
+    if (read(home / "runtime/bridge-config.json") or {}).get("backend") == "extension":
+        return False, "일반 Chrome 확장 수집 모드"
     if not credentials.is_file():
         return False, "계정 파일 없음"
     runtime = home / "runtime"
@@ -381,6 +424,8 @@ def should_start(home, credentials, *, now):
 
 
 def service(root):
+    if (read(root / "runtime/bridge-config.json") or {}).get("backend") == "extension":
+        return
     from trader.daemon import Lock
 
     runtime = root / "runtime"

@@ -60,6 +60,15 @@ def _pause_if_console() -> None:
 
 
 def main() -> None:
+    # Chrome supplies the caller origin as argv[1]; keep binary framing away from CLI output.
+    if len(sys.argv) > 1:
+        from trader.saveticker.bridge_install import is_native_origin, native_entry
+
+        if is_native_origin(sys.argv[1]):
+            code = native_entry(sys.argv[1])
+            if code:
+                raise SystemExit(code)
+            return
     from trader import cli
     from trader.platform import bundle
 

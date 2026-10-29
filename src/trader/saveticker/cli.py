@@ -8,6 +8,7 @@ import threading
 import time
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Annotated
 
 import typer
 
@@ -386,3 +387,57 @@ def monitor_cmd():
     from trader.saveticker.automation import monitor
 
     _print(monitor(home()))
+
+
+extension_app = typer.Typer(help="일반 Chrome 상시 수집 확장 준비·등록", no_args_is_help=True)
+app.add_typer(extension_app, name="extension")
+
+
+def _bridge_action(function, *args, **kwargs):
+    from trader.saveticker.bridge_install import InstallError
+
+    try:
+        _print(function(*args, **kwargs))
+    except InstallError as exc:
+        _print({"ok": False, "error": str(exc)})
+        raise typer.Exit(1) from None
+
+
+@extension_app.command("prepare")
+def extension_prepare(destination: Annotated[Path, typer.Option("--destination")]):
+    """설치·활성화 없이 검토할 확장 패키지와 권한 목록을 만든다."""
+    from trader.saveticker.bridge_install import prepare
+
+    _bridge_action(prepare, destination)
+
+
+@extension_app.command("install-host")
+def extension_install(package: Path):
+    """사용자 승인 후 Native host를 등록하고 기존 자동로그인 수집을 전환한다."""
+    from trader.saveticker.bridge_install import install_host
+
+    _bridge_action(install_host, package)
+
+
+@extension_app.command("uninstall-host")
+def extension_uninstall(package: Path):
+    """확장 중지 후 등록을 지우고 기존 계정 파일을 복원한다."""
+    from trader.saveticker.bridge_install import uninstall_host
+
+    _bridge_action(uninstall_host, package)
+
+
+@extension_app.command("status")
+def extension_status():
+    from trader.saveticker.automation import status
+
+    _print(status(home()))
+
+
+@app.command("native-host", hidden=True)
+def native_host_cmd(origin: str):
+    from trader.saveticker.bridge_install import native_entry
+
+    code = native_entry(origin)
+    if code:
+        raise typer.Exit(code)
