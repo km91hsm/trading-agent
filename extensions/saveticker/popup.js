@@ -26,6 +26,7 @@ async function render() {
     $('updated').textContent = s.lastCollected ? '최근 수집 ' + new Date(s.lastCollected).toLocaleString('ko-KR') : '아직 수집 기록이 없습니다.';
     $('start').disabled = !!s.enabled;
     $('stop').disabled = !s.enabled;
+    $('resume').disabled = false;
 }
 for (const action of ['start', 'stop', 'resume'])
     $(action).addEventListener('click', async () => {
