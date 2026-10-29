@@ -33,3 +33,9 @@ describe("세이브티커 상태(설정 화면)", () => {
     expect(laneRows(s)[0]).toEqual({ lane: "news", label: "뉴스", state: "오류", note: "사이트 재확인 필요" });
   });
 });
+
+it("재확인 대기를 수집 중으로 표시하지 않고 브라우저 조작을 안내한다", () => {
+  const s = { ...base, lane_blocks: {}, lanes: { news: { state: "waiting_verification", error_type: null, stage: "waiting_verification", updated_at: null } } };
+  expect(savetickerBadge(s)).toEqual({ label: "사이트 재확인 대기", kind: "pending" });
+  expect(laneRows(s)[0]).toEqual({ lane: "news", label: "뉴스", state: "사이트 재확인 대기", note: "열린 수집 브라우저에서 재확인·로그인을 완료하세요(최대 10분)" });
+});

@@ -94,7 +94,13 @@ def test_lane_login_is_serialized_with_shared_lock(tmp_path):
 
     held = []
 
+    from types import SimpleNamespace
+
     class Adapter:
+        page = SimpleNamespace(
+            context=SimpleNamespace(storage_state=lambda **kwargs: {"cookies": [], "origins": []})
+        )
+
         def login(self):
             fh = filelock.try_hold(tmp_path / "login.lock")
             held.append(fh is None)  # 로그인 중에는 다른 작업이 잠금을 못 잡는다

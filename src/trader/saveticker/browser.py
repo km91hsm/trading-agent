@@ -6,6 +6,7 @@ import json
 import re
 import tempfile
 import time
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -63,7 +64,9 @@ class Browser:
         max_details: int = 20,
         artifact_root: Path | None = None,
         max_reports: int = 2,
+        reauthenticate: Callable[[], None] | None = None,
     ):
+        self.reauthenticate = reauthenticate
         self.max_reports = max_reports
         self.pending_reports = False
         self.artifact_root = artifact_root
@@ -546,7 +549,7 @@ class Browser:
             self.loaded_at = 0
             raise SiteClientError("site_client_application_error")
         if dom.authentication_required(self.html()) or not self.authenticated():
-            self.login()
+            (self.reauthenticate or self.login)()
             self.goto(view.url)
         self.page.get_by_role("button", name="프로필 메뉴", exact=True).wait_for(
             state="visible", timeout=15000

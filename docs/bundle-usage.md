@@ -71,6 +71,12 @@ trader/                ← 이 폴더가 TRADER_HOME. 폴더째 다른 PC 로 �
   앱을 종료하면 함께 닫습니다. 수집 폴더는 `state/external/saveticker/`(`config/sources.yaml`
   `news.saveticker_dir`, 다른 곳의 수집기를 함께 쓰려면 그 절대경로)이고 장애·복구는 텔레그램
   `[세이브티커 수집]` 으로 옵니다. 로그인 실패로 멈추면 계정 파일을 고칠 때까지 다시 시도하지 않습니다.
+  로그인 성공 후 인증 상태를 `runtime/auth/storage-state.json`에 비공개 파일(0600)로 저장해
+  다음 시작과 다른 수집 작업이 재사용합니다. 이 파일에는 로그인 토큰이 있어 공유하지 마세요.
+  “재확인이 필요합니다”가 뜨면 수집용 브라우저 창을 최대 10분 동안 유지합니다. 해당 창에서
+  안내에 따라 새로고침·재확인·로그인을 직접 마치면 자동으로 수집을 이어갑니다.
+  설정 화면에는 **사이트 재확인 대기**로 표시됩니다. 시간 초과·창 닫기·headless 실행은
+  기존처럼 중지하며, 설정 화면의 **다시 시작**으로 새 시도를 시작할 수 있습니다.
   변경 이력·날짜별 파일·PDF 원본은 `news.saveticker_retention_days`(30일) 뒤 지웁니다. 상태 확인:
   `./trader saveticker status`, Chromium 만 미리 받기: `./trader saveticker install-browser`.
 - 터미널 명령은 개발 환경과 같습니다(`uv run trader …` 대신 `./trader …`):
