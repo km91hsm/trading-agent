@@ -88,3 +88,10 @@ Files: src/trader/saveticker/bridge_install.py, cli.py, automation.py, src/trade
 - 첫 hook/candidate 실패 후 같은 ticket 유효 시간에 다음 pdf_begin을 요청하여 기존 원인을 busy로 덮던 동작을 RED→GREEN으로 수정했다. 첫 실패에서 멈추고 원인을 유지한다. Native begin/save 오류는 실제 고정 코드만 매핑하며 미확인 문자열은 고정 fallback으로 처리한다.
 - 확장79개, 실제 content→MAIN Chromium 검사1개, ruff/diff 통과. 독립 리뷰 P1/P2 없음. Native Python은 변경하지 않았다.
 - 수집 중지·Native 종료 후 확장 파일만1.0.7로 교체했다. 기존 frozen Native1.0.6 코드/권한은 유지. 사용자 Chrome 재로드 후 실제 최초 PDF 실패 코드를 확인해야 한다.
+
+### 1.0.7 실제 PDF 진단 및1.0.8 후보
+- 실제 popup 최초 실패는 url_unverified. 별도 일반 탭에서 실제 화면 클릭은 같은 사이트 /api/report/download의200 application/pdf와6.1MB 파일 완료를 확인했다. 쿠키/요청 헤더/응답 본문은 수집하지 않았고 페이지 한정 Network 진단은 종료했다. 수동 파일을 자동 수집 성공으로 세지 않는다.
+- 격리 재현에서 anchor.dispatchEvent(MouseEvent) 경로가 click 전용 도우미를 우회함을 확인했다. 숨김/반응형 중복 버튼도 잘못 선택되거나 매칭이 실패했다. 실제 사이트 원인으로 단정하지 않고 재현된 지원 누락만 수정했다.
+-1.0.8은 HTMLAnchorElement.prototype에만 dispatchEvent wrapper를 제한하고, 정확한 버튼 클릭 이후 same-origin blob만 전달한다. EventTarget 전역은 바꾸지 않으며 원래 상속 descriptor를 복원한다. 후보/버튼 불일치도 고정 진단 코드로 구분한다.
+- 확장93개와 실제 isolated Chromium click/dispatch 두 경로(19.71s), ruff/diff 통과. 독립 리뷰 P1/P2 없음. frozen Native 코드는 변경하지 않았다. 빌드/실제 자동 PDF는 검증 대기.
+- 진단 창이 수집 창을 완전히 가린 뒤 visible=false와 선택 오류 재발을 확인했다. 표시된 전용 창을 유지해야 하는 기존 제한이 남아 있으며, 일반 데이터 초기20개 성공만으로 가려진 창의 무인 동작을 보장하지 않는다.

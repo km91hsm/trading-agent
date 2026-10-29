@@ -97,39 +97,48 @@
         return clone.outerHTML;
     }
     const byteLength = value => new TextEncoder().encode(value).length;
-    function boundedNodes(nodes, start, end, limit, max = 100) { let result = start, count = 0, size = byteLength(start + end); for (const node of nodes) {
-        if (count >= max)
-            break;
-        if (!visible(node, true))
-            continue;
-        const value = clean(node), n = byteLength(value);
-        if (n > limit - size)
-            continue;
-        result += value;
-        size += n;
-        count++;
-    } return result + end; }
-    function calendarData(v) { const wanted = Number(v.month.slice(5, 7)); const headers = [...document.querySelectorAll('h3')].filter(n => visible(n, true) && /^(\d{1,2})월\s+\d{1,2}일\s+.+요일$/.test(text(n))); const matching = headers.filter(n => Number(text(n).match(/^(\d+)/)[1]) === wanted); const empty = [...document.querySelectorAll('p,span,div')].some(n => visible(n, true) && text(n) === '이 달에 일정이 없어요'); return { ready: headers.length > 0 ? matching.length === headers.length : empty, groups: [...new Set(matching.map(n => n.parentElement))], empty: headers.length === 0 && empty }; }
-    function frame(v) { if (v.stream === 'news_all')
-        return boundedNodes([...document.querySelectorAll('#news-tabpanel [data-read][role="button"][aria-label]')], '<section id="news-tabpanel">', '</section>', 512 * 1024, 100); if (v.stream === 'news_reports') {
-        const groups = [];
-        for (const button of document.querySelectorAll('button[aria-label="PDF 다운로드"]')) {
-            if (!visible(button, true))
+    function boundedNodes(nodes, start, end, limit, max = 100) {
+        let result = start, count = 0, size = byteLength(start + end);
+        for (const node of nodes) {
+            if (count >= max)
+                break;
+            if (!visible(node, true))
                 continue;
-            for (let n = button.parentElement; n && n !== document.body; n = n.parentElement) {
-                if (n.querySelectorAll('button[aria-label="PDF 다운로드"]').length === 1 && /^\d{4}년 \d{1,2}월 \d{1,2}일 \(.+\)$/.test(text(n.querySelector('p')))) {
-                    groups.push(n);
-                    break;
+            const value = clean(node), n = byteLength(value);
+            if (n > limit - size)
+                continue;
+            result += value;
+            size += n;
+            count++;
+        }
+        return result + end;
+    }
+    function calendarData(v) { const wanted = Number(v.month.slice(5, 7)); const headers = [...document.querySelectorAll('h3')].filter(n => visible(n, true) && /^(\d{1,2})월\s+\d{1,2}일\s+.+요일$/.test(text(n))); const matching = headers.filter(n => Number(text(n).match(/^(\d+)/)[1]) === wanted); const empty = [...document.querySelectorAll('p,span,div')].some(n => visible(n, true) && text(n) === '이 달에 일정이 없어요'); return { ready: headers.length > 0 ? matching.length === headers.length : empty, groups: [...new Set(matching.map(n => n.parentElement))], empty: headers.length === 0 && empty }; }
+    function frame(v) {
+        if (v.stream === 'news_all')
+            return boundedNodes([...document.querySelectorAll('#news-tabpanel [data-read][role="button"][aria-label]')], '<section id="news-tabpanel">', '</section>', 512 * 1024, 100);
+        if (v.stream === 'news_reports') {
+            const groups = [];
+            for (const button of document.querySelectorAll('button[aria-label="PDF 다운로드"]')) {
+                if (!visible(button, true))
+                    continue;
+                for (let n = button.parentElement; n && n !== document.body; n = n.parentElement) {
+                    if (n.querySelectorAll('button[aria-label="PDF 다운로드"]').length === 1 && /^\d{4}년 \d{1,2}월 \d{1,2}일 \(.+\)$/.test(text(n.querySelector('p')))) {
+                        groups.push(n);
+                        break;
+                    }
                 }
             }
+            return boundedNodes([...new Set(groups)], '<section>', '</section>', 512 * 1024, 100);
         }
-        return boundedNodes([...new Set(groups)], '<section>', '</section>', 512 * 1024, 100);
-    } if (v.month) {
-        const data = calendarData(v);
-        if (data.empty)
-            return '<section><p>이 달에 일정이 없어요</p></section>';
-        return boundedNodes(data.groups, '<section>', '</section>', 1024 * 1024, 500);
-    } return clean(document.body); }
+        if (v.month) {
+            const data = calendarData(v);
+            if (data.empty)
+                return '<section><p>이 달에 일정이 없어요</p></section>';
+            return boundedNodes(data.groups, '<section>', '</section>', 1024 * 1024, 500);
+        }
+        return clean(document.body);
+    }
     function selection(v) {
         const result = { loaded: document.readyState === 'complete' && !auth(), visible: document.visibilityState === 'visible' };
         if (v.source)
@@ -387,15 +396,16 @@
                 reply({ ok: false });
                 return;
             }
-            const buttons = [...document.querySelectorAll('button[aria-label="PDF 다운로드"]')];
-            const match = buttons.find(button => {
+            const buttons = [...document.querySelectorAll('button[aria-label="PDF 다운로드"]')].filter(button => visible(button));
+            const matches = buttons.filter(button => {
                 for (let n = button.parentElement, i = 0; n && i < 7; n = n.parentElement, i++)
-                    if (n.querySelectorAll('button[aria-label="PDF 다운로드"]').length === 1 && text(n).includes(message.title))
+                    if (buttons.filter(candidate => n.contains(candidate)).length === 1 && text(n).includes(message.title))
                         return true;
                 return false;
             });
+            const match = matches.length === 1 ? matches[0] : null;
             if (!match || auth()) {
-                reply({ ok: false });
+                reply({ ok: false, reason: 'button_unverified' });
                 return;
             }
             let ready = false, aborted = false;
@@ -440,8 +450,11 @@
                     match.click();
                     await pause();
                     await pause();
-                    if (aborted || candidates.length !== 1)
+                    if (aborted || candidates.length !== 1) {
+                        if (!aborted && candidates.length === 0)
+                            reason = 'candidate_missing';
                         throw Error('pdf_unverified');
+                    }
                     reply({ ok: true, observed_url: candidates[0], nonce });
                 }
                 catch {

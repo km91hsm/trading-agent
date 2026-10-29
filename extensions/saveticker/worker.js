@@ -1,11 +1,12 @@
 import { LANES, Scheduler, laneFor, marker, ownedLane, safePage, PdfPair } from './core.js';
-const WORKER_VERSION = '1.0.7';
+const WORKER_VERSION = '1.0.8';
 const scheduler = new Scheduler(), pdf = new PdfPair(), reportAttempts = new Map();
 let limits = { max_scrolls: 2, max_details: 2, max_reports: 2 };
 let port = null, requests = new Map(), seq = 0, enabled = false, token = '', ticking = null, retryAt = 0, failures = 0, planAt = 0, epoch = 0, nextTimer = null, presentRequested = false;
 const handoffReleases = new Map();
 const PDF_BEGIN_ERRORS = { pdf_busy: 'pdf_begin_busy', unknown_report: 'pdf_begin_unknown_report', pdf_cached: 'pdf_begin_cached' };
 const PDF_SAVE_ERRORS = { invalid_pdf_ticket: 'pdf_save_ticket', invalid_pdf_path: 'pdf_save_path', invalid_pdf: 'pdf_save_invalid' };
+const PDF_CLICK_ERRORS = new Set(['hook_not_ready', 'button_unverified', 'candidate_missing', 'url_unverified']);
 function nativePdfState(stage, error) { const allowed = stage === 'begin' ? PDF_BEGIN_ERRORS : PDF_SAVE_ERRORS; const code = error?.message; return Object.hasOwn(allowed, code) ? allowed[code] : stage === 'begin' ? 'pdf_begin_failed' : 'pdf_save_failed'; }
 const pendingPaces = new Map();
 const activeJobs = new Map();
@@ -380,7 +381,7 @@ async function laneRun(lane, tab, runEpoch) {
                 if (!clicked.ok || !clicked.observed_url || clicked.nonce !== nonce) {
                     pdfUnverified = true;
                     discardPdf(pending);
-                    await store({ pdfState: clicked.reason === 'hook_not_ready' ? 'hook_not_ready' : 'url_unverified' });
+                    await store({ pdfState: PDF_CLICK_ERRORS.has(clicked.reason) ? clicked.reason : 'url_unverified' });
                     break;
                 }
                 try {

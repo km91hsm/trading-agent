@@ -50,7 +50,15 @@ document.querySelector('[aria-label="PDF 다운로드"]').addEventListener('clic
 """
 
 
-def _probe_content_handoff(tmp_path: Path) -> dict:
+def _probe_content_handoff(tmp_path: Path, *, dispatch: bool = False) -> dict:
+    page_script = (
+        _PAGE_SCRIPT.replace(
+            "anchor.click();",
+            "anchor.dispatchEvent(new MouseEvent('click', {bubbles:true,cancelable:true}));",
+        )
+        if dispatch
+        else _PAGE_SCRIPT
+    )
     source = Path(__file__).resolve().parents[2] / "extensions/saveticker"
     extension = tmp_path / "extension"
     extension.mkdir()
@@ -88,7 +96,7 @@ def _probe_content_handoff(tmp_path: Path) -> dict:
                     request.abort()
                 elif url.endswith("/content-probe.js"):
                     request.fulfill(
-                        status=200, content_type="application/javascript", body=_PAGE_SCRIPT
+                        status=200, content_type="application/javascript", body=page_script
                     )
                 else:
                     request.fulfill(
@@ -106,9 +114,7 @@ def _probe_content_handoff(tmp_path: Path) -> dict:
                 if context.service_workers
                 else context.wait_for_event("serviceworker", timeout=15000)
             )
-            assert worker.evaluate(
-                "async()=>!(await chrome.storage.local.get('enabled')).enabled"
-            )
+            assert worker.evaluate("async()=>!(await chrome.storage.local.get('enabled')).enabled")
             page = context.new_page()
             page.goto(
                 "https://www.saveticker.com/news?label_group=7#trader-saveticker="
@@ -143,9 +149,7 @@ def _probe_content_handoff(tmp_path: Path) -> dict:
                 ),
                 "nonce_matches": reply.get("nonce") == _NONCE,
                 "pace_requests": len(paces),
-                "pace_authentication": all(
-                    p["sameExtension"] and p["tokenMatches"] for p in paces
-                ),
+                "pace_authentication": all(p["sameExtension"] and p["tokenMatches"] for p in paces),
                 "page_button_clicks": page.evaluate("()=>window.probeClicks"),
                 "events": events,
             }
@@ -162,8 +166,9 @@ def _probe_content_handoff(tmp_path: Path) -> dict:
             context.close()
 
 
-def test_content_to_static_main_pdf_candidate_in_isolated_chromium(tmp_path):
-    result = _probe_content_handoff(tmp_path)
+@pytest.mark.parametrize("dispatch", [False, True], ids=["anchor-click", "anchor-dispatch"])
+def test_content_to_static_main_pdf_candidate_in_isolated_chromium(tmp_path, dispatch):
+    result = _probe_content_handoff(tmp_path, dispatch=dispatch)
     assert result["reply_ok"], json.dumps(result, ensure_ascii=False)
     assert result["candidate_is_same_origin_blob"]
     assert result["nonce_matches"]

@@ -10,7 +10,7 @@
 
 시작은 enabled를 저장하고 30초 알람을 설정합니다. 인증·보안 확인은 lane별로 중지 상태를 저장하며 worker 재시작 후에도 유지됩니다. 사용자가 전용 탭에서 확인 후 **직접 확인 후 재개**를 눌러야 다시 확인합니다. 수집 중지는 알람·Native 연결·PDF 연결을 종료하며 재연결하지 않습니다. 전용 탭은 사용자가 확인할 수 있게 남겨 둡니다. 절전이나 Chrome 종료 중에는 수집할 수 없습니다.
 
-PDF 클릭 전에 호스트의 일회 ticket과 32hex nonce를 발급합니다. 정적 MAIN 도우미는 소유가 확인된 뉴스 리포트 버튼이 nonce로 표시된 경우에만 최대 15초 동안 DOM 앵커 click을 관찰합니다. 정확한 same-origin blob 앵커(분리된 앵커 포함)의 원래 click만 억제하고 URL을 전달하며, 해당 blob의 요청된 revoke만 release/만료까지 지연합니다. 여러 후보·사용자 조작·이동·만료는 연결을 취소합니다. 모든 호출에서 실제 시각의 만료를 확인하므로 숨겨진 페이지의 타이머에만 의존하지 않습니다.
+PDF 클릭 전에 호스트의 일회 ticket과 32hex nonce를 발급합니다. 정적 MAIN 도우미는 소유가 확인된 뉴스 리포트 버튼이 nonce로 표시된 경우에만 최대 15초 동안 DOM 앵커 click과 합성 MouseEvent의 dispatchEvent를 관찰합니다. 정확한 same-origin blob 앵커(분리된 앵커 포함)의 원래 click만 억제하고 URL을 전달하며, 해당 blob의 요청된 revoke만 release/만료까지 지연합니다. 여러 후보·사용자 조작·이동·만료는 연결을 취소합니다. 모든 호출에서 실제 시각의 만료를 확인하므로 숨겨진 페이지의 타이머에만 의존하지 않습니다.
 
 확장은 관찰된 blob URL로 Chrome downloads.download를 호출하고 반환된 downloadId만 연결합니다. 발급 파일명을 API에 직접 지정하며 다른 다운로드의 파일명을 변경하지 않습니다. 반환 전에 완료된 경우도 ID 조회로 확인합니다. 실제 파일명이 `SaveTicker/<발급명>`과 다르면 Native 저장을 요청하지 않습니다. Native의 ticket·실제 PDF·경로 검증은 그대로 유지합니다. 도우미 준비 실패·주소 미확인·Chrome blob 다운로드 실패·Native 검증 실패는 popup의 고정 상태로 표시하며 partial을 유지합니다. 브라우저가 페이지 blob의 확장 다운로드를 허용하는지는 설치 후 실제 Chrome에서 확인해야 합니다.
 
@@ -31,3 +31,7 @@ PDF 클릭 전에 호스트의 일회 ticket과 32hex nonce를 발급합니다. 
 뉴스 목록은 실제 #news-tabpanel 카드만 프레임당100개·512KiB, 세 프레임까지 전송합니다. 넘치는 카드는 건너뛰며 다른 카드 수집을 유지합니다. SAVE 리포트는 날짜와 PDF 버튼이 있는 카드만 담습니다. 본문 상세가256KiB를 넘으면 해당 상세를 생략하여 pending으로 둡니다. 캘린더는 스크롤하지 않고 선택 월과 일치하는 화면 날짜 그룹이나 명시적인 빈 달 안내를 기다린 뒤 한 프레임1MiB 이내로 전송합니다. 다른 달의 오래된 날짜 행이 남아 있으면 calendar_rows_unverified로 실패하며 이전 정상 데이터는 보존합니다. 모든 범위는 partial이며 전체 이력 완료를 뜻하지 않습니다.
 
 PDF 연결은 정해진 시간 동안의 DOM handoff이며 임의의 비동기 웹사이트 내부 동작 전체의 인과관계를 증명하지 않습니다. MAIN 취소 통지는 nonce·소유 탭·현재 작업 증거로 확인합니다. 주소 수신 후라도 다운로드 시작 전에 취소되면 시작하지 않으며, 시작 API 응답을 기다리는 중 취소되면 반환된 해당 다운로드 ID만 취소하고 Native 연결을 건너뜁니다. 오래된 완료 응답은 새 PDF 작업을 소비하거나 정리하지 않습니다.
+
+PDF 앵커 handoff는 표시된 다운로드 버튼을 누른 뒤의 HTMLAnchorElement.prototype.click과 합성 MouseEvent click의 앵커 전용 dispatchEvent를 지원합니다. 전역 EventTarget은 수정하지 않으며, 원래 상속된 메서드는 종료 시 임시 own property를 삭제하여 복원합니다. 숨김·비활성 버튼은 제외하고 일치하는 표시 버튼이 두 개 이상이면 button_unverified로 중단합니다. 도우미가 준비됐지만 후보 주소가 오지 않은 경우는 candidate_missing으로 구분합니다. 이 지원 경로가 실제 사이트의 내부 구현이라고 단정하지 않으며 설치 후 실제 PDF 결과로 확인합니다.
+
+1.0.8은 실제로 표시되고 활성화된 PDF 버튼 한 개만 선택합니다. anchor.click과 anchor.dispatchEvent의 합성 클릭 모두 정확한 버튼/nonce/same-origin blob 조건에서만 연결하며, 원래 상속된 메서드는 해제 때 own property를 제거하여 복원합니다. 가려진 수집 창의 선택 UI가 갱신되지 않을 수 있으므로 전용 창이 다른 창에 완전히 가려지지 않도록 유지해야 합니다.
