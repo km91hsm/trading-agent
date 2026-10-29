@@ -72,3 +72,8 @@ Files: src/trader/saveticker/bridge_install.py, cli.py, automation.py, src/trade
 - 뉴스100카드/프레임512KiB·세 프레임, 리포트 카드만, 상세256KiB 제한으로 누적 DOM 전송을 줄였다. 캘린더는 스크롤 없이 실제 월별 행/명시적 빈 상태를 기다리고 parser도 다른 달 행을 거절한다.
 - 정적 same-site MAIN DOM 도우미가 nonce로 표시된 정확한 PDF 버튼 클릭 이후 최대15초간 same-origin blob 앵커를 전달한다. Chrome 다운로드 API가 반환한 ID만 ticket과 연결한다. 추가 Chrome 권한·쿠키·요청 관찰은 없다. 취소/중지/늦은 응답은 이전 작업을 저장하지 않아야 한다.
 - 1.0.6 후보 Python62개(격리된 실제 Chromium blob 전달 포함), Node69개 통과. 독립 검토에서 발견한 이동 후 취소 조건도 발급된 작업 객체·탭·nonce·token·epoch로 검증하도록 보완하고 회귀 검사를 추가했다. frozen 재빌드·실제 PDF·전체주기 재검증은 아직 미완료다.
+
+### 1.0.6 검증 결과 (2026-10-29)
+- 최종 커밋 b8242f2: Node69개, 관련 Python62개, 전체 Python2644 passed/1 skipped(562.22s), ruff/diff check 통과. CI40883931408/test123482472679 통과(4m19s). 독립 리뷰의 PDF 이동 후 취소 P2 수정 후 추가 blocker 없음.
+- macOS bundle/selfcheck·격리된 frozen Native20개 작업·합성1페이지PDF·EOF exit0·가짜 등록 복원 통과. 실제 Chromium 격리 프로필의 same-origin blob→extension downloads ID 전달 통과. 합성 데이터는 운영 저장소에 넣지 않았다.
+- 설치 패키지에 extension-next-1.0.6, native-runtime/Trader-next-1.0.6.app으로 별도 준비했다. 운영 Trader.app·현재1.0.5 수집 실행 파일은 교체하지 않았다. Mac 잠금으로 중지/교체/사용자 Chrome 재로드·실제 PDF·전체주기 확인이 필요하여 PR80 draft를 유지한다.
