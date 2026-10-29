@@ -97,6 +97,19 @@ def test_market_cannot_claim_community_regular_equivalence(tmp_path):
     assert client.handle(message)["error"] == "selection_mismatch"
 
 
+def test_selection_diagnostics_store_only_comparisons_not_page_values(tmp_path):
+    client = session(tmp_path)
+    message = snapshot(
+        client, selection={"loaded": True, "tab": "PRIVATE_SENTINEL", "regular": False}
+    )
+    assert client.handle(message)["error"] == "selection_mismatch"
+    path = tmp_path / "runtime/selection-market.json"
+    diagnostic = json.loads(path.read_text())
+    assert diagnostic["matches"] == {"tab": False, "regular": True}
+    assert diagnostic["loaded"] is True
+    assert "PRIVATE_SENTINEL" not in path.read_text()
+
+
 def test_unknown_stream_and_invalid_request_are_fixed_errors(tmp_path):
     client = session(tmp_path)
     assert client.handle({"id": 9, "type": "begin", "stream": "secret"}) == {

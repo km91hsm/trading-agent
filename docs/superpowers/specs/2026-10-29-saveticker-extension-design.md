@@ -66,3 +66,8 @@ MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA3WeKbuemZizg+F+9q1VmyQPIJ639KzMlycxI
 - Chrome 새 탭은 `pendingUrl`만 있거나 URL 필드가 없을 수 있다. 초기 탐색은 정본 URL로 진행하되 수집 증거는 실제 content 응답에서만 얻는다. 실패한 발급 작업은 정본 URL의 error snapshot으로 종료한다.
 - community 정규장 checkbox가 비활성·checked=true이고 title이 정확히 `지금은 실시간과 정규장 기준이 같아요`인 때만 selection에 `regular_disabled:true`, `regular_equivalent:true`, `regular_equivalence_label`을 함께 보낸다. `regular`는 실제 true를 유지한다. Host는 community kind에만 이를 허용하고 quote.basis에 안내를 남긴다. requested_regular는 요청 기준을 유지한다.
 - 커뮤니티 탭이 aria 선택 상태를 제공하지 않는 경우, 지수/상승/하락 세 버튼의 같은 그룹 안에서 유일한 `bg-neutral-800 text-background-secondary text-medium-bold` 선택 스타일을 확인한다.
+
+### 백그라운드 초기화 보완 (1.0.3)
+- 실기에서 숨겨진 뉴스/캘린더 탭은 로딩 완료 뒤에도 선택 텍스트가 준비되지 않았고, 표시한 뒤 동일 코드의 선택 검증과 저장이 성공했다. 수집은 전용 Chrome 창에서 정확한 토큰 소유 탭만 이동/복구하고 각 작업 탭을 차례로 활성화한다. 창 전체에는 focused:true를 사용하지 않는다.
+- 다른 사용자 탭이 섞인 창은 수집 창으로 재사용하지 않는다. 정확한 토큰의 탭만 새 전용 창으로 옮긴다. 최소화된 수집 창은 임의 복원하지 않고 native paused/page_not_loaded로 기록한다.
+- runtime/selection-<lane>.json은 요청 stream과 선택 조건별 일치 여부/loaded/status만 기록한다. 페이지 텍스트·선택값·HTML·인증정보를 기록하지 않는다.

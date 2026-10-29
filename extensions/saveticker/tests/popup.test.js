@@ -14,7 +14,8 @@ test('popup restores resume after start and repeated resume, and identifies cach
     dom.window.eval(fs.readFileSync(new URL('../popup.js', import.meta.url), 'utf8'));
     await settle();
     const get = id => dom.window.document.getElementById(id);
-    assert.match(get('version').textContent, /확장 새로고침 필요/);
+    assert.match(get('version').textContent, /수집기 시작 전/);
+    assert.doesNotMatch(get('version').textContent, /새로고침 필요/);
     get('start').click(); await settle();
     assert.equal(get('resume').disabled, false);
     get('resume').click(); await settle();

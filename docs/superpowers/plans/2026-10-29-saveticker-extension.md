@@ -50,3 +50,8 @@ Files: src/trader/saveticker/bridge_install.py, cli.py, automation.py, src/trade
 - Chrome 등록/사용자 확장 로드·시작 완료. 실제 수집: 뉴스 7, TOP5 5, 시장 6개 기준 각20, 캘린더 9월133/10월137/11월96. 오류: 커뮤니티 기준 선택·리포트·빈 12월/1월. 원래 코드 CI 통과(6m51s).
 - 새 탭 URL 없는 시작 조건과 미종료 작업을 회귀 테스트로 수정. 커뮤니티 실제 DOM CSS 선택·비활성 동등성 표시 지원, 실행 버전 진단 추가(확장1.0.1). 후속39 native/install·28 Node 통과.
 - 후속 bundle/CI 및 업데이트 후 실제 전체 주기 재검증 진행 중. 완전 수집/운영 완료는 아직 주장하지 않음.
+
+### 1.0.3 검증 진행
+- 숨겨진 탭의 실제 초기화 부족을 비교 진단으로 확인. 전용 unfocused 창·소유 탭만 이동·순차 활성화·최소화 대기 구현. 독립 리뷰 후 초기 Tab metadata fallback을 실제 URL이 둘 다 없을 때만 사용하도록 수정.
+- Node 32 tests, Native 26 tests 통과. runtime 비교 진단은 본문/선택값 없이 boolean만 저장하는 회귀 검사 포함.
+- 로컬 원인 확인에는 임시 standalone Python launcher를 사용했다. 완료 전 frozen runtime으로 복원하고 두 주기 이상 갱신 확인 필수.

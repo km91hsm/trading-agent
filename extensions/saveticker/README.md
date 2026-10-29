@@ -1,6 +1,6 @@
 # SaveTicker Chrome 수집 확장
 
-일반 Chrome의 로그인된 SaveTicker 화면을 네 개의 전용 탭에서 읽어 Native host `com.trader.saveticker`로 전달합니다. 확장 ID는 `gfchfnjghmjiidifohjglpodaakdphho`입니다. 사용자 탭은 URL이 같아도 가져오지 않습니다. 확장 storage의 임의 소유 token과 URL 마커가 모두 일치하는 탭만 복구합니다.
+일반 Chrome의 로그인된 SaveTicker 화면을 네 개의 전용 탭에서 읽어 Native host `com.trader.saveticker`로 전달합니다. 확장 ID는 `gfchfnjghmjiidifohjglpodaakdphho`입니다. 수집은 포커스를 빼앗지 않는 전용 Chrome 창에서 네 lane의 탭을 차례대로 활성화하여 진행합니다. 사용자 탭은 URL이 같아도 가져오지 않습니다. 확장 storage의 임의 소유 token과 URL 마커가 모두 일치하는 탭만 복구합니다.
 
 확장 설치·호스트 등록·backend 변경은 운영자의 최종 승인 후 별도 설치 명령으로 진행합니다. 이 디렉터리를 작성하는 것으로 Chrome에 설치되거나 사용자 프로필이 바뀌지 않습니다.
 
@@ -15,3 +15,5 @@ PDF 클릭 전에 호스트가 발급한 일회 ticket을 등록합니다. 전�
 테스트: 저장소에서 `node --test extensions/saveticker/tests/*.test.js`. DOM 테스트는 기존 `web/node_modules/jsdom`을 사용합니다 (`cd web && npm ci` 후 실행). 합성 UI·가짜 Chrome/Native 이벤트만 사용하며 개인 브라우저를 제어하지 않습니다. 실제 사이트의 새 UI가 선택 속성을 노출하지 않으면 안전하게 실패할 수 있습니다. 설치 후 로그인된 실제 Chrome에서 UI 선택·다운로드·재시작을 별도로 확인해야 합니다.
 
 1.0.1은 Chrome 새 탭의 `url`이 아직 없을 때 `pendingUrl`을 확인하고, 실패한 작업을 오류 캡처로 종료합니다. 팝업은 설치 버전과 실제 worker 실행 버전을 함께 표시하여 확장 관리 화면의 다시 로드가 적용됐는지 확인할 수 있습니다. 커뮤니티의 선택된 버튼 CSS와 비활성 정규장 체크박스를 읽습니다. 사이트가 정확히 “지금은 실시간과 정규장 기준이 같아요”라고 안내한 비활성 체크 상태에서만 기준 동등성을 전달하며, 실제 체크값과 요청 기준을 따로 보존합니다.
+
+전용 창은 저장된 window ID만 믿지 않고 해당 창의 모든 탭이 소유 token과 일치하는지 확인하여 재사용합니다. 일반 탭이 섞였으면 소유 탭만 새 전용 창으로 옮기며 일반 탭은 이동하거나 닫지 않습니다. 창이 최소화되면 자동으로 복원하거나 포커스하지 않고 수집 상태를 일시 정지로 남깁니다. 사용자가 전용 창을 복원하면 다음 주기에 다시 확인합니다.

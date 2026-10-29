@@ -355,8 +355,28 @@ class NativeSession:
         regular_equivalent = False
         if status not in {"ok", "partial", "error", "auth_required"}:
             _reject("invalid_message")
+        selection = message.get("selection")
+        evidence = selection if isinstance(selection, dict) else {}
+        comparisons = {
+            key: evidence.get(key) == view[key]
+            for key in ("source", "category", "tab", "month")
+            if view.get(key) is not None
+        }
+        if view["tab"]:
+            comparisons["regular"] = (
+                type(evidence.get("regular")) is bool and evidence["regular"] == view["regular"]
+            )
+        atomic_json(
+            self.root / "runtime" / f"selection-{lane}.json",
+            {
+                "stream": view["stream"],
+                "updated_at": _now().isoformat(),
+                "loaded": evidence.get("loaded") is True,
+                "status": status,
+                "matches": comparisons,
+            },
+        )
         if status not in {"error", "auth_required"}:
-            selection = message.get("selection")
             if not isinstance(selection, dict) or selection.get("loaded") is not True:
                 _reject("selection_mismatch")
             for key in ("source", "category", "tab", "month"):

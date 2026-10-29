@@ -1,5 +1,5 @@
 import { LANES, Scheduler, laneFor, marker, ownedLane, safePage, PdfPair } from './core.js';
-const WORKER_VERSION='1.0.2';
+const WORKER_VERSION = '1.0.3';
 const scheduler = new Scheduler(), pdf = new PdfPair(), reportAttempts = new Map();
 let limits = { max_scrolls: 2, max_details: 2, max_reports: 2 };
 let port = null, requests = new Map(), seq = 0, enabled = false, token = '', ticking = null, retryAt = 0, failures = 0, planAt = 0, epoch = 0, nextTimer = null;
@@ -61,26 +61,81 @@ async function connect() {
     limits = plan.limits || limits;
     planAt = Date.now();
     failures = 0;
-    await store({ connection: '연결됨', planCount: plan.views.length,workerVersion:WORKER_VERSION });
+    await store({ connection: '연결됨', planCount: plan.views.length, workerVersion: WORKER_VERSION });
 }
-async function tabs() {
-    const all = await chrome.tabs.query({ url: 'https://www.saveticker.com/*' });
+async function pauseWindow() { const status = { connection: '전용 창이 최소화됨 · 창을 복원해 주세요' }; for (const lane of LANES) {
+    status['lane_error_' + lane] = 'window_minimized';
+    status['lane_' + lane] = '전용 창 복원 대기';
+    await request('state', { lane, state: 'paused', reason: 'page_not_loaded' });
+} await store(status); }
+async function tabs(runEpoch) {
+    const active = () => enabled && runEpoch === epoch;
+    let all = await chrome.tabs.query({ url: 'https://www.saveticker.com/*' });
+    const marked = all.filter(t => ownedLane(t, token));
+    const saved = (await chrome.storage.local.get('ownedWindowId')).ownedWindowId;
+    let ownedWindow = null;
+    if (Number.isInteger(saved) && marked.some(t => t.windowId === saved)) {
+        try {
+            ownedWindow = await chrome.windows.get(saved);
+            if (ownedWindow.state === 'minimized') {
+                await pauseWindow();
+                return null;
+            }
+            const occupants = await chrome.tabs.query({ windowId: saved });
+            if (!occupants.length || occupants.some(t => !ownedLane(t, token)))
+                ownedWindow = null;
+        }
+        catch {
+            if (ownedWindow?.state === 'minimized')
+                throw Error('window_minimized');
+            ownedWindow = null;
+        }
+    }
+    if (!active())
+        return null;
+    if (!ownedWindow) {
+        if (marked.length)
+            ownedWindow = await chrome.windows.create({ tabId: marked[0].id, focused: false });
+        else {
+            const first = scheduler.views[0];
+            if (!first)
+                return {};
+            const url = marker(first.url, token, laneFor(first));
+            ownedWindow = await chrome.windows.create({ url, focused: false });
+            const initial = ownedWindow.tabs?.[0] || (await chrome.tabs.query({ windowId: ownedWindow.id })).find(t => t.windowId === ownedWindow.id);
+            if (initial)
+                all.push({ ...initial, pendingUrl: initial.pendingUrl || (!initial.url ? url : undefined), windowId: ownedWindow.id });
+        }
+        if (marked.length)
+            marked[0].windowId = ownedWindow.id;
+        await store({ ownedWindowId: ownedWindow.id });
+    }
+    if (ownedWindow.state === 'minimized') {
+        await pauseWindow();
+        return null;
+    }
     const result = {};
     for (const lane of LANES) {
-        if (!enabled)
+        if (!active())
             break;
         const owned = all.filter(t => ownedLane(t, token) === lane);
         if (owned.length) {
-            result[lane] = owned[0];
+            const tab = owned[0];
+            if (tab.windowId !== ownedWindow.id) {
+                await chrome.tabs.move(tab.id, { windowId: ownedWindow.id, index: -1 });
+                tab.windowId = ownedWindow.id;
+            }
+            result[lane] = tab;
             for (const extra of owned.slice(1))
                 await chrome.tabs.remove(extra.id);
         }
         else {
             const view = scheduler.views.find(v => laneFor(v) === lane);
             if (view)
-                result[lane] = await chrome.tabs.create({ url: marker(view.url, token, lane), active: false });
+                result[lane] = await chrome.tabs.create({ windowId: ownedWindow.id, url: marker(view.url, token, lane), active: false });
         }
     }
+    await store({ connection: '연결됨' });
     return result;
 }
 async function command(tabId, message) {
@@ -115,6 +170,9 @@ async function laneRun(lane, tab, runEpoch) {
             await chrome.tabs.update(tab.id, { url: marker(job.view.url, token, lane) });
             await new Promise(r => setTimeout(r, 2000));
         }
+        failureCode = 'tab_activation_failed';
+        await chrome.tabs.update(tab.id, { active: true });
+        await new Promise(r => setTimeout(r, 2000));
         failureCode = 'content_unavailable';
         const capture = await command(tab.id, { type: 'collect', job: { ...job, limits }, token });
         if (!enabled || runEpoch !== epoch)
@@ -151,11 +209,11 @@ async function laneRun(lane, tab, runEpoch) {
                 }
             }
         }
-        const status = saved.status==='auth_required'||capture.status==='auth_required'?'auth_required':saved.status==='error'||capture.status==='error'?'error':saved.status||capture.status;
+        const status = saved.status === 'auth_required' || capture.status === 'auth_required' ? 'auth_required' : saved.status === 'error' || capture.status === 'error' ? 'error' : saved.status || capture.status;
         const update = { ['lane_' + lane]: pdfUnverified ? 'PDF 연결 미확인 · 일부 범위' : status === 'auth_required' ? '사용자 확인 필요' : status === 'error' ? '선택 확인 실패' : Number(saved.count) > 0 ? '수집됨 · 일부 범위' : '항목 미확인 · 일부 범위', lastAttempt: Date.now() };
         if (Number(saved.count) > 0 && ['ok', 'partial'].includes(status))
             update.lastCollected = Date.now();
-        update['lane_error_' + lane] = status==='error'?'selection_unverified':null;
+        update['lane_error_' + lane] = status === 'error' ? 'selection_unverified' : null;
         update['lane_release_error_' + lane] = null;
         await store(update);
     }
@@ -206,8 +264,15 @@ export async function tick() {
             await request('ping');
             if (!enabled || runEpoch !== epoch)
                 return;
-            const owned = await tabs();
-            await Promise.all(LANES.filter(l => owned[l]).map(l => laneRun(l, owned[l], runEpoch)));
+            const owned = await tabs(runEpoch);
+            if (!owned)
+                return;
+            for (const lane of LANES) {
+                if (!enabled || runEpoch !== epoch)
+                    break;
+                if (owned[lane])
+                    await laneRun(lane, owned[lane], runEpoch);
+            }
         }
         catch {
             retryAt = Date.now() + Math.min(60000, 1000 * 2 ** failures++);
