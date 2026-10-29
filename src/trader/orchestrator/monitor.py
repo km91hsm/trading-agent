@@ -29,6 +29,7 @@ from trader.notify.telegram import Notifier, NullNotifier
 from trader.orchestrator import executor, resume, tools
 from trader.platform import paths
 from trader.risk import horizon
+from trader.risk.stops import effective_stop
 
 logger = logging.getLogger("trader.monitor")
 
@@ -104,9 +105,8 @@ def check_position(
     무효화 조건용 완성 일봉 종가(없으면 그 조건은 미판정)."""
     dec = decision or {}
     threshold = move_pct if move_pct is not None else MOVE_PCT
-    stop = dec.get("stop_loss")
-    level = Decimal(str(stop)) if stop else pos.avg_price * (1 + Decimal(str(stop_loss_pct)))
-    if quote <= level:
+    level, _ = effective_stop(dec.get("stop_loss"), None, pos.avg_price, stop_loss_pct)
+    if level is not None and quote <= level:
         return [Signal("stop_loss", quote, {"level": _q2(level), "avg_price": str(pos.avg_price)})]
     out: list[Signal] = []
     tp = dec.get("take_profit")
@@ -575,10 +575,8 @@ def _monotone_stop(
     비웠거나(보유 재분석 HOLD) 더 낮게 냈어도 이전 손절선이 살아 있다 — 기본 −15% 로 풀리지 않게."""
     since = repo.held_since(ctx.conn, account.id, [pos.ticker]).get(pos.ticker)
     best = repo.max_stop_since(ctx.conn, market, pos.ticker, since)
-    if best is None:
-        return data
-    cur = (data or {}).get("stop_loss")
-    if cur is not None and Decimal(str(cur)) >= best:
+    _, source = effective_stop((data or {}).get("stop_loss"), best, None, 0)
+    if source != "floor":
         return data
     return {**(data or {}), "stop_loss": float(best)}
 

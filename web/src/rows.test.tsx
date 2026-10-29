@@ -67,6 +67,23 @@ describe("DetailRow (W9)", () => {
   });
 });
 
+describe("보유 표 손절가 — 실제 적용 손절선", () => {
+  it("결정 계획이 없어도 기본 손절선을 '기본' 꼬리표와 함께 보여 준다", () => {
+    const p: Position = { ticker: "005930", market: "KR", qty: 1, avg_price: "100", current_price: "100", eval_amount: "100", plan: null, stop: { level: 85, source: "default", dist_pct: -0.15 } };
+    const out = renderToStaticMarkup(<PositionsTable rows={[p]} nav="1000" />);
+    expect(out).toContain("85원 (-15.0%)");
+    expect(out).toContain("기본");
+  });
+
+  it("결정 손절가면 꼬리표가 없다", () => {
+    const p: Position = { ticker: "005930", market: "KR", qty: 1, avg_price: "100", current_price: "100", eval_amount: "100", stop: { level: 95, source: "decision", dist_pct: -0.05 } };
+    const out = renderToStaticMarkup(<PositionsTable rows={[p]} nav="1000" />);
+    expect(out).toContain("95원 (-5.0%)");
+    expect(out).not.toContain(">바닥<");
+    expect(out).not.toContain(">기본<");
+  });
+});
+
 describe("RowButton (W10)", () => {
   it("버튼이라 Enter/Space 로 열리고, 행 클릭과 두 번 토글되지 않는다", () => {
     let n = 0;

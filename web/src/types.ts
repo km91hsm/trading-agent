@@ -163,12 +163,16 @@ export type Position = {
   horizon?: "short" | "mid" | "long" | null; // 최근 결정의 보유기간 프로필 (Phase 23)
   horizon_days?: number | null;
   plan?: PositionPlan | null; // 최근 결정의 계획과 현재가 대비 거리 (Phase 24)
+  stop?: EffectiveStop | null; // 모니터가 실제로 쓰는 손절선(결정 원문이 비어도 바닥·기본값)
   weight?: number | null; // 평가금액 / NAV
   drift_pp?: number | null; // 목표 비중 대비 현재 − 목표 (%p, Phase 25 리밸런스)
   accounts?: string[]; // 전체 합산 행: 이 종목을 가진 계좌들
   pnl?: string | null;
   pnl_pct?: number | null;
 };
+
+/** 실제 적용 손절선 — 서버 `risk.stops.effective_stop`: 결정 손절가 · 보유 중 손절 바닥(floor) · 평단 기본(default). */
+export type EffectiveStop = { level: number; source: "decision" | "floor" | "default"; dist_pct: number | null };
 
 export type PositionPlan = {
   decision_id: number | null;

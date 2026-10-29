@@ -522,3 +522,6 @@
 - [ ] 체결통보 `H0IFCNI0`·실시간 파생 호가 (Phase 26 이연): 지금은 `fills_sync`·REST — Phase 27
 - [ ] 파생 백테스트·ML/RL 사이징 (Phase 26 이연): 신호가 LLM 이라 보류
 - [ ] 완료 기준: 단계 5 머지 뒤 `uv run pytest`·`ruff`·web 게이트 통과, `FAKE_CLAUDE=1 uv run trader fo session --dry-run`·`fo monitor --once --dry-run` 체크포인트 확인, 현물 기본 동작 회귀 없음(스냅샷 테스트)
+
+## 보유 표 실제 손절선 (2026-10-29, 사용자 질문 — 손절가가 화면에 안 보임)
+- [x] 손절선 계산을 `risk/stops.effective_stop` 하나로 모아 monitor 와 웹 보유 표가 같이 쓴다. 보유 행 `stop`(손절선·출처·거리), 손절가 칸에 `바닥`·`기본` 꼬리표, 실시간 시세로 거리 재계산, 합산 행은 낮은 값

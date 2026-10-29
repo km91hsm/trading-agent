@@ -75,7 +75,8 @@ export function applyQuotes(
       evalSum += ev;
       liveCount += 1;
       const plan = p.plan ? livePlan(p.plan, px) : p.plan;
-      return { ...p, current_price: q.price, eval_amount: String(ev), live: true, change_pct: q.change_pct, plan };
+      const stop = p.stop && px > 0 ? { ...p.stop, dist_pct: dist(p.stop.level, px) } : p.stop;
+      return { ...p, current_price: q.price, eval_amount: String(ev), live: true, change_pct: q.change_pct, plan, stop };
     }
     evalSum += before;
     return { ...p, live: false };

@@ -31,6 +31,16 @@ describe("livePlan (전체 검토 W8)", () => {
     expect(livePlan(plan, 0)).toEqual(plan);
     expect(livePlan(null, 110)).toBeNull();
   });
+  it("applyQuotes 가 실제 적용 손절선 거리도 실시간 현재가로 다시 잰다", () => {
+    const stop = { level: 90, source: "default" as const, dist_pct: -0.1 };
+    const r = applyQuotes([{ ...pos("005930", 1, "100", "100"), stop }], {
+      "005930": { price: "95", change_pct: null, asof: "2026-10-29T01:00:00Z", stale: false },
+    });
+    expect(r.positions[0].stop!.dist_pct).toBeCloseTo(90 / 95 - 1);
+    expect(r.positions[0].stop!.source).toBe("default");
+    expect(stop.dist_pct).toBe(-0.1); // 원본 불변
+  });
+
   it("applyQuotes 가 실시간 행의 계획 거리를 갱신해 planCells 문구가 바뀐다", () => {
     const r = applyQuotes([{ ...pos("005930", 1, "100", "100"), plan }], {
       "005930": { price: "95", change_pct: null, asof: "x", stale: false },

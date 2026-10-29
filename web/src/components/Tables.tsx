@@ -2,7 +2,7 @@
 import { useMemo } from "react";
 import { fmtDate, fmtDelta, fmtMoney, fmtTime, minutesLeft } from "../format";
 import { sideLabel, termLabel } from "../glossary";
-import { planCells } from "../overview";
+import { planCells, stopCell } from "../overview";
 import type { Approval, Order, Position, RiskCheck } from "../types";
 import { Badge } from "./Badge";
 import { EmptyState } from "./EmptyState";
@@ -54,7 +54,9 @@ export function PositionsTable({ rows, nav, showAccounts = false, bandPct = 0.05
           <Th num>목표 비중</Th>
           <Th num>드리프트</Th>
           <Th num>익절가</Th>
-          <Th num>손절가</Th>
+          <Th num>
+            <Term k="stop_loss">손절가</Term>
+          </Th>
           <Th num>지정가</Th>
           {showAccounts && <Th>계좌</Th>}
           <MoreTh />
@@ -65,6 +67,22 @@ export function PositionsTable({ rows, nav, showAccounts = false, bandPct = 0.05
           const d = fmtDelta(p.current_price, p.avg_price);
           const ev = p.eval_amount ? Number(p.eval_amount) : NaN;
           const plan = planCells(p.plan, p.market);
+          const sc = stopCell(p.stop, p.market);
+          const stop = sc ? (
+            <>
+              {sc.text}
+              {sc.term && (
+                <>
+                  {" "}
+                  <span className="muted">
+                    <Term k={sc.term} />
+                  </span>
+                </>
+              )}
+            </>
+          ) : (
+            "—"
+          );
           const drift = driftCell(p.drift_pp, bandPct);
           const avg = <Num value={p.avg_price} market={p.market} />;
           const evalAmt = <Num value={p.eval_amount} market={p.market} />;
@@ -81,7 +99,7 @@ export function PositionsTable({ rows, nav, showAccounts = false, bandPct = 0.05
                 { label: "목표 비중", value: plan?.target ?? "—" },
                 { label: "드리프트", value: drift.text },
                 { label: "익절가", value: plan?.takeProfit ?? "—" },
-                { label: "손절가", value: plan?.stop ?? "—" },
+                { label: "손절가", value: stop },
                 { label: "지정가", value: plan?.limit ?? "—" },
                 ...(showAccounts ? [{ label: "계좌", value: (p.accounts ?? []).join(", ") || "—" }] : []),
               ]}
@@ -101,7 +119,7 @@ export function PositionsTable({ rows, nav, showAccounts = false, bandPct = 0.05
               <Td num>{plan?.target ?? "—"}</Td>
               <Td num className={drift.over ? "pend" : ""}>{drift.text}</Td>
               <Td num className={plan?.tpClass}>{plan?.takeProfit ?? "—"}</Td>
-              <Td num className={plan?.stopClass}>{plan?.stop ?? "—"}</Td>
+              <Td num className={sc?.cls}>{stop}</Td>
               <Td num>{plan?.limit ?? "—"}</Td>
               {showAccounts && <Td>{(p.accounts ?? []).join(", ")}</Td>}
             </DetailRow>

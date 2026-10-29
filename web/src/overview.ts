@@ -1,7 +1,7 @@
 // 전체 계좌 합산(/api/portfolio/overview)과 보유 행 계획 열 — 행 변환 순수 함수 (Phase 24).
 import { fmtMoney } from "./format";
 import { applyQuotes, type LiveQuote } from "./live";
-import type { Market, Overview, OverviewEnv, Position, PositionPlan } from "./types";
+import type { EffectiveStop, Market, Overview, OverviewEnv, Position, PositionPlan } from "./types";
 
 export const ALL_ACCOUNTS = "all";
 
@@ -32,6 +32,23 @@ export function planCells(plan: PositionPlan | null | undefined, market: Market 
     tpClass: distClass(plan.dist_take_profit_pct),
     stopClass: distClass(plan.dist_stop_pct),
   };
+}
+
+/** 실제 적용 손절선 칸: 가격·거리 문구, 출처 꼬리표 용어 키(결정 손절가면 없음), 색 클래스. */
+export function stopCell(stop: EffectiveStop | null | undefined, market: Market | string): { text: string; term: string | null; cls: string } | null {
+  if (!stop) return null;
+  return {
+    text: planCell(stop.level, stop.dist_pct, market),
+    term: stop.source === "decision" ? null : `stop.${stop.source}`,
+    cls: distClass(stop.dist_pct),
+  };
+}
+
+/** 두 손절선 중 낮은 것(가격이 더 내려가야 걸리는 쪽) — 합친 보유 행은 늦게 걸리는 계좌 기준. */
+export function lowerStop(a: EffectiveStop | null | undefined, b: EffectiveStop | null | undefined): EffectiveStop | null {
+  if (!a) return b ?? null;
+  if (!b) return a;
+  return b.level < a.level ? b : a;
 }
 
 export type OverviewRow = {
@@ -106,6 +123,7 @@ export function mergeHoldings(rows: Position[]): Position[] {
       qty: cur.qty + p.qty,
       eval_amount: String(ev),
       accounts: Array.from(new Set([...(cur.accounts ?? []), ...(p.accounts ?? [])])),
+      stop: lowerStop(cur.stop, p.stop),
     });
   }
   return [...by.values()];
