@@ -372,6 +372,7 @@ class NativeSession:
                 "stream": view["stream"],
                 "updated_at": _now().isoformat(),
                 "loaded": evidence.get("loaded") is True,
+                "visible": evidence.get("visible") is True,
                 "status": status,
                 "matches": comparisons,
             },

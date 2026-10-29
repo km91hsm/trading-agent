@@ -51,14 +51,15 @@
     async function click(n) {
         if (!n || n.disabled)
             throw Error('selection_unverified');
-        const rect=n.getBoundingClientRect();
-        const options={bubbles:true,cancelable:true,composed:true,button:0,buttons:1,clientX:rect.left+rect.width/2,clientY:rect.top+rect.height/2};
-        const Pointer=window.PointerEvent||window.MouseEvent;
-        n.dispatchEvent(new Pointer('pointerdown',{...options,pointerId:1,pointerType:'mouse',isPrimary:true}));
-        n.dispatchEvent(new MouseEvent('mousedown',options));
-        if(!n.disabled)n.focus({preventScroll:true});
-        n.dispatchEvent(new Pointer('pointerup',{...options,buttons:0,pointerId:1,pointerType:'mouse',isPrimary:true}));
-        n.dispatchEvent(new MouseEvent('mouseup',{...options,buttons:0}));
+        const rect = n.getBoundingClientRect();
+        const options = { bubbles: true, cancelable: true, composed: true, button: 0, buttons: 1, clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 };
+        const Pointer = window.PointerEvent || window.MouseEvent;
+        n.dispatchEvent(new Pointer('pointerdown', { ...options, pointerId: 1, pointerType: 'mouse', isPrimary: true }));
+        n.dispatchEvent(new MouseEvent('mousedown', options));
+        if (!n.disabled)
+            n.focus({ preventScroll: true });
+        n.dispatchEvent(new Pointer('pointerup', { ...options, buttons: 0, pointerId: 1, pointerType: 'mouse', isPrimary: true }));
+        n.dispatchEvent(new MouseEvent('mouseup', { ...options, buttons: 0 }));
         n.click();
         await pause();
     }
@@ -77,7 +78,7 @@
         return clone.outerHTML;
     }
     function selection(v) {
-        const result = { loaded: document.readyState === 'complete' && !auth() };
+        const result = { loaded: document.readyState === 'complete' && !auth(), visible: document.visibilityState === 'visible' };
         if (v.source)
             result.source = nodes().filter(n => n.getAttribute('role') === 'tab' && active(n)).map(label).find(x => x === v.source);
         if (v.category)
@@ -97,32 +98,61 @@
         return result;
     }
     function verified(v, s) { return s.loaded && ['source', 'category', 'tab', 'month'].every(k => !v[k] || s[k] === v[k]) && (!v.tab || s.regular === v.regular || (communityView(v) && s.regular === true && s.regular_disabled === true && s.regular_equivalent === true && s.regular_equivalence_label === COMMUNITY_EQUIVALENCE)); }
-    async function select(v) {
-        if (v.source && !active(find(v.source, 'tab')))
-            await click(find(v.source, 'tab'));
-        if (v.category && !active(category(v.category)))
-            await click(category(v.category));
+    async function waitControl(predicate, budget, maxPauses = 7) {
+        for (let i = 0; !predicate(); i++) {
+            if (auth())
+                throw Error('auth_required');
+            if (i >= maxPauses || budget.readiness <= 0 || Date.now() >= budget.deadline)
+                throw Error('selection_unverified');
+            budget.readiness--;
+            await pause();
+        }
+        if (auth())
+            throw Error('auth_required');
+    }
+    async function select(v, budget) {
+        const step = async (node) => { if (auth())
+            throw Error('auth_required'); if (Date.now() >= budget.deadline)
+            throw Error('selection_unverified'); await click(node); };
+        if (v.source) {
+            await waitControl(() => visible(find(v.source, 'tab')), budget);
+            if (!active(find(v.source, 'tab')))
+                await step(find(v.source, 'tab'));
+        }
+        if (v.category) {
+            await waitControl(() => visible(category(v.category)), budget);
+            if (!active(category(v.category)))
+                await step(category(v.category));
+        }
         if (v.tab) {
+            await waitControl(() => rankingFind(v, v.tab), budget);
             if (!rankingActive(v, rankingFind(v, v.tab)))
-                await click(rankingFind(v, v.tab));
+                await step(rankingFind(v, v.tab));
+            await waitControl(() => rankingFind(v, '정규장 기준'), budget);
             const control = rankingFind(v, '정규장 기준');
             if (check(control) !== v.regular && !equivalent(v, control))
-                await click(control);
+                await step(control);
             const risk = rankingFind(v, '위험주 제외');
             if (check(risk) === true)
-                await click(risk);
+                await step(risk);
         }
         if (v.month) {
-            await click(find('월별'));
-            for (let i = 0; i < 26 && month() !== v.month; i++) {
+            await waitControl(() => visible(find('월별')), budget);
+            if (!active(find('월별')))
+                await step(find('월별'));
+            await waitControl(() => month() && find('이전') && find('다음'), budget, 2);
+            while (month() !== v.month) {
+                if (budget.navigation <= 0)
+                    throw Error('selection_unverified');
                 const current = month();
                 if (!current)
                     throw Error('selection_unverified');
-                await click(find(current < v.month ? '다음' : '이전'));
+                budget.navigation--;
+                await step(find(current < v.month ? '다음' : '이전'));
             }
             const all = nodes().find(n => label(n) === '전체' && (n.hasAttribute('aria-pressed') || n.hasAttribute('aria-checked')) && visible(n));
             if (check(all) === false)
-                await click(all);
+                await step(all);
             if (all && check(all) !== true)
                 throw Error('selection_unverified');
         }
@@ -172,12 +202,27 @@
         const limits = job.limits || { max_scrolls: 2, max_details: 2 };
         const v = job.view, page_url = location.origin + location.pathname;
         let html = '', details = [], s = selection(v);
+        const budget = { readiness: 7, navigation: 26, deadline: Math.min(Date.now() + 90000, (Date.parse(job.expires_at) || Date.now() + 120000) - 20000) };
         for (let i = 0; i < 7 && !find('프로필 메뉴') && !barrier(); i++)
             await pause();
         if (auth())
-            return { page_url, html: '', selection: { loaded: false }, status: 'auth_required', reason: 'verification_required' };
+            return { page_url, html: '', selection: { loaded: false, visible: document.visibilityState === 'visible' }, status: 'auth_required', reason: 'verification_required' };
         try {
-            await select(v);
+            for (let attempt = 0; attempt < 2; attempt++) {
+                try {
+                    await select(v, budget);
+                }
+                catch (error) {
+                    if (auth())
+                        throw error;
+                    if (attempt === 1 || Date.now() >= budget.deadline)
+                        throw error;
+                    continue;
+                }
+                s = selection(v);
+                if (verified(v, s))
+                    break;
+            }
             s = selection(v);
             if (!verified(v, s))
                 return { page_url, html: '', selection: s, status: 'error', reason: 'selection_unverified' };
@@ -238,6 +283,7 @@
             return { page_url, html, details, selection: s, tab: v.tab, regular: v.regular, month: v.month, status: 'partial', reason: 'scroll_limit' };
         }
         catch (e) {
+            s = selection(v);
             return { page_url, html: '', selection: s, status: auth() ? 'auth_required' : 'error', reason: auth() ? 'verification_required' : 'selection_unverified' };
         }
     }

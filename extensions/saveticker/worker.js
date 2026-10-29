@@ -1,5 +1,5 @@
 import { LANES, Scheduler, laneFor, marker, ownedLane, safePage, PdfPair } from './core.js';
-const WORKER_VERSION = '1.0.3';
+const WORKER_VERSION = '1.0.4';
 const scheduler = new Scheduler(), pdf = new PdfPair(), reportAttempts = new Map();
 let limits = { max_scrolls: 2, max_details: 2, max_reports: 2 };
 let port = null, requests = new Map(), seq = 0, enabled = false, token = '', ticking = null, retryAt = 0, failures = 0, planAt = 0, epoch = 0, nextTimer = null;
@@ -63,11 +63,15 @@ async function connect() {
     failures = 0;
     await store({ connection: '연결됨', planCount: plan.views.length, workerVersion: WORKER_VERSION });
 }
-async function pauseWindow() { const status = { connection: '전용 창이 최소화됨 · 창을 복원해 주세요' }; for (const lane of LANES) {
-    status['lane_error_' + lane] = 'window_minimized';
-    status['lane_' + lane] = '전용 창 복원 대기';
-    await request('state', { lane, state: 'paused', reason: 'page_not_loaded' });
-} await store(status); }
+async function pauseWindow() {
+    const status = { connection: '전용 창이 최소화됨 · 창을 복원해 주세요' };
+    for (const lane of LANES) {
+        status['lane_error_' + lane] = 'window_minimized';
+        status['lane_' + lane] = '전용 창 복원 대기';
+        await request('state', { lane, state: 'paused', reason: 'page_not_loaded' });
+    }
+    await store(status);
+}
 async function tabs(runEpoch) {
     const active = () => enabled && runEpoch === epoch;
     let all = await chrome.tabs.query({ url: 'https://www.saveticker.com/*' });
@@ -153,7 +157,7 @@ async function laneRun(lane, tab, runEpoch) {
     const view = scheduler.next(Date.now(), lane);
     if (!view)
         return;
-    let job = null, consumed = false, failureCode = 'begin_failed';
+    let job = null, consumed = false, failureCode = 'begin_failed', failed = false;
     try {
         job = await request('begin', { stream: view.stream });
         if (!enabled || runEpoch !== epoch)
@@ -210,6 +214,7 @@ async function laneRun(lane, tab, runEpoch) {
             }
         }
         const status = saved.status === 'auth_required' || capture.status === 'auth_required' ? 'auth_required' : saved.status === 'error' || capture.status === 'error' ? 'error' : saved.status || capture.status;
+        failed = status === 'error';
         const update = { ['lane_' + lane]: pdfUnverified ? 'PDF 연결 미확인 · 일부 범위' : status === 'auth_required' ? '사용자 확인 필요' : status === 'error' ? '선택 확인 실패' : Number(saved.count) > 0 ? '수집됨 · 일부 범위' : '항목 미확인 · 일부 범위', lastAttempt: Date.now() };
         if (Number(saved.count) > 0 && ['ok', 'partial'].includes(status))
             update.lastCollected = Date.now();
@@ -218,6 +223,7 @@ async function laneRun(lane, tab, runEpoch) {
         await store(update);
     }
     catch (error) {
+        failed = true;
         const code = error?.message === 'lane_busy' ? 'lane_busy' : failureCode;
         if (job && !consumed && port && enabled && runEpoch === epoch) {
             try {
@@ -230,7 +236,7 @@ async function laneRun(lane, tab, runEpoch) {
         await store({ ['lane_' + lane]: '수집 오류 · 다음 주기 대기', ['lane_error_' + lane]: code });
     }
     finally {
-        scheduler.done(view, Date.now());
+        scheduler.done(view, Date.now(), failed);
     }
 }
 export async function tick() {

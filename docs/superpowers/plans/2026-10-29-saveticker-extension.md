@@ -55,3 +55,8 @@ Files: src/trader/saveticker/bridge_install.py, cli.py, automation.py, src/trade
 - 숨겨진 탭의 실제 초기화 부족을 비교 진단으로 확인. 전용 unfocused 창·소유 탭만 이동·순차 활성화·최소화 대기 구현. 독립 리뷰 후 초기 Tab metadata fallback을 실제 URL이 둘 다 없을 때만 사용하도록 수정.
 - Node 32 tests, Native 26 tests 통과. runtime 비교 진단은 본문/선택값 없이 boolean만 저장하는 회귀 검사 포함.
 - 로컬 원인 확인에는 임시 standalone Python launcher를 사용했다. 완료 전 frozen runtime으로 복원하고 두 주기 이상 갱신 확인 필수.
+
+### 1.0.4 초기화/재시도 보완
+- 표시된 탭도 컨트롤 준비가 늦는 조건을 회귀 검사로 추가. 준비 대기 최대14초, 선택 시도2회, 달력 이동 총26회, 만료20초 전/90초 공통 제한.
+- 일반 오류는 실제 시도 시각을 보존한 별도 retryAt으로30초 후 다시 가능. 아직 읽지 않은 월/화면을 실패한 리포트 재시도가 가리지 않도록 검사. 인증은 자동 재시도하지 않음.
+- 확장37개, native/설치40개 통과. 독립 리뷰 추가 P1/P2 없음. 실제 전체 범위·PDF·frozen 복원·다중 주기 확인 진행 중.

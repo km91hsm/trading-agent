@@ -18,10 +18,10 @@ export function ownedLane(tab, token) {
     }
 }
 export class Scheduler {
-    constructor() { this.views = []; this.times = new Map(); this.blocked = new Set(); this.hot = 0; }
+    constructor() { this.views = []; this.times = new Map(); this.retryAt = new Map(); this.blocked = new Set(); this.hot = 0; }
     plan(v) { this.views = v.filter(x => LANES.includes(laneFor(x)) && Number(x.interval_s) >= 30); }
     next(now, lane) {
-        let due = this.views.filter(v => (!lane || laneFor(v) === lane) && !this.blocked.has(laneFor(v)) && now - (this.times.get(v.stream) ?? -Infinity) >= v.interval_s * 1000);
+        let due = this.views.filter(v => (!lane || laneFor(v) === lane) && !this.blocked.has(laneFor(v)) && (now - (this.times.get(v.stream) ?? -Infinity) >= v.interval_s * 1000 || (this.retryAt.has(v.stream) && now >= this.retryAt.get(v.stream))));
         due.sort((a, b) => (this.times.get(a.stream) ?? -Infinity) - (this.times.get(b.stream) ?? -Infinity));
         if (this.hot >= 8) {
             const cold = due.find(v => v.interval_s >= 300);
@@ -32,7 +32,10 @@ export class Scheduler {
         }
         return due[0];
     }
-    done(v, now) { this.times.set(v.stream, now); this.hot = v.interval_s < 300 ? this.hot + 1 : 0; }
+    done(v, now, failed = false) { this.times.set(v.stream, now); if (failed)
+        this.retryAt.set(v.stream, now + 30000);
+    else
+        this.retryAt.delete(v.stream); this.hot = v.interval_s < 300 ? this.hot + 1 : 0; }
     block(l) { this.blocked.add(l); }
     resume() { this.blocked.clear(); }
 }
