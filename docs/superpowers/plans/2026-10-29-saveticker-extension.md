@@ -77,3 +77,14 @@ Files: src/trader/saveticker/bridge_install.py, cli.py, automation.py, src/trade
 - 최종 커밋 b8242f2: Node69개, 관련 Python62개, 전체 Python2644 passed/1 skipped(562.22s), ruff/diff check 통과. CI40883931408/test123482472679 통과(4m19s). 독립 리뷰의 PDF 이동 후 취소 P2 수정 후 추가 blocker 없음.
 - macOS bundle/selfcheck·격리된 frozen Native20개 작업·합성1페이지PDF·EOF exit0·가짜 등록 복원 통과. 실제 Chromium 격리 프로필의 same-origin blob→extension downloads ID 전달 통과. 합성 데이터는 운영 저장소에 넣지 않았다.
 - 설치 패키지에 extension-next-1.0.6, native-runtime/Trader-next-1.0.6.app으로 별도 준비했다. 운영 Trader.app·현재1.0.5 수집 실행 파일은 교체하지 않았다. Mac 잠금으로 중지/교체/사용자 Chrome 재로드·실제 PDF·전체주기 확인이 필요하여 PR80 draft를 유지한다.
+
+### 1.0.6 실제 Chrome 검증 (2026-10-30 08:18~08:24 KST)
+- 사용자 잠금 해제 후1.0.5 정상 중지·Native 종료를 확인하고1.0.6 frozen/확장으로 교체했다. 이전 버전은 별도 rollback으로 보존. 사용자 재로드·시작 후 popup 확장/수집기1.0.6 및 Chrome 자식 frozen PID34066 확인.
+- 시작 이후20/20 stream이 error/auth 없이 partial로 갱신됐다. 뉴스4회 갱신, 리포트20, TOP5/지수5, 나머지순위20, 캘린더9월133/10월136/11월96/12월0/1월0. 빈 월은 실제 명시적 빈 화면을 확인했다.
+- 기존 reader로 지수/순위·34개 근접 일정·뉴스를 읽었으나 최신 report excerpt 없음. 새 PDF0건이며 popup native_failed. 일반 수집 성공과 PDF 실패를 분리해 기록한다.
+- 실제 isolated content→MAIN→candidate 경로를 추가 Chromium 합성 검사로 확인:3회 인증된 pace·정확한 버튼1회·page-origin/sourceWindow/nonce 일치·blob candidate 성공(11.01s). 실제 PDF 첫 실패를 다음 pdf_begin busy가 덮을 수 있는 진단 문제 보완 중이다.
+
+### 1.0.7 PDF 첫 실패 진단 보완
+- 첫 hook/candidate 실패 후 같은 ticket 유효 시간에 다음 pdf_begin을 요청하여 기존 원인을 busy로 덮던 동작을 RED→GREEN으로 수정했다. 첫 실패에서 멈추고 원인을 유지한다. Native begin/save 오류는 실제 고정 코드만 매핑하며 미확인 문자열은 고정 fallback으로 처리한다.
+- 확장79개, 실제 content→MAIN Chromium 검사1개, ruff/diff 통과. 독립 리뷰 P1/P2 없음. Native Python은 변경하지 않았다.
+- 수집 중지·Native 종료 후 확장 파일만1.0.7로 교체했다. 기존 frozen Native1.0.6 코드/권한은 유지. 사용자 Chrome 재로드 후 실제 최초 PDF 실패 코드를 확인해야 한다.
