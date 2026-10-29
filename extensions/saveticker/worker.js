@@ -1,9 +1,71 @@
 import { LANES, Scheduler, laneFor, marker, ownedLane, safePage, PdfPair } from './core.js';
-const WORKER_VERSION = '1.0.4';
+const WORKER_VERSION = '1.0.5';
 const scheduler = new Scheduler(), pdf = new PdfPair(), reportAttempts = new Map();
 let limits = { max_scrolls: 2, max_details: 2, max_reports: 2 };
-let port = null, requests = new Map(), seq = 0, enabled = false, token = '', ticking = null, retryAt = 0, failures = 0, planAt = 0, epoch = 0, nextTimer = null;
+let port = null, requests = new Map(), seq = 0, enabled = false, token = '', ticking = null, retryAt = 0, failures = 0, planAt = 0, epoch = 0, nextTimer = null, presentRequested = false;
 const downloadWaiters = new Map();
+const pendingPaces = new Map();
+const activeJobs = new Map();
+function cancelPaces() {
+    for (const [id, p] of pendingPaces) {
+        clearTimeout(p.timer);
+        pendingPaces.delete(id);
+        try {
+            p.reply({ ok: false, error: 'pace_stopped' });
+        }
+        catch { }
+    }
+}
+function markerRepair(sender) {
+    const proof = activeJobs.get(sender.tab?.id);
+    if (!proof || proof.epoch !== epoch || proof.token !== token)
+        return null;
+    try {
+        const u = new URL(sender.tab.url);
+        if (u.hash !== '' || u.origin !== 'https://www.saveticker.com' || u.pathname !== '/news' || u.origin + u.pathname !== proof.page)
+            return null;
+        if (!((proof.stream === 'news_reports' && u.search === '?label_group=7') || (proof.stream === 'news_all' && u.search === '')))
+            return null;
+        u.hash = 'trader-saveticker=' + proof.token + ':' + proof.lane;
+        return { url: u.href, proof };
+    }
+    catch {
+        return null;
+    }
+}
+function pace(message, sender, reply) {
+    if (sender.id !== chrome.runtime.id || !enabled || message.ownerToken !== token || !Number.isInteger(sender.tab?.id)) {
+        reply({ ok: false, error: 'pace_denied' });
+        return;
+    }
+    const owned = ownedLane(sender.tab, token), repair = owned ? null : markerRepair(sender);
+    if (!owned && !repair) {
+        reply({ ok: false, error: 'pace_denied' });
+        return;
+    }
+    const tabId = sender.tab.id;
+    if (pendingPaces.has(tabId) || pendingPaces.size >= 4) {
+        reply({ ok: false, error: 'pace_busy' });
+        return;
+    }
+    const pending = { timer: null, reply };
+    pendingPaces.set(tabId, pending);
+    const deny = () => { if (pendingPaces.get(tabId) !== pending)
+        return; pendingPaces.delete(tabId); reply({ ok: false, error: 'pace_denied' }); };
+    (async () => {
+        if (repair) {
+            await chrome.tabs.update(tabId, { url: repair.url });
+            if (!enabled || activeJobs.get(tabId) !== repair.proof || repair.proof.epoch !== epoch) {
+                deny();
+                return;
+            }
+        }
+        if (pendingPaces.get(tabId) !== pending)
+            return;
+        pending.timer = setTimeout(() => { if (pendingPaces.get(tabId) !== pending)
+            return; pendingPaces.delete(tabId); reply(enabled ? { ok: true } : { ok: false, error: 'pace_stopped' }); }, 2000);
+    })().catch(deny);
+}
 function settleDownloads() {
     for (const [id, w] of downloadWaiters) {
         clearTimeout(w.timer);
@@ -46,6 +108,8 @@ async function connect() {
         if (port !== activePort)
             return;
         port = null;
+        cancelPaces();
+        activeJobs.clear();
         pdf.clear();
         settleDownloads();
         for (const p of requests.values()) {
@@ -77,7 +141,7 @@ async function tabs(runEpoch) {
     let all = await chrome.tabs.query({ url: 'https://www.saveticker.com/*' });
     const marked = all.filter(t => ownedLane(t, token));
     const saved = (await chrome.storage.local.get('ownedWindowId')).ownedWindowId;
-    let ownedWindow = null;
+    let ownedWindow = null, createdWindow = false;
     if (Number.isInteger(saved) && marked.some(t => t.windowId === saved)) {
         try {
             ownedWindow = await chrome.windows.get(saved);
@@ -98,6 +162,7 @@ async function tabs(runEpoch) {
     if (!active())
         return null;
     if (!ownedWindow) {
+        createdWindow = true;
         if (marked.length)
             ownedWindow = await chrome.windows.create({ tabId: marked[0].id, focused: false });
         else {
@@ -135,9 +200,16 @@ async function tabs(runEpoch) {
         }
         else {
             const view = scheduler.views.find(v => laneFor(v) === lane);
-            if (view)
-                result[lane] = await chrome.tabs.create({ windowId: ownedWindow.id, url: marker(view.url, token, lane), active: false });
+            if (view) {
+                const requested = marker(view.url, token, lane);
+                const created = await chrome.tabs.create({ windowId: ownedWindow.id, url: requested, active: false });
+                result[lane] = { ...created, pendingUrl: created.pendingUrl || created.url || requested };
+            }
         }
+    }
+    if (active() && (presentRequested || createdWindow)) {
+        await chrome.windows.update(ownedWindow.id, { focused: true });
+        presentRequested = false;
     }
     await store({ connection: '연결됨' });
     return result;
@@ -157,11 +229,17 @@ async function laneRun(lane, tab, runEpoch) {
     const view = scheduler.next(Date.now(), lane);
     if (!view)
         return;
-    let job = null, consumed = false, failureCode = 'begin_failed', failed = false;
+    let job = null, consumed = false, failureCode = 'begin_failed', failed = false, proof = null;
     try {
+        failureCode = 'ownership_unverified';
+        if (ownedLane(tab, token) !== lane)
+            throw Error('ownership_unverified');
+        failureCode = 'begin_failed';
         job = await request('begin', { stream: view.stream });
         if (!enabled || runEpoch !== epoch)
             return;
+        proof = { lane, token, epoch: runEpoch, page: safePage(job.view.url), stream: view.stream };
+        activeJobs.set(tab.id, proof);
         failureCode = 'state_failed';
         await request('state', { lane, state: 'collecting' });
         let currentPage = null;
@@ -236,6 +314,8 @@ async function laneRun(lane, tab, runEpoch) {
         await store({ ['lane_' + lane]: '수집 오류 · 다음 주기 대기', ['lane_error_' + lane]: code });
     }
     finally {
+        if (activeJobs.get(tab.id) === proof)
+            activeJobs.delete(tab.id);
         scheduler.done(view, Date.now(), failed);
     }
 }
@@ -289,8 +369,12 @@ export async function tick() {
     return ticking;
 }
 async function control(action) {
+    if (action === 'start' || action === 'resume')
+        presentRequested = true;
     if (action === 'stop') {
         enabled = false;
+        cancelPaces();
+        activeJobs.clear();
         epoch++;
         clearTimeout(nextTimer);
         nextTimer = null;
@@ -319,6 +403,10 @@ async function control(action) {
     void tick();
 }
 chrome.runtime.onMessage.addListener((message, sender, reply) => {
+    if (message.type === 'pace') {
+        pace(message, sender, reply);
+        return true;
+    }
     if (sender.id !== chrome.runtime.id || sender.tab)
         return;
     if (['start', 'stop', 'resume'].includes(message.action)) {
@@ -330,14 +418,16 @@ chrome.alarms.onAlarm.addListener(alarm => {
     if (alarm.name === 'saveticker')
         void tick();
 });
-const restore = async () => {
+const restore = async (present = false) => {
     if ((await chrome.storage.local.get('enabled')).enabled) {
+        if (present)
+            presentRequested = true;
         await chrome.alarms.create('saveticker', { periodInMinutes: 0.5 });
         void tick();
     }
 };
-chrome.runtime.onStartup.addListener(restore);
-chrome.runtime.onInstalled.addListener(restore);
+chrome.runtime.onStartup.addListener(() => restore(true));
+chrome.runtime.onInstalled.addListener(() => restore(false));
 void restore();
 chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
     if (!pdf.pending) {

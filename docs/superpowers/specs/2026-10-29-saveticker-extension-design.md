@@ -71,3 +71,8 @@ MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA3WeKbuemZizg+F+9q1VmyQPIJ639KzMlycxI
 - 실기에서 숨겨진 뉴스/캘린더 탭은 로딩 완료 뒤에도 선택 텍스트가 준비되지 않았고, 표시한 뒤 동일 코드의 선택 검증과 저장이 성공했다. 수집은 전용 Chrome 창에서 정확한 토큰 소유 탭만 이동/복구하고 각 작업 탭을 차례로 활성화한다. 창 전체에는 focused:true를 사용하지 않는다.
 - 다른 사용자 탭이 섞인 창은 수집 창으로 재사용하지 않는다. 정확한 토큰의 탭만 새 전용 창으로 옮긴다. 최소화된 수집 창은 임의 복원하지 않고 native paused/page_not_loaded로 기록한다.
 - runtime/selection-<lane>.json은 요청 stream과 선택 조건별 일치 여부/loaded/status만 기록한다. 페이지 텍스트·선택값·HTML·인증정보를 기록하지 않는다.
+
+### 1.0.5 worker 대기와 UI 경로 변경
+- Content 대기는 고정2초 내부 pace 메시지로만 처리한다. caller 확장 ID·소유 tab/token·enabled·동시 제한을 확인하고 stop/disconnect 때 pending reply를 취소한다. auth/검증 실패 시 저장하지 않는 조건 유지.
+- 시작/재개·Chrome 시작·새 전용 창은 소유 창을1회 표시할 수 있다. 기존 사용자 창을 focus하지 않으며 일반 주기/MV3 idle 복원은 focus하지 않는다.
+- reports 선택이 /news?label_group=7로 이동하며 hash를 지운다. 발급된 뉴스 작업의 tab/token/epoch/page 증명을 가진 동안에만 exact source query와 빈 hash를 수리한다. 작업 종료 뒤/다른 tab·origin·path·query·hash에는 적용하지 않는다.

@@ -5,7 +5,7 @@ async function render() {
     const s = await chrome.storage.local.get(null);
     const knownVersion = typeof s.workerVersion === 'string' && /^\d+\.\d+\.\d+$/.test(s.workerVersion);
     const workerVersion = knownVersion ? s.workerVersion : s.enabled ? '연결 중' : '시작 전';
-    $('version').textContent = '확장 1.0.4 · 수집기 ' + workerVersion + (knownVersion && workerVersion !== '1.0.4' ? ' · 확장 새로고침 필요' : '');
+    $('version').textContent = '확장 1.0.5 · 수집기 ' + workerVersion + (knownVersion && workerVersion !== '1.0.5' ? ' · 확장 새로고침 필요' : '');
     $('connection').textContent = s.connection || (s.enabled ? '연결 대기' : '중지됨');
     for (const lane of ['news', 'community', 'market', 'background'])
         $(lane).textContent = s['lane_' + lane] || '대기';

@@ -60,3 +60,9 @@ Files: src/trader/saveticker/bridge_install.py, cli.py, automation.py, src/trade
 - 표시된 탭도 컨트롤 준비가 늦는 조건을 회귀 검사로 추가. 준비 대기 최대14초, 선택 시도2회, 달력 이동 총26회, 만료20초 전/90초 공통 제한.
 - 일반 오류는 실제 시도 시각을 보존한 별도 retryAt으로30초 후 다시 가능. 아직 읽지 않은 월/화면을 실패한 리포트 재시도가 가리지 않도록 검사. 인증은 자동 재시도하지 않음.
 - 확장37개, native/설치40개 통과. 독립 리뷰 추가 P1/P2 없음. 실제 전체 범위·PDF·frozen 복원·다중 주기 확인 진행 중.
+
+### 1.0.5 표시·대기·소유 표시 보완
+- 숨김 DOM 타이머 지연을 피하려고 고정2초 대기를 Native 연결로 유지되는 MV3 worker에서 응답한다. 같은 확장·정확한 소유 탭/token·enabled를 검증하고 탭당1개/총4개로 제한하며 중지·연결 해제 때 취소한다.
+- 명시적 시작/재개·Chrome 시작·새 전용 창에만 소유 창을1회 표시한다. 일반 tick/MV3 idle 복원은 기존 창의 focus를 바꾸지 않는다. 최소화된 창은 쉰다.
+- 실기 리포트 출처 변경이 주소의 hash를 제거함을 확인. 이미 발급한 같은 tab/token/epoch 뉴스 작업과 정확한 source query, 빈 hash일 때만 소유 표시를 복원한다. 전역 재소유·다른 탭/경로/hash/query 수용 없음.
+- 확장44 tests 및 독립 리뷰 통과. frozen104 runtime/launcher 복원 완료; 다음 실제 Chrome 연결에서 frozen PID와 전체범위/PDF/여러주기 확인 필수.

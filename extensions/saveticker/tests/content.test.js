@@ -42,24 +42,64 @@ test('disabled community checkbox without exact equivalence label cannot satisfy
 test('community equivalence cannot bypass market regular mismatch', async () => { const result = await capture(communityRanking('지금은 실시간과 정규장 기준이 같아요'), { stream: 'market_index_live', kind: 'market', tab: '지수', regular: false }); assert.equal(result.status, 'error'); assert.equal(result.html, ''); });
 test('source controls driven by mousedown switch away from reports and preserve actual evidence', async () => { const result = await capture('<button aria-label="프로필 메뉴"></button><button id="allsource" role="tab" aria-selected="false">전체</button><button id="reportssource" role="tab" aria-selected="true">SAVE 리포트</button><div aria-label="뉴스 카테고리"><button aria-current="true">전체</button></div><div id="news-tabpanel">Latest headline</div>', { stream: 'news_all', source: '전체', category: '전체' }, w => w.document.querySelector('#allsource').addEventListener('mousedown', () => { w.document.querySelector('#allsource').setAttribute('aria-selected', 'true'); w.document.querySelector('#reportssource').setAttribute('aria-selected', 'false'); })); assert.equal(result.status, 'partial'); assert.equal(result.selection.source, '전체'); });
 test('monthly control driven by pointerdown exposes and verifies actual month', async () => { const result = await capture('<button aria-label="프로필 메뉴"></button><button id="monthly">월별</button><div id="calendar"></div>', { stream: 'calendar_2026-10', month: '2026-10' }, w => w.document.querySelector('#monthly').addEventListener('pointerdown', () => { w.document.querySelector('#calendar').innerHTML = '<div><button aria-label="이전"></button><span>2026년 10월</span><button aria-label="다음"></button></div>'; })); assert.equal(result.status, 'partial'); assert.equal(result.selection.month, '2026-10'); });
-test('profile can precede source/category controls and delayed mousedown hydration', async () => { let pauses = 0; const result = await capture('<button aria-label="프로필 메뉴"></button><div id="slot"></div>', { stream: 'news_all', source: '전체', category: '전체' }, w => { w.setTimeout = (fn, ms) => { if (ms === 2000) {
-    pauses++;
-    if (pauses === 2)
-        w.document.querySelector('#slot').innerHTML = '<button id="src" role="tab" aria-selected="false">전체</button><div aria-label="뉴스 카테고리"><button id="cat" aria-current="false">전체</button></div><div id="news-tabpanel">New headline</div>';
-    if (pauses === 3) {
-        w.document.querySelector('#src').addEventListener('mousedown', e => e.target.setAttribute('aria-selected', 'true'));
-        w.document.querySelector('#cat').addEventListener('mousedown', e => e.target.setAttribute('aria-current', 'true'));
-    }
-} fn(); return 1; }; }); assert.equal(result.status, 'partial'); assert.equal(result.selection.source, '전체'); assert.equal(result.selection.category, '전체'); assert.equal(typeof result.selection.visible, 'boolean'); });
-test('monthly controls and pointer handler can hydrate after profile without false month evidence', async () => { let pauses = 0; const result = await capture('<button aria-label="프로필 메뉴"></button><div id="slot"></div>', { stream: 'calendar_2026-10', month: '2026-10' }, w => { w.setTimeout = (fn, ms) => { if (ms === 2000) {
-    pauses++;
-    if (pauses === 2)
-        w.document.querySelector('#slot').innerHTML = '<button id="monthly">월별</button><div id="range"></div>';
-    if (pauses === 3)
-        w.document.querySelector('#monthly').addEventListener('pointerdown', () => { w.document.querySelector('#range').innerHTML = '<div><button aria-label="이전"></button><span>2026년 10월</span><button aria-label="다음"></button></div>'; });
-} fn(); return 1; }; }); assert.equal(result.status, 'partial'); assert.equal(result.selection.month, '2026-10'); });
-test('authentication barrier during control readiness stops immediately', async () => { let pauses = 0; const result = await capture('<button aria-label="프로필 메뉴"></button>', { stream: 'news_reports', source: 'SAVE 리포트' }, w => { w.setTimeout = (fn, ms) => { if (ms === 2000) {
-    pauses++;
-    w.document.body.innerHTML = 'Verify you are human';
-} fn(); return 1; }; }); assert.equal(result.status, 'auth_required'); assert.equal(pauses, 1); assert.equal(result.html, ''); });
+test('profile can precede source/category controls and delayed mousedown hydration', async () => {
+    let pauses = 0;
+    const result = await capture('<button aria-label="프로필 메뉴"></button><div id="slot"></div>', { stream: 'news_all', source: '전체', category: '전체' }, w => {
+        w.setTimeout = (fn, ms) => {
+            if (ms === 2000) {
+                pauses++;
+                if (pauses === 2)
+                    w.document.querySelector('#slot').innerHTML = '<button id="src" role="tab" aria-selected="false">전체</button><div aria-label="뉴스 카테고리"><button id="cat" aria-current="false">전체</button></div><div id="news-tabpanel">New headline</div>';
+                if (pauses === 3) {
+                    w.document.querySelector('#src').addEventListener('mousedown', e => e.target.setAttribute('aria-selected', 'true'));
+                    w.document.querySelector('#cat').addEventListener('mousedown', e => e.target.setAttribute('aria-current', 'true'));
+                }
+            }
+            fn();
+            return 1;
+        };
+    });
+    assert.equal(result.status, 'partial');
+    assert.equal(result.selection.source, '전체');
+    assert.equal(result.selection.category, '전체');
+    assert.equal(typeof result.selection.visible, 'boolean');
+});
+test('monthly controls and pointer handler can hydrate after profile without false month evidence', async () => {
+    let pauses = 0;
+    const result = await capture('<button aria-label="프로필 메뉴"></button><div id="slot"></div>', { stream: 'calendar_2026-10', month: '2026-10' }, w => {
+        w.setTimeout = (fn, ms) => {
+            if (ms === 2000) {
+                pauses++;
+                if (pauses === 2)
+                    w.document.querySelector('#slot').innerHTML = '<button id="monthly">월별</button><div id="range"></div>';
+                if (pauses === 3)
+                    w.document.querySelector('#monthly').addEventListener('pointerdown', () => { w.document.querySelector('#range').innerHTML = '<div><button aria-label="이전"></button><span>2026년 10월</span><button aria-label="다음"></button></div>'; });
+            }
+            fn();
+            return 1;
+        };
+    });
+    assert.equal(result.status, 'partial');
+    assert.equal(result.selection.month, '2026-10');
+});
+test('authentication barrier during control readiness stops immediately', async () => {
+    let pauses = 0;
+    const result = await capture('<button aria-label="프로필 메뉴"></button>', { stream: 'news_reports', source: 'SAVE 리포트' }, w => {
+        w.setTimeout = (fn, ms) => {
+            if (ms === 2000) {
+                pauses++;
+                w.document.body.innerHTML = 'Verify you are human';
+            }
+            fn();
+            return 1;
+        };
+    });
+    assert.equal(result.status, 'auth_required');
+    assert.equal(pauses, 1);
+    assert.equal(result.html, '');
+});
 test('calendar navigation cap stays 26 across bounded selection attempts', async () => { let clicks = 0; const result = await capture('<button aria-label="프로필 메뉴"></button><button>월별</button><div><button aria-label="이전"></button><span>2026년 10월</span><button aria-label="다음"></button></div>', { stream: 'calendar_2027-01', month: '2027-01' }, w => w.document.querySelector('[aria-label="다음"]').addEventListener('click', () => clicks++)); assert.equal(result.status, 'error'); assert.ok(clicks <= 26); });
+test('hidden DOM timers never fire but worker pace replies advance collection', async () => { let paces = 0; const result = await capture(controls + '<div id="news-tabpanel">Headline</div>', { stream: 'news_all', source: '전체', category: '전체' }, w => { w.setTimeout = () => { throw Error('hidden DOM timer must not be used'); }; w.chrome.runtime.sendMessage = async (message) => { assert.equal(message.type, 'pace'); assert.equal(message.ownerToken, 'token'); paces++; return { ok: true }; }; }); assert.equal(result.status, 'partial'); assert.ok(paces >= 3); });
+test('missing worker pace response fails instead of falling back to DOM timer', async () => { const result = await capture(controls + '<div id="news-tabpanel">Headline</div>', { stream: 'news_all', source: '전체', category: '전체' }, w => { w.setTimeout = () => { throw Error('no timer fallback'); }; w.chrome.runtime.sendMessage = async () => undefined; }); assert.equal(result.status, 'error'); assert.equal(result.html, ''); });
+test('stopped worker pacing during profile readiness returns a bounded failure', async () => { let paces = 0; const result = await capture('<div>Loading</div>', { stream: 'news_all', source: '전체' }, w => { w.chrome.runtime.sendMessage = async () => { paces++; return { ok: false, error: 'pace_stopped' }; }; }); assert.equal(paces, 1); assert.equal(result.html, ''); assert.ok(['error', 'auth_required'].includes(result.status)); });
+test('PDF observer also uses worker pacing when hidden DOM timers never fire', async () => { const result = await capture('<button aria-label="프로필 메뉴"></button><section>Report<button aria-label="PDF 다운로드"></button></section>', {}, w => { w.setTimeout = () => { throw Error('hidden timer'); }; w.chrome.runtime.sendMessage = async () => ({ ok: true }); w.document.querySelector('[aria-label="PDF 다운로드"]').addEventListener('click', () => { const a = w.document.createElement('a'); a.href = 'blob:https://www.saveticker.com/report'; a.addEventListener('click', e => e.preventDefault()); w.document.body.append(a); a.click(); a.remove(); }); }, { type: 'pdf_click', title: 'Report' }); assert.equal(result.ok, true); assert.equal(result.observed_url, 'blob:https://www.saveticker.com/report'); });

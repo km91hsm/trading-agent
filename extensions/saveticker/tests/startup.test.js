@@ -27,7 +27,7 @@ test('pendingUrl-only new tabs collect; failed commands consume job and recover 
                         queueMicrotask(() => p.onMessage.emit(r));
                     } };
                 return p;
-            } }, windows: { get: async (id) => ({ id, state: 'normal' }), create: async ({ url }) => { tabs.push({ id: 1, pendingUrl: url, windowId: 7 }); return { id: 7, state: 'normal', tabs: [{ id: 1, windowId: 7 }] }; } }, alarms: { onAlarm: event(), create: async () => { }, clear: async () => { } }, tabs: { query: async () => tabs, create: async ({ url }) => { const t = { id: 1, pendingUrl: url }; tabs.push(t); return { id: t.id }; }, move: async () => { }, update: async (id, opts) => { if (opts.url)
+            } }, windows: { update:async()=>{},get: async (id) => ({ id, state: 'normal' }), create: async ({ url }) => { tabs.push({ id: 1, pendingUrl: url, windowId: 7 }); return { id: 7, state: 'normal', tabs: [{ id: 1, windowId: 7 }] }; } }, alarms: { onAlarm: event(), create: async () => { }, clear: async () => { } }, tabs: { query: async () => tabs, create: async ({ url }) => { const t = { id: 1, pendingUrl: url }; tabs.push(t); return { id: t.id }; }, move: async () => { }, update: async (id, opts) => { if (opts.url)
                 navigations++; }, remove: async () => { }, sendMessage: async () => {
                 if (failContent)
                     throw Error('PRIVATE PAGE CONTENT MUST NOT BE LOGGED');

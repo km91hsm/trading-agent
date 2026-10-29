@@ -1,6 +1,13 @@
 // Isolated-world DOM collector. No credentials, requests or cookie access.
 (() => {
-    const pause = () => new Promise(r => setTimeout(r, 2000));
+    let collectionToken = null;
+    const pause = async () => {
+        if (typeof chrome.runtime.sendMessage !== 'function')
+            return new Promise(r => setTimeout(r, 2000));
+        const result = await chrome.runtime.sendMessage({ type: 'pace', ownerToken: collectionToken });
+        if (result?.ok !== true)
+            throw Error('pace_stopped');
+    };
     let busy = false, detailCursor = 0;
     const text = n => (n?.textContent || '').trim();
     const label = n => n.getAttribute('aria-label') || text(n);
@@ -111,9 +118,13 @@
             throw Error('auth_required');
     }
     async function select(v, budget) {
-        const step = async (node) => { if (auth())
-            throw Error('auth_required'); if (Date.now() >= budget.deadline)
-            throw Error('selection_unverified'); await click(node); };
+        const step = async (node) => {
+            if (auth())
+                throw Error('auth_required');
+            if (Date.now() >= budget.deadline)
+                throw Error('selection_unverified');
+            await click(node);
+        };
         if (v.source) {
             await waitControl(() => visible(find(v.source, 'tab')), budget);
             if (!active(find(v.source, 'tab')))
@@ -203,17 +214,17 @@
         const v = job.view, page_url = location.origin + location.pathname;
         let html = '', details = [], s = selection(v);
         const budget = { readiness: 7, navigation: 26, deadline: Math.min(Date.now() + 90000, (Date.parse(job.expires_at) || Date.now() + 120000) - 20000) };
-        for (let i = 0; i < 7 && !find('프로필 메뉴') && !barrier(); i++)
-            await pause();
-        if (auth())
-            return { page_url, html: '', selection: { loaded: false, visible: document.visibilityState === 'visible' }, status: 'auth_required', reason: 'verification_required' };
         try {
+            for (let i = 0; i < 7 && !find('프로필 메뉴') && !barrier(); i++)
+                await pause();
+            if (auth())
+                return { page_url, html: '', selection: { loaded: false, visible: document.visibilityState === 'visible' }, status: 'auth_required', reason: 'verification_required' };
             for (let attempt = 0; attempt < 2; attempt++) {
                 try {
                     await select(v, budget);
                 }
                 catch (error) {
-                    if (auth())
+                    if (auth() || error?.message === 'pace_stopped')
                         throw error;
                     if (attempt === 1 || Date.now() >= budget.deadline)
                         throw error;
@@ -295,6 +306,7 @@
             reply({ ok: false });
             return;
         }
+        collectionToken = token;
         if (message.type === 'collect') {
             if (busy) {
                 reply({ page_url: location.origin + location.pathname, html: '', selection: { loaded: false }, status: 'error', reason: 'lane_busy' });
@@ -332,13 +344,21 @@
                 };
                 document.addEventListener('click', observe, true);
                 match.click();
-                setTimeout(() => {
+                const finish = cancelled => {
                     if (finished)
                         return;
                     finished = true;
                     document.removeEventListener('click', observe, true);
-                    reply(urls.size === 1 ? { ok: true, observed_url: [...urls][0] } : { ok: false, reason: 'pdf_unverified' });
-                }, 4000);
+                    reply(!cancelled && urls.size === 1 ? { ok: true, observed_url: [...urls][0] } : { ok: false, reason: 'pdf_unverified' });
+                };
+                (async () => { try {
+                    await pause();
+                    await pause();
+                    finish(false);
+                }
+                catch {
+                    finish(true);
+                } })();
                 return true;
             }
             else
