@@ -1,9 +1,9 @@
 import { LANES, Scheduler, laneFor, marker, ownedLane, safePage, PdfPair } from './core.js';
-const WORKER_VERSION = '1.0.5';
+const WORKER_VERSION = '1.0.6';
 const scheduler = new Scheduler(), pdf = new PdfPair(), reportAttempts = new Map();
 let limits = { max_scrolls: 2, max_details: 2, max_reports: 2 };
 let port = null, requests = new Map(), seq = 0, enabled = false, token = '', ticking = null, retryAt = 0, failures = 0, planAt = 0, epoch = 0, nextTimer = null, presentRequested = false;
-const downloadWaiters = new Map();
+const handoffReleases = new Map();
 const pendingPaces = new Map();
 const activeJobs = new Map();
 function cancelPaces() {
@@ -50,8 +50,12 @@ function pace(message, sender, reply) {
     }
     const pending = { timer: null, reply };
     pendingPaces.set(tabId, pending);
-    const deny = () => { if (pendingPaces.get(tabId) !== pending)
-        return; pendingPaces.delete(tabId); reply({ ok: false, error: 'pace_denied' }); };
+    const deny = () => {
+        if (pendingPaces.get(tabId) !== pending)
+            return;
+        pendingPaces.delete(tabId);
+        reply({ ok: false, error: 'pace_denied' });
+    };
     (async () => {
         if (repair) {
             await chrome.tabs.update(tabId, { url: repair.url });
@@ -62,18 +66,69 @@ function pace(message, sender, reply) {
         }
         if (pendingPaces.get(tabId) !== pending)
             return;
-        pending.timer = setTimeout(() => { if (pendingPaces.get(tabId) !== pending)
-            return; pendingPaces.delete(tabId); reply(enabled ? { ok: true } : { ok: false, error: 'pace_stopped' }); }, 2000);
+        pending.timer = setTimeout(() => {
+            if (pendingPaces.get(tabId) !== pending)
+                return;
+            pendingPaces.delete(tabId);
+            reply(enabled ? { ok: true } : { ok: false, error: 'pace_stopped' });
+        }, 2000);
     })().catch(deny);
 }
-function settleDownloads() {
-    for (const [id, w] of downloadWaiters) {
-        clearTimeout(w.timer);
-        const name = pdf.claim(w.item);
-        w.suggest(name ? { filename: name, conflictAction: 'uniquify' } : undefined);
-        downloadWaiters.delete(id);
-    }
+function releaseHandoff(nonce) {
+    const h = handoffReleases.get(nonce);
+    if (!h)
+        return;
+    handoffReleases.delete(nonce);
+    clearTimeout(h.timer);
+    void chrome.tabs.sendMessage(h.tabId, { type: 'pdf_release', nonce, token: h.token }).catch(() => { });
 }
+function releaseAllHandoffs() {
+    for (const nonce of [...handoffReleases.keys()])
+        releaseHandoff(nonce);
+}
+const currentPdf = p => !!p && enabled && p.epoch === epoch && pdf.pending === p && !p.cancelled;
+async function cancelOwnedDownload(id) { if (!Number.isInteger(id) || id < 0)
+    return; try {
+    await chrome.downloads.cancel(id);
+}
+catch { } }
+function discardPdf(p) { if (pdf.pending === p)
+    pdf.clear(); if (p?.nonce)
+    releaseHandoff(p.nonce); }
+function abortPdf(message, sender, reply) { const p = pdf.pending; let allowed = false; try {
+    const proof = p?.proof;
+    const handoff = handoffReleases.get(message.nonce);
+    // Cancellation acts only on the already bound download. Navigation may
+    // have changed the current route before MAIN's pagehide message arrives.
+    allowed = sender.id === chrome.runtime.id && enabled && p?.nonce === message.nonce && p.ownerToken === message.ownerToken && message.ownerToken === token && p.tabId === sender.tab?.id && p.epoch === epoch && proof?.stream === 'news_reports' && proof.token === token && proof.epoch === epoch && handoff?.pending === p && handoff.proof === proof && handoff.tabId === p.tabId && handoff.token === token;
+}
+catch { } if (!allowed) {
+    reply({ ok: false, error: 'pdf_abort_denied' });
+    return;
+} p.cancelled = true; if (p.downloadId !== null) {
+    void cancelOwnedDownload(p.downloadId);
+    discardPdf(p);
+}
+else
+    releaseHandoff(p.nonce); void store({ pdfState: 'handoff_aborted' }); reply({ ok: true }); }
+async function finishPdf(item, expected = pdf.pending) { if (!currentPdf(expected))
+    return; const pending = expected, pair = pdf.complete(item || {}); if (!pair) {
+    if (item?.id === pending.downloadId && item.state === 'complete') {
+        discardPdf(pending);
+        await store({ pdfState: 'filename_unverified' });
+    }
+    return;
+} if (pair.nonce)
+    releaseHandoff(pair.nonce); if (!enabled || !port || pending.cancelled || pending.epoch !== epoch)
+    return; try {
+    await request('pdf', { item_id: pair.item_id, ticket: pair.ticket, download_name: pair.download_name });
+    if (enabled && pending.epoch === epoch && !pending.cancelled && !pdf.pending)
+        await store({ pdfState: 'saved' });
+}
+catch {
+    if (enabled && pending.epoch === epoch && !pending.cancelled && !pdf.pending)
+        await store({ pdfState: 'native_failed' });
+} }
 function scheduleNext() {
     clearTimeout(nextTimer);
     nextTimer = null;
@@ -110,8 +165,10 @@ async function connect() {
         port = null;
         cancelPaces();
         activeJobs.clear();
+        if (pdf.pending)
+            pdf.pending.cancelled = true;
         pdf.clear();
-        settleDownloads();
+        releaseAllHandoffs();
         for (const p of requests.values()) {
             clearTimeout(p.timer);
             p.reject(Error('disconnected'));
@@ -276,23 +333,81 @@ async function laneRun(lane, tab, runEpoch) {
                 if (pdf.pending)
                     break;
                 reportAttempts.set(item.id, Date.now());
-                const ticket = await request('pdf_begin', { item_id: item.id });
-                pdf.begin({ ...ticket, item_id: item.id });
-                const clicked = await command(tab.id, { type: 'pdf_click', title: item.title, token });
-                if (!clicked.ok || !clicked.observed_url) {
-                    pdfUnverified = true;
-                    pdf.clear();
-                    settleDownloads();
+                let ticket;
+                try {
+                    ticket = await request('pdf_begin', { item_id: item.id });
                 }
-                else {
-                    pdf.expect(clicked.observed_url);
-                    settleDownloads();
+                catch {
+                    await store({ pdfState: 'native_failed' });
+                    throw Error('pdf_native_failed');
+                }
+                const nonce = crypto.randomUUID().replaceAll('-', '');
+                pdf.begin({ ...ticket, item_id: item.id, direct: true, nonce, tabId: tab.id, ownerToken: token, epoch: runEpoch, proof, cancelled: false });
+                const pending = pdf.pending;
+                handoffReleases.set(nonce, { tabId: tab.id, token, proof, pending, timer: null });
+                await store({ pdfState: 'waiting_hook' });
+                const clicked = await command(tab.id, { type: 'pdf_click', title: item.title, token, nonce });
+                if (!currentPdf(pending)) {
+                    pdfUnverified = true;
+                    discardPdf(pending);
                     break;
                 }
+                if (!clicked.ok || !clicked.observed_url || clicked.nonce !== nonce) {
+                    pdfUnverified = true;
+                    discardPdf(pending);
+                    await store({ pdfState: clicked.reason === 'hook_not_ready' ? 'hook_not_ready' : 'url_unverified' });
+                    continue;
+                }
+                try {
+                    pdf.expect(clicked.observed_url);
+                    await store({ pdfState: 'starting' });
+                    if (!currentPdf(pending)) {
+                        pdfUnverified = true;
+                        discardPdf(pending);
+                        break;
+                    }
+                    const downloadId = await chrome.downloads.download({ url: clicked.observed_url, filename: 'SaveTicker/' + ticket.download_name, saveAs: false, conflictAction: 'uniquify' });
+                    if (!currentPdf(pending)) {
+                        await cancelOwnedDownload(downloadId);
+                        discardPdf(pending);
+                        pdfUnverified = true;
+                        break;
+                    }
+                    pdf.bind(downloadId);
+                    await store({ pdfState: 'downloading' });
+                    if (!currentPdf(pending)) {
+                        await cancelOwnedDownload(downloadId);
+                        discardPdf(pending);
+                        pdfUnverified = true;
+                        break;
+                    }
+                    const h = handoffReleases.get(nonce);
+                    if (h)
+                        h.timer = setTimeout(() => releaseHandoff(nonce), 5000);
+                    const [actual] = await chrome.downloads.search({ id: downloadId });
+                    if (!currentPdf(pending))
+                        break;
+                    if (actual?.state === 'complete')
+                        await finishPdf(actual, pending);
+                    else if (actual?.state === 'interrupted') {
+                        discardPdf(pending);
+                        await store({ pdfState: 'download_interrupted' });
+                    }
+                }
+                catch {
+                    pdfUnverified = true;
+                    if (currentPdf(pending)) {
+                        discardPdf(pending);
+                        await store({ pdfState: 'download_start_failed' });
+                    }
+                    else
+                        discardPdf(pending);
+                }
+                break;
             }
         }
         const status = saved.status === 'auth_required' || capture.status === 'auth_required' ? 'auth_required' : saved.status === 'error' || capture.status === 'error' ? 'error' : saved.status || capture.status;
-        failed = status === 'error';
+        failed = status === 'error' || pdfUnverified;
         const update = { ['lane_' + lane]: pdfUnverified ? 'PDF 연결 미확인 · 일부 범위' : status === 'auth_required' ? '사용자 확인 필요' : status === 'error' ? '선택 확인 실패' : Number(saved.count) > 0 ? '수집됨 · 일부 범위' : '항목 미확인 · 일부 범위', lastAttempt: Date.now() };
         if (Number(saved.count) > 0 && ['ok', 'partial'].includes(status))
             update.lastCollected = Date.now();
@@ -302,6 +417,13 @@ async function laneRun(lane, tab, runEpoch) {
     }
     catch (error) {
         failed = true;
+        if (view.stream === 'news_reports' && pdf.pending?.proof === proof) {
+            const nonce = pdf.pending.nonce;
+            pdf.clear();
+            if (nonce)
+                releaseHandoff(nonce);
+            await store({ pdfState: 'url_unverified' });
+        }
         const code = error?.message === 'lane_busy' ? 'lane_busy' : failureCode;
         if (job && !consumed && port && enabled && runEpoch === epoch) {
             try {
@@ -380,8 +502,10 @@ async function control(action) {
         nextTimer = null;
         await store({ enabled: false, connection: '중지됨' });
         await chrome.alarms.clear('saveticker');
+        if (pdf.pending)
+            pdf.pending.cancelled = true;
         pdf.clear();
-        settleDownloads();
+        releaseAllHandoffs();
         const oldPort = port;
         port = null;
         for (const p of requests.values()) {
@@ -403,6 +527,10 @@ async function control(action) {
     void tick();
 }
 chrome.runtime.onMessage.addListener((message, sender, reply) => {
+    if (message.type === 'pdf_abort') {
+        abortPdf(message, sender, reply);
+        return true;
+    }
     if (message.type === 'pace') {
         pace(message, sender, reply);
         return true;
@@ -429,39 +557,19 @@ const restore = async (present = false) => {
 chrome.runtime.onStartup.addListener(() => restore(true));
 chrome.runtime.onInstalled.addListener(() => restore(false));
 void restore();
-chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
-    if (!pdf.pending) {
-        suggest();
-        return;
-    }
-    const name = pdf.claim(item);
-    if (name) {
-        suggest({ filename: name, conflictAction: 'uniquify' });
-        return;
-    }
-    if (pdf.pending.expectedUrl || downloadWaiters.size >= 8) {
-        suggest();
-        return;
-    }
-    const timer = setTimeout(() => { downloadWaiters.delete(item.id); suggest(); }, 6000);
-    downloadWaiters.set(item.id, { item, suggest, timer });
-    return true;
-});
-chrome.downloads.onChanged.addListener(async (delta) => {
-    if (delta.state?.current === 'interrupted' && pdf.pending?.downloadId === delta.id) {
-        pdf.clear();
-        return;
-    }
-    if (delta.state?.current !== 'complete')
-        return;
+// Direct download API supplies the issued filename; never rename unrelated downloads.
+chrome.downloads.onDeterminingFilename.addListener((_item, suggest) => suggest());
+chrome.downloads.onChanged.addListener(async (delta) => { const pending = pdf.pending; if (!currentPdf(pending) || delta.id !== pending.downloadId)
+    return; if (delta.state?.current === 'interrupted') {
+    discardPdf(pending);
+    await store({ pdfState: 'download_interrupted' });
+    return;
+} if (delta.state?.current !== 'complete')
+    return; try {
     const [item] = await chrome.downloads.search({ id: delta.id });
-    const pair = pdf.complete(item || {});
-    if (pair && enabled && port) {
-        try {
-            await request('pdf', { item_id: pair.item_id, ticket: pair.ticket, download_name: pair.download_name });
-        }
-        catch {
-            await store({ lane_background: 'PDF 저장 확인 실패' });
-        }
-    }
-});
+    await finishPdf(item, pending);
+}
+catch {
+    if (currentPdf(pending))
+        await store({ pdfState: 'native_failed' });
+} });

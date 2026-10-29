@@ -76,3 +76,8 @@ MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA3WeKbuemZizg+F+9q1VmyQPIJ639KzMlycxI
 - Content 대기는 고정2초 내부 pace 메시지로만 처리한다. caller 확장 ID·소유 tab/token·enabled·동시 제한을 확인하고 stop/disconnect 때 pending reply를 취소한다. auth/검증 실패 시 저장하지 않는 조건 유지.
 - 시작/재개·Chrome 시작·새 전용 창은 소유 창을1회 표시할 수 있다. 기존 사용자 창을 focus하지 않으며 일반 주기/MV3 idle 복원은 focus하지 않는다.
 - reports 선택이 /news?label_group=7로 이동하며 hash를 지운다. 발급된 뉴스 작업의 tab/token/epoch/page 증명을 가진 동안에만 exact source query와 빈 hash를 수리한다. 작업 종료 뒤/다른 tab·origin·path·query·hash에는 적용하지 않는다.
+
+### 1.0.6 범위 제한과 PDF 연결
+- 누적 뉴스 body 전체 복제를 제거하고 stream별 실제 카드/일정 그룹을 읽는다. 뉴스100카드·512KiB/프레임·3프레임, 상세256KiB, 일정1MiB 한 프레임 제한. 크기 초과 상세는 pending을 유지한다. 캘린더는 실제 같은 달 행/명시적 빈 상태를 기다리며 parser도 다른 달을 거절한다. 모두 partial이다.
+- same-site 정적 MAIN 도우미는 정확한 nonce의 PDF 버튼 클릭 후15초간 same-origin blob 앵커를 전달한다. 사용자 조작·복수 후보·이동·만료는 취소하고 자신의 wrapper만 복원한다. 요청·인증정보·앱 내부 상태를 관찰하지 않는다.
+- downloads.download의 반환 ID만 연결하고 원래 발급 파일명·Native ticket·실제 PDF를 검사한다. 늦은 취소/중지/응답이 다음 작업을 저장하지 않도록 pending 객체와 epoch를 검증한다. 실제 사이트 PDF 성공은 별도 실기로 증명한다.

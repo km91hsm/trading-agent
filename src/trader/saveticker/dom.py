@@ -186,7 +186,7 @@ def _calendar(soup, month: str) -> list[Item]:
     result = []
     for heading in soup.select("h3"):
         day = re.fullmatch(r"(\d+)월 (\d+)일 .요일", text(heading))
-        if not day:
+        if not day or int(day[1]) != int(month[5:7]):
             continue
         for n in heading.parent.select("[data-stretched-link-card]"):
             title = text(n.select_one("h4"))

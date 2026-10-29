@@ -1,6 +1,18 @@
 // Isolated-world DOM collector. No credentials, requests or cookie access.
 (() => {
     let collectionToken = null;
+    const pdfHandoffs = new Map(), PDF_CHANNEL = 'trader-saveticker-pdf';
+    function releasePdf(nonce) {
+        for (const b of document.querySelectorAll('button[data-trader-pdf-nonce]'))
+            if (b.getAttribute('data-trader-pdf-nonce') === nonce)
+                b.removeAttribute('data-trader-pdf-nonce');
+        const listener = pdfHandoffs.get(nonce);
+        if (listener) {
+            window.removeEventListener('message', listener);
+            pdfHandoffs.delete(nonce);
+        }
+        window.postMessage({ channel: PDF_CHANNEL, type: 'release', nonce }, location.origin);
+    }
     const pause = async () => {
         if (typeof chrome.runtime.sendMessage !== 'function')
             return new Promise(r => setTimeout(r, 2000));
@@ -84,6 +96,40 @@
         }
         return clone.outerHTML;
     }
+    const byteLength = value => new TextEncoder().encode(value).length;
+    function boundedNodes(nodes, start, end, limit, max = 100) { let result = start, count = 0, size = byteLength(start + end); for (const node of nodes) {
+        if (count >= max)
+            break;
+        if (!visible(node, true))
+            continue;
+        const value = clean(node), n = byteLength(value);
+        if (n > limit - size)
+            continue;
+        result += value;
+        size += n;
+        count++;
+    } return result + end; }
+    function calendarData(v) { const wanted = Number(v.month.slice(5, 7)); const headers = [...document.querySelectorAll('h3')].filter(n => visible(n, true) && /^(\d{1,2})월\s+\d{1,2}일\s+.+요일$/.test(text(n))); const matching = headers.filter(n => Number(text(n).match(/^(\d+)/)[1]) === wanted); const empty = [...document.querySelectorAll('p,span,div')].some(n => visible(n, true) && text(n) === '이 달에 일정이 없어요'); return { ready: headers.length > 0 ? matching.length === headers.length : empty, groups: [...new Set(matching.map(n => n.parentElement))], empty: headers.length === 0 && empty }; }
+    function frame(v) { if (v.stream === 'news_all')
+        return boundedNodes([...document.querySelectorAll('#news-tabpanel [data-read][role="button"][aria-label]')], '<section id="news-tabpanel">', '</section>', 512 * 1024, 100); if (v.stream === 'news_reports') {
+        const groups = [];
+        for (const button of document.querySelectorAll('button[aria-label="PDF 다운로드"]')) {
+            if (!visible(button, true))
+                continue;
+            for (let n = button.parentElement; n && n !== document.body; n = n.parentElement) {
+                if (n.querySelectorAll('button[aria-label="PDF 다운로드"]').length === 1 && /^\d{4}년 \d{1,2}월 \d{1,2}일 \(.+\)$/.test(text(n.querySelector('p')))) {
+                    groups.push(n);
+                    break;
+                }
+            }
+        }
+        return boundedNodes([...new Set(groups)], '<section>', '</section>', 512 * 1024, 100);
+    } if (v.month) {
+        const data = calendarData(v);
+        if (data.empty)
+            return '<section><p>이 달에 일정이 없어요</p></section>';
+        return boundedNodes(data.groups, '<section>', '</section>', 1024 * 1024, 500);
+    } return clean(document.body); }
     function selection(v) {
         const result = { loaded: document.readyState === 'complete' && !auth(), visible: document.visibilityState === 'visible' };
         if (v.source)
@@ -243,14 +289,24 @@
                 if (!verified(v, s))
                     throw Error('selection_unverified');
             }
-            const frames = [clean(document.body)];
-            for (let i = 0; i < Math.min(2, limits.max_scrolls); i++) {
+            if (v.month) {
+                try {
+                    await waitControl(() => calendarData(v).ready, budget);
+                }
+                catch (error) {
+                    if (auth() || error?.message === 'pace_stopped')
+                        throw error;
+                    throw Error('calendar_rows_unverified');
+                }
+            }
+            const frames = [frame(v)];
+            for (let i = 0; !v.month && i < Math.min(2, limits.max_scrolls); i++) {
                 await scroll();
                 if (auth())
                     throw Error('auth_required');
                 if (!verified(v, selection(v)))
                     throw Error('selection_unverified');
-                frames.push(clean(document.body));
+                frames.push(frame(v));
             }
             html = frames.join('\n');
             if (v.stream === 'news_all') {
@@ -269,8 +325,11 @@
                                     panel = n;
                                     break;
                                 }
-                        if (panel)
-                            details.push({ title, html: clean(panel) });
+                        if (panel) {
+                            const detailHtml = clean(panel);
+                            if (byteLength(detailHtml) <= 256 * 1024)
+                                details.push({ title, html: detailHtml });
+                        }
                     }
                     const close = find('닫기') || find('Close');
                     if (close)
@@ -291,11 +350,11 @@
                 throw Error('selection_unverified');
             if (new TextEncoder().encode(html + details.map(x => x.html).join('')).length > 4 * 1024 * 1024)
                 return { page_url, html: '', selection: s, status: 'error', reason: 'snapshot_too_large' };
-            return { page_url, html, details, selection: s, tab: v.tab, regular: v.regular, month: v.month, status: 'partial', reason: 'scroll_limit' };
+            return { page_url, html, details, selection: s, tab: v.tab, regular: v.regular, month: v.month, status: 'partial', reason: v.month ? (calendarData(v).empty ? 'empty' : 'partial') : 'scroll_limit' };
         }
         catch (e) {
             s = selection(v);
-            return { page_url, html: '', selection: s, status: auth() ? 'auth_required' : 'error', reason: auth() ? 'verification_required' : 'selection_unverified' };
+            return { page_url, html: '', selection: s, status: auth() ? 'auth_required' : 'error', reason: auth() ? 'verification_required' : e?.message === 'calendar_rows_unverified' ? 'calendar_rows_unverified' : 'selection_unverified' };
         }
     }
     chrome.runtime.onMessage.addListener((message, sender, reply) => {
@@ -316,53 +375,81 @@
             collect(message.job).then(reply).finally(() => { busy = false; });
             return true;
         }
+        if (message.type === 'pdf_release') {
+            if (/^[a-f0-9]{32}$/.test(message.nonce || ''))
+                releasePdf(message.nonce);
+            reply({ ok: true });
+            return;
+        }
         if (message.type === 'pdf_click') {
+            const nonce = message.nonce;
+            if (!/^[a-f0-9]{32}$/.test(nonce || '')) {
+                reply({ ok: false });
+                return;
+            }
             const buttons = [...document.querySelectorAll('button[aria-label="PDF 다운로드"]')];
             const match = buttons.find(button => {
-                let n = button.parentElement;
-                for (let i = 0; n && i < 7; i++, n = n.parentElement) {
+                for (let n = button.parentElement, i = 0; n && i < 7; n = n.parentElement, i++)
                     if (n.querySelectorAll('button[aria-label="PDF 다운로드"]').length === 1 && text(n).includes(message.title))
                         return true;
-                }
                 return false;
             });
-            if (match && !auth()) {
-                // Only a programmatic anchor click produced in this owned tab can identify
-                // the button's download. An opaque direct download remains unverified.
-                let finished = false;
-                const urls = new Set();
-                const observe = e => {
-                    const a = e.target.closest?.('a[href]');
-                    if (a && !e.isTrusted) {
-                        try {
-                            const u = new URL(a.href);
-                            if ((u.protocol === 'blob:' && u.origin === location.origin) || (u.protocol === 'https:' && u.origin === location.origin))
-                                urls.add(u.href);
-                        }
-                        catch { }
+            if (!match || auth()) {
+                reply({ ok: false });
+                return;
+            }
+            let ready = false, aborted = false;
+            const candidates = [];
+            const listener = event => {
+                if (event.source !== window || event.origin !== location.origin || event.data?.channel !== PDF_CHANNEL || event.data.nonce !== nonce)
+                    return;
+                const data = event.data;
+                if (data.type === 'ready')
+                    ready = true;
+                if (data.type === 'aborted') {
+                    aborted = true;
+                    if (typeof chrome.runtime.sendMessage === 'function')
+                        void Promise.resolve(chrome.runtime.sendMessage({ type: 'pdf_abort', nonce, ownerToken: collectionToken })).catch(() => { });
+                }
+                if (data.type === 'candidate') {
+                    try {
+                        if (typeof data.url !== 'string' || data.url.length > 2048)
+                            throw Error('pdf_unverified');
+                        const u = new URL(data.url);
+                        if (u.protocol === 'blob:' && u.origin === location.origin)
+                            candidates.push(u.href);
+                        else
+                            aborted = true;
                     }
-                };
-                document.addEventListener('click', observe, true);
-                match.click();
-                const finish = cancelled => {
-                    if (finished)
-                        return;
-                    finished = true;
-                    document.removeEventListener('click', observe, true);
-                    reply(!cancelled && urls.size === 1 ? { ok: true, observed_url: [...urls][0] } : { ok: false, reason: 'pdf_unverified' });
-                };
-                (async () => { try {
+                    catch {
+                        aborted = true;
+                    }
+                }
+            };
+            match.setAttribute('data-trader-pdf-nonce', nonce);
+            pdfHandoffs.set(nonce, listener);
+            window.addEventListener('message', listener);
+            window.postMessage({ channel: PDF_CHANNEL, type: 'arm', nonce }, location.origin);
+            (async () => {
+                let reason = 'hook_not_ready';
+                try {
+                    await pause();
+                    if (!ready || aborted || auth())
+                        throw Error('pdf_unverified');
+                    reason = 'url_unverified';
+                    match.click();
                     await pause();
                     await pause();
-                    finish(false);
+                    if (aborted || candidates.length !== 1)
+                        throw Error('pdf_unverified');
+                    reply({ ok: true, observed_url: candidates[0], nonce });
                 }
                 catch {
-                    finish(true);
-                } })();
-                return true;
-            }
-            else
-                reply({ ok: false });
+                    releasePdf(nonce);
+                    reply({ ok: false, reason });
+                }
+            })();
+            return true;
         }
     });
 })();

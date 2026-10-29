@@ -1,21 +1,66 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 const event = () => { const listeners = []; return { listeners, addListener: f => listeners.push(f) }; };
-test('issued owned report job repairs only exact hashless report route through pacing and PDF completion', async () => { const state = { enabled: false, ownerToken: 'owner', ownedWindowId: 7 }, messages = event(), calls = [], repairs = []; const view = { stream: 'news_reports', kind: 'news', source: 'SAVE 리포트', url: 'https://www.saveticker.com/news', interval_s: 900 }, tab = { id: 8, url: view.url + '#trader-saveticker=owner:background', windowId: 7 }, name = 'a'.repeat(32) + '-1234567890123.pdf'; const realTimer = setTimeout; globalThis.setTimeout = (fn, delay, ...a) => realTimer(fn, delay === 2000 ? 0 : delay, ...a); const send = (url, id = 8) => new Promise(reply => messages.listeners[0]({ type: 'pace', ownerToken: 'owner' }, { id: 'ext', tab: { ...tab, id, url } }, reply)); globalThis.chrome = { storage: { local: { get: async () => ({ ...state }), set: async (v) => Object.assign(state, v) } }, runtime: { id: 'ext', onMessage: messages, onStartup: event(), onInstalled: event(), connectNative: () => { const p = { onMessage: event(), onDisconnect: event(), disconnect: () => { }, postMessage: m => { calls.push(m); let response = { ok: true, id: m.id, count: 20, status: 'partial' }; if (m.type === 'hello')
-                response.views = [view]; if (m.type === 'begin')
-                response = { ...response, job_id: 'job', view }; if (m.type === 'snapshot')
-                response.report_items = [{ id: 'report', title: 'Report', attachment_ok: false }]; if (m.type === 'pdf_begin')
-                response = { ...response, ticket: 'ticket', download_name: name }; queueMicrotask(() => p.onMessage.listeners.forEach(f => f(response))); } }; return p; } }, windows: { get: async () => ({ id: 7, state: 'normal' }), update: async () => { } }, tabs: { query: async () => [tab], update: async (id, opts) => { assert.equal(id, 8); if (opts.url) {
-            repairs.push(opts.url);
-            tab.url = opts.url;
-        } return tab; }, sendMessage: async (id, m) => { if (m.type === 'collect') {
-            assert.deepEqual(await send(view.url + '?label_group=7', 77), { ok: false, error: 'pace_denied' });
-            assert.deepEqual(await send(view.url + '?label_group=7#user'), { ok: false, error: 'pace_denied' });
-            assert.deepEqual(await send('https://example.com/news?label_group=7'), { ok: false, error: 'pace_denied' });
-            assert.deepEqual(await send('https://www.saveticker.com/community'), { ok: false, error: 'pace_denied' });
-            assert.deepEqual(await send(view.url + '?label_group=8'), { ok: false, error: 'pace_denied' });
-            tab.url = view.url + '?label_group=7';
-            assert.deepEqual(await send(tab.url), { ok: true });
-            assert.equal(tab.url, view.url + '?label_group=7#trader-saveticker=owner:background');
-            return { page_url: view.url, html: '<body>Report</body>', selection: { loaded: true, source: view.source }, status: 'partial' };
-        } assert.equal(m.type, 'pdf_click'); assert.ok(tab.url.endsWith('#trader-saveticker=owner:background')); return { ok: true, observed_url: 'blob:https://www.saveticker.com/pdf' }; } }, alarms: { onAlarm: event(), create: async () => { }, clear: async () => { } }, downloads: { onDeterminingFilename: event(), onChanged: event(), search: async () => [{ id: 99, url: 'blob:https://www.saveticker.com/pdf', state: 'complete', filename: '/Downloads/SaveTicker/' + name }] } }; const worker = await import('../worker.js?markerrepair'); await new Promise(r => realTimer(r, 1)); state.enabled = true; await worker.tick(); assert.equal(repairs.length, 1); assert.equal(calls.filter(m => m.type === 'pdf_begin').length, 1); let suggestion; chrome.downloads.onDeterminingFilename.listeners[0]({ id: 99, url: 'blob:https://www.saveticker.com/pdf', mime: 'application/pdf', referrer: view.url + '?label_group=7', startTime: new Date().toISOString() }, s => suggestion = s); assert.equal(suggestion.filename, 'SaveTicker/' + name); await chrome.downloads.onChanged.listeners[0]({ id: 99, state: { current: 'complete' } }); assert.equal(calls.filter(m => m.type === 'pdf' && m.ticket === 'ticket').length, 1); assert.deepEqual(await send(view.url + '?label_group=7'), { ok: false, error: 'pace_denied' }, 'completed job provenance cannot adopt a hashless tab'); await new Promise(r => messages.listeners[0]({ action: 'stop' }, { id: 'ext' }, r)); globalThis.setTimeout = realTimer; });
+test('issued owned report job repairs only exact hashless report route through pacing and PDF completion', async () => {
+    const state = { enabled: false, ownerToken: 'owner', ownedWindowId: 7 }, messages = event(), calls = [], repairs = [];
+    const view = { stream: 'news_reports', kind: 'news', source: 'SAVE 리포트', url: 'https://www.saveticker.com/news', interval_s: 900 }, tab = { id: 8, url: view.url + '#trader-saveticker=owner:background', windowId: 7 }, name = 'a'.repeat(32) + '-1234567890123.pdf';
+    const realTimer = setTimeout;
+    globalThis.setTimeout = (fn, delay, ...a) => realTimer(fn, delay === 2000 ? 0 : delay, ...a);
+    const send = (url, id = 8) => new Promise(reply => messages.listeners[0]({ type: 'pace', ownerToken: 'owner' }, { id: 'ext', tab: { ...tab, id, url } }, reply));
+    globalThis.chrome = { storage: { local: { get: async () => ({ ...state }), set: async (v) => Object.assign(state, v) } }, runtime: { id: 'ext', onMessage: messages, onStartup: event(), onInstalled: event(), connectNative: () => {
+                const p = { onMessage: event(), onDisconnect: event(), disconnect: () => { }, postMessage: m => {
+                        calls.push(m);
+                        let response = { ok: true, id: m.id, count: 20, status: 'partial' };
+                        if (m.type === 'hello')
+                            response.views = [view];
+                        if (m.type === 'begin')
+                            response = { ...response, job_id: 'job', view };
+                        if (m.type === 'snapshot')
+                            response.report_items = [{ id: 'report', title: 'Report', attachment_ok: false }];
+                        if (m.type === 'pdf_begin')
+                            response = { ...response, ticket: 'ticket', download_name: name };
+                        queueMicrotask(() => p.onMessage.listeners.forEach(f => f(response)));
+                    } };
+                return p;
+            } }, windows: { get: async () => ({ id: 7, state: 'normal' }), update: async () => { } }, tabs: { query: async () => [tab], update: async (id, opts) => {
+                assert.equal(id, 8);
+                if (opts.url) {
+                    repairs.push(opts.url);
+                    tab.url = opts.url;
+                }
+                return tab;
+            }, sendMessage: async (id, m) => {
+                if (m.type === 'collect') {
+                    assert.deepEqual(await send(view.url + '?label_group=7', 77), { ok: false, error: 'pace_denied' });
+                    assert.deepEqual(await send(view.url + '?label_group=7#user'), { ok: false, error: 'pace_denied' });
+                    assert.deepEqual(await send('https://example.com/news?label_group=7'), { ok: false, error: 'pace_denied' });
+                    assert.deepEqual(await send('https://www.saveticker.com/community'), { ok: false, error: 'pace_denied' });
+                    assert.deepEqual(await send(view.url + '?label_group=8'), { ok: false, error: 'pace_denied' });
+                    tab.url = view.url + '?label_group=7';
+                    assert.deepEqual(await send(tab.url), { ok: true });
+                    assert.equal(tab.url, view.url + '?label_group=7#trader-saveticker=owner:background');
+                    return { page_url: view.url, html: '<body>Report</body>', selection: { loaded: true, source: view.source }, status: 'partial' };
+                }
+                if (m.type === 'pdf_release')
+                    return { ok: true };
+                assert.equal(m.type, 'pdf_click');
+                assert.ok(tab.url.endsWith('#trader-saveticker=owner:background'));
+                return { ok: true, observed_url: 'blob:https://www.saveticker.com/pdf', nonce: m.nonce };
+            } }, alarms: { onAlarm: event(), create: async () => { }, clear: async () => { } }, downloads: { download: async (opts) => { assert.equal(opts.url, 'blob:https://www.saveticker.com/pdf'); assert.equal(opts.filename, 'SaveTicker/' + name); await chrome.downloads.onChanged.listeners[0]({ id: 99, state: { current: 'complete' } }); return 99; }, onDeterminingFilename: event(), onChanged: event(), search: async () => [{ id: 99, url: 'blob:https://www.saveticker.com/pdf', state: 'complete', filename: '/Downloads/SaveTicker/' + name }] } };
+    const worker = await import('../worker.js?markerrepair');
+    await new Promise(r => realTimer(r, 1));
+    state.enabled = true;
+    await worker.tick();
+    assert.equal(repairs.length, 1);
+    assert.equal(calls.filter(m => m.type === 'pdf_begin').length, 1);
+    let suggestion;
+    chrome.downloads.onDeterminingFilename.listeners[0]({ id: 99, url: 'blob:https://www.saveticker.com/pdf', mime: 'application/pdf', referrer: view.url + '?label_group=7', startTime: new Date().toISOString() }, s => suggestion = s);
+    assert.equal(suggestion, undefined, 'global filename observer never claims a download');
+    assert.equal(calls.filter(m => m.type === 'pdf').length, 1, 'search after returned id catches completion-before-return race');
+    await chrome.downloads.onChanged.listeners[0]({ id: 777, state: { current: 'complete' } });
+    await chrome.downloads.onChanged.listeners[0]({ id: 99, state: { current: 'complete' } });
+    assert.equal(calls.filter(m => m.type === 'pdf' && m.ticket === 'ticket').length, 1);
+    assert.deepEqual(await send(view.url + '?label_group=7'), { ok: false, error: 'pace_denied' }, 'completed job provenance cannot adopt a hashless tab');
+    await new Promise(r => messages.listeners[0]({ action: 'stop' }, { id: 'ext' }, r));
+    globalThis.setTimeout = realTimer;
+});

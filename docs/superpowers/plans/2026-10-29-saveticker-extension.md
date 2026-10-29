@@ -66,3 +66,9 @@ Files: src/trader/saveticker/bridge_install.py, cli.py, automation.py, src/trade
 - 명시적 시작/재개·Chrome 시작·새 전용 창에만 소유 창을1회 표시한다. 일반 tick/MV3 idle 복원은 기존 창의 focus를 바꾸지 않는다. 최소화된 창은 쉰다.
 - 실기 리포트 출처 변경이 주소의 hash를 제거함을 확인. 이미 발급한 같은 tab/token/epoch 뉴스 작업과 정확한 source query, 빈 hash일 때만 소유 표시를 복원한다. 전역 재소유·다른 탭/경로/hash/query 수용 없음.
 - 확장44 tests 및 독립 리뷰 통과. frozen104 runtime/launcher 복원 완료; 다음 실제 Chrome 연결에서 frozen PID와 전체범위/PDF/여러주기 확인 필수.
+
+### 1.0.6 장시간 실행·PDF 보완 (실기 대기)
+- 1.0.5 frozen Native 프로세스가 AI 없이 5시간 이상 유지되고 초기 전체20개 stream·뉴스6회 갱신을 확인했다. 장시간 후 뉴스 전체 DOM 초과와 월 변경 지연 오류가 남았으며, 실제 PDF 첨부는0건이었다. 이를 완료로 간주하지 않는다.
+- 뉴스100카드/프레임512KiB·세 프레임, 리포트 카드만, 상세256KiB 제한으로 누적 DOM 전송을 줄였다. 캘린더는 스크롤 없이 실제 월별 행/명시적 빈 상태를 기다리고 parser도 다른 달 행을 거절한다.
+- 정적 same-site MAIN DOM 도우미가 nonce로 표시된 정확한 PDF 버튼 클릭 이후 최대15초간 same-origin blob 앵커를 전달한다. Chrome 다운로드 API가 반환한 ID만 ticket과 연결한다. 추가 Chrome 권한·쿠키·요청 관찰은 없다. 취소/중지/늦은 응답은 이전 작업을 저장하지 않아야 한다.
+- 1.0.6 후보 Python62개(격리된 실제 Chromium blob 전달 포함), Node69개 통과. 독립 검토에서 발견한 이동 후 취소 조건도 발급된 작업 객체·탭·nonce·token·epoch로 검증하도록 보완하고 회귀 검사를 추가했다. frozen 재빌드·실제 PDF·전체주기 재검증은 아직 미완료다.

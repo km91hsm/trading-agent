@@ -32,10 +32,14 @@ export class Scheduler {
         }
         return due[0];
     }
-    done(v, now, failed = false) { this.times.set(v.stream, now); if (failed)
-        this.retryAt.set(v.stream, now + 30000);
-    else
-        this.retryAt.delete(v.stream); this.hot = v.interval_s < 300 ? this.hot + 1 : 0; }
+    done(v, now, failed = false) {
+        this.times.set(v.stream, now);
+        if (failed)
+            this.retryAt.set(v.stream, now + 30000);
+        else
+            this.retryAt.delete(v.stream);
+        this.hot = v.interval_s < 300 ? this.hot + 1 : 0;
+    }
     block(l) { this.blocked.add(l); }
     resume() { this.blocked.clear(); }
 }
@@ -68,9 +72,11 @@ export class PdfPair {
             throw Error('pdf_url_unverified');
         this.pending.expectedUrl = url;
     }
+    bind(id) { if (!this.pending?.direct || !Number.isInteger(id) || id < 0 || this.pending.downloadId !== null)
+        throw Error('pdf_id'); this.pending.downloadId = id; }
     claim(item) {
         const p = this.pending;
-        if (!p || !p.expectedUrl || item.url !== p.expectedUrl || p.downloadId !== null)
+        if (!p || p.direct || !p.expectedUrl || item.url !== p.expectedUrl || p.downloadId !== null)
             return null;
         let u;
         try {

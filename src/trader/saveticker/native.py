@@ -43,6 +43,8 @@ REASONS = {
     "json_unverified",
     "empty",
     "pdf_failed",
+    "snapshot_too_large",
+    "calendar_rows_unverified",
 }
 
 
