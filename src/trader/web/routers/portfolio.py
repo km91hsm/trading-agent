@@ -36,7 +36,11 @@ def portfolio(
     deps = deps_of(request)
     with closing(deps.conn_factory()) as conn:
         snap = views.latest_positions(conn, acct.id, m)
-        views.attach_plans(conn, m, snap)
+        views.attach_plans(
+            conn, m, snap, account_id=acct.id,
+            stop_loss_pct=deps.settings.risk.stop_loss_pct,
+            excluded=deps.settings.excluded_tickers(m),
+        )  # fmt: skip
         if format == "csv":  # Phase 23 G: 보유 표만
             return csv_response((snap or {}).get("positions") or [], f"positions_{acct.id}_{m}.csv")
         return {
@@ -126,6 +130,8 @@ def overview(request: Request) -> dict:
             sector_of=sector_of,
             hedge_tickers=hedge_tickers,
             sector_resolvers=resolvers,
+            stop_loss_pct=deps.settings.risk.stop_loss_pct,
+            excluded_tickers=deps.settings.excluded_tickers,
         )
 
 

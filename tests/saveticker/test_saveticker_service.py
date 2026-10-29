@@ -339,7 +339,13 @@ def test_news_plan_uses_whole_once_and_keeps_required_pdf_stream():
 
 def _route_login(api, html):
     p = api.sync_playwright().start()
-    browser = launch_or_skip(p)
+    try:
+        browser = launch_or_skip(p)
+    except BaseException:
+        # Chromium 미설치 skip 도 멈추고 나간다 — 돌던 이벤트 루프가 스레드에 남으면 뒤 테스트의
+        # Playwright·anyio 가 "이미 asyncio 실행 중" 으로 깨진다(CI 는 Chromium 이 없다)
+        p.stop()
+        raise
     page = browser.new_page()
     page.set_default_timeout(1000)
     page.route(

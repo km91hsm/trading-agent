@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { accountSubRows, liveSummary, mergeAccountRows, mergeHoldings, missingText, overviewRows, partialText, planCell, planCells } from "./overview";
+import { accountSubRows, liveSummary, mergeAccountRows, mergeHoldings, missingText, overviewRows, partialText, planCell, planCells, stopCell } from "./overview";
 import type { Overview, OverviewEnv } from "./types";
 
 const env = (nav: string, accounts: string[]): OverviewEnv => ({
@@ -54,6 +54,23 @@ describe("mergeHoldings (전체 검토 W4)", () => {
     const p = (qty: number, ev: string, acct: string) => ({ ticker: "005930", market: "KR", qty, avg_price: "1", current_price: "1", eval_amount: ev, accounts: [acct] });
     const [m] = mergeHoldings([p(10, "100", "paper-main"), p(5, "50", "real-main")]);
     expect(m).toMatchObject({ qty: 15, eval_amount: "150", accounts: ["paper-main", "real-main"] });
+  });
+});
+
+describe("stopCell — 실제 적용 손절선", () => {
+  it("결정 손절가는 꼬리표 없이, 바닥·기본값은 출처 꼬리표를 단다", () => {
+    expect(stopCell({ level: 95, source: "decision", dist_pct: -0.05 }, "KR")).toEqual({ text: "95원 (-5.0%)", term: null, cls: "dn" });
+    expect(stopCell({ level: 92, source: "floor", dist_pct: -0.08 }, "KR")).toMatchObject({ term: "stop.floor" });
+    expect(stopCell({ level: 85, source: "default", dist_pct: -0.15 }, "KR")).toMatchObject({ term: "stop.default", text: "85원 (-15.0%)" });
+  });
+  it("손절선이 없으면 null", () => {
+    expect(stopCell(null, "KR")).toBeNull();
+    expect(stopCell(undefined, "KR")).toBeNull();
+  });
+  it("mergeHoldings 는 더 낮은(늦게 걸리는) 손절선을 남긴다", () => {
+    const p = (lvl: number, acct: string) => ({ ticker: "005930", market: "KR", qty: 1, avg_price: "1", current_price: "1", eval_amount: "1", accounts: [acct], stop: { level: lvl, source: "decision" as const, dist_pct: null } });
+    expect(mergeHoldings([p(95, "paper-main"), p(90, "real-main")])[0].stop!.level).toBe(90);
+    expect(mergeHoldings([p(90, "paper-main"), p(95, "real-main")])[0].stop!.level).toBe(90);
   });
 });
 

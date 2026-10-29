@@ -378,6 +378,62 @@ def test_portfolio_position_plan_distances(client, conn):
     assert by["000660"]["plan"] is None
 
 
+def test_portfolio_effective_stop(client, conn):
+    """보유 행의 `stop` 은 모니터가 실제로 쓰는 손절선이다: 결정 손절가, 보유 중 손절 바닥이 더
+    높으면 그것, 둘 다 없으면 평단 × (1 + stop_loss_pct)."""
+    _snap(conn, "paper-main", "KR", "005930", 2, "90", "100", "1000", "800")
+    _snap(conn, "paper-main", "KR", "000660", 1, "100", "100", "1000", "800")
+    _snap(conn, "paper-main", "KR", "035420", 1, "100", "100", "1000", "800")
+    # 005930: 10-20 매수 체결 뒤 BUY 가 손절 바닥 92 를 남겼고 최신 HOLD 는 손절가를 비웠다
+    conn.execute(
+        "INSERT INTO orders(id, account_id, decision_id, market, ticker, side, qty, "
+        "order_type, price, status, mode, created_at) VALUES (1,'paper-main',NULL,'KR',"
+        "'005930','BUY',2,'LIMIT','90','filled','auto','2026-10-20T01:00:00+00:00')"
+    )
+    conn.execute(
+        "INSERT INTO fills(order_id, account_id, qty, price, filled_at) "
+        "VALUES (1,'paper-main',2,'90','2026-10-20T01:00:00+00:00')"
+    )
+    conn.execute(
+        "INSERT INTO decisions(date, market, ticker, action, json, stop_floor, created_at) "
+        "VALUES ('2026-10-20','KR','005930','BUY','{\"stop_loss\": 92}',92,"
+        "'2026-10-20T00:00:00+00:00')"
+    )
+    conn.execute(
+        "INSERT INTO decisions(date, market, ticker, action, json, created_at) "
+        "VALUES ('2026-10-24','KR','005930','HOLD','{\"horizon_days\": 5}',"
+        "'2026-10-24T00:00:00+00:00')"
+    )
+    # 000660: 결정 손절가 그대로
+    conn.execute(
+        "INSERT INTO decisions(date, market, ticker, action, json, created_at) "
+        "VALUES ('2026-10-24','KR','000660','BUY','{\"stop_loss\": 95}',"
+        "'2026-10-24T00:00:00+00:00')"
+    )
+    conn.commit()
+    r = client.get("/api/portfolio", params={"account_id": "paper-main", "market": "KR"}).json()
+    by = {p["ticker"]: p for p in r["snapshot"]["positions"]}
+    assert by["005930"]["plan"]["stop_loss"] is None  # 결정 원문은 비어 있어도
+    assert by["005930"]["stop"] == {
+        "level": 92.0,
+        "source": "floor",
+        "dist_pct": pytest.approx(-0.08),
+    }
+    assert by["000660"]["stop"]["source"] == "decision" and by["000660"]["stop"]["level"] == 95.0
+    # 035420: 결정 없음 → 평단 −15%
+    assert by["035420"]["plan"] is None
+    assert by["035420"]["stop"] == {
+        "level": 85.0,
+        "source": "default",
+        "dist_pct": pytest.approx(-0.15),
+    }
+
+    ov = client.get("/api/portfolio/overview").json()
+    rows = {p["ticker"]: p for p in ov["markets"]["KR"]["envs"]["paper"]["positions"]}
+    assert rows["005930"]["stop"]["source"] == "floor" and rows["005930"]["stop"]["level"] == 92.0
+    assert rows["035420"]["stop"]["source"] == "default"
+
+
 def test_portfolio_overview_per_market(client, conn):
     """Phase 24: 전체 계좌 합산은 시장(통화) × 모의/실전별. 보유·비중·섹터의 분모도 환경별."""
     _snap(conn, "paper-main", "KR", "005930", 2, "90", "100", "1000", "800")
@@ -416,7 +472,11 @@ def test_portfolio_overview_same_ticker_merged_within_env(client, conn):
     _snap(conn, "p2", "KR", "005930", 1, "120", "100", "500", "400")
     conn.commit()
     r = views.account_overview(
-        conn, [A("p1", "paper"), A("p2", "paper")], sector_of=None, hedge_tickers=lambda m: set()
+        conn,
+        [A("p1", "paper"), A("p2", "paper")],
+        sector_of=None,
+        hedge_tickers=lambda m: set(),
+        stop_loss_pct=-0.15,
     )
     (pos,) = r["markets"]["KR"]["envs"]["paper"]["positions"]
     assert pos["qty"] == 3 and Decimal(pos["avg_price"]) == Decimal("100")

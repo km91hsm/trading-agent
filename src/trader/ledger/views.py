@@ -117,17 +117,63 @@ def position_plan(decision: dict | None, current_price) -> dict | None:
     }
 
 
-def attach_plans(conn: sqlite3.Connection, market: str, snap: dict | None) -> None:
-    """스냅샷 보유 행에 `plan`·`weight`(평가/NAV) 와 하위 호환 `horizon`·`horizon_days` 를
-    붙인다."""
+def position_stop(
+    conn: sqlite3.Connection,
+    market: str,
+    account_id: str,
+    ticker: str,
+    *,
+    avg_price,
+    current_price,
+    decision: dict | None,
+    stop_loss_pct: float,
+) -> dict | None:
+    """보유 행의 **실제 적용 손절선** — 모니터와 같은 계산(`risk.stops.effective_stop`): 보유 묶음
+    시작 뒤 손절 바닥, 최근 결정 손절가, 평단 기본 손절 순. `plan.stop_loss` 는 결정 원문이라 HOLD
+    재분석이 비우면 빈칸이지만 모니터는 바닥·기본값으로 계속 감시한다. 근거가 없으면 None."""
+    from trader.risk.stops import effective_stop
+
+    since = repo.held_since(conn, account_id, [ticker]).get(ticker)
+    floor = repo.max_stop_since(conn, market, ticker, since)
+    try:
+        avg = Decimal(str(avg_price)) if avg_price not in (None, "") else None
+    except ArithmeticError:
+        avg = None
+    data = (decision or {}).get("data") or {}
+    level, source = effective_stop(data.get("stop_loss"), floor, avg, stop_loss_pct)
+    if level is None:
+        return None
+    return {"level": float(level), "source": source, "dist_pct": _dist(level, current_price)}
+
+
+def attach_plans(
+    conn: sqlite3.Connection,
+    market: str,
+    snap: dict | None,
+    *,
+    account_id: str,
+    stop_loss_pct: float,
+    excluded: set[str] | frozenset[str] = frozenset(),
+) -> None:
+    """스냅샷 보유 행에 `plan`·`stop`(실제 적용 손절선)·`weight`(평가/NAV) 와 하위 호환
+    `horizon`·`horizon_days` 를 붙인다. `excluded`(헤지·현금 ETF)는 모니터가 손절하지 않으므로
+    `stop` 이 None."""
     if not snap:
         return
     nav = Decimal(str(snap.get("nav") or 0))
     for p in snap.get("positions") or []:
-        plan = position_plan(
-            repo.latest_decision(conn, market, p["ticker"]), p.get("current_price")
-        )
+        latest = repo.latest_decision(conn, market, p["ticker"])
+        plan = position_plan(latest, p.get("current_price"))
         p["plan"] = plan
+        p["stop"] = (
+            None
+            if p["ticker"] in excluded
+            else position_stop(
+                conn, market, account_id, p["ticker"], avg_price=p.get("avg_price"),
+                current_price=p.get("current_price"), decision=latest,
+                stop_loss_pct=stop_loss_pct,
+            )
+        )  # fmt: skip
         p["horizon_days"] = plan["horizon_days"] if plan else None
         p["horizon"] = plan["horizon"] if plan else None
         ev = Decimal(str(p.get("eval_amount") or 0))
@@ -149,6 +195,9 @@ def _env_block(
     market: str,
     sector_of: Callable[[str], str | None] | None,
     hedge: set[str],
+    *,
+    stop_loss_pct: float,
+    excluded: set[str],
 ) -> dict:
     """한 시장·한 환경(모의|실전) 계좌들의 합산: NAV·현금·평가손익·보유(같은 종목 합침, 수량 가중
     평단)·섹터 비중. 비중·섹터의 분모는 이 환경의 NAV 뿐이다."""
@@ -182,8 +231,10 @@ def _env_block(
                     "eval": Decimal(0),
                     "current_price": p["current_price"],
                     "accounts": [],
+                    "lots": [],
                 },
             )
+            g["lots"].append((a.id, p["avg_price"]))
             g["qty"] += qty
             g["cost"] += avg * qty
             g["eval"] += ev
@@ -194,7 +245,22 @@ def _env_block(
     for g in sorted(merged.values(), key=lambda g: -g["eval"]):
         avg = g["cost"] / g["qty"] if g["qty"] else Decimal(0)
         pnl = g["eval"] - g["cost"]
-        plan = position_plan(repo.latest_decision(conn, market, g["ticker"]), g["current_price"])
+        latest = repo.latest_decision(conn, market, g["ticker"])
+        plan = position_plan(latest, g["current_price"])
+        # 계좌마다 보유 시작일·평단이 달라 손절선이 다를 수 있다 — 가장 낮은(가장 늦게 걸리는) 것
+        stops = (
+            []
+            if g["ticker"] in excluded
+            else [
+                st
+                for acct_id, lot_avg in g["lots"]
+                if (st := position_stop(
+                    conn, market, acct_id, g["ticker"], avg_price=lot_avg,
+                    current_price=g["current_price"], decision=latest,
+                    stop_loss_pct=stop_loss_pct,
+                )) is not None
+            ]
+        )  # fmt: skip
         positions.append(
             {
                 "ticker": g["ticker"],
@@ -208,6 +274,7 @@ def _env_block(
                 "weight": float(g["eval"] / nav) if nav > 0 else None,
                 "accounts": g["accounts"],
                 "plan": plan,
+                "stop": min(stops, key=lambda st: st["level"]) if stops else None,
                 # 계좌 표(`attach_plans`)와 같은 최상위 필드 — 보유기간 열이 읽는다
                 "horizon_days": plan["horizon_days"] if plan else None,
                 "horizon": plan["horizon"] if plan else None,
@@ -238,6 +305,8 @@ def account_overview(
     sector_of: Callable[[str, str], str | None] | None,
     hedge_tickers: Callable[[str], set[str]],
     sector_resolvers: dict[str, Callable[[str], str | None]] | None = None,
+    stop_loss_pct: float,
+    excluded_tickers: Callable[[str], set[str]] | None = None,
 ) -> dict:
     """전체 계좌 합산(Phase 24). 통화가 달라 시장별로, 가짜 돈과 진짜 돈이라 모의·실전(env)별로만
     더한다(PRODUCT.md 원칙 3) — 보유·비중·섹터의 분모도 환경별 NAV. `markets[시장].envs[env]` 가
@@ -263,7 +332,15 @@ def account_overview(
         hedge = hedge_tickers(m)
         out["markets"][m] = {
             "envs": {
-                env: _env_block(conn, by_env[env], m, smap, hedge)
+                env: _env_block(
+                    conn,
+                    by_env[env],
+                    m,
+                    smap,
+                    hedge,
+                    stop_loss_pct=stop_loss_pct,
+                    excluded=set(excluded_tickers(m)) if excluded_tickers else hedge,
+                )  # fmt: skip
                 for env in ("paper", "real")
                 if env in by_env
             }
