@@ -17,6 +17,7 @@ from trader.saveticker import credentials_path, home
 from trader.saveticker.dom import months_between
 from trader.saveticker.models import Capture
 from trader.saveticker.service import View, build_views, choose_due, collect_cycle, lane_for
+from trader.saveticker.session import serialized_login, session_context
 from trader.saveticker.store import Store, atomic_json
 
 app = typer.Typer(help="SaveTicker 브라우저 수집·파일 조회", no_args_is_help=True)
@@ -122,20 +123,6 @@ def select_views(
     return views
 
 
-LOGIN_LOCK = "login.lock"
-LOGIN_LOCK_WAIT_S = 300  # 다른 작업의 로그인을 기다리는 최대 시간
-
-
-def serialized_login(adapter, runtime: Path) -> None:
-    """작업(lane)들이 동시에 로그인하지 않게 같은 잠금 파일로 한 번에 하나씩 — 네 창 동시 로그인이
-    사이트 재확인을 부르던 문제(2026-10-29). 앞 작업이 로그인하면 세션 쿠키가 있어도 창마다 따로라
-    각자 로그인은 하되 겹치지 않는다."""
-    from trader.platform import filelock
-
-    with filelock.locked(runtime / LOGIN_LOCK, timeout=LOGIN_LOCK_WAIT_S, poll_s=0.5):
-        adapter.login()
-
-
 def plan_lanes(planned: list[View], skip: str | None) -> list[str]:
     """수집 계획의 작업(lane) 목록에서 쉬는 작업을 뺀다(서비스가 `--skip-lanes` 로 넘긴다)."""
     skipped = {x.strip() for x in (skip or "").split(",") if x.strip()}
@@ -155,7 +142,7 @@ def run_cmd(
     skip_lanes: str | None = typer.Option(None, "--skip-lanes", hidden=True),
 ):
     """계정 파일로 자동 로그인해 수집한다. Ctrl+C로 종료한다."""
-    from trader.saveticker.browser import Browser, credentials
+    from trader.saveticker.browser import credentials
 
     if lane is not None and lane not in {"news", "community", "market", "background"}:
         typer.echo("알 수 없는 수집 작업입니다", err=True)
@@ -262,81 +249,103 @@ def run_cmd(
             return
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch(headless=not headed)
-            try:
-                context = browser.new_context(
-                    locale="ko-KR",
-                    timezone_id="Asia/Seoul",
-                    viewport={"width": 1440, "height": 1000},
+
+            def remember(created):
+                nonlocal adapter
+                adapter = created
+
+            def waiting():
+                heartbeat(
+                    "waiting_verification",
+                    stage="waiting_verification",
+                    diagnostics=adapter.diagnostics if adapter else {},
                 )
-                page = context.new_page()
-                adapter = Browser(
-                    page,
+
+            try:
+                heartbeat("logging_in")
+                with session_context(
+                    browser,
+                    run_folder,
                     account,
+                    headed=headed,
+                    stop=stop,
+                    on_wait=waiting,
+                    on_adapter=remember,
                     max_scrolls=max_scrolls,
                     max_details=min(max_details, 2) if not once else max_details,
                     artifact_root=folder,
                     max_reports=max_details if once else 2,
-                )
-                heartbeat("logging_in")
-                serialized_login(adapter, run_folder)
-                news_views = adapter.discover_news() if lane in (None, "news", "background") else []
-                if only:
-                    known = build_views(start, end) + [
-                        View("news_all", "news"),
-                        View("news_reports", "news"),
-                    ]
-                    if set(only.split(",")) - {view.stream for view in known}:
-                        raise ConfigError("알 수 없는 수집 스트림입니다")
-                views = select_views(start, end, news_views, only=only, lane=lane)
-                store = Store(folder)
-                _print({"state": "collecting", "streams": len(views), "root": str(folder)})
-                due = {v.stream: 0.0 for v in views}
-                completed = set()
-                hot_streak = 0
-                while not stop.is_set():
-                    if rolling and not once and rolling_range(datetime.now(KST)) != (start, end):
-                        start, end = rolling_range(datetime.now(KST))
-                        views = select_views(start, end, news_views, only=only, lane=lane)
-                        for v in views:
-                            due.setdefault(v.stream, 0.0)
-                    candidates = [v for v in views if not once or v.stream not in completed]
-                    if not candidates:
-                        break
-                    view = (
-                        min(candidates, key=lambda v: due[v.stream])
-                        if once
-                        else choose_due(
-                            candidates, due, now=time.monotonic(), hot_streak=hot_streak
+                ) as adapter:
+                    news_views = (
+                        adapter.discover_news() if lane in (None, "news", "background") else []
+                    )
+                    if only:
+                        known = build_views(start, end) + [
+                            View("news_all", "news"),
+                            View("news_reports", "news"),
+                        ]
+                        if set(only.split(",")) - {view.stream for view in known}:
+                            raise ConfigError("알 수 없는 수집 스트림입니다")
+                    views = select_views(start, end, news_views, only=only, lane=lane)
+                    store = Store(folder)
+                    _print({"state": "collecting", "streams": len(views), "root": str(folder)})
+                    due = {v.stream: 0.0 for v in views}
+                    completed = set()
+                    hot_streak = 0
+                    while not stop.is_set():
+                        if (
+                            rolling
+                            and not once
+                            and rolling_range(datetime.now(KST)) != (start, end)
+                        ):
+                            start, end = rolling_range(datetime.now(KST))
+                            views = select_views(start, end, news_views, only=only, lane=lane)
+                            for v in views:
+                                due.setdefault(v.stream, 0.0)
+                        candidates = [v for v in views if not once or v.stream not in completed]
+                        if not candidates:
+                            break
+                        view = (
+                            min(candidates, key=lambda v: due[v.stream])
+                            if once
+                            else choose_due(
+                                candidates, due, now=time.monotonic(), hot_streak=hot_streak
+                            )
                         )
-                    )
-                    if view is None:
-                        stop.wait(min(5, max(0, min(due.values()) - time.monotonic())))
-                        continue
-                    hot_streak = hot_streak + 1 if view.interval_s <= 30 else 0
-                    begin = time.monotonic()
-                    heartbeat(
-                        "collecting",
-                        stream=view.stream,
-                        lag_s=max(0, begin - due[view.stream]) if due[view.stream] else 0,
-                    )
-                    result = collect_cycle(adapter, store, [view])[0]
-                    heartbeat(
-                        "collecting",
-                        stream=view.stream,
-                        diagnostics=adapter.diagnostics,
-                        elapsed_s=time.monotonic() - begin,
-                    )
-                    _print(result)
-                    completed.add(view.stream)
-                    interval = (
-                        60
-                        if view.stream == "news_reports" and adapter.pending_reports
-                        else view.interval_s
-                    )
-                    due[view.stream] = max(begin + interval, time.monotonic() + 2)
-                    if not adapter.authenticated():
-                        heartbeat("reauthenticating")
-                        serialized_login(adapter, run_folder)
+                        if view is None:
+                            stop.wait(min(5, max(0, min(due.values()) - time.monotonic())))
+                            continue
+                        hot_streak = hot_streak + 1 if view.interval_s <= 30 else 0
+                        begin = time.monotonic()
+                        heartbeat(
+                            "collecting",
+                            stream=view.stream,
+                            lag_s=max(0, begin - due[view.stream]) if due[view.stream] else 0,
+                        )
+                        result = collect_cycle(adapter, store, [view])[0]
+                        heartbeat(
+                            "collecting",
+                            stream=view.stream,
+                            diagnostics=adapter.diagnostics,
+                            elapsed_s=time.monotonic() - begin,
+                        )
+                        _print(result)
+                        completed.add(view.stream)
+                        interval = (
+                            60
+                            if view.stream == "news_reports" and adapter.pending_reports
+                            else view.interval_s
+                        )
+                        due[view.stream] = max(begin + interval, time.monotonic() + 2)
+                        if not adapter.authenticated():
+                            heartbeat("reauthenticating")
+                            serialized_login(
+                                adapter,
+                                run_folder,
+                                headed=headed,
+                                stop=stop,
+                                on_wait=waiting,
+                            )
             finally:
                 browser.close()
         heartbeat("stopped")
