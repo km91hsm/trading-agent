@@ -61,3 +61,8 @@ Native host 이름: `com.trader.saveticker`. 확장 ID: `gfchfnjghmjiidifohjglpo
 ```text
 MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA3WeKbuemZizg+F+9q1VmyQPIJ639KzMlycxI33pcMvITzLWUNTt4jTI62Wgh2/bMbM6Zgya1J27bmAYn5Wfd5AFc2NQwscNvzx0d6d3zYm3q+S2C19RbOneLa7bW3JOCSn0JPw1cXPJfSDKzXer9whZprisEx0/bmKPjOmveFl1axpXZMIG0CaqC2FBT/fgcSxKsMNP7MOTlelNoQN+JklWrAw4BBvqtyYklWnIYe+xF1ZZShtdeLHEs4HhpvVLekPs44g6FWnoxEFAFnbgkuj3jw4OlTnxjWI1bvCgcIo2cOtGbpkJwxirmMLU77V+lpDUR7ZjAMsxdbE/nRzRJjQIDAQAB
 ```
+
+### 실기 후 계약 보완 (1.0.1)
+- Chrome 새 탭은 `pendingUrl`만 있거나 URL 필드가 없을 수 있다. 초기 탐색은 정본 URL로 진행하되 수집 증거는 실제 content 응답에서만 얻는다. 실패한 발급 작업은 정본 URL의 error snapshot으로 종료한다.
+- community 정규장 checkbox가 비활성·checked=true이고 title이 정확히 `지금은 실시간과 정규장 기준이 같아요`인 때만 selection에 `regular_disabled:true`, `regular_equivalent:true`, `regular_equivalence_label`을 함께 보낸다. `regular`는 실제 true를 유지한다. Host는 community kind에만 이를 허용하고 quote.basis에 안내를 남긴다. requested_regular는 요청 기준을 유지한다.
+- 커뮤니티 탭이 aria 선택 상태를 제공하지 않는 경우, 지수/상승/하락 세 버튼의 같은 그룹 안에서 유일한 `bg-neutral-800 text-background-secondary text-medium-bold` 선택 스타일을 확인한다.

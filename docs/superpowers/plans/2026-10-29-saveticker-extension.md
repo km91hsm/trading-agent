@@ -45,3 +45,8 @@ Files: src/trader/saveticker/bridge_install.py, cli.py, automation.py, src/trade
 - 확장: 23 Node tests. 독립 리뷰 후 뉴스 상단 초기화·실제 새 뉴스 버튼·오류 표시 보완.
 - macOS bundle build/selfcheck 완료. frozen host를 임시 HOME·공백 경로에서 별도 실행: 20개 stream 요청/상태 저장, 합성 뉴스·시장·리포트/PDF, EOF exit 0, 등록 복원. 빈 합성 community/calendar는 항목 수 0으로 남겼으며 실제 사이트 결과로 주장하지 않음.
 - 설치 패키지: 운영 root의 runtime/chrome-extension-20261029 (자체 runtime 포함). 실제 전체 사이트 수집·Chrome 재시작·Windows 실기는 아직 미확인.
+
+### 실기 후 보완
+- Chrome 등록/사용자 확장 로드·시작 완료. 실제 수집: 뉴스 7, TOP5 5, 시장 6개 기준 각20, 캘린더 9월133/10월137/11월96. 오류: 커뮤니티 기준 선택·리포트·빈 12월/1월. 원래 코드 CI 통과(6m51s).
+- 새 탭 URL 없는 시작 조건과 미종료 작업을 회귀 테스트로 수정. 커뮤니티 실제 DOM CSS 선택·비활성 동등성 표시 지원, 실행 버전 진단 추가(확장1.0.1). 후속39 native/install·28 Node 통과.
+- 후속 bundle/CI 및 업데이트 후 실제 전체 주기 재검증 진행 중. 완전 수집/운영 완료는 아직 주장하지 않음.

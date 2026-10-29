@@ -49,6 +49,54 @@ def test_plan_preserves_all_lanes_and_five_months():
     assert all(v["interval_s"] >= 30 for v in plan["views"])
 
 
+def test_community_live_accepts_only_explicit_disabled_equivalence(tmp_path):
+    client = session(tmp_path)
+    message = snapshot(
+        client,
+        "community_index_live",
+        page_url="https://www.saveticker.com/community",
+        selection={
+            "loaded": True,
+            "tab": "지수",
+            "regular": True,
+            "regular_disabled": True,
+            "regular_equivalent": True,
+            "regular_equivalence_label": "지금은 실시간과 정규장 기준이 같아요",
+        },
+        html=(
+            '<div role="button" data-clickable aria-label="QQQ 나스닥100">'
+            "<span>QQQ</span><span>$100</span><span>+1%</span></div>"
+        ),
+    )
+    message["selection"]["regular_equivalence_label"] = "다른 안내"
+    assert client.handle(message)["error"] == "selection_mismatch"
+    message["selection"]["regular_equivalence_label"] = "지금은 실시간과 정규장 기준이 같아요"
+    message["selection"]["regular_disabled"] = False
+    assert client.handle(message)["error"] == "selection_mismatch"
+    message["selection"]["regular_disabled"] = True
+    saved = client.handle(message)
+    assert saved["ok"] and saved["count"] == 1
+    data = json.loads((tmp_path / "data/latest/community_index_live.json").read_text())
+    assert data["view"]["requested_regular"] is False
+    assert "실시간과 정규장 기준이 같아요" in data["items"][0]["basis"]
+
+
+def test_market_cannot_claim_community_regular_equivalence(tmp_path):
+    client = session(tmp_path)
+    message = snapshot(
+        client,
+        selection={
+            "loaded": True,
+            "tab": "상승",
+            "regular": True,
+            "regular_disabled": True,
+            "regular_equivalent": True,
+            "regular_equivalence_label": "지금은 실시간과 정규장 기준이 같아요",
+        },
+    )
+    assert client.handle(message)["error"] == "selection_mismatch"
+
+
 def test_unknown_stream_and_invalid_request_are_fixed_errors(tmp_path):
     client = session(tmp_path)
     assert client.handle({"id": 9, "type": "begin", "stream": "secret"}) == {

@@ -352,6 +352,7 @@ class NativeSession:
         if message.get("page_url") != view["url"]:
             _reject("invalid_url")
         status = message.get("status", "partial")
+        regular_equivalent = False
         if status not in {"ok", "partial", "error", "auth_required"}:
             _reject("invalid_message")
         if status not in {"error", "auth_required"}:
@@ -361,13 +362,23 @@ class NativeSession:
             for key in ("source", "category", "tab", "month"):
                 if view.get(key) is not None and selection.get(key) != view[key]:
                     _reject("selection_mismatch")
+            regular_equivalent = (
+                view["kind"] == "community"
+                and selection.get("regular") is True
+                and selection.get("regular_disabled") is True
+                and selection.get("regular_equivalent") is True
+                and selection.get("regular_equivalence_label")
+                == "지금은 실시간과 정규장 기준이 같아요"
+            )
             if view["tab"] and (
                 type(selection.get("regular")) is not bool
-                or selection["regular"] != view["regular"]
+                or (selection["regular"] != view["regular"] and not regular_equivalent)
             ):
                 _reject("selection_mismatch")
         items = []
         reason = message.get("reason")
+        if reason == "selection_unverified":
+            reason = "selection_mismatch"
         reason = reason if reason in REASONS else "partial"
         responses = message.get("json_responses", [])
         if not isinstance(responses, list) or len(responses) > 500:
@@ -391,6 +402,19 @@ class NativeSession:
             # Virtualised lists and bounded scrolling do not establish completeness.
             status = "partial"
             items = self._json_items(message, view, items)
+            if regular_equivalent:
+                items = [
+                    item.model_copy(
+                        update={
+                            "basis": "; ".join(
+                                filter(None, [item.basis, "지금은 실시간과 정규장 기준이 같아요"])
+                            )
+                        }
+                    )
+                    if item.kind == "quote"
+                    else item
+                    for item in items
+                ]
             details = message.get("details", [])
             if not isinstance(details, list) or len(details) > 2:
                 _reject("invalid_message")

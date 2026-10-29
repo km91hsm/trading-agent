@@ -8,18 +8,45 @@
     const find = (name, role) => nodes().find(n => label(n) === name && (!role || n.getAttribute('role') === role));
     const categoryNodes = () => [...document.querySelectorAll('[aria-label="뉴스 카테고리"] button')];
     const category = name => categoryNodes().find(n => label(n) === name);
-    const visible = n => { if (!n || n.disabled || n.closest('[hidden],[aria-hidden="true"]'))
-        return false; for (let p = n; p; p = p.parentElement) {
-        const style = getComputedStyle(p);
-        if (style.display === 'none' || style.visibility === 'hidden')
+    const visible = (n, includeDisabled = false) => {
+        if (!n || (!includeDisabled && n.disabled) || n.closest('[hidden],[aria-hidden="true"]'))
             return false;
-    } return true; };
-    function ranking(v) { const trigger = nodes().find(n => visible(n) && label(n) === v.tab); for (let n = trigger?.parentElement; n && n !== document.body; n = n.parentElement) {
-        if (n.querySelector('[data-stretched-link-card],[data-clickable]') && [...n.querySelectorAll('button,[role="checkbox"]')].some(c => label(c) === '정규장 기준' && visible(c)))
-            return n;
-    } return trigger?.parentElement; }
-    const rankingFind = (v, name) => [...(ranking(v)?.querySelectorAll('button,[role="checkbox"],[role="switch"]') || [])].find(n => label(n) === name && visible(n));
+        for (let p = n; p; p = p.parentElement) {
+            const style = getComputedStyle(p);
+            if (style.display === 'none' || style.visibility === 'hidden')
+                return false;
+        }
+        return true;
+    };
+    function ranking(v) {
+        const trigger = nodes().find(n => visible(n) && !n.closest('aside,nav,[role="complementary"]') && label(n) === v.tab);
+        for (let n = trigger?.parentElement; n && n !== document.body; n = n.parentElement) {
+            if (n.querySelector('[data-stretched-link-card],[data-clickable]') && [...n.querySelectorAll('button,[role="checkbox"]')].some(c => label(c) === '정규장 기준' && visible(c, true)))
+                return n;
+        }
+        return trigger?.parentElement;
+    }
+    const rankingFind = (v, name) => [...(ranking(v)?.querySelectorAll('button,[role="checkbox"],[role="switch"]') || [])].find(n => label(n) === name && visible(n, name === '정규장 기준'));
     const active = n => ['true', 'page'].includes(n?.getAttribute('aria-current')) || n?.getAttribute('aria-selected') === 'true' || n?.getAttribute('aria-pressed') === 'true' || n?.getAttribute('data-state') === 'active' || n?.getAttribute('data-selected') === 'true';
+    const COMMUNITY_EQUIVALENCE = '지금은 실시간과 정규장 기준이 같아요';
+    const communityView = v => v.kind === 'community' || v.stream?.startsWith('community_');
+    function rankingActive(v, node) {
+        if (active(node))
+            return true;
+        if (!communityView(v) || !node || !['지수', '상승', '하락'].includes(label(node)))
+            return false;
+        const selected = n => ['bg-neutral-800', 'text-background-secondary', 'text-medium-bold'].every(c => n.classList.contains(c));
+        const scope = ranking(v);
+        for (let group = node.parentElement; group; group = group.parentElement) {
+            const buttons = [...group.querySelectorAll('button')].filter(n => visible(n) && ['지수', '상승', '하락'].includes(label(n)));
+            if (['지수', '상승', '하락'].every(t => buttons.some(n => label(n) === t)))
+                return buttons.filter(selected).length === 1 && selected(node);
+            if (group === scope)
+                break;
+        }
+        return false;
+    }
+    const equivalent = (v, control) => communityView(v) && control?.disabled === true && control.getAttribute('title') === COMMUNITY_EQUIVALENCE && check(control) === true;
     const check = n => { const v = n?.getAttribute('aria-checked') ?? n?.getAttribute('aria-pressed'); return v === 'true' ? true : v === 'false' ? false : undefined; };
     async function click(n) {
         if (!n || n.disabled)
@@ -48,24 +75,30 @@
         if (v.category)
             result.category = categoryNodes().filter(active).map(label).find(x => x === v.category);
         if (v.tab) {
-            result.tab = active(rankingFind(v, v.tab)) ? v.tab : undefined;
-            result.regular = check(rankingFind(v, '정규장 기준'));
+            result.tab = rankingActive(v, rankingFind(v, v.tab)) ? v.tab : undefined;
+            const control = rankingFind(v, '정규장 기준');
+            result.regular = check(control);
+            result.regular_disabled = control?.disabled === true;
+            if (equivalent(v, control)) {
+                result.regular_equivalent = true;
+                result.regular_equivalence_label = COMMUNITY_EQUIVALENCE;
+            }
         }
         if (v.month)
             result.month = month();
         return result;
     }
-    function verified(v, s) { return s.loaded && ['source', 'category', 'tab', 'month'].every(k => !v[k] || s[k] === v[k]) && (!v.tab || s.regular === v.regular); }
+    function verified(v, s) { return s.loaded && ['source', 'category', 'tab', 'month'].every(k => !v[k] || s[k] === v[k]) && (!v.tab || s.regular === v.regular || (communityView(v) && s.regular === true && s.regular_disabled === true && s.regular_equivalent === true && s.regular_equivalence_label === COMMUNITY_EQUIVALENCE)); }
     async function select(v) {
         if (v.source && !active(find(v.source, 'tab')))
             await click(find(v.source, 'tab'));
         if (v.category && !active(category(v.category)))
             await click(category(v.category));
         if (v.tab) {
-            if (!active(rankingFind(v, v.tab)))
+            if (!rankingActive(v, rankingFind(v, v.tab)))
                 await click(rankingFind(v, v.tab));
             const control = rankingFind(v, '정규장 기준');
-            if (check(control) !== v.regular)
+            if (check(control) !== v.regular && !equivalent(v, control))
                 await click(control);
             const risk = rankingFind(v, '위험주 제외');
             if (check(risk) === true)
@@ -87,19 +120,32 @@
         }
     }
     async function freshNews() {
-        if(auth()) throw Error('auth_required');
-        let panel=document.querySelector('#news-tabpanel');
-        const toolbar=document.querySelector('[aria-label="뉴스 목록 필터"]');
-        let scope=toolbar;
-        if(panel && toolbar) for(let n=panel.parentElement;n && n!==document.body;n=n.parentElement) if(n.contains(toolbar)){scope=n;break;}
-        const fresh=[...(scope?.querySelectorAll('button')||[])].find(n=>label(n)==='새 뉴스' && visible(n) && !n.closest('aside,nav,[role="complementary"]'));
-        if(fresh) await click(fresh);
-        if(auth()) throw Error('auth_required');
-        panel=document.querySelector('#news-tabpanel');
-        for(let n=panel;n;n=n.parentElement) {if(n===panel || n.scrollHeight>n.clientHeight) n.scrollTop=0;}
-        if(document.scrollingElement) document.scrollingElement.scrollTop=0;
+        if (auth())
+            throw Error('auth_required');
+        let panel = document.querySelector('#news-tabpanel');
+        const toolbar = document.querySelector('[aria-label="뉴스 목록 필터"]');
+        let scope = toolbar;
+        if (panel && toolbar)
+            for (let n = panel.parentElement; n && n !== document.body; n = n.parentElement)
+                if (n.contains(toolbar)) {
+                    scope = n;
+                    break;
+                }
+        const fresh = [...(scope?.querySelectorAll('button') || [])].find(n => label(n) === '새 뉴스' && visible(n) && !n.closest('aside,nav,[role="complementary"]'));
+        if (fresh)
+            await click(fresh);
+        if (auth())
+            throw Error('auth_required');
+        panel = document.querySelector('#news-tabpanel');
+        for (let n = panel; n; n = n.parentElement) {
+            if (n === panel || n.scrollHeight > n.clientHeight)
+                n.scrollTop = 0;
+        }
+        if (document.scrollingElement)
+            document.scrollingElement.scrollTop = 0;
         await pause();
-        if(auth()) throw Error('auth_required');
+        if (auth())
+            throw Error('auth_required');
     }
     async function scroll() {
         const candidates = [...document.querySelectorAll('*')].filter(n => n.clientHeight > 100 && n.scrollHeight > n.clientHeight + 30 && ['auto', 'scroll'].includes(getComputedStyle(n).overflowY));
@@ -127,7 +173,12 @@
             s = selection(v);
             if (!verified(v, s))
                 return { page_url, html: '', selection: s, status: 'error', reason: 'selection_unverified' };
-            if(v.stream==='news_all') {await freshNews();s=selection(v);if(!verified(v,s))throw Error('selection_unverified');}
+            if (v.stream === 'news_all') {
+                await freshNews();
+                s = selection(v);
+                if (!verified(v, s))
+                    throw Error('selection_unverified');
+            }
             const frames = [clean(document.body)];
             for (let i = 0; i < Math.min(2, limits.max_scrolls); i++) {
                 await scroll();
@@ -214,18 +265,26 @@
                 // the button's download. An opaque direct download remains unverified.
                 let finished = false;
                 const urls = new Set();
-                const observe = e => { const a = e.target.closest?.('a[href]'); if (a && !e.isTrusted) {
-                    try {
-                        const u = new URL(a.href);
-                        if ((u.protocol === 'blob:' && u.origin === location.origin) || (u.protocol === 'https:' && u.origin === location.origin))
-                            urls.add(u.href);
+                const observe = e => {
+                    const a = e.target.closest?.('a[href]');
+                    if (a && !e.isTrusted) {
+                        try {
+                            const u = new URL(a.href);
+                            if ((u.protocol === 'blob:' && u.origin === location.origin) || (u.protocol === 'https:' && u.origin === location.origin))
+                                urls.add(u.href);
+                        }
+                        catch { }
                     }
-                    catch { }
-                } };
+                };
                 document.addEventListener('click', observe, true);
                 match.click();
-                setTimeout(() => { if (finished)
-                    return; finished = true; document.removeEventListener('click', observe, true); reply(urls.size === 1 ? { ok: true, observed_url: [...urls][0] } : { ok: false, reason: 'pdf_unverified' }); }, 4000);
+                setTimeout(() => {
+                    if (finished)
+                        return;
+                    finished = true;
+                    document.removeEventListener('click', observe, true);
+                    reply(urls.size === 1 ? { ok: true, observed_url: [...urls][0] } : { ok: false, reason: 'pdf_unverified' });
+                }, 4000);
                 return true;
             }
             else

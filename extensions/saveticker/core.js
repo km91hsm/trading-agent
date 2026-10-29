@@ -9,7 +9,7 @@ export const laneFor = v => v.kind === 'calendar' || v.stream === 'news_reports'
 export const marker = (url, token, lane) => safePage(url) + '#trader-saveticker=' + token + ':' + lane;
 export function ownedLane(tab, token) {
     try {
-        const u = new URL(tab.url);
+        const u = new URL(tab.pendingUrl || tab.url);
         safePage(u.href);
         return LANES.find(l => u.hash === '#trader-saveticker=' + token + ':' + l) || null;
     }
@@ -59,8 +59,12 @@ export class PdfPair {
             throw Error('pdf_name');
         this.pending = { ...job, at: now, downloadId: null };
     }
-    expect(url) { const u = new URL(url); if (!this.pending || !((u.protocol === 'blob:' && u.origin === 'https://www.saveticker.com') || (u.protocol === 'https:' && u.origin === 'https://www.saveticker.com')))
-        throw Error('pdf_url_unverified'); this.pending.expectedUrl = url; }
+    expect(url) {
+        const u = new URL(url);
+        if (!this.pending || !((u.protocol === 'blob:' && u.origin === 'https://www.saveticker.com') || (u.protocol === 'https:' && u.origin === 'https://www.saveticker.com')))
+            throw Error('pdf_url_unverified');
+        this.pending.expectedUrl = url;
+    }
     claim(item) {
         const p = this.pending;
         if (!p || !p.expectedUrl || item.url !== p.expectedUrl || p.downloadId !== null)

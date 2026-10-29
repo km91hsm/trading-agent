@@ -1,18 +1,25 @@
 import { LANES, Scheduler, laneFor, marker, ownedLane, safePage, PdfPair } from './core.js';
+const WORKER_VERSION='1.0.1';
 const scheduler = new Scheduler(), pdf = new PdfPair(), reportAttempts = new Map();
 let limits = { max_scrolls: 2, max_details: 2, max_reports: 2 };
 let port = null, requests = new Map(), seq = 0, enabled = false, token = '', ticking = null, retryAt = 0, failures = 0, planAt = 0, epoch = 0, nextTimer = null;
 const downloadWaiters = new Map();
-function settleDownloads() { for (const [id, w] of downloadWaiters) {
-    clearTimeout(w.timer);
-    const name = pdf.claim(w.item);
-    w.suggest(name ? { filename: name, conflictAction: 'uniquify' } : undefined);
-    downloadWaiters.delete(id);
-} }
-function scheduleNext() { clearTimeout(nextTimer); nextTimer = null; if (enabled) {
-    nextTimer = setTimeout(() => { nextTimer = null; void tick(); }, port ? 5000 : Math.max(1000, retryAt - Date.now()));
-    nextTimer?.unref?.();
-} }
+function settleDownloads() {
+    for (const [id, w] of downloadWaiters) {
+        clearTimeout(w.timer);
+        const name = pdf.claim(w.item);
+        w.suggest(name ? { filename: name, conflictAction: 'uniquify' } : undefined);
+        downloadWaiters.delete(id);
+    }
+}
+function scheduleNext() {
+    clearTimeout(nextTimer);
+    nextTimer = null;
+    if (enabled) {
+        nextTimer = setTimeout(() => { nextTimer = null; void tick(); }, port ? 5000 : Math.max(1000, retryAt - Date.now()));
+        nextTimer?.unref?.();
+    }
+}
 const store = values => chrome.storage.local.set(values);
 function request(type, body = {}) {
     if (!port)
@@ -54,7 +61,7 @@ async function connect() {
     limits = plan.limits || limits;
     planAt = Date.now();
     failures = 0;
-    await store({ connection: '연결됨', planCount: plan.views.length });
+    await store({ connection: '연결됨', planCount: plan.views.length,workerVersion:WORKER_VERSION });
 }
 async function tabs() {
     const all = await chrome.tabs.query({ url: 'https://www.saveticker.com/*' });
@@ -91,19 +98,31 @@ async function laneRun(lane, tab, runEpoch) {
     const view = scheduler.next(Date.now(), lane);
     if (!view)
         return;
-    const job = await request('begin', { stream: view.stream });
-    if (!enabled || runEpoch !== epoch)
-        return;
-    await request('state', { lane, state: 'collecting' });
+    let job = null, consumed = false, failureCode = 'begin_failed';
     try {
-        if (safePage(tab.url) !== safePage(job.view.url)) {
+        job = await request('begin', { stream: view.stream });
+        if (!enabled || runEpoch !== epoch)
+            return;
+        failureCode = 'state_failed';
+        await request('state', { lane, state: 'collecting' });
+        let currentPage = null;
+        try {
+            currentPage = safePage(tab.pendingUrl || tab.url);
+        }
+        catch { }
+        failureCode = 'navigation_failed';
+        if (currentPage !== safePage(job.view.url)) {
             await chrome.tabs.update(tab.id, { url: marker(job.view.url, token, lane) });
             await new Promise(r => setTimeout(r, 2000));
         }
+        failureCode = 'content_unavailable';
         const capture = await command(tab.id, { type: 'collect', job: { ...job, limits }, token });
         if (!enabled || runEpoch !== epoch)
             return;
+        failureCode = 'snapshot_failed';
         const saved = await request('snapshot', { ...capture, stream: view.stream, job_id: job.job_id });
+        consumed = true;
+        failureCode = 'postprocess_failed';
         if (capture.status === 'auth_required' || saved.status === 'auth_required') {
             scheduler.block(lane);
             await store({ blockedLanes: [...scheduler.blocked] });
@@ -132,14 +151,25 @@ async function laneRun(lane, tab, runEpoch) {
                 }
             }
         }
-        const status = saved.status || capture.status;
+        const status = saved.status==='auth_required'||capture.status==='auth_required'?'auth_required':saved.status==='error'||capture.status==='error'?'error':saved.status||capture.status;
         const update = { ['lane_' + lane]: pdfUnverified ? 'PDF 연결 미확인 · 일부 범위' : status === 'auth_required' ? '사용자 확인 필요' : status === 'error' ? '선택 확인 실패' : Number(saved.count) > 0 ? '수집됨 · 일부 범위' : '항목 미확인 · 일부 범위', lastAttempt: Date.now() };
         if (Number(saved.count) > 0 && ['ok', 'partial'].includes(status))
             update.lastCollected = Date.now();
+        update['lane_error_' + lane] = status==='error'?'selection_unverified':null;
+        update['lane_release_error_' + lane] = null;
         await store(update);
     }
-    catch {
-        await store({ ['lane_' + lane]: '수집 오류 · 다음 주기 대기' });
+    catch (error) {
+        const code = error?.message === 'lane_busy' ? 'lane_busy' : failureCode;
+        if (job && !consumed && port && enabled && runEpoch === epoch) {
+            try {
+                await request('snapshot', { stream: view.stream, job_id: job.job_id, page_url: safePage(job.view.url), html: '', selection: { loaded: false }, status: 'error', reason: 'collection_error' });
+            }
+            catch {
+                await store({ ['lane_release_error_' + lane]: 'job_release_failed' });
+            }
+        }
+        await store({ ['lane_' + lane]: '수집 오류 · 다음 주기 대기', ['lane_error_' + lane]: code });
     }
     finally {
         scheduler.done(view, Date.now());
@@ -238,16 +268,24 @@ const restore = async () => {
 chrome.runtime.onStartup.addListener(restore);
 chrome.runtime.onInstalled.addListener(restore);
 void restore();
-chrome.downloads.onDeterminingFilename.addListener((item, suggest) => { if (!pdf.pending) {
-    suggest();
-    return;
-} const name = pdf.claim(item); if (name) {
-    suggest({ filename: name, conflictAction: 'uniquify' });
-    return;
-} if (pdf.pending.expectedUrl || downloadWaiters.size >= 8) {
-    suggest();
-    return;
-} const timer = setTimeout(() => { downloadWaiters.delete(item.id); suggest(); }, 6000); downloadWaiters.set(item.id, { item, suggest, timer }); return true; });
+chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
+    if (!pdf.pending) {
+        suggest();
+        return;
+    }
+    const name = pdf.claim(item);
+    if (name) {
+        suggest({ filename: name, conflictAction: 'uniquify' });
+        return;
+    }
+    if (pdf.pending.expectedUrl || downloadWaiters.size >= 8) {
+        suggest();
+        return;
+    }
+    const timer = setTimeout(() => { downloadWaiters.delete(item.id); suggest(); }, 6000);
+    downloadWaiters.set(item.id, { item, suggest, timer });
+    return true;
+});
 chrome.downloads.onChanged.addListener(async (delta) => {
     if (delta.state?.current === 'interrupted' && pdf.pending?.downloadId === delta.id) {
         pdf.clear();
