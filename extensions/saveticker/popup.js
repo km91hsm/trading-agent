@@ -3,7 +3,7 @@ const errors = { selection_unverified:'화면의 선택 상태를 확인하지 �
 const laneNames = { news: '뉴스', community: '커뮤니티', market: '증시', background: '캘린더·리포트' };
 async function render() {
     const s = await chrome.storage.local.get(null);
-    const workerVersion=typeof s.workerVersion==='string'&&/^\d+\.\d+\.\d+$/.test(s.workerVersion)?s.workerVersion:'미확인';$('version').textContent='확장 1.0.1 · 수집기 '+workerVersion+(workerVersion==='1.0.1'?'':' · 확장 새로고침 필요');
+    const workerVersion=typeof s.workerVersion==='string'&&/^\d+\.\d+\.\d+$/.test(s.workerVersion)?s.workerVersion:'미확인';$('version').textContent='확장 1.0.2 · 수집기 '+workerVersion+(workerVersion==='1.0.2'?'':' · 확장 새로고침 필요');
     $('connection').textContent = s.connection || (s.enabled ? '연결 대기' : '중지됨');
     for (const lane of ['news', 'community', 'market', 'background'])
         $(lane).textContent = s['lane_' + lane] || '대기';

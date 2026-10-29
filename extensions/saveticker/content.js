@@ -51,6 +51,14 @@
     async function click(n) {
         if (!n || n.disabled)
             throw Error('selection_unverified');
+        const rect=n.getBoundingClientRect();
+        const options={bubbles:true,cancelable:true,composed:true,button:0,buttons:1,clientX:rect.left+rect.width/2,clientY:rect.top+rect.height/2};
+        const Pointer=window.PointerEvent||window.MouseEvent;
+        n.dispatchEvent(new Pointer('pointerdown',{...options,pointerId:1,pointerType:'mouse',isPrimary:true}));
+        n.dispatchEvent(new MouseEvent('mousedown',options));
+        if(!n.disabled)n.focus({preventScroll:true});
+        n.dispatchEvent(new Pointer('pointerup',{...options,buttons:0,pointerId:1,pointerType:'mouse',isPrimary:true}));
+        n.dispatchEvent(new MouseEvent('mouseup',{...options,buttons:0}));
         n.click();
         await pause();
     }
