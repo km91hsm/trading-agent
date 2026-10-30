@@ -69,3 +69,12 @@
 5. 리포트 상세 응답에서 PDF 문서 경로를 얻는 필드와 다운로드 모드 확인.
 6. content worker의 숨김 상태 실제 요청, Native snapshot 저장, 새 PDF 자동 저장을 한 항목부터 검증한 후 범위를 확장한다.
 7. 모든 20개 범위와 PDF를 숨김/최소화 여러 주기에서 통과해야 기본 backend 전환 및 draft 해제를 검토한다.
+
+## 구현 전 재확인 (2026-10-30 23시 KST 전후)
+사용자가 AI 미사용 여부와 실제 동작 재확인을 요청하여 구현을 시작하지 않았다.
+
+- Native 진입점은 Chrome origin을 확인해 native.serve로 직접 분기하며 trading CLI/daemon을 실행하지 않는다. 확장 권한은 SaveTicker 호스트로 제한되고 수집 코드에 AI provider 호출이 없다. 수집 실행에 AI 세션·AI API key가 필요하지 않다.
+- 격리된 Chromium 최소화 재시험: 10.26초에 worker가 요청한 3회 모두 windowState=minimized, visibility=hidden, 합성 쿠키 전달 및 JSON 응답 성공. 실제 SaveTicker 검증이 아니라는 한계를 유지한다.
+- 재연결한 일반 Chrome에서 뉴스 페이지를 한 번 열었으나 managed challenge 화면이 다시 표시됐다. 자동 통과·접속 지속성은 검증하지 않았으며 새로고침/추가 요청 없이 해당 진단 탭을 닫았다. 앞선 정상 UI/API 응답이 안정적인 접속 회복을 증명하지 않는다.
+- 현재 설치된 DOM 수집 worker는 최소화 시 window_minimized로 수집을 중지한다. API backend는 아직 구현하지 않았다. 실제 숨김 수집·자동 PDF 성공을 주장하지 않는다.
+- 생산 코드/설치 파일은 변경하지 않았고 수집도 시작하지 않았다. 실제 사이트의 정상 접근과 미확인 계약 확인을 통과하기 전 운영 전환을 보류한다.
