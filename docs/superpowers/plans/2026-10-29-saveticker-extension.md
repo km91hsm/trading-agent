@@ -106,3 +106,7 @@ Files: src/trader/saveticker/bridge_install.py, cli.py, automation.py, src/trade
 - CDP allow/allowAndName도 정상 파일명 결정 경로를 우회하므로 검증 환경에서 제거했다. 테스트는 temp profile prefs와 default 동작을 사용한다. 사용자 Chrome의 해당 진단 설정 복원 명령은 CUA raw CDP에서 지원되지 않았으며, 실제 계정 검증 시 도구 연결 없는 정상 Chrome 재시작을 검토한다. 경로/ID/ticket/PDF 검증은 완화하지 않았다.
 - 최종109 Node93개, 실제 isolated Chromium3개(27.57s), ruff/diff 및 macOS bundle/selfcheck 통과. 독립 검토 P1/P2 없음. Native Python 변경 없음. Chrome 다운로드 API 문서의 onDeterminingFilename 계약과도 확인했다: https://developer.chrome.com/docs/extensions/reference/api/downloads#event-onDeterminingFilename
 - Mac이 다시 잠겨 사용자 해제를 요청했다. extension-next-1.0.9 및 native-runtime/Trader-next-1.0.9.app으로 후보만 준비하며 현재 설치본은 교체하지 않는다. 실제 계정의 자동 PDF 저장은 여전히 미검증이다.
+
+### 사용자 요구 확정 및109 확장 적용
+- 사용자 요구: 전용 창은 허용하되 뒤로 숨기거나 최소화해도 수집을 계속하고 싶다. 현재 DOM 방식의 가림 제약을 해결한 것으로 주장하지 않으며 API 요청 계약 검증을 다음 단계로 진행한다.
+- 잠금 해제 후 사용자의 Chrome 조작과 자동 클릭이 충돌했다.109는 Native Python 변경이 없으므로 실행 중 Native를 교체하지 않고 외부 unpacked extension 디렉터리만 원자적으로 교체했다. extension-before-1.0.9를 rollback으로 보존하고 Native109 app 후보는 별도로 남겼다. Chrome 확장 재로드/시작 및 실제 PDF 검증 대기.
