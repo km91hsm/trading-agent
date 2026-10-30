@@ -371,6 +371,7 @@
         }
     }
     chrome.runtime.onMessage.addListener((message, sender, reply) => {
+        if (!['collect', 'pdf_release', 'pdf_click'].includes(message.type)) return;
         if (sender.id !== chrome.runtime.id)
             return;
         const token = message.token;

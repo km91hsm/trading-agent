@@ -1,0 +1,163 @@
+"""Real hidden Chromium, production worker/content, fake port + real Native validator.
+
+Only synthetic HTTPS and a temporary profile are used; no operator browser or
+SaveTicker account. Playwright default focus/timer emulation is disabled by
+manual launch + connect_over_cdp(no_defaults=True).
+"""
+
+import json
+import shutil
+import subprocess
+import time
+from pathlib import Path
+
+import pytest
+from playwright.sync_api import sync_playwright
+
+from trader.saveticker.native import NativeSession
+
+
+def test_hidden_production_api_pipeline(tmp_path):
+    source = Path(__file__).resolve().parents[2] / "extensions/saveticker"
+    extension = tmp_path / "extension"
+    shutil.copytree(source, extension)
+    client = NativeSession(tmp_path / "collector")
+    view = next(v for v in client._plan["views"] if v["stream"] == "news_all")
+    job = client.handle({"id": 1, "type": "api_begin", "stream": "news_all"})
+    assert job["ok"]
+    manifest_path = extension / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["permissions"].remove("nativeMessaging")
+    manifest["background"]["service_worker"] = "probe-worker.js"
+    manifest_path.write_text(json.dumps(manifest))
+    setup = """
+const event=()=>({listeners:[],addListener(fn){this.listeners.push(fn)}});
+globalThis.apiCalls=[];globalThis.focusCalls=[];
+const update=chrome.windows.update.bind(chrome.windows);
+chrome.windows.update=async(id,options)=>{
+ if(options.focused)focusCalls.push(options);return update(id,options);};
+chrome.runtime.connectNative=()=>{const p={onMessage:event(),onDisconnect:event(),disconnect(){},
+ postMessage(m){
+ apiCalls.push(m);let r={id:m.id,ok:true,status:'partial',count:1};
+ if(m.type==='hello')Object.assign(r,{views:[VIEW]});
+ if(m.type==='api_begin')Object.assign(r,JOB,{id:m.id});
+ queueMicrotask(()=>p.onMessage.listeners.forEach(f=>f(r)));
+}};return p;};
+""".replace("VIEW", json.dumps(view)).replace("JOB", json.dumps(job))
+    (extension / "probe-native.js").write_text(setup)
+    (extension / "probe-worker.js").write_text(
+        "import './probe-native.js';import {tick} from './worker.js';"
+        "void (async()=>{await chrome.storage.local.set({enabled:false,backend:'api',"
+        "ownerToken:'a'.repeat(32)});"
+        "globalThis.runProbe=async()=>{const [tab]=await chrome.tabs.query({url:'https://www.saveticker.com/*'});"
+        "await chrome.windows.update(tab.windowId,{state:'minimized'});"
+        "await chrome.storage.local.set({enabled:true});await tick();"
+        "return {calls:apiCalls,focus:focusCalls,window:await chrome.windows.get(tab.windowId)};};"
+        "globalThis.probeReady=true;})();"
+    )
+    profile = tmp_path / "profile"
+    profile.mkdir()
+    seen = []
+    with sync_playwright() as playwright:
+        if not Path(playwright.chromium.executable_path).is_file():
+            pytest.skip("Chromium is not installed")
+        proc = subprocess.Popen(
+            [
+                playwright.chromium.executable_path,
+                f"--user-data-dir={profile}",
+                "--remote-debugging-port=0",
+                "--no-first-run",
+                "--no-default-browser-check",
+                "--disable-background-networking",
+                f"--disable-extensions-except={extension}",
+                f"--load-extension={extension}",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        browser = None
+        try:
+            endpoint = profile / "DevToolsActivePort"
+            deadline = time.monotonic() + 10
+            while not endpoint.exists():
+                assert time.monotonic() < deadline, "isolated browser startup"
+                time.sleep(0.05)
+            port = endpoint.read_text().splitlines()[0]
+            browser = playwright.chromium.connect_over_cdp(
+                f"http://127.0.0.1:{port}", no_defaults=True
+            )
+            context = browser.contexts[0]
+
+            def route(request):
+                if request.request.url == job["request"]["url"]:
+                    seen.append("synthetic=yes" in request.request.headers.get("cookie", ""))
+                    request.fulfill(
+                        content_type="application/json",
+                        body=json.dumps(
+                            {
+                                "news_list": [
+                                    {
+                                        "id": "1",
+                                        "title": "Hidden news",
+                                        "source": "save-pick",
+                                        "author_secret": "never",
+                                    }
+                                ]
+                            }
+                        ),
+                    )
+                elif request.request.url == "https://www.saveticker.com/news":
+                    request.fulfill(
+                        content_type="text/html",
+                        body="<html><title>API hidden probe</title><body>synthetic</body></html>",
+                        headers={"Set-Cookie": "synthetic=yes; Secure; SameSite=Lax; Path=/"},
+                    )
+                else:
+                    request.abort()
+
+            context.route("**/*", route)
+            page = context.new_page()
+            page.goto("https://www.saveticker.com/news#trader-saveticker-api=" + "a" * 32)
+            workers = context.service_workers
+            worker = next((w for w in workers if w.url.endswith("/probe-worker.js")), None)
+            if worker is None:
+                worker = context.wait_for_event("serviceworker", timeout=10000)
+            deadline = time.monotonic() + 10
+            while not worker.evaluate("()=>globalThis.probeReady===true"):
+                assert time.monotonic() < deadline, "probe worker ready"
+                time.sleep(0.1)
+            # Wait for document_idle listener without making a website request.
+            deadline = time.monotonic() + 10
+            while True:
+                ready = worker.evaluate(
+                    "async()=>{try{const [t]=await chrome.tabs.query({"
+                    "url:'https://www.saveticker.com/*'});"
+                    "return await chrome.tabs.sendMessage(t.id,{type:'api_fetch',"
+                    "token:'a'.repeat(32),job:JOB});}catch{return null;}}".replace(
+                        "JOB", json.dumps(job)
+                    )
+                )
+                if ready and ready.get("error") == "api_stopped":
+                    break
+                assert time.monotonic() < deadline, (
+                    f"content listener ready: {ready!r}; url={page.url}"
+                )
+                time.sleep(0.1)
+            result = worker.evaluate("()=>runProbe()")
+            assert result["window"]["state"] == "minimized"
+            assert page.evaluate("document.visibilityState") == "hidden"
+            assert result["focus"] == []
+            messages = [m for m in result["calls"] if m["type"] == "api_snapshot"]
+            assert len(messages) == 1 and seen == [True]
+            assert "author_secret" not in json.dumps(messages[0])
+            saved = client.handle(messages[0])
+            assert saved["ok"] and saved["count"] == 1
+            latest = json.loads((tmp_path / "collector/data/latest/news_all.json").read_text())
+            assert latest["items"][0]["title"] == "Hidden news"
+            assert latest["status"] == "partial"
+        finally:
+            if browser:
+                browser.close()
+            if proc.poll() is None:
+                proc.terminate()
+            proc.wait(timeout=5)

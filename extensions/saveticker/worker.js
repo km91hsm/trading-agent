@@ -1,5 +1,6 @@
+import { apiCycle, abortApi } from './api-runner.js';
 import { LANES, Scheduler, laneFor, marker, ownedLane, safePage, PdfPair } from './core.js';
-const WORKER_VERSION = '1.0.10';
+const WORKER_VERSION = '1.1.0';
 const scheduler = new Scheduler(), pdf = new PdfPair(), reportAttempts = new Map();
 let limits = { max_scrolls: 2, max_details: 2, max_reports: 2 };
 let port = null, requests = new Map(), seq = 0, enabled = false, token = '', ticking = null, retryAt = 0, failures = 0, planAt = 0, epoch = 0, nextTimer = null, presentRequested = false;
@@ -176,7 +177,7 @@ async function loadPlan(plan) {
     scheduler.restore(saved.collectionSchedule);
     limits = plan.limits || limits;
     planAt = Date.now();
-    await store({ collectionSchedule: scheduler.snapshot() });
+    await store({ collectionSchedule: scheduler.snapshot(), apiSupportedCount: plan.views.filter(v => v.api_supported === true).length, apiUnsupported: plan.views.filter(v => v.api_supported === false).map(v => v.stream) });
 }
 async function connect() {
     if (port)
@@ -506,7 +507,7 @@ export async function tick() {
     if (ticking)
         return ticking;
     ticking = (async () => {
-        const state = await chrome.storage.local.get(['enabled', 'ownerToken', 'blockedLanes', 'hostBlocked']);
+        const state = await chrome.storage.local.get(['enabled', 'ownerToken', 'blockedLanes', 'hostBlocked', 'backend', 'apiCooldownUntil']);
         enabled = state.enabled === true;
         if (!enabled)
             return;
@@ -537,6 +538,14 @@ export async function tick() {
                 await store({ connection: '사용자 확인 필요 · 수집 일시 중지' });
                 return;
             }
+            if (Number.isFinite(state.apiCooldownUntil) && Date.now() < state.apiCooldownUntil) {
+                await store({ connection: '요청 제한 · 서버 대기 시간 적용' });
+                return;
+            }
+            if (state.backend === 'api') {
+                await apiCycle({ chrome, token, scheduler, active: () => enabled && runEpoch === epoch, request, store, blockHost });
+                return;
+            }
             const owned = await tabs(runEpoch);
             if (!owned)
                 return;
@@ -560,6 +569,8 @@ async function control(action) {
         presentRequested = true;
     if (action === 'stop') {
         enabled = false;
+        if ((await chrome.storage.local.get('backend')).backend === 'api')
+            void abortApi(chrome, token).catch(() => {});
         cancelPaces();
         activeJobs.clear();
         epoch++;
@@ -602,6 +613,15 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
     }
     if (sender.id !== chrome.runtime.id || sender.tab)
         return;
+    if (message.action === 'set_backend') {
+        (async () => {
+            if ((await chrome.storage.local.get('enabled')).enabled || !['api', 'dom'].includes(message.backend)) return { ok: false };
+            scheduler.times.clear(); scheduler.retryAt.clear(); scheduler.failureStreak.clear();
+            await store({ backend: message.backend, collectionSchedule: scheduler.snapshot() });
+            return { ok: true };
+        })().then(reply);
+        return true;
+    }
     if (['start', 'stop', 'resume'].includes(message.action)) {
         control(message.action).then(() => reply({ ok: true }));
         return true;
