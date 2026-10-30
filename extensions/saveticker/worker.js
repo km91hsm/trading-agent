@@ -1,9 +1,10 @@
 import { apiCycle, abortApi } from './api-runner.js';
 import { LANES, Scheduler, laneFor, marker, ownedLane, safePage, PdfPair } from './core.js';
-const WORKER_VERSION = '1.1.0';
+const WORKER_VERSION = '1.2.0';
 const scheduler = new Scheduler(), pdf = new PdfPair(), reportAttempts = new Map();
 let limits = { max_scrolls: 2, max_details: 2, max_reports: 2 };
 let port = null, requests = new Map(), seq = 0, enabled = false, token = '', ticking = null, retryAt = 0, failures = 0, planAt = 0, epoch = 0, nextTimer = null, presentRequested = false;
+let apiSetupRequired = false;
 const handoffReleases = new Map();
 const PDF_BEGIN_ERRORS = { pdf_busy: 'pdf_begin_busy', unknown_report: 'pdf_begin_unknown_report', pdf_cached: 'pdf_begin_cached' };
 const PDF_SAVE_ERRORS = { invalid_pdf_ticket: 'pdf_save_ticket', invalid_pdf_path: 'pdf_save_path', invalid_pdf: 'pdf_save_invalid' };
@@ -85,7 +86,7 @@ function releaseHandoff(nonce) {
         return;
     handoffReleases.delete(nonce);
     clearTimeout(h.timer);
-    void chrome.tabs.sendMessage(h.tabId, { type: 'pdf_release', nonce, token: h.token }).catch(() => { });
+    void chrome.tabs.sendMessage(h.tabId, { type: h.api ? 'api_pdf_release' : 'pdf_release', nonce, token: h.token }).catch(() => { });
 }
 function releaseAllHandoffs() {
     for (const nonce of [...handoffReleases.keys()])
@@ -101,6 +102,7 @@ async function cancelOwnedDownload(id) {
     catch { }
 }
 function discardPdf(p) {
+    p?.resolve?.(false);
     if (pdf.pending === p)
         pdf.clear();
     if (p?.nonce)
@@ -148,10 +150,13 @@ async function finishPdf(item, expected = pdf.pending) {
         return;
     try {
         await request('pdf', { item_id: pair.item_id, ticket: pair.ticket, download_name: pair.download_name });
-        if (enabled && pending.epoch === epoch && !pending.cancelled && !pdf.pending)
+        if (enabled && pending.epoch === epoch && !pending.cancelled && !pdf.pending) {
             await store({ pdfState: 'saved' });
+            pending.resolve?.(true);
+        } else pending.resolve?.(false);
     }
     catch (error) {
+        pending.resolve?.(false);
         if (enabled && pending.epoch === epoch && !pending.cancelled && !pdf.pending)
             await store({ pdfState: nativePdfState('save', error) });
     }
@@ -172,6 +177,7 @@ function request(type, body = {}) {
     return new Promise((resolve, reject) => { const timer = setTimeout(() => { requests.delete(id); reject(Error('host_timeout')); }, 20000); requests.set(id, { resolve, reject, timer }); port.postMessage({ type, id, ...body }); });
 }
 async function loadPlan(plan) {
+    apiSetupRequired = plan.api_setup_required === true;
     scheduler.plan(plan.views);
     const saved = await chrome.storage.local.get('collectionSchedule');
     scheduler.restore(saved.collectionSchedule);
@@ -200,8 +206,10 @@ async function connect() {
         port = null;
         cancelPaces();
         activeJobs.clear();
-        if (pdf.pending)
+        if (pdf.pending) {
             pdf.pending.cancelled = true;
+            pdf.pending.resolve?.(false);
+        }
         pdf.clear();
         releaseAllHandoffs();
         for (const p of requests.values()) {
@@ -321,6 +329,7 @@ async function blockHost() {
     cancelPaces();
     if (pdf.pending) {
         pdf.pending.cancelled = true;
+        pdf.pending.resolve?.(false);
         if (pdf.pending.downloadId !== null)
             void cancelOwnedDownload(pdf.pending.downloadId);
         pdf.clear();
@@ -335,6 +344,51 @@ async function blockHost() {
     for (const lane of LANES) {
         try { await request('state', { lane, state: 'waiting_verification', reason: 'verification_required' }); }
         catch { }
+    }
+}
+async function apiPdf(item, tab, runEpoch) {
+    if (!enabled || runEpoch !== epoch || pdf.pending) return;
+    const ticket = await request('api_pdf_begin', { item_id: item.id });
+    if (!enabled || runEpoch !== epoch) return;
+    const nonce = ticket.job_id;
+    pdf.begin({ ...ticket, item_id: item.id, direct: true, nonce, tabId: tab.id, ownerToken: token, epoch: runEpoch, cancelled: false });
+    const pending = pdf.pending;
+    let timer = null;
+    const completed = new Promise(resolve => { pending.resolve = resolve; });
+    handoffReleases.set(nonce, { tabId: tab.id, token, pending, api: true, timer: null });
+    try {
+        await store({ pdfState: 'api_fetching' });
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        if (!currentPdf(pending)) return;
+        const captured = await command(tab.id, { type: 'api_fetch', token, job: ticket });
+        if (!currentPdf(pending)) return;
+        if ([401, 403, 429].includes(captured?.status)) { discardPdf(pending); return captured; }
+        if (captured?.error || captured?.status !== 200 || captured.url !== ticket.request.url || captured.nonce !== nonce || captured.content_type !== 'application/pdf') throw Error('api_pdf_unverified');
+        const url = new URL(captured.blob_url);
+        if (url.protocol !== 'blob:' || url.origin !== 'https://www.saveticker.com') throw Error('api_pdf_unverified');
+        pdf.expect(url.href);
+        if (!currentPdf(pending)) return;
+        const id = await chrome.downloads.download({ url: url.href, filename: 'SaveTicker/' + ticket.download_name, conflictAction: 'uniquify', saveAs: false });
+        if (!currentPdf(pending)) { await cancelOwnedDownload(id); return; }
+        pdf.bind(id);
+        await store({ pdfState: 'downloading' });
+        timer = setTimeout(() => {
+            if (!currentPdf(pending)) return;
+            pending.cancelled = true;
+            void cancelOwnedDownload(pending.downloadId);
+            discardPdf(pending);
+        }, Math.max(1, Date.parse(ticket.expires_at) - Date.now() - 10000));
+        timer?.unref?.();
+        const [download] = await chrome.downloads.search({ id });
+        if (download?.state === 'complete') await finishPdf(download, pending);
+        if (!await completed && enabled && runEpoch === epoch) throw Error('api_pdf_failed');
+    } catch {
+        if (enabled && runEpoch === epoch) await store({ pdfState: 'api_failed' });
+        throw Error('api_pdf_failed');
+    } finally {
+        clearTimeout(timer);
+        if (currentPdf(pending)) discardPdf(pending);
+        releaseHandoff(nonce);
     }
 }
 async function laneRun(lane, tab, runEpoch) {
@@ -507,7 +561,7 @@ export async function tick() {
     if (ticking)
         return ticking;
     ticking = (async () => {
-        const state = await chrome.storage.local.get(['enabled', 'ownerToken', 'blockedLanes', 'hostBlocked', 'backend', 'apiCooldownUntil']);
+        const state = await chrome.storage.local.get(['enabled', 'ownerToken', 'blockedLanes', 'hostBlocked', 'backend', 'apiCooldownUntil', 'apiSetupRetryAt']);
         enabled = state.enabled === true;
         if (!enabled)
             return;
@@ -531,19 +585,26 @@ export async function tick() {
                 const plan = await request('hello', { protocol: 1 });
                 await loadPlan(plan);
             }
-            await request('ping');
-            if (!enabled || runEpoch !== epoch)
-                return;
             if (scheduler.blocked.size === LANES.length) {
+                // Keep Native diagnostics paused instead of resetting them with ping.
+                for (const lane of LANES) {
+                    if (!enabled || runEpoch !== epoch) return;
+                    await request('state', { lane, state: 'waiting_verification', reason: 'verification_required' });
+                }
+                if (!enabled || runEpoch !== epoch) return;
                 await store({ connection: '사용자 확인 필요 · 수집 일시 중지' });
                 return;
             }
+            await request('ping');
+            if (!enabled || runEpoch !== epoch)
+                return;
             if (Number.isFinite(state.apiCooldownUntil) && Date.now() < state.apiCooldownUntil) {
                 await store({ connection: '요청 제한 · 서버 대기 시간 적용' });
                 return;
             }
             if (state.backend === 'api') {
-                await apiCycle({ chrome, token, scheduler, active: () => enabled && runEpoch === epoch, request, store, blockHost });
+                if (apiSetupRequired && Number.isFinite(state.apiSetupRetryAt) && Date.now() < state.apiSetupRetryAt) return;
+                await apiCycle({ chrome, token, scheduler, active: () => enabled && runEpoch === epoch, request, store, blockHost, setupRequired: apiSetupRequired, onSetup: async () => loadPlan(await request('hello', { protocol: 1 })), onPdf: (item, tab) => apiPdf(item, tab, runEpoch) });
                 return;
             }
             const owned = await tabs(runEpoch);
@@ -578,8 +639,10 @@ async function control(action) {
         nextTimer = null;
         await store({ enabled: false, connection: '중지됨' });
         await chrome.alarms.clear('saveticker');
-        if (pdf.pending)
+        if (pdf.pending) {
             pdf.pending.cancelled = true;
+            pdf.pending.resolve?.(false);
+        }
         pdf.clear();
         releaseAllHandoffs();
         const oldPort = port;

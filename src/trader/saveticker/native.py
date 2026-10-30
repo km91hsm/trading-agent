@@ -16,7 +16,8 @@ from zoneinfo import ZoneInfo
 
 from bs4 import BeautifulSoup
 
-from trader.saveticker import api_contract, dom, jsonfeed
+from trader.saveticker import dom, jsonfeed
+from trader.saveticker.api_jobs import ApiError, BrowserApiSession
 from trader.saveticker.models import Capture, Item, ViewInfo
 from trader.saveticker.reports import save_pdf
 from trader.saveticker.service import View, build_views, lane_for
@@ -232,6 +233,7 @@ class NativeSession:
         self._tickets = {}
         self._store = None
         self._plan = build_plan()
+        self.api = BrowserApiSession(self)
 
     @property
     def store(self):
@@ -260,6 +262,7 @@ class NativeSession:
     def disconnect(self):
         self._jobs.clear()
         self._tickets.clear()
+        self.api.clear()
         self._heartbeat("paused", "extension_disconnected")
         for lane in LANES:
             self._heartbeat("paused", "extension_disconnected", lane)
@@ -284,7 +287,7 @@ class NativeSession:
             if len(json.dumps(result, ensure_ascii=False).encode()) > MAX_REPLY:
                 _reject("response_too_large")
             return result
-        except InvalidMessage as exc:
+        except (InvalidMessage, ApiError) as exc:
             return {**reply, "ok": False, "error": str(exc)}
         except Exception:
             return {**reply, "ok": False, "error": "invalid_message"}
@@ -298,9 +301,10 @@ class NativeSession:
             self._heartbeat("connecting")
             return {
                 "type": "plan",
+                "api_setup_required": self.api.group_id is None,
                 **self._plan,
                 "views": [
-                    {**v, "api_supported": api_contract.descriptor(v) is not None}
+                    {**v, "api_supported": self.api.descriptor(v) is not None}
                     for v in self._plan["views"]
                 ],
             }
@@ -314,16 +318,21 @@ class NativeSession:
             reason = message.get("reason")
             self._heartbeat(state, reason if reason in REASONS else None, lane)
             return {"type": "state_saved"}
-        if kind in {"api_snapshot", "api_cancel"}:
-            return self._api_result(message)
-        if kind in {"begin", "api_begin"}:
+        if kind in {
+            "api_begin",
+            "api_prepare",
+            "api_snapshot",
+            "api_cancel",
+            "api_context_begin",
+            "api_context",
+            "api_pdf_begin",
+        }:
+            return self.api.handle(message)
+        if kind == "begin":
             stream = message.get("stream")
             view = next((v for v in self._plan["views"] if v["stream"] == stream), None)
             if view is None:
                 _reject("unknown_stream")
-            contract = api_contract.descriptor(view) if kind == "api_begin" else None
-            if kind == "api_begin" and contract is None:
-                _reject("api_contract_unverified")
             lane = self._lane(view)
             prior = self._jobs.get(lane)
             if prior and prior["expires_at"] > _now():
@@ -332,7 +341,7 @@ class NativeSession:
                 "job_id": secrets.token_hex(16),
                 "view": view,
                 "expires_at": _now() + timedelta(seconds=120),
-                "backend": "api" if kind == "api_begin" else "dom",
+                "backend": "dom",
             }
             self._jobs[lane] = job
             self._heartbeat(lane=lane)
@@ -340,7 +349,6 @@ class NativeSession:
                 "type": "job",
                 **job,
                 "expires_at": job["expires_at"].isoformat(),
-                **({"request": contract} if contract else {}),
             }
         if kind == "snapshot":
             return self._snapshot(message)
@@ -349,74 +357,6 @@ class NativeSession:
         if kind == "pdf":
             return self._pdf(message)
         _reject("invalid_message")
-
-    def _api_result(self, message):
-        view = next((v for v in self._plan["views"] if v["stream"] == message.get("stream")), None)
-        if view is None:
-            _reject("unknown_stream")
-        lane = self._lane(view)
-        job = self._jobs.get(lane)
-        if (
-            not job
-            or job.get("backend") != "api"
-            or job["job_id"] != message.get("job_id")
-            or job["view"] != view
-            or job["expires_at"] <= _now()
-        ):
-            _reject("invalid_job")
-        if message["type"] == "api_cancel":
-            del self._jobs[lane]
-            if message.get("reason") == "verification_required":
-                self._heartbeat("waiting_verification", "verification_required", lane)
-            else:
-                self._heartbeat("paused", "collection_error", lane)
-            return {"type": "cancelled"}
-        if len(json.dumps(message, ensure_ascii=False).encode()) > MAX_SNAPSHOT:
-            _reject("snapshot_too_large")
-        try:
-            items = api_contract.parse_snapshot(view, message.get("response"))
-        except (ValueError, TypeError, KeyError, AttributeError):
-            _reject("api_response_unverified")
-        if view["stream"] == "news_all":
-            previous = {
-                r["item"]["id"]: Item.model_validate(r["item"])
-                for r in self.store.query(asof=_now(), limit=10000)
-                if r["item"].get("body") and r["item"].get("detail_status") == "ok"
-            }
-            items = [
-                item.model_copy(
-                    update={
-                        k: getattr(previous[item.id], k)
-                        for k in ("body", "detail_status", "published_at")
-                    }
-                )
-                if item.id in previous and not item.body
-                else item
-                for item in items
-            ]
-        if view["stream"] == "news_reports":
-            items = [self._cached_report(item) for item in items]
-        # API page 1 and unverified details/PDF are deliberately partial.
-        capture = Capture(
-            stream=view["stream"],
-            page_url=view["url"],
-            observed_at=_now(),
-            status="partial",
-            reason="partial",
-            items=items,
-            view=ViewInfo(
-                source=view["source"],
-                category=view["category"],
-                tab=view["tab"],
-                month=view["month"],
-                requested_regular=view["regular"] if view["tab"] else None,
-            ),
-            target_interval_s=view["interval_s"],
-        )
-        result = self.store.save(capture)
-        del self._jobs[lane]
-        self._heartbeat("collecting", "partial", lane)
-        return {"type": "saved", **result}
 
     @staticmethod
     def _lane(view):

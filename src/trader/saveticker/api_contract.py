@@ -15,7 +15,7 @@ MAX_BYTES = 2 * 1024 * 1024
 INDEX_SYMBOLS = ("QQQ", "SPY", "DIA", "IWM", "SOXX")
 
 
-def descriptor(view):
+def descriptor(view, *, group_id=None):
     stream = view["stream"]
     if stream == "news_all":
         path, query, kind = (
@@ -47,9 +47,22 @@ def descriptor(view):
             {"start_date": str(first - timedelta(days=1)), "end_date": str(following)},
             "calendar",
         )
+    elif view.get("kind") in {"market", "community"} and view.get("tab") in {
+        "상승",
+        "하락",
+        "거래대금",
+    }:
+        if type(group_id) is not int or not 0 < group_id < 2**53:
+            return None
+        tab = {"상승": "gainers", "하락": "losers", "거래대금": "turnover"}[view["tab"]]
+        path, query, kind = (
+            "/api/stocks/api/v1/tickers/popular",
+            {"tab": tab, "groupId": group_id},
+            "popular",
+        )
+        if tab != "turnover":
+            query["excludeRisky"] = "true"
     else:
-        # groupId necessity, popular regular basis and detail/PDF contracts are
-        # not established. Never manufacture them from route names.
         return None
     return {
         "method": "GET",
@@ -70,24 +83,9 @@ def _rows(data, key, limit):
     return rows
 
 
-def parse_snapshot(view, response):
-    expected = descriptor(view)
-    if not expected or not isinstance(response, dict):
-        raise ValueError("api_contract_unverified")
-    if (
-        response.get("url") != expected["url"]
-        or type(response.get("status")) is not int
-        or response["status"] != 200
-    ):
-        raise ValueError("api_response_unverified")
-    if str(response.get("content_type", "")).split(";", 1)[0].strip().lower() != "application/json":
-        raise ValueError("api_response_unverified")
-    data = response.get("data")
-    if (
-        not isinstance(data, dict)
-        or len(json.dumps(data, ensure_ascii=False, allow_nan=False).encode()) > MAX_BYTES
-    ):
-        raise ValueError("api_shape_unverified")
+def parse_snapshot(view, response, *, group_id=None):
+    expected = descriptor(view, group_id=group_id)
+    data = validate_response(expected, response)
     kind = expected["kind"]
     key = {
         "news": "news_list",
@@ -95,6 +93,7 @@ def parse_snapshot(view, response):
         "calendar": "events",
         "index": "items",
         "top5": "rankings",
+        "popular": "items",
     }[kind]
     rows = _rows(data, key, 500 if kind == "calendar" else 50)
     if kind in {"news", "reports"}:
@@ -159,6 +158,30 @@ def parse_snapshot(view, response):
         ):
             raise ValueError("api_shape_unverified")
         return jsonfeed.extract(data, "news_all")
+    if kind == "popular":
+        expected_tab = {"상승": "gainers", "하락": "losers", "거래대금": "turnover"}[view["tab"]]
+        if (
+            data.get("tab") != expected_tab
+            or data.get("basis") != "live"
+            or data.get("excludeRisky") is not (expected_tab != "turnover")
+        ):
+            raise ValueError("api_basis_unverified")
+        if not rows or len(rows) > 20 or len({r.get("symbol") for r in rows}) != len(rows):
+            raise ValueError("api_shape_unverified")
+        if view["regular"] and data.get("session") != "open":
+            # The UI explicitly equates these only DURING the regular session.
+            raise ValueError("api_regular_unverified")
+        for row in rows:
+            if not isinstance(row.get("symbol"), str) or any(
+                type(row.get(k)) not in (int, float) for k in ("price", "changePercent")
+            ):
+                raise ValueError("api_shape_unverified")
+        items = jsonfeed.extract({"items": rows}, view["stream"], regular=False)
+        return (
+            [i.model_copy(update={"basis": "regular_equivalent_open"}) for i in items]
+            if view["regular"]
+            else items
+        )
     if kind == "index":
         matched = {x.get("symbol"): x for x in rows if x.get("symbol") in INDEX_SYMBOLS}
         if len(matched) != 5 or len([x for x in rows if x.get("symbol") in INDEX_SYMBOLS]) != 5:
@@ -176,3 +199,23 @@ def parse_snapshot(view, response):
         ):
             raise ValueError("api_shape_unverified")
     return jsonfeed.extract({key: rows}, view["stream"], regular=view["regular"])
+
+
+def validate_response(expected, response):
+    if not expected or not isinstance(response, dict):
+        raise ValueError("api_contract_unverified")
+    if (
+        response.get("url") != expected["url"]
+        or type(response.get("status")) is not int
+        or response["status"] != 200
+    ):
+        raise ValueError("api_response_unverified")
+    if str(response.get("content_type", "")).split(";", 1)[0].strip().lower() != "application/json":
+        raise ValueError("api_response_unverified")
+    data = response.get("data")
+    if (
+        not isinstance(data, dict)
+        or len(json.dumps(data, ensure_ascii=False, allow_nan=False).encode()) > MAX_BYTES
+    ):
+        raise ValueError("api_shape_unverified")
+    return data

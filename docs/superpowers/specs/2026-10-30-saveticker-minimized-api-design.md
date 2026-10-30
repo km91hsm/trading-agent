@@ -81,3 +81,15 @@
 
 ## 1.1.0 시험 구현
 사용자의 구현 요청 후 위 설계의 확인된 계약 10/20개를 별도 API 모드로 구현했다. 기본 DOM 모드는 유지하며 중지 상태에서만 사용자가 전환한다. 미확인 인기 순위 10개·뉴스 본문·PDF 저장은 미지원으로 표시하고 추정 요청을 보내지 않는다. 신규 API 경로는 DOM 선택 증거를 사용하지 않는다. 실제 최소화 Chromium/합성 HTTPS에서 production worker/content → Native 검증/Store 저장 검사를 통과했고, Node113개/SaveTicker Python172개 및 frozen smoke 검사가 통과했다. 실제 계정의 숨김 전체 범위 운영은 여전히 미검증이며 PR은 draft다.
+
+## 2026-10-31 추가 검증 중간 기록
+- 운영 SQLite에서 10월30일23:36:49~23:44:48 KST의 캡처를 확인했다. 뉴스14회, TOP5·실시간 지수 각13회, 정규장 지수·각 캘린더 월2회 갱신 후 보안 중지됐다. 장시간 운영 검증은 통과로 처리하지 않는다.
+- 새 진단 탭은 보안 화면이 지속돼 새로고침 없이 닫았다. 이후 브라우저 진단 연결을 사용하지 않고 Native UI로 연 일반 Chrome에서는 로그인된 뉴스/커뮤니티가 정상 표시됐다. 시간·세션 조건도 달라 확정적인 원인 분리 결과라고 단정하지 않는다.
+- Native UI로 Network 목록의 공개 URL·Method만 관찰했다. GET /api/news/detail?id=<목록에서 제공한 news ID>가200이며 JSON은 top-level id/title/content/channel/source/translations 등을 가진다. 실제 본문도 화면에 표시됐다. 계정/인증 헤더는 출력·저장하지 않았다.
+- 커뮤니티 상승의 정상 UI 요청은 GET /api/stocks/api/v1/tickers/popular?tab=gainers&groupId=<현재 그룹>&excludeRisky=true다. 정규장 중 disabled checkbox의 Help는 정확히 ‘정규장 중에는 실시간과 정규장 기준이 같아요’였다. 이 조건을 시장 종료 이후 요청 계약으로 확장해 추정하지 않는다.
+- 격리 Chromium 재시작 검사는 production worker/content를 사용하고 인터넷 DNS를 차단했다. 같은 임시 프로필로 브라우저를 종료·재실행했을 때 enabled/backend/token/collectionSchedule 유지,30초 간격 보존, 자동 재수집, hostBlocked 상태의 재시작 후 요청 억제를 확인했다. 사용자 Chrome 종료·자동 재부팅 검증은 아니다.
+
+추가 관찰: Native UI Network 패널에서 GET /api/stocks/api/v1/watchlist/groups의200 JSON Preview를 확인했다. 응답은 groups 배열이며 각 항목에 groupId, name, isDefault, sortOrder, itemCount, canAddItem 등이 있다. 제한된 초기화는 유일한 isDefault=true 항목의 양의 정수 groupId만 선택하고 다른 개인 설정 필드는 내보내거나 보관하지 않는다. 확인된 계정별 숫자 자체는 코드에 넣지 않는다.
+
+리포트 상세 추가 관찰: GET /api/report/detail?id=<목록 report id>의200 JSON은 report 객체이며 report.id와 report.pdf_url을 포함한다. pdf_url은 /api/uploads/documents/<숫자> 경로였다. 상세 표시에는 GET /api/report/download?url=<인코딩된 경로>&mode=inline, 사용자 다운로드 버튼에는 같은 GET 경로에서 mode가 없는 요청이 사용됐다. 둘 다 정상 UI에서 관찰했다.
+증시 추가 관찰: 초기 turnover 요청은 groupId 없이도200이었고, 그룹 초기화 후 groupId가 붙었다. 증시 상승/하락은 GET /api/stocks/api/v1/tickers/popular?tab=gainers 또는 losers&groupId=<현재 기본 그룹>&excludeRisky=true를 보냈다. 증시 체크박스 Help도 정규장 중 실시간과 정규장 기준이 같다는 안내였다. 시장 종료 후 정규장 전용 매개변수는 여전히 미확인이다.

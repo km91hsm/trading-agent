@@ -23,7 +23,7 @@ test('one observed host challenge blocks every lane across restart/start until e
  assert.deepEqual(new Set(state.blockedLanes),new Set(['news','community','market','background']));
  assert.equal(calls.filter(m=>m.type==='state'&&m.state==='waiting_verification').length,4);
  const action=(index,action)=>new Promise(r=>messages.listeners[index]({action},{id:'ext'},r));
- const beforeBlockedQueries=queries;await first.tick();assert.equal(queries,beforeBlockedQueries,'blocked future tick never queries tabs');
+ const beforeBlockedQueries=queries,beforeBlockedPings=calls.filter(m=>m.type==='ping').length;await first.tick();assert.equal(calls.filter(m=>m.type==='ping').length,beforeBlockedPings,'blocked tick must not report collecting heartbeat');assert.equal(queries,beforeBlockedQueries,'blocked future tick never queries tabs');
  await action(0,'stop');
  const restarted=await import('../worker.js?hostblock-restart');await new Promise(r=>realTimer(r,1));
  state.enabled=true;await restarted.tick();assert.equal(captures,1,'persisted barrier survives new worker');assert.equal(queries,beforeBlockedQueries,'restored barrier prevents tabs lookup/creation/navigation');

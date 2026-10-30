@@ -8,7 +8,7 @@ const TOKEN = 'a'.repeat(32), URL_NEWS = 'https://www.saveticker.com/api/news/li
 const descriptor = { method:'GET',url:URL_NEWS,kind:'news',max_bytes:2097152 };
 async function content(response, override={}) {
  const listeners=[], state={enabled:true,backend:'api',ownerToken:TOKEN}; let calls=0;
- const context={URL,AbortController,TextDecoder,Date,JSON,Set,Object,Number,Promise,RegExp,Error,setTimeout,clearTimeout,
+ const context={URL,URLSearchParams,AbortController,TextDecoder,Uint8Array,Date,JSON,Set,Object,Number,Promise,RegExp,Error,setTimeout,clearTimeout,
  location:{origin:'https://www.saveticker.com',hash:'#trader-saveticker-api='+TOKEN},document:{title:'뉴스',querySelector:()=>null},
  chrome:{runtime:{id:'ext',onMessage:{addListener:f=>listeners.push(f)}},storage:{local:{get:async()=>state}}},
  fetch:async(...args)=>{calls++; assert.equal(args[1].credentials,'same-origin'); assert.equal(args[1].redirect,'manual'); return response;},...override};
@@ -68,4 +68,30 @@ test('persisted 429 cooldown survives worker reload and DOM mode switch',async()
  const ev=()=>({listeners:[],addListener(fn){this.listeners.push(fn);}}), state={enabled:false,backend:'dom',apiCooldownUntil:Date.now()+180000},calls=[];
  const messages=ev();globalThis.chrome={storage:{local:{get:async()=>({...state}),set:async x=>Object.assign(state,x)}},runtime:{id:'ext',onMessage:messages,onStartup:ev(),onInstalled:ev(),connectNative:()=>{const p={onMessage:ev(),onDisconnect:ev(),disconnect(){},postMessage(m){calls.push(m);queueMicrotask(()=>p.onMessage.listeners[0]({ok:true,id:m.id,views:[{stream:'news_all',kind:'news',interval_s:30}]}));}};return p;}},tabs:{query:async()=>{throw Error('must not access tabs during cooldown');}},alarms:{onAlarm:ev(),create:async()=>{},clear:async()=>{}},downloads:{onChanged:ev()}};
  const worker=await import('../worker.js?api-cooldown-restart');state.enabled=true;await worker.tick();assert.ok(!calls.some(c=>c.type==='begin'||c.type==='api_begin'));assert.equal(state.connection,'요청 제한 · 서버 대기 시간 적용');await new Promise(resolve=>messages.listeners[0]({action:'stop'},{id:'ext'},resolve));
+});
+test('project default group context without account names and allow issued detail requests',async()=>{
+ const groupUrl='https://www.saveticker.com/api/stocks/api/v1/watchlist/groups';
+ let r=jsonResponse({groups:[{groupId:42,isDefault:true,name:'private group',itemCount:10}]});Object.defineProperty(r,'url',{value:groupUrl});
+ let c=await content(r);let out=await c.send({job:{job_id:'b'.repeat(32),expires_at:new Date(Date.now()+60000).toISOString(),request:{...descriptor,kind:'groups',url:groupUrl}}});
+ assert.equal(out.data.groups[0].groupId,42);assert.equal(out.data.groups[0].name,undefined);
+ const detailUrl='https://www.saveticker.com/api/news/detail?id=news_one';r=jsonResponse({id:'news_one',title:'One',content:[{type:'text',content:'Body'}]});Object.defineProperty(r,'url',{value:detailUrl});
+ c=await content(r);out=await c.send({job:{job_id:'b'.repeat(32),expires_at:new Date(Date.now()+60000).toISOString(),request:{...descriptor,kind:'news_detail',url:detailUrl}}});assert.equal(out.data.id,'news_one');
+});
+test('PDF handoff reads only bounded PDF and releases only its own blob',async()=>{
+ const pdfUrl='https://www.saveticker.com/api/report/download?url=%2Fapi%2Fuploads%2Fdocuments%2F77';
+ let created=0,revoked=[];class TestURL extends URL {static createObjectURL(){created++;return 'blob:https://www.saveticker.com/own-pdf';}static revokeObjectURL(url){revoked.push(url);}}
+ let r=new Response('%PDF-1.4\nSynthetic PDF',{headers:{'content-type':'application/pdf'}});Object.defineProperty(r,'url',{value:pdfUrl});
+ let c=await content(r,{URL:TestURL,Blob,Uint8Array});let out=await c.send({job:{job_id:'b'.repeat(32),expires_at:new Date(Date.now()+60000).toISOString(),request:{method:'GET',url:pdfUrl,kind:'pdf',max_bytes:25*1024*1024}}});assert.equal(out.blob_url,'blob:https://www.saveticker.com/own-pdf');assert.equal(created,1);
+ await c.send({type:'api_pdf_release',nonce:'c'.repeat(32)});assert.deepEqual(revoked,[]);
+ await c.send({type:'api_pdf_release',nonce:'b'.repeat(32)});assert.deepEqual(revoked,['blob:https://www.saveticker.com/own-pdf']);
+ r=new Response('not PDF',{headers:{'content-type':'application/pdf'}});Object.defineProperty(r,'url',{value:pdfUrl});c=await content(r,{URL:TestURL,Blob,Uint8Array});out=await c.send({job:{job_id:'b'.repeat(32),expires_at:new Date(Date.now()+60000).toISOString(),request:{method:'GET',url:pdfUrl,kind:'pdf',max_bytes:25*1024*1024}}});assert.equal(out.error,'api_pdf_unverified');assert.equal(created,1);
+});
+test('runner fetches only Native-issued children and sends correlated detail envelopes',async()=>{
+ let step=0;const detailUrl='https://www.saveticker.com/api/news/detail?id=news_one';
+ const r=runner(undefined,{deps:{request:async(type,body)=>{if(type==='api_begin')return {job_id:'b'.repeat(32),request:descriptor};if(type==='api_prepare')return {requests:[{job_id:'b'.repeat(32),request:{...descriptor,url:detailUrl,kind:'news_detail'}}]};if(type==='api_snapshot'&&body.stream==='news_all'){assert.equal(body.details[0].url,detailUrl);step++;}return {status:'partial',count:1};},chrome:{tabs:{query:async()=>[{id:1,url:'https://www.saveticker.com/news#trader-saveticker-api='+TOKEN}],sendMessage:async(_id,m)=>({status:200,url:m.job.request.url,content_type:'application/json',data:m.job.request.kind==='news_detail'?{id:'news_one',title:'One',content:'Body'}:{news_list:[{id:'news_one',title:'One'}]}})}}}});
+ await r.run();assert.equal(step,1);
+});
+test('failed default-group setup backs off rather than re-requesting every tick',async()=>{
+ const r=runner(undefined,{deps:{setupRequired:true,request:async()=>({job_id:'b'.repeat(32),request:descriptor}),chrome:{tabs:{query:async()=>[{id:1,url:'https://www.saveticker.com/news#trader-saveticker-api='+TOKEN}],sendMessage:async()=>({error:'api_context_unverified'})}}}});
+ await r.run();assert.ok(r.state.apiSetupRetryAt>=Date.now()+59000);
 });

@@ -13,7 +13,7 @@ export async function abortApi(chrome, token) {
     for (const tab of tabs.filter(t => owned(t, token)))
         try { await chrome.tabs.sendMessage(tab.id, { type: 'api_abort', token }); } catch { }
 }
-export async function apiCycle({ chrome, token, scheduler, active, request, store, blockHost, wait = ms => new Promise(resolve => setTimeout(resolve, ms)) }) {
+export async function apiCycle({ chrome, token, scheduler, active, request, store, blockHost, setupRequired = false, onSetup = async () => {}, onPdf = async () => {}, wait = ms => new Promise(resolve => setTimeout(resolve, ms)) }) {
     if (!active()) return;
     const candidates = await chrome.tabs.query({ url: 'https://www.saveticker.com/*' });
     if (!active()) return;
@@ -28,6 +28,28 @@ export async function apiCycle({ chrome, token, scheduler, active, request, stor
         // Do not send a message or navigate repeatedly while the page loads.
         return;
     }
+    const fetchJob = async job => {
+        await wait(2000);
+        if (!active()) return null;
+        return chrome.tabs.sendMessage(tab.id, { type: 'api_fetch', token, job });
+    };
+    const blocked = async response => {
+        if (response?.status === 401 || response?.status === 403) { await blockHost(); return true; }
+        if (response?.status === 429) { await store({ apiCooldownUntil: retryDeadline(response.retry_after), connection: '요청 제한 · 서버 대기 시간 적용' }); return true; }
+        return false;
+    };
+    if (setupRequired) {
+        try {
+            const job = await request('api_context_begin');
+            if (!active()) return;
+            const response = await fetchJob(job);
+            if (!active() || await blocked(response)) return;
+            if (!response || response.error) throw Error('api_context_unverified');
+            await request('api_context', { job_id: job.job_id, response });
+            if (active()) { await store({ apiSetupRetryAt: 0 }); await onSetup(); }
+        } catch { if (active()) await store({ apiSetupRetryAt: Date.now() + 60000, connection: 'API 기본 그룹 확인 실패 · 다음 주기 대기' }); }
+        return;
+    }
     for (const lane of LANES) {
         if (!active()) break;
         const view = scheduler.next(Date.now(), lane);
@@ -36,9 +58,7 @@ export async function apiCycle({ chrome, token, scheduler, active, request, stor
         try {
             job = await request('api_begin', { stream: view.stream });
             if (!active()) return;
-            await wait(2000);
-            if (!active()) return;
-            const response = await chrome.tabs.sendMessage(tab.id, { type: 'api_fetch', token, job });
+            const response = await fetchJob(job);
             if (!active()) return;
             if (response?.status === 401 || response?.status === 403) {
                 authBlocked = true;
@@ -51,12 +71,31 @@ export async function apiCycle({ chrome, token, scheduler, active, request, stor
                 return;
             }
             if (!response || response.error) throw Error(response?.error || 'api_content_unavailable');
-            const result = await request('api_snapshot', { stream: view.stream, job_id: job.job_id, response });
+            const details = [];
+            if (view.stream === 'news_all' || view.stream === 'news_reports') {
+                const prepared = await request('api_prepare', { stream: view.stream, job_id: job.job_id, response });
+                if (!active()) return;
+                for (const child of (prepared.requests || []).slice(0, 2)) {
+                    const detail = await fetchJob(child);
+                    if (!active()) return;
+                    if (await blocked(detail)) { authBlocked = detail?.status !== 429; return; }
+                    if (!detail || detail.error) throw Error('api_detail_unverified');
+                    details.push(detail);
+                }
+            }
+            const result = await request('api_snapshot', { stream: view.stream, job_id: job.job_id, response, details });
             saved = true;
             if (!active()) return;
             failed = false;
-            await store({ ['lane_' + lane]: 'API 부분 수집 · ' + (result.count || 0) + '개', ['lane_error_' + lane]: null, ...(result.count > 0 ? { lastCollected: Date.now() } : {}), apiCoverage: '일부 계약 검증 중 · 본문·PDF·순위 조건 미완료' });
+            for (const item of (result.pdf_items || []).slice(0, 1)) {
+                if (!active()) return;
+                const result = await onPdf(item, tab);
+                if (!active()) return;
+                if (result && await blocked(result)) return;
+            }
+            await store({ ['lane_' + lane]: 'API 부분 수집 · ' + (result.count || 0) + '개', ['lane_error_' + lane]: null, ...(result.count > 0 ? { lastCollected: Date.now() } : {}), apiCoverage: 'API 부분 수집 · 정규장 별도 조건은 시장 상태에 따라 대기' });
         } catch (error) {
+            failed = true;
             if (!active()) return;
             const unsupported = error?.message === 'api_contract_unverified';
             await store({ ['lane_' + lane]: unsupported ? 'API 요청 조건 미확인 · 대기' : 'API 수집 오류 · 다음 주기 대기', ['lane_error_' + lane]: unsupported ? 'api_contract_unverified' : 'api_request_failed' });

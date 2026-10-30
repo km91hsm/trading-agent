@@ -52,3 +52,20 @@ Interfaces: api-content accepts api_fetch with same-extension sender, owner toke
 - Production pacing is 2 seconds per API request and existing plan intervals remain unchanged. 429 deadline is persisted before job cleanup and honored by both modes.
 
 - Final checks: Node 113 passed; SaveTicker pytest 172 passed in 78.34s; Ruff and diff check passed. Frozen bundle smoke/selfcheck passed. Frozen Native hello/api_begin/api_snapshot saved one synthetic item and reported 10/20 API contracts. No site requests were made during implementation or installation. Chrome reload/live acceptance pending.
+
+### Task 4: Remaining-contract implementation and acceptance
+- [x] Isolated browser restart: real schedule interval/token/backend persist; automatic collection resumes; persisted hostBlocked suppresses requests. Full SaveTicker suite173 passed.
+- [x] Normal UI confirms default group initialization, all live ranking query forms, news detail id correlation, report.pdf_url and PDF download request. Do not store personal group names or credential headers.
+- [x] Extract API-only job state to api_jobs.py; initialize only unique default groupId from projected groups response.
+- [x] Add Native-issued enrichment requests (max2 news details and max1 report detail), bind exact URLs/source IDs/base snapshot hash, and merge only correlated bodies.
+- [x] Add read-only popular contracts. Regular equivalence is permitted only with response session=open and basis=live under the exact observed UI rule; other regular conditions remain explicitly unverified.
+- [x] Add API PDF fetch from Native-verified report.pdf_url; bounded same-origin PDF blob handoff reuses returned download ID, issued filename and existing Native ticket/PDF validation. No new permissions or MAIN hooks.
+- [x] Red/green protocol, ownership, stop/late-response, malformed/cross-ID, auth/429, download/PDF tests; real isolated hidden pipeline and independent review.
+- [ ] Build/install while stopped, user manual reload only, then actual account acceptance with normal Chrome UI; genuine long-running and market-closed regular acceptance remain pending until demonstrated.
+
+Ruling: per-task user approval is not repeated; the user explicitly authorized implementation and the remaining validation. Normal Chrome via native UI is used for observation without browser-driver attachment. DevTools Network is metadata/collection JSON only; authentication headers are not copied.
+
+- 1.2.0 review found no P1/P2. Follow-up guard prevents stopped/old epochs from overwriting block diagnostics. Red test reproduced Native ping falsely reporting collecting while hostBlocked; block ticks now send waiting_verification instead.
+- Isolated validation: Node120 passed. Hidden API/restart/real download + real Native attachment tests3 passed in60.04s after unlocking. Full suite while OS locked had182 pass/2 visibility failures; these are retained as failed evidence, not counted as hidden passes. Unlocked full suite184 passed in141.33s.
+- Real 1.1.0 no-driver/no-DevTools minimized run resumed03:14:28 KST; last news03:20:23 and calendar03:20:28. Native UI subsequently confirmed re-verification screen and hostBlocked. Operator collector explicitly stopped; no repeated refresh or automatic resume. This is a failed sustained-operation acceptance, independent of synthetic success.
+- Frozen Native synthetic proof supports20 contracts after projected default-group setup; correlated news body, open-session regular rank, PDF ticket and1-page attachment passed. Bundle smoke/selfcheck passed. Final package refresh pending after diagnostic guard change.
