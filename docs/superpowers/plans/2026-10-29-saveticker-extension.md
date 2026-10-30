@@ -95,3 +95,14 @@ Files: src/trader/saveticker/bridge_install.py, cli.py, automation.py, src/trade
 -1.0.8은 HTMLAnchorElement.prototype에만 dispatchEvent wrapper를 제한하고, 정확한 버튼 클릭 이후 same-origin blob만 전달한다. EventTarget 전역은 바꾸지 않으며 원래 상속 descriptor를 복원한다. 후보/버튼 불일치도 고정 진단 코드로 구분한다.
 - 확장93개와 실제 isolated Chromium click/dispatch 두 경로(19.71s), ruff/diff 통과. 독립 리뷰 P1/P2 없음. frozen Native 코드는 변경하지 않았다. 빌드/실제 자동 PDF는 검증 대기.
 - 진단 창이 수집 창을 완전히 가린 뒤 visible=false와 선택 오류 재발을 확인했다. 표시된 전용 창을 유지해야 하는 기존 제한이 남아 있으며, 일반 데이터 초기20개 성공만으로 가려진 창의 무인 동작을 보장하지 않는다.
+
+### 창 가림 제약에 대한 사용자 질문 (2026-10-30)
+- 현재 DOM 방식은 완전히 가림/최소화에서 화면 선택 오류가 재발했고1.0.8도 community 선택 오류가 남았다. 표시된 화면을 유지하는 임시 제한을 없앤 것으로 주장하지 않는다.
+- 일반 Chrome content의 same-origin API 요청을 worker가 예약하는 방향을 읽기 검토했다. jsonfeed에 뉴스/list·detail, calendar/events, tickers/popular, market-panel, community/feed/ticker-rankings 응답 파서는 있다. 요청 method/query/body·page/sort/regular/month 계약과 추가 인증 헤더 필요 여부는 미확인이다.
+- 구현 전 정상 UI 요청의 허용 경로·method·비밀이 아닌 매개변수를 확인해야 한다. Native에도 DOM 선택값을 꾸미는 대신 발급 작업별 API 요청 계약 검증을 별도로 추가해야 한다. API 방식도 Chrome 종료/동결/폐기/시스템 절전 동작을 실기로 검증하기 전 보장하지 않는다. 실험적 Chrome flag만으로 해결됐다고 주장하지 않는다.
+
+### 1.0.9 파일명 원인 확정 및 후보 준비
+-1.0.8에서 blob 전달/다운로드가 진행됐으나 파일명이 blob UUID로 저장돼 filename_unverified가 발생했다. 정상 Chrome 동작(default)과 임시 다운로드 디렉터리에서 실제 production worker·fake Native·합성 HTTPS로 A/B했다. 기존 empty onDeterminingFilename 콜백은 발급 파일명을 잃고 실패, 콜백 제거는 정확한 SaveTicker/<발급명>·일치 ticket/item/name Native 전달에 성공했다. 추가 파일명 hint는 최종 코드에 넣지 않았다.
+- CDP allow/allowAndName도 정상 파일명 결정 경로를 우회하므로 검증 환경에서 제거했다. 테스트는 temp profile prefs와 default 동작을 사용한다. 사용자 Chrome의 해당 진단 설정 복원 명령은 CUA raw CDP에서 지원되지 않았으며, 실제 계정 검증 시 도구 연결 없는 정상 Chrome 재시작을 검토한다. 경로/ID/ticket/PDF 검증은 완화하지 않았다.
+- 최종109 Node93개, 실제 isolated Chromium3개(27.57s), ruff/diff 및 macOS bundle/selfcheck 통과. 독립 검토 P1/P2 없음. Native Python 변경 없음. Chrome 다운로드 API 문서의 onDeterminingFilename 계약과도 확인했다: https://developer.chrome.com/docs/extensions/reference/api/downloads#event-onDeterminingFilename
+- Mac이 다시 잠겨 사용자 해제를 요청했다. extension-next-1.0.9 및 native-runtime/Trader-next-1.0.9.app으로 후보만 준비하며 현재 설치본은 교체하지 않는다. 실제 계정의 자동 PDF 저장은 여전히 미검증이다.

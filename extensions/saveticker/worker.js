@@ -1,5 +1,5 @@
 import { LANES, Scheduler, laneFor, marker, ownedLane, safePage, PdfPair } from './core.js';
-const WORKER_VERSION = '1.0.8';
+const WORKER_VERSION = '1.0.9';
 const scheduler = new Scheduler(), pdf = new PdfPair(), reportAttempts = new Map();
 let limits = { max_scrolls: 2, max_details: 2, max_reports: 2 };
 let port = null, requests = new Map(), seq = 0, enabled = false, token = '', ticking = null, retryAt = 0, failures = 0, planAt = 0, epoch = 0, nextTimer = null, presentRequested = false;
@@ -583,8 +583,7 @@ const restore = async (present = false) => {
 chrome.runtime.onStartup.addListener(() => restore(true));
 chrome.runtime.onInstalled.addListener(() => restore(false));
 void restore();
-// Direct download API supplies the issued filename; never rename unrelated downloads.
-chrome.downloads.onDeterminingFilename.addListener((_item, suggest) => suggest());
+// The download API return is the sole ID binding; no global filename observer.
 chrome.downloads.onChanged.addListener(async (delta) => {
     const pending = pdf.pending;
     if (!currentPdf(pending) || delta.id !== pending.downloadId)
