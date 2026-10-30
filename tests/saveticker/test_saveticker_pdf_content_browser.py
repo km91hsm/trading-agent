@@ -20,11 +20,15 @@ _TITLE = "2026년 10월 29일 (목요일)"
 _WORKER = """
 void chrome.storage.local.set({enabled:false});
 globalThis.probePaces = [];
+// This bridge-only fixture tests IPC and DOM provenance, not delay duration.
+// The production-worker browser test covers actual pacing. Keep fake replies
+// short so an unconnected test worker cannot outlive the bounded MAIN lease.
 chrome.runtime.onMessage.addListener((message,sender,reply)=>{
     if(message.type==='pace'){
-        globalThis.probePaces.push({sameExtension:sender.id===chrome.runtime.id,
-                                   tokenMatches:message.ownerToken==='b'.repeat(32)});
-        setTimeout(()=>reply({ok:true}),2000);
+        const pace={sameExtension:sender.id===chrome.runtime.id,
+                    tokenMatches:message.ownerToken==='b'.repeat(32),at:Date.now()};
+        globalThis.probePaces.push(pace);
+        setTimeout(()=>{pace.repliedAt=Date.now();reply({ok:true});},100);
         return true;
     }
     if(message.type==='pdf_abort'){reply({ok:true});return;}
@@ -36,7 +40,8 @@ window.probeMessages=[];window.probeClicks=0;
 window.addEventListener('message',event=>{
     if(event.data?.channel!=='trader-saveticker-pdf')return;
     window.probeMessages.push({type:event.data.type,origin:event.origin,
-        sourceWindow:event.source===window,nonceMatches:event.data.nonce==='a'.repeat(32)});
+        sourceWindow:event.source===window,nonceMatches:event.data.nonce==='a'.repeat(32),
+        reason:event.data.reason,at:Date.now()});
 });
 document.querySelector('[aria-label="PDF 다운로드"]').addEventListener('click',()=>{
     window.probeClicks++;
@@ -149,6 +154,7 @@ def _probe_content_handoff(tmp_path: Path, *, dispatch: bool = False) -> dict:
                 ),
                 "nonce_matches": reply.get("nonce") == _NONCE,
                 "pace_requests": len(paces),
+                "pace_timings": paces,
                 "pace_authentication": all(p["sameExtension"] and p["tokenMatches"] for p in paces),
                 "page_button_clicks": page.evaluate("()=>window.probeClicks"),
                 "events": events,

@@ -42,5 +42,48 @@ test('full production plan preserves every lane, regular/live mode, and five mon
     assert.equal(scheduler.next(1000000), undefined);
 });
 test('PDF cannot claim generic concurrent download without exact observed URL', () => { const p = new PdfPair(); p.begin({ ticket: 't', download_name: 'a'.repeat(32) + '-1234567890123.pdf', item_id: 'i' }, 1000); const item = { id: 4, startTime: new Date(1100).toISOString(), referrer: 'https://www.saveticker.com/news', mime: 'application/pdf', url: 'blob:https://www.saveticker.com/other' }; assert.equal(p.claim(item), null); p.expect('blob:https://www.saveticker.com/expected'); assert.equal(p.claim(item), null); assert.ok(p.claim({ ...item, url: 'blob:https://www.saveticker.com/expected' })); });
-test('failed 900-second report retries at 30 seconds without starving unattempted cold months', () => { const s = new Scheduler(), report = { stream: 'news_reports', kind: 'news', interval_s: 900 }, month = { stream: 'calendar_2026-10', kind: 'calendar', interval_s: 300 }; s.plan([report, month]); assert.equal(s.next(100000).stream, report.stream); s.done(report, 100000, true); assert.equal(s.times.get(report.stream), 100000, 'real attempt time is never backdated'); assert.equal(s.next(130000).stream, month.stream, 'unattempted month remains first'); s.done(month, 130000); assert.equal(s.next(130000).stream, report.stream); s.done(report, 130000, false); assert.equal(s.next(160000), undefined); });
+test('failed report retains normal interval and never starves untouched months', () => {
+ const s=new Scheduler(), report={stream:'news_reports',kind:'news',interval_s:900}, month={stream:'calendar_2026-10',kind:'calendar',interval_s:300};
+ s.plan([report,month]);s.done(report,100000,true);
+ assert.equal(s.next(130000).stream,month.stream);s.done(month,130000);
+ assert.equal(s.next(130000),undefined);s.plan([report]);assert.equal(s.next(999999,'background'),undefined);
+ assert.equal(s.next(1000000).stream,report.stream);
+});
+test('failure deadline dominates normal due time, grows boundedly and success resets streak',()=>{
+ const s=new Scheduler(),v={stream:'news_all',kind:'news',interval_s:30};s.plan([v]);
+ s.done(v,0,true);assert.equal(s.next(30000),undefined);assert.equal(s.next(60000),v);
+ s.done(v,60000,true);assert.equal(s.next(90000),undefined);assert.equal(s.next(179999),undefined);assert.equal(s.next(180000),v);
+ let at=180000;
+ for(let n=0;n<10;n++){s.done(v,at,true);const deadline=s.retryAt.get(v.stream);assert.ok(deadline-at<=900000);assert.equal(s.next(deadline-1),undefined);at=deadline;}
+ s.done(v,at,false);assert.equal(s.next(at+30000),v);
+ s.done(v,at+30000,true);assert.equal(s.retryAt.get(v.stream),at+90000,'success clears previous failure streak');
+ const slow={stream:'news_reports',kind:'news',interval_s:1800};s.plan([slow]);s.done(slow,0,true);assert.equal(s.retryAt.get(slow.stream),1800000,'cap never shortens a normal interval');
+});
 test('direct PDF mode binds returned download id and ignores generic concurrent downloads', () => { const p = new PdfPair(); p.begin({ ticket: 't', download_name: 'a'.repeat(32) + '-1234567890123.pdf', item_id: 'i', direct: true }); p.expect('blob:https://www.saveticker.com/report'); assert.equal(p.claim({ id: 9, url: 'blob:https://www.saveticker.com/report', referrer: 'https://www.saveticker.com/news', startTime: new Date().toISOString(), mime: 'application/pdf' }), null); p.bind(42); assert.equal(p.complete({ id: 9, state: 'complete', filename: '/Downloads/SaveTicker/' + p.pending.download_name }), null); assert.ok(p.complete({ id: 42, state: 'complete', filename: '/Downloads/SaveTicker/' + p.pending.download_name })); });
+test('validated schedule persists normal cooldown and failure streak across worker restart',()=>{
+ const v={stream:'news_all',kind:'news',interval_s:30},s=new Scheduler();s.plan([v]);
+ s.done(v,100000,true);s.done(v,160000,true);
+ const restored=new Scheduler();restored.plan([v]);restored.restore(s.snapshot(),170000);
+ assert.equal(restored.next(200000),undefined);assert.equal(restored.next(279999),undefined);assert.equal(restored.next(280000),v);
+ restored.done(v,280000,true);assert.equal(restored.retryAt.get(v.stream),520000,'third failure retains streak');
+ restored.done(v,520000,false);
+ const success=new Scheduler();success.plan([v]);success.restore(restored.snapshot(),525000);
+ assert.equal(success.next(549999),undefined);assert.equal(success.next(550000),v);
+ success.done(v,550000,true);assert.equal(success.retryAt.get(v.stream),610000,'persisted success clears streak');
+});
+test('schedule restore rejects unknown streams, malformed times and excessive deadlines',()=>{
+ const v={stream:'news_all',kind:'news',interval_s:30},now=1000000;
+ for(const invalid of [null,{},Infinity,NaN,-1,1000001]){
+  const s=new Scheduler();s.plan([v]);s.restore({version:1,entries:[{stream:v.stream,at:invalid}]},now);assert.equal(s.next(now),v);
+ }
+ for(const row of [
+  {stream:'unknown',at:now},
+  {stream:v.stream,at:now,retry_at:Infinity,failure_streak:1},
+  {stream:v.stream,at:now,retry_at:now+900001,failure_streak:1},
+  {stream:v.stream,at:now,retry_at:now+60000,failure_streak:NaN},
+  {stream:v.stream,at:now,retry_at:now+1000,failure_streak:1},
+  {stream:v.stream,at:now,retry_at:now+45000,failure_streak:1},
+  {stream:v.stream,at:now,retry_at:now+60000,failure_streak:999},
+ ]){const s=new Scheduler();s.plan([v]);s.restore({version:1,entries:[row]},now);assert.equal(s.next(now),v);assert.equal(s.times.size,0);}
+ const s=new Scheduler();s.plan([v]);s.done(v,now);s.plan([]);assert.deepEqual(s.snapshot(),{version:1,entries:[]});
+});

@@ -82,7 +82,11 @@
         n.click();
         await pause();
     }
-    function barrier() { const s = text(document.body); return /사람인지 확인|보안 확인|Verify you are human|Access Denied|Too Many Requests|잠시 후 다시|로그인이 필요|이메일로 로그인/i.test(s); }
+    function barrier() {
+        const challenges = new Set(['접속 환경을 확인하고 있습니다', 'Checking your connection', 'Just a moment']);
+        if ([document.title.trim(), ...[...document.querySelectorAll('h1')].filter(n => visible(n, true)).map(text)].some(value => challenges.has(value)))
+            return true;
+        const s = text(document.body); return /사람인지 확인|보안 확인|Verify you are human|Access Denied|Too Many Requests|잠시 후 다시|로그인이 필요|이메일로 로그인/i.test(s); }
     function auth() { return barrier() || !find('프로필 메뉴'); }
     function month() { const previous = find('이전'); const m = text(previous?.parentElement).match(/(\d{4})년\s*(\d{1,2})월/); return m ? `${m[1]}-${m[2].padStart(2, '0')}` : undefined; }
     function clean(root) {

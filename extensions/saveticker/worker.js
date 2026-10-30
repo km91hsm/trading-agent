@@ -1,5 +1,5 @@
 import { LANES, Scheduler, laneFor, marker, ownedLane, safePage, PdfPair } from './core.js';
-const WORKER_VERSION = '1.0.9';
+const WORKER_VERSION = '1.0.10';
 const scheduler = new Scheduler(), pdf = new PdfPair(), reportAttempts = new Map();
 let limits = { max_scrolls: 2, max_details: 2, max_reports: 2 };
 let port = null, requests = new Map(), seq = 0, enabled = false, token = '', ticking = null, retryAt = 0, failures = 0, planAt = 0, epoch = 0, nextTimer = null, presentRequested = false;
@@ -170,6 +170,14 @@ function request(type, body = {}) {
     const id = ++seq;
     return new Promise((resolve, reject) => { const timer = setTimeout(() => { requests.delete(id); reject(Error('host_timeout')); }, 20000); requests.set(id, { resolve, reject, timer }); port.postMessage({ type, id, ...body }); });
 }
+async function loadPlan(plan) {
+    scheduler.plan(plan.views);
+    const saved = await chrome.storage.local.get('collectionSchedule');
+    scheduler.restore(saved.collectionSchedule);
+    limits = plan.limits || limits;
+    planAt = Date.now();
+    await store({ collectionSchedule: scheduler.snapshot() });
+}
 async function connect() {
     if (port)
         return;
@@ -204,9 +212,7 @@ async function connect() {
         void store({ connection: enabled ? '연결 끊김 · 다시 연결 대기' : '중지됨' });
     });
     const plan = await request('hello', { protocol: 1 });
-    scheduler.plan(plan.views);
-    limits = plan.limits || limits;
-    planAt = Date.now();
+    await loadPlan(plan);
     failures = 0;
     await store({ connection: '연결됨', planCount: plan.views.length, workerVersion: WORKER_VERSION });
 }
@@ -308,6 +314,28 @@ async function command(tabId, message) {
     }
     throw Error('tab_unavailable');
 }
+async function blockHost() {
+    for (const lane of LANES)
+        scheduler.block(lane);
+    cancelPaces();
+    if (pdf.pending) {
+        pdf.pending.cancelled = true;
+        if (pdf.pending.downloadId !== null)
+            void cancelOwnedDownload(pdf.pending.downloadId);
+        pdf.clear();
+    }
+    releaseAllHandoffs();
+    const status = { blockedLanes: [...LANES], hostBlocked: true, connection: '사용자 확인 필요 · 수집 일시 중지', lastAttempt: Date.now() };
+    for (const lane of LANES) {
+        status['lane_' + lane] = '사용자 확인 필요';
+        status['lane_error_' + lane] = null;
+    }
+    await store(status);
+    for (const lane of LANES) {
+        try { await request('state', { lane, state: 'waiting_verification', reason: 'verification_required' }); }
+        catch { }
+    }
+}
 async function laneRun(lane, tab, runEpoch) {
     const view = scheduler.next(Date.now(), lane);
     if (!view)
@@ -342,14 +370,17 @@ async function laneRun(lane, tab, runEpoch) {
         const capture = await command(tab.id, { type: 'collect', job: { ...job, limits }, token });
         if (!enabled || runEpoch !== epoch)
             return;
+        const contentBlocked = capture.status === 'auth_required';
+        if (contentBlocked)
+            await blockHost();
         failureCode = 'snapshot_failed';
         const saved = await request('snapshot', { ...capture, stream: view.stream, job_id: job.job_id });
         consumed = true;
         failureCode = 'postprocess_failed';
         if (capture.status === 'auth_required' || saved.status === 'auth_required') {
-            scheduler.block(lane);
-            await store({ blockedLanes: [...scheduler.blocked] });
-            await request('state', { lane, state: 'waiting_verification', reason: 'verification_required' });
+            if (!contentBlocked)
+                await blockHost();
+            return;
         }
         if (pdf.pending && Date.now() - pdf.pending.at > 120000)
             pdf.clear();
@@ -459,24 +490,30 @@ async function laneRun(lane, tab, runEpoch) {
                 await store({ ['lane_release_error_' + lane]: 'job_release_failed' });
             }
         }
-        await store({ ['lane_' + lane]: '수집 오류 · 다음 주기 대기', ['lane_error_' + lane]: code });
+        if (scheduler.blocked.size === LANES.length)
+            await store({ ['lane_' + lane]: '사용자 확인 필요', ['lane_error_' + lane]: null });
+        else
+            await store({ ['lane_' + lane]: '수집 오류 · 다음 주기 대기', ['lane_error_' + lane]: code });
     }
     finally {
         if (activeJobs.get(tab.id) === proof)
             activeJobs.delete(tab.id);
         scheduler.done(view, Date.now(), failed);
+        await store({ collectionSchedule: scheduler.snapshot() });
     }
 }
 export async function tick() {
     if (ticking)
         return ticking;
     ticking = (async () => {
-        const state = await chrome.storage.local.get(['enabled', 'ownerToken', 'blockedLanes']);
+        const state = await chrome.storage.local.get(['enabled', 'ownerToken', 'blockedLanes', 'hostBlocked']);
         enabled = state.enabled === true;
         if (!enabled)
             return;
-        for (const l of state.blockedLanes || [])
-            scheduler.block(l);
+        if (state.hostBlocked || (state.blockedLanes || []).length) {
+            for (const lane of LANES)
+                scheduler.block(lane);
+        }
         token = state.ownerToken;
         if (!token) {
             token = crypto.randomUUID().replaceAll('-', '');
@@ -491,18 +528,20 @@ export async function tick() {
                 return;
             if (Date.now() - planAt > 300000) {
                 const plan = await request('hello', { protocol: 1 });
-                scheduler.plan(plan.views);
-                limits = plan.limits || limits;
-                planAt = Date.now();
+                await loadPlan(plan);
             }
             await request('ping');
             if (!enabled || runEpoch !== epoch)
                 return;
+            if (scheduler.blocked.size === LANES.length) {
+                await store({ connection: '사용자 확인 필요 · 수집 일시 중지' });
+                return;
+            }
             const owned = await tabs(runEpoch);
             if (!owned)
                 return;
             for (const lane of LANES) {
-                if (!enabled || runEpoch !== epoch)
+                if (!enabled || runEpoch !== epoch || scheduler.blocked.size === LANES.length)
                     break;
                 if (owned[lane])
                     await laneRun(lane, owned[lane], runEpoch);
@@ -544,7 +583,7 @@ async function control(action) {
     }
     if (action === 'resume') {
         scheduler.resume();
-        await store({ blockedLanes: [] });
+        await store({ blockedLanes: [], hostBlocked: false });
     }
     await store({ enabled: true });
     enabled = true;

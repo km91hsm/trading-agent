@@ -46,10 +46,13 @@ test('pendingUrl-only new tabs collect; failed commands consume job and recover 
     failContent = false;
     Date.now = () => realNow() + 31000;
     await worker.tick();
+    assert.equal(calls.filter(m => m.type === 'begin').length, 1, 'failed stream stays quiet through its backoff');
+    Date.now = () => realNow() + 61000;
+    await worker.tick();
     assert.equal(calls.filter(m => m.type === 'snapshot' && m.status === 'partial').length, 1, 'pendingUrl-only tab recovers and saves');
     assert.ok(state.lastCollected);
     forceBusy = true;
-    Date.now = () => realNow() + 62000;
+    Date.now = () => realNow() + 92000;
     await worker.tick();
     assert.equal(state.lane_error_market, 'lane_busy');
     assert.equal(state.connection, '연결됨');

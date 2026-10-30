@@ -110,3 +110,10 @@ Files: src/trader/saveticker/bridge_install.py, cli.py, automation.py, src/trade
 ### 사용자 요구 확정 및109 확장 적용
 - 사용자 요구: 전용 창은 허용하되 뒤로 숨기거나 최소화해도 수집을 계속하고 싶다. 현재 DOM 방식의 가림 제약을 해결한 것으로 주장하지 않으며 API 요청 계약 검증을 다음 단계로 진행한다.
 - 잠금 해제 후 사용자의 Chrome 조작과 자동 클릭이 충돌했다.109는 Native Python 변경이 없으므로 실행 중 Native를 교체하지 않고 외부 unpacked extension 디렉터리만 원자적으로 교체했다. extension-before-1.0.9를 rollback으로 보존하고 Native109 app 후보는 별도로 남겼다. Chrome 확장 재로드/시작 및 실제 PDF 검증 대기.
+
+### 1.0.10 재시도 안전 보완과 현재 차단 상태
+- 사용자 경고에 따라 실패한900초 리포트가30초 뒤 반복되던 경로와 정상 주기 조건이 backoff를 무시하던 조건을 RED→GREEN으로 수정했다. 정상 주기를 유지하고 실패 대기는 max(정상 주기,60초)부터 max(정상 주기,15분)까지 지수 증가한다. 현재plan의128개 이하 stream·유한 시각·유효 범위/실패횟수를 검증해 Chrome 로컬 저장·재시작 복원한다.
+- content/Native의 인증/보안 확인은 Native snapshot 실패 전에도 전체4lane를 먼저 중지·저장한다. 이후 재시작/일반 시작에서도 탭 접근/후속수집/PDF를 건너뛰고 명시적 재개만 허용한다. 실제 관측한 managed challenge title/표시h1을 감지하되 일반 Cloudflare 기사에는 반응하지 않는다.
+- Node103개 및 독립 검토 통과. 부모의 최종 격리 Chromium3개22.08s 통과. bridge-only mock worker는 Native 연결이 없는 타이머 동작 때문에 bounded MAIN lease가 만료됐고, 해당 transport 검사는 빠른 비동기 mock ack로 한정했다. 별도 production-worker 검사는 실제 pacing·파일명·Native ticket 전달을 계속 검증한다. 운영 MAIN TTL/worker pacing은 완화하지 않았다.
+- 격리된 headful Chromium을 CDP no_defaults로 연결해 실제 minimized+document hidden 상태의 same-origin fetch3회/합성 쿠키 전달 성공을 확인했다(9.28s). 자동화 기본 focus emulation을 제거한 시험이며 실제 사이트 인증/API를 증명하지 않는다. 설계 초안: docs/superpowers/specs/2026-10-30-saveticker-minimized-api-design.md.
+- 사용자가 보안 확인 반복을 재확인했다. 이후 실제 사이트 요청/새로고침을 멈추고 임시 검증 탭만 닫았다. 실제 요청 계약·실제 자동PDF·전체 범위의 숨김 운영은 미완료다. 수집기는 중지한 채110 파일만 적용하며 운영 거래 앱은 변경하지 않는다.

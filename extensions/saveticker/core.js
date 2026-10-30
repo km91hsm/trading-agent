@@ -18,10 +18,42 @@ export function ownedLane(tab, token) {
     }
 }
 export class Scheduler {
-    constructor() { this.views = []; this.times = new Map(); this.retryAt = new Map(); this.blocked = new Set(); this.hot = 0; }
-    plan(v) { this.views = v.filter(x => LANES.includes(laneFor(x)) && Number(x.interval_s) >= 30); }
+    constructor() { this.views = []; this.times = new Map(); this.retryAt = new Map(); this.failureStreak = new Map(); this.blocked = new Set(); this.hot = 0; }
+    plan(v) {
+        this.views = v.filter(x => LANES.includes(laneFor(x)) && Number.isFinite(Number(x.interval_s)) && Number(x.interval_s) >= 30).slice(0, 128);
+        const allowed = new Set(this.views.map(v => v.stream));
+        for (const map of [this.times, this.retryAt, this.failureStreak])
+            for (const key of map.keys())
+                if (!allowed.has(key)) map.delete(key);
+    }
+    snapshot() {
+        return { version: 1, entries: this.views.filter(v => this.times.has(v.stream)).map(v => ({
+            stream: v.stream, at: this.times.get(v.stream),
+            ...(this.retryAt.has(v.stream) ? { retry_at: this.retryAt.get(v.stream), failure_streak: this.failureStreak.get(v.stream) } : {})
+        })) };
+    }
+    restore(saved, now = Date.now()) {
+        if (saved?.version !== 1 || !Array.isArray(saved.entries) || !Number.isFinite(now)) return;
+        const allowed = new Map(this.views.map(v => [v.stream, v])), seen = new Set();
+        for (const row of saved.entries.slice(0, 128)) {
+            const v = row && allowed.get(row.stream);
+            if (!v || seen.has(row.stream) || !Number.isFinite(row.at) || row.at < 0 || row.at > now) continue;
+            const retry = Object.hasOwn(row, 'retry_at'), streak = Object.hasOwn(row, 'failure_streak');
+            const normal = Number(v.interval_s) * 1000, base = Math.max(normal, 60000), cap = Math.max(normal, 900000);
+            if (retry !== streak || (retry && (!Number.isFinite(row.retry_at) || row.retry_at < row.at + base || row.retry_at > row.at + cap || row.retry_at > now + cap || !Number.isInteger(row.failure_streak) || row.failure_streak < 1 || row.failure_streak > 32))) continue;
+            seen.add(row.stream);
+            this.times.set(row.stream, row.at);
+            if (retry) {
+                this.retryAt.set(row.stream, row.retry_at);
+                this.failureStreak.set(row.stream, row.failure_streak);
+            } else {
+                this.retryAt.delete(row.stream);
+                this.failureStreak.delete(row.stream);
+            }
+        }
+    }
     next(now, lane) {
-        let due = this.views.filter(v => (!lane || laneFor(v) === lane) && !this.blocked.has(laneFor(v)) && (now - (this.times.get(v.stream) ?? -Infinity) >= v.interval_s * 1000 || (this.retryAt.has(v.stream) && now >= this.retryAt.get(v.stream))));
+        let due = this.views.filter(v => (!lane || laneFor(v) === lane) && !this.blocked.has(laneFor(v)) && (this.retryAt.has(v.stream) ? now >= this.retryAt.get(v.stream) : now - (this.times.get(v.stream) ?? -Infinity) >= v.interval_s * 1000));
         due.sort((a, b) => (this.times.get(a.stream) ?? -Infinity) - (this.times.get(b.stream) ?? -Infinity));
         if (this.hot >= 8) {
             const cold = due.find(v => v.interval_s >= 300);
@@ -34,10 +66,17 @@ export class Scheduler {
     }
     done(v, now, failed = false) {
         this.times.set(v.stream, now);
-        if (failed)
-            this.retryAt.set(v.stream, now + 30000);
-        else
+        if (failed) {
+            const streak = Math.min(32, (this.failureStreak.get(v.stream) || 0) + 1);
+            this.failureStreak.set(v.stream, streak);
+            const normal = Number(v.interval_s) * 1000;
+            const base = Math.max(normal, 60000), cap = Math.max(normal, 900000);
+            this.retryAt.set(v.stream, now + Math.min(cap, base * 2 ** Math.min(32, streak - 1)));
+        }
+        else {
             this.retryAt.delete(v.stream);
+            this.failureStreak.delete(v.stream);
+        }
         this.hot = v.interval_s < 300 ? this.hot + 1 : 0;
     }
     block(l) { this.blocked.add(l); }
