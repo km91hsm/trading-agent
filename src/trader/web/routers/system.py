@@ -253,7 +253,11 @@ def saveticker_status(request: Request) -> dict:
     from trader.saveticker import automation
 
     home = st.home()
-    return {"configured": st.credentials_path().is_file(), **automation.status(home)}
+    state = automation.status(home)
+    return {
+        "configured": st.credentials_path().is_file() or state.get("backend") == "extension",
+        **state,
+    }
 
 
 @router.get("/scalp")

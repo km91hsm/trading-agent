@@ -34,3 +34,5 @@ jobs:
           npm run typecheck
           npm test -- --run
           npm run build
+      - name: Chrome 수집 확장 테스트
+        run: node --test extensions/saveticker/tests/*.test.js

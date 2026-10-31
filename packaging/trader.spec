@@ -27,6 +27,8 @@ for rel, dst in (("web/dist", "web/dist"), ("docs/runbook-live-transition.md", "
                  ("docs/bundle-usage.md", "docs")):
     if (ROOT / rel).exists():
         datas.append((str(ROOT / rel), dst))
+if (ROOT / "extensions/saveticker").is_dir():
+    datas.append((str(ROOT / "extensions/saveticker"), "extensions/saveticker"))
 datas += collect_data_files("tzdata")
 # 세이브티커 수집기: Playwright 드라이버(node + package, 약 140MB). Chromium 은 첫 실행에 내려받는다
 # (trader.saveticker.chromium). 드라이버 위치는 playwright 패키지 옆 driver/ 라 그대로 둔다.

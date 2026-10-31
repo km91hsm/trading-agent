@@ -339,14 +339,21 @@ def test_news_plan_uses_whole_once_and_keeps_required_pdf_stream():
 
 def _route_login(api, html):
     p = api.sync_playwright().start()
-    browser = launch_or_skip(p)
-    page = browser.new_page()
-    page.set_default_timeout(1000)
-    page.route(
-        "https://www.saveticker.com/**",
-        lambda route: route.fulfill(body=html, content_type="text/html"),
-    )
-    return p, browser, page
+    browser = None
+    try:
+        browser = launch_or_skip(p)
+        page = browser.new_page()
+        page.set_default_timeout(1000)
+        page.route(
+            "https://www.saveticker.com/**",
+            lambda route: route.fulfill(body=html, content_type="text/html"),
+        )
+        return p, browser, page
+    except BaseException:
+        if browser is not None:
+            browser.close()
+        p.stop()
+        raise
 
 
 def test_login_stops_on_verification_screen_before_filling():
@@ -389,3 +396,34 @@ def test_login_stops_when_verification_appears_after_submit():
     finally:
         browser.close()
         p.stop()
+
+
+def test_login_route_skip_stops_playwright_loop(monkeypatch):
+    import sys
+
+    import pytest
+
+    api = pytest.importorskip("playwright.sync_api")
+    real = api.sync_playwright
+    opened = []
+
+    class Manager:
+        def start(self):
+            handle = real().start()
+            opened.append(handle)
+            return handle
+
+    monkeypatch.setattr(api, "sync_playwright", Manager)
+
+    def unavailable(_):
+        pytest.skip("synthetic missing browser")
+
+    monkeypatch.setattr(sys.modules[__name__], "launch_or_skip", unavailable)
+    try:
+        with pytest.raises(pytest.skip.Exception):
+            _route_login(api, "synthetic")
+        with real():
+            pass
+    finally:
+        for handle in opened:
+            handle.stop()

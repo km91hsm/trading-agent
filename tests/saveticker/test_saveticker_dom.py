@@ -14,6 +14,20 @@ def test_calendar_keeps_future_schedule_and_release_values_separate():
     assert items[0].published_at is None
 
 
+def test_calendar_ignores_previous_month_rows_during_month_transition():
+    from trader.saveticker.dom import extract
+
+    html = (
+        '<div><h3>9월 30일 수요일</h3><div data-stretched-link-card>'
+        '<span>21:30</span><h4><button>이전 달 일정</button></h4></div></div>'
+        '<div><h3>10월 1일 목요일</h3><div data-stretched-link-card>'
+        '<span>21:30</span><h4><button>선택한 달 일정</button></h4></div></div>'
+    )
+    items = extract(html, "calendar_2026-10", month="2026-10")
+    assert [item.title for item in items] == ["선택한 달 일정"]
+    assert items[0].scheduled_at.month == 10
+
+
 def test_virtual_news_id_does_not_depend_on_scroll_index_or_views():
     from trader.saveticker.dom import extract
 

@@ -1,0 +1,137 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import { JSDOM } from '../../../web/node_modules/jsdom/lib/api.js';
+const script = fs.readFileSync(new URL('../content.js', import.meta.url), 'utf8');
+async function capture(html, view, setup = () => { }, message = { type: 'collect' }) {
+    const dom = new JSDOM(html, { url: 'https://www.saveticker.com/news#trader-saveticker=token:news', runScripts: 'outside-only' });
+    let listener;
+    dom.window.chrome = { runtime: { id: 'ext', onMessage: { addListener: fn => listener = fn } } };
+    dom.window.TextEncoder = TextEncoder;
+    dom.window.setTimeout = fn => { fn(); return 1; };
+    dom.window.scrollBy = () => { };
+    setup(dom.window);
+    if (message.type === 'pdf_click') {
+        const owner = 'b'.repeat(32);
+        dom.window.history.replaceState(null, '', '/news?label_group=7#trader-saveticker=' + owner + ':background');
+        message = { ...message, nonce: 'a'.repeat(32) };
+        dom.window.URL.revokeObjectURL = () => { };
+        const timer = dom.window.setTimeout;
+        dom.window.setTimeout = (fn, ms) => ms === 15000 ? 0 : timer(fn, ms);
+        dom.window.postMessage = data => dom.window.dispatchEvent(new dom.window.MessageEvent('message', { data, origin: dom.window.location.origin, source: dom.window }));
+        if (!message.noMain)
+            dom.window.eval(fs.readFileSync(new URL('../pdf-main.js', import.meta.url), 'utf8'));
+    }
+    dom.window.eval(script);
+    await new Promise(r => setTimeout(r, 1));
+    const result = await new Promise(resolve => listener({ ...message, job: { job_id: 'j', view }, token: message.type === 'pdf_click' ? 'b'.repeat(32) : 'token' }, { id: 'ext' }, resolve));
+    dom.window.close();
+    return result;
+}
+const controls = '<button aria-label="프로필 메뉴"></button><button role="tab" aria-selected="true">전체</button><div aria-label="뉴스 카테고리"><button aria-pressed="true">전체</button></div>';
+test('actual selected DOM evidence, scrubbed HTML and partial bounded capture', async () => { const result = await capture(controls + '<div id="news-tabpanel"><div role="button" data-read="false" aria-label="headline"><p>headline</p><script>secret</script><form><input value="password"></form><nav>private</nav></div></div>', { stream: 'news_all', source: '전체', category: '전체' }); assert.equal(result.selection.source, '전체'); assert.equal(result.selection.category, '전체'); assert.equal(result.selection.loaded, true); assert.equal(result.status, 'partial'); assert.ok(result.html.includes('headline')); assert.ok(!result.html.includes('secret')); assert.ok(!result.html.includes('password')); assert.ok(!result.html.includes('private')); });
+test('requested source never becomes evidence when click fails to select', async () => { const result = await capture('<button aria-label="프로필 메뉴"></button><button role="tab" aria-selected="false">SAVE 리포트</button>', { stream: 'news_reports', source: 'SAVE 리포트' }); assert.equal(result.status, 'error'); assert.equal(result.selection.source, undefined); assert.equal(result.html, ''); });
+test('authentication blocks without collecting forms', async () => { const result = await capture('<button>이메일로 로그인</button><input value="secret">', { stream: 'news_all' }); assert.equal(result.status, 'auth_required'); assert.equal(result.html, ''); });
+test('regular selection requires explicit checked evidence', async () => { const result = await capture('<button aria-label="프로필 메뉴"></button><button aria-pressed="true">상승</button><button aria-pressed="false">정규장 기준</button>', { stream: 'market_gain_regular', tab: '상승', regular: true }); assert.equal(result.status, 'error'); assert.equal(result.selection.regular, false); });
+test('calendar selection reads resulting month label and navigates bounded controls', async () => { const result = await capture('<button aria-label="프로필 메뉴"></button><button>월별</button><div><button aria-label="이전"></button><span>2026년 10월</span><button aria-label="다음"></button></div><p>이 달에 일정이 없어요</p><section><h3>10월 29일 목요일</h3><div data-stretched-link-card><h4>일정</h4></div></section>', { stream: 'calendar_2026-10', month: '2026-10' }); assert.equal(result.selection.month, '2026-10'); assert.equal(result.status, 'partial'); assert.ok(result.html.includes('일정')); });
+test('wrong month never saves another calendar as successful', async () => { const result = await capture('<button aria-label="프로필 메뉴"></button><button>월별</button><div><button aria-label="이전"></button><span>2026년 10월</span><button aria-label="다음"></button></div><p>이 달에 일정이 없어요</p>', { stream: 'calendar_2027-01', month: '2027-01' }); assert.equal(result.status, 'error'); assert.equal(result.html, ''); });
+test('actual news category aria-current evidence is accepted', async () => { const result = await capture('<button aria-label="프로필 메뉴"></button><button role="tab" aria-selected="true">전체</button><div aria-label="뉴스 카테고리"><button aria-current="true" tabindex="0">전체</button><button tabindex="-1">증시</button></div>', { stream: 'news_all', source: '전체', category: '전체' }); assert.equal(result.status, 'partial'); assert.equal(result.selection.category, '전체'); });
+test('source 전체 never substitutes for missing category evidence', async () => { const result = await capture('<button aria-label="프로필 메뉴"></button><button role="tab" aria-selected="true">전체</button><div aria-label="뉴스 카테고리"><button>전체</button></div>', { stream: 'news_all', source: '전체', category: '전체' }); assert.equal(result.status, 'error'); assert.equal(result.html, ''); });
+test('ranking regular toggle ignores disabled header duplicate', async () => { const result = await capture('<button aria-label="프로필 메뉴"></button><header><button disabled role="checkbox" aria-checked="true">정규장 기준</button></header><section><button aria-current="true">상승</button><button role="checkbox" aria-checked="false">정규장 기준</button><div data-stretched-link-card>rank</div></section>', { stream: 'market_gain_live', tab: '상승', regular: false }); assert.equal(result.status, 'partial'); assert.equal(result.selection.regular, false); });
+test('challenge appearing during scroll blocks instead of saving partial', async () => { const result = await capture(controls + '<article>old</article>', { stream: 'news_all', source: '전체', category: '전체' }, w => { w.scrollBy = () => { w.document.body.innerHTML = 'Verify you are human'; }; }); assert.equal(result.status, 'auth_required'); assert.equal(result.html, ''); });
+test('news detail section body is collected and Escape close verified', async () => {
+    let closed = false;
+    const result = await capture(controls + '<div id="news-tabpanel"><div role="button" data-read="false" aria-label="Headline"></div></div>', { stream: 'news_all', source: '전체', category: '전체' }, w => {
+        w.document.querySelector('[data-read]').addEventListener('click', () => { const el = w.document.createElement('section'); el.id = 'detail'; el.innerHTML = '<h2>Headline</h2><div class="gap-6 p-6"><p class="whitespace-pre-wrap">Article body</p></div>'; w.document.body.append(el); });
+        w.document.addEventListener('keydown', e => {
+            if (e.key === 'Escape') {
+                w.document.getElementById('detail')?.remove();
+                closed = true;
+            }
+        });
+    });
+    assert.equal(result.status, 'partial');
+    assert.equal(result.details.length, 1);
+    assert.ok(result.details[0].html.includes('Article body'));
+    assert.equal(closed, true);
+});
+test('detail that does not close is rejected rather than silently left as successful', async () => { const result = await capture(controls + '<div id="news-tabpanel"><div role="button" data-read="false" aria-label="Headline"></div></div>', { stream: 'news_all', source: '전체', category: '전체' }, w => w.document.querySelector('[data-read]').addEventListener('click', () => { const el = w.document.createElement('section'); el.innerHTML = '<h2>Headline</h2><div class="gap-6 p-6"><p>body</p></div>'; w.document.body.append(el); })); assert.equal(result.status, 'error'); assert.equal(result.html, ''); });
+test('calendar enables actual all checkbox rather than same-name range button', async () => { let toggled = false; const result = await capture('<button aria-label="프로필 메뉴"></button><button>월별</button><button>전체</button><button id="all" aria-pressed="false">전체</button><div><button aria-label="이전"></button><span>2026년 10월</span><button aria-label="다음"></button></div><p>이 달에 일정이 없어요</p>', { stream: 'calendar_2026-10', month: '2026-10' }, w => w.document.querySelector('#all').addEventListener('click', e => { e.target.setAttribute('aria-pressed', 'true'); toggled = true; })); assert.equal(result.status, 'partial'); assert.equal(toggled, true); });
+test('PDF opaque button download is unverified; exact generated anchor URL is observable', async () => { const html = '<button aria-label="프로필 메뉴"></button><section>Report<button aria-label="PDF 다운로드"></button></section>'; const opaque = await capture(html, {}, () => { }, { type: 'pdf_click', title: 'Report' }); assert.equal(opaque.ok, false); const seen = await capture(html, {}, w => w.document.querySelector('[aria-label="PDF 다운로드"]').addEventListener('click', () => { const a = w.document.createElement('a'); a.href = 'blob:https://www.saveticker.com/unique'; a.download = 'report.pdf'; a.addEventListener('click', e => e.preventDefault()); w.document.body.append(a); a.click(); a.remove(); }), { type: 'pdf_click', title: 'Report' }); assert.equal(seen.ok, true); assert.equal(seen.observed_url, 'blob:https://www.saveticker.com/unique'); });
+test('second collection of reused virtualized news tab applies queued news and returns to top', async () => { const dom = new JSDOM(controls + '<aside><button id="unrelated">새 뉴스</button></aside><main><div aria-label="뉴스 목록 필터"><button id="fresh">새 뉴스</button></div><div id="scroller"><div id="news-tabpanel"><div role="button" data-read="false" aria-label="First headline">First headline</div></div></div></main>', { url: 'https://www.saveticker.com/news#trader-saveticker=token:news', runScripts: 'outside-only' }); const w = dom.window; let listener, top = 0, queued = 'First headline', clicked = 0, unrelated = 0; w.chrome = { runtime: { id: 'ext', onMessage: { addListener: f => listener = f } } }; w.TextEncoder = TextEncoder; w.setTimeout = fn => { fn(); return 1; }; w.scrollBy = () => { }; const scroller = w.document.querySelector('#scroller'), panel = w.document.querySelector('#news-tabpanel'); Object.defineProperties(scroller, { clientHeight: { value: 200 }, scrollHeight: { value: 2000 }, scrollTop: { get: () => top, set: v => { top = v; const title = v === 0 ? queued : 'Older headlines'; panel.innerHTML = '<div role="button" data-read="false" aria-label="' + title + '">' + title + '</div>'; } } }); scroller.style.overflowY = 'auto'; scroller.scrollBy = () => { scroller.scrollTop = top + 160; }; w.document.querySelector('#fresh').addEventListener('click', () => { clicked++; queued = clicked === 1 ? 'First headline' : 'Newest headline'; }); w.document.querySelector('#unrelated').addEventListener('click', () => unrelated++); w.eval(script); await new Promise(r => setTimeout(r, 1)); const collect = () => new Promise(resolve => listener({ type: 'collect', token: 'token', job: { job_id: 'j', view: { stream: 'news_all', source: '전체', category: '전체' }, limits: { max_scrolls: 2, max_details: 0 } } }, { id: 'ext' }, resolve)); const first = await collect(); await new Promise(r => setTimeout(r, 1)); assert.ok(first.html.includes('First headline')); assert.ok(top > 0); const second = await collect(); assert.ok(second.html.includes('Newest headline')); assert.equal(clicked, 2); assert.equal(unrelated, 0); dom.window.close(); });
+const communityRanking = title => '<button aria-label="프로필 메뉴"></button><aside style="display:none"><button class="bg-neutral-800 text-background-secondary text-medium-bold">상승</button></aside><main><section><div><button class="bg-neutral-800 text-background-secondary text-medium-bold">지수</button><button class="bg-background-secondary text-neutral-700 text-medium-regular">상승</button><button class="bg-background-secondary text-neutral-700 text-medium-regular">하락</button></div><button role="checkbox" aria-checked="true" disabled title="' + title + '">정규장 기준</button><div data-stretched-link-card>rank</div></section></main>';
+for (const regular of [false, true])
+    test('community plain selected class and explicit disabled equivalence preserve actual checkbox for ' + (regular ? 'regular' : 'live'), async () => { const result = await capture(communityRanking('지금은 실시간과 정규장 기준이 같아요'), { stream: 'community_index_' + (regular ? 'regular' : 'live'), kind: 'community', tab: '지수', regular }); assert.equal(result.status, 'partial'); assert.equal(result.selection.tab, '지수'); assert.equal(result.selection.regular, true); assert.equal(result.selection.regular_disabled, true); assert.equal(result.selection.regular_equivalent, true); assert.equal(result.selection.regular_equivalence_label, '지금은 실시간과 정규장 기준이 같아요'); });
+test('disabled community checkbox without exact equivalence label cannot satisfy live request', async () => { const result = await capture(communityRanking('임의 안내'), { stream: 'community_index_live', kind: 'community', tab: '지수', regular: false }); assert.equal(result.status, 'error'); assert.equal(result.html, ''); });
+test('community equivalence cannot bypass market regular mismatch', async () => { const result = await capture(communityRanking('지금은 실시간과 정규장 기준이 같아요'), { stream: 'market_index_live', kind: 'market', tab: '지수', regular: false }); assert.equal(result.status, 'error'); assert.equal(result.html, ''); });
+test('source controls driven by mousedown switch away from reports and preserve actual evidence', async () => { const result = await capture('<button aria-label="프로필 메뉴"></button><button id="allsource" role="tab" aria-selected="false">전체</button><button id="reportssource" role="tab" aria-selected="true">SAVE 리포트</button><div aria-label="뉴스 카테고리"><button aria-current="true">전체</button></div><div id="news-tabpanel">Latest headline</div>', { stream: 'news_all', source: '전체', category: '전체' }, w => w.document.querySelector('#allsource').addEventListener('mousedown', () => { w.document.querySelector('#allsource').setAttribute('aria-selected', 'true'); w.document.querySelector('#reportssource').setAttribute('aria-selected', 'false'); })); assert.equal(result.status, 'partial'); assert.equal(result.selection.source, '전체'); });
+test('monthly control driven by pointerdown exposes and verifies actual month', async () => { const result = await capture('<button aria-label="프로필 메뉴"></button><button id="monthly">월별</button><div id="calendar"></div>', { stream: 'calendar_2026-10', month: '2026-10' }, w => w.document.querySelector('#monthly').addEventListener('pointerdown', () => { w.document.querySelector('#calendar').innerHTML = '<div><button aria-label="이전"></button><span>2026년 10월</span><button aria-label="다음"></button></div><p>이 달에 일정이 없어요</p>'; })); assert.equal(result.status, 'partial'); assert.equal(result.selection.month, '2026-10'); });
+test('profile can precede source/category controls and delayed mousedown hydration', async () => {
+    let pauses = 0;
+    const result = await capture('<button aria-label="프로필 메뉴"></button><div id="slot"></div>', { stream: 'news_all', source: '전체', category: '전체' }, w => {
+        w.setTimeout = (fn, ms) => {
+            if (ms === 2000) {
+                pauses++;
+                if (pauses === 2)
+                    w.document.querySelector('#slot').innerHTML = '<button id="src" role="tab" aria-selected="false">전체</button><div aria-label="뉴스 카테고리"><button id="cat" aria-current="false">전체</button></div><div id="news-tabpanel">New headline</div>';
+                if (pauses === 3) {
+                    w.document.querySelector('#src').addEventListener('mousedown', e => e.target.setAttribute('aria-selected', 'true'));
+                    w.document.querySelector('#cat').addEventListener('mousedown', e => e.target.setAttribute('aria-current', 'true'));
+                }
+            }
+            fn();
+            return 1;
+        };
+    });
+    assert.equal(result.status, 'partial');
+    assert.equal(result.selection.source, '전체');
+    assert.equal(result.selection.category, '전체');
+    assert.equal(typeof result.selection.visible, 'boolean');
+});
+test('monthly controls and pointer handler can hydrate after profile without false month evidence', async () => {
+    let pauses = 0;
+    const result = await capture('<button aria-label="프로필 메뉴"></button><div id="slot"></div>', { stream: 'calendar_2026-10', month: '2026-10' }, w => {
+        w.setTimeout = (fn, ms) => {
+            if (ms === 2000) {
+                pauses++;
+                if (pauses === 2)
+                    w.document.querySelector('#slot').innerHTML = '<button id="monthly">월별</button><div id="range"></div>';
+                if (pauses === 3)
+                    w.document.querySelector('#monthly').addEventListener('pointerdown', () => { w.document.querySelector('#range').innerHTML = '<div><button aria-label="이전"></button><span>2026년 10월</span><button aria-label="다음"></button></div><p>이 달에 일정이 없어요</p>'; });
+            }
+            fn();
+            return 1;
+        };
+    });
+    assert.equal(result.status, 'partial');
+    assert.equal(result.selection.month, '2026-10');
+});
+test('authentication barrier during control readiness stops immediately', async () => {
+    let pauses = 0;
+    const result = await capture('<button aria-label="프로필 메뉴"></button>', { stream: 'news_reports', source: 'SAVE 리포트' }, w => {
+        w.setTimeout = (fn, ms) => {
+            if (ms === 2000) {
+                pauses++;
+                w.document.body.innerHTML = 'Verify you are human';
+            }
+            fn();
+            return 1;
+        };
+    });
+    assert.equal(result.status, 'auth_required');
+    assert.equal(pauses, 1);
+    assert.equal(result.html, '');
+});
+test('calendar navigation cap stays 26 across bounded selection attempts', async () => { let clicks = 0; const result = await capture('<button aria-label="프로필 메뉴"></button><button>월별</button><div><button aria-label="이전"></button><span>2026년 10월</span><button aria-label="다음"></button></div><p>이 달에 일정이 없어요</p>', { stream: 'calendar_2027-01', month: '2027-01' }, w => w.document.querySelector('[aria-label="다음"]').addEventListener('click', () => clicks++)); assert.equal(result.status, 'error'); assert.ok(clicks <= 26); });
+test('hidden DOM timers never fire but worker pace replies advance collection', async () => { let paces = 0; const result = await capture(controls + '<div id="news-tabpanel">Headline</div>', { stream: 'news_all', source: '전체', category: '전체' }, w => { w.setTimeout = () => { throw Error('hidden DOM timer must not be used'); }; w.chrome.runtime.sendMessage = async (message) => { assert.equal(message.type, 'pace'); assert.equal(message.ownerToken, 'token'); paces++; return { ok: true }; }; }); assert.equal(result.status, 'partial'); assert.ok(paces >= 3); });
+test('missing worker pace response fails instead of falling back to DOM timer', async () => { const result = await capture(controls + '<div id="news-tabpanel">Headline</div>', { stream: 'news_all', source: '전체', category: '전체' }, w => { w.setTimeout = () => { throw Error('no timer fallback'); }; w.chrome.runtime.sendMessage = async () => undefined; }); assert.equal(result.status, 'error'); assert.equal(result.html, ''); });
+test('stopped worker pacing during profile readiness returns a bounded failure', async () => { let paces = 0; const result = await capture('<div>Loading</div>', { stream: 'news_all', source: '전체' }, w => { w.chrome.runtime.sendMessage = async () => { paces++; return { ok: false, error: 'pace_stopped' }; }; }); assert.equal(paces, 1); assert.equal(result.html, ''); assert.ok(['error', 'auth_required'].includes(result.status)); });
+test('PDF observer also uses worker pacing when hidden DOM timers never fire', async () => { const result = await capture('<button aria-label="프로필 메뉴"></button><section>Report<button aria-label="PDF 다운로드"></button></section>', {}, w => { w.setTimeout = () => { throw Error('hidden timer'); }; w.chrome.runtime.sendMessage = async () => ({ ok: true }); w.document.querySelector('[aria-label="PDF 다운로드"]').addEventListener('click', () => { const a = w.document.createElement('a'); a.href = 'blob:https://www.saveticker.com/report'; a.addEventListener('click', e => e.preventDefault()); w.document.body.append(a); a.click(); a.remove(); }); }, { type: 'pdf_click', title: 'Report' }); assert.equal(result.ok, true); assert.equal(result.observed_url, 'blob:https://www.saveticker.com/report'); });
+test('missing static MAIN ready fails before clicking report button', async () => { let clicked = 0; const result = await capture('<button aria-label="프로필 메뉴"></button><section>Report<button aria-label="PDF 다운로드"></button></section>', {}, w => w.document.querySelector('[aria-label="PDF 다운로드"]').addEventListener('click', () => clicked++), { type: 'pdf_click', title: 'Report', noMain: true }); assert.equal(result.ok, false); assert.equal(result.reason, 'hook_not_ready'); assert.equal(clicked, 0); });
+test('PDF candidate with wrong nonce or origin is rejected', async () => { const result = await capture('<button aria-label="프로필 메뉴"></button><section>Report<button aria-label="PDF 다운로드"></button></section>', {}, w => w.document.querySelector('[aria-label="PDF 다운로드"]').addEventListener('click', () => { for (const [nonce, origin] of [['c'.repeat(32), w.location.origin], ['a'.repeat(32), 'https://evil.test']])
+    w.dispatchEvent(new w.MessageEvent('message', { data: { channel: 'trader-saveticker-pdf', type: 'candidate', nonce, url: 'blob:https://www.saveticker.com/forged' }, source: w, origin })); }), { type: 'pdf_click', title: 'Report' }); assert.equal(result.ok, false); assert.equal(result.reason, 'candidate_missing'); });
+
+for(const heading of ['접속 환경을 확인하고 있습니다','Checking your connection','Just a moment'])
+ test('managed challenge heading blocks collection: '+heading,async()=>{const r=await capture(controls+'<h1>'+heading+'</h1>',{stream:'news_all',source:'전체',category:'전체'});assert.equal(r.status,'auth_required');assert.equal(r.html,'');});
+test('managed challenge document title blocks even when profile remains',async()=>{const r=await capture(controls,{stream:'news_all'},w=>w.document.title='Checking your connection');assert.equal(r.status,'auth_required');});
+test('article mention of Cloudflare is ordinary content',async()=>{const r=await capture(controls+'<article>Cloudflare Checking your connection story</article>',{stream:'news_all',source:'전체',category:'전체'});assert.equal(r.status,'partial');});

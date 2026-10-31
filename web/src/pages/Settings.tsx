@@ -153,7 +153,7 @@ export function SettingsPage() {
             ) : st.data ? (
               <>
                 {st.data.blocked ? <p className="pend">{st.data.reason_text}</p> : null}
-                <p className="muted">마지막 수집 {st.data.last_success_at ? fmtTime(st.data.last_success_at, "KR") : "—"} · 데몬이 1분마다 수집 서비스를 살펴요</p>
+                <p className="muted">마지막 수집 {st.data.last_success_at ? fmtTime(st.data.last_success_at, "KR") : "—"} · {st.data.backend === "extension" ? "일반 Chrome에서 AI 없이 수집해요" : "데몬이 1분마다 수집 서비스를 살펴요"}</p>
                 <Table dense caption="세이브티커 작업별 상태">
                   <thead>
                     <tr>
@@ -172,12 +172,18 @@ export function SettingsPage() {
                     ))}
                   </tbody>
                 </Table>
+                {st.data.backend === "extension" ? (
+                  <p className="note">Chrome의 ‘SaveTicker 수집’ 확장 아이콘에서 시작·정지·재개할 수 있어요. 컴퓨터가 잠들거나 Chrome을 종료하면 수집도 멈춰요.</p>
+                ) : (
+                  <>
                 <div className="row">
                   <button type="button" className="btn" disabled={!token} onClick={restartSaveticker} title={token ? undefined : "토큰이 필요해요"}>
                     다시 시작
                   </button>
                 </div>
                 <p className="note">멈춤·쉬는 작업 기록을 지우고 다시 띄워요. 인증이 계속 실패하면 계정 파일을 확인하세요(로그인을 반복하면 계정이 잠길 수 있어요).</p>
+                  </>
+                )}
               </>
             ) : null}
           </Section>
