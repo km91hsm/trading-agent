@@ -39,7 +39,7 @@
                 return u.pathname === '/api/report/download' && /^\/api\/uploads\/documents\/\d{1,20}$/.test(path || '') && u.search === '?' + new URLSearchParams({ url: path }).toString();
             }
             if (r.kind === 'popular') {
-                return u.pathname === '/api/stocks/api/v1/tickers/popular' && /^\?tab=(gainers|losers)&groupId=[1-9]\d{0,15}&excludeRisky=true$/.test(u.search) || u.pathname === '/api/stocks/api/v1/tickers/popular' && /^\?tab=turnover&groupId=[1-9]\d{0,15}$/.test(u.search);
+                return u.pathname === '/api/stocks/api/v1/tickers/popular' && /^\?tab=(gainers|losers)&groupId=[1-9]\d{0,15}(?:&basis=regular)?&excludeRisky=true$/.test(u.search) || u.pathname === '/api/stocks/api/v1/tickers/popular' && /^\?tab=turnover&groupId=[1-9]\d{0,15}(?:&basis=regular)?$/.test(u.search);
             }
             if (r.kind !== 'calendar' || u.pathname !== '/api/calendar/events' || !/^\?start_date=\d{4}-\d{2}-\d{2}&end_date=\d{4}-\d{2}-\d{2}$/.test(u.search)) return false;
             const start = Date.parse(u.searchParams.get('start_date')), end = Date.parse(u.searchParams.get('end_date'));

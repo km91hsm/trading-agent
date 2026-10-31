@@ -60,6 +60,8 @@ def descriptor(view, *, group_id=None):
             {"tab": tab, "groupId": group_id},
             "popular",
         )
+        if view["regular"]:
+            query["basis"] = "regular"
         if tab != "turnover":
             query["excludeRisky"] = "true"
     else:
@@ -160,28 +162,28 @@ def parse_snapshot(view, response, *, group_id=None):
         return jsonfeed.extract(data, "news_all")
     if kind == "popular":
         expected_tab = {"상승": "gainers", "하락": "losers", "거래대금": "turnover"}[view["tab"]]
-        if (
-            data.get("tab") != expected_tab
-            or data.get("basis") != "live"
-            or data.get("excludeRisky") is not (expected_tab != "turnover")
+        if data.get("tab") != expected_tab or data.get("excludeRisky") is not (
+            expected_tab != "turnover"
         ):
             raise ValueError("api_basis_unverified")
         if not rows or len(rows) > 20 or len({r.get("symbol") for r in rows}) != len(rows):
             raise ValueError("api_shape_unverified")
-        if view["regular"] and data.get("session") != "open":
-            # The UI explicitly equates these only DURING the regular session.
-            raise ValueError("api_regular_unverified")
+        basis = data.get("basis")
+        # session may describe a historical snapshot; only the explicit basis
+        # establishes which prices/ranking this response actually represents.
+        if basis != ("regular" if view["regular"] else "live"):
+            raise ValueError(
+                "api_regular_unverified" if view["regular"] else "api_basis_unverified"
+            )
         for row in rows:
             if not isinstance(row.get("symbol"), str) or any(
                 type(row.get(k)) not in (int, float) for k in ("price", "changePercent")
             ):
                 raise ValueError("api_shape_unverified")
         items = jsonfeed.extract({"items": rows}, view["stream"], regular=False)
-        return (
-            [i.model_copy(update={"basis": "regular_equivalent_open"}) for i in items]
-            if view["regular"]
-            else items
-        )
+        if view["regular"]:
+            return [i.model_copy(update={"basis": "regular"}) for i in items]
+        return items
     if kind == "index":
         matched = {x.get("symbol"): x for x in rows if x.get("symbol") in INDEX_SYMBOLS}
         if len(matched) != 5 or len([x for x in rows if x.get("symbol") in INDEX_SYMBOLS]) != 5:

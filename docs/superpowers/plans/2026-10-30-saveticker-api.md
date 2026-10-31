@@ -71,3 +71,13 @@ Ruling: per-task user approval is not repeated; the user explicitly authorized i
 - Frozen Native synthetic proof supports20 contracts after projected default-group setup; correlated news body, open-session regular rank, PDF ticket and1-page attachment passed. Bundle smoke/selfcheck passed. Final package refresh pending after diagnostic guard change.
 
 - Final delivery:184 Python/120 Node passed; final macOS build/smoke and frozen API proof passed. Installed1.2.0 extension and dedicated Native app while stopped, preserving extension-before-1.2.0 and Trader-before-1.2.0.app. Native UI one normal refresh recovered authenticated report list. Manual Chrome reload pending; actual1.2.0 acceptance not yet started.
+
+### Task 5: Observed explicit regular basis
+- [x] Separate normal Chrome UI confirms all5 regularpopular query forms and server basis=regular; no credential/header extraction, no driver on collection tab.
+- [x] Red:5 Native URL expectations and2 Node allowlist/connection regressions. Green focused28 Python.
+- [x] Add exact basis=regular descriptor/query allowlist; validate exact requested responsebasis. Historical session=open does not establish equivalence; reject live responses for regular and regular responses for live.
+- [ ] Full checks/review/package1.2.1, preserve1.2.0 rollback, user reload, actual20 streams under minimized collection.
+
+1.2.0 actual post-resume proof: dedicatedwindow minimized around11:30:35KST. All15 nonconditional streams refreshed including zero calendars. Native validated a secondPDF30pages/6118121bytes/12783textcharacters while minimized; popup reported saved. Earlier28page PDF was also present but its delayed reply had surfaced unconfirmed; do not infer the cause of the long execution gap. Latest CIac13a9d passed6m38s. Read-only10minute minimized observer is running; do not claim long-running acceptance yet.
+
+- ReviewP2 fixed: explicit regular requests now require server basis=regular, removing live/open fallback because session=open also appears on historical closed-market snapshots. Red regression reproduced incorrect acceptance before the fix.

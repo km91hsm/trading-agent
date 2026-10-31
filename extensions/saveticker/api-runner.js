@@ -93,7 +93,7 @@ export async function apiCycle({ chrome, token, scheduler, active, request, stor
                 if (!active()) return;
                 if (result && await blocked(result)) return;
             }
-            await store({ ['lane_' + lane]: 'API 부분 수집 · ' + (result.count || 0) + '개', ['lane_error_' + lane]: null, ...(result.count > 0 ? { lastCollected: Date.now() } : {}), apiCoverage: 'API 부분 수집 · 정규장 별도 조건은 시장 상태에 따라 대기' });
+            await store({ connection: '연결됨 · API 수집 중', ['lane_' + lane]: 'API 부분 수집 · ' + (result.count || 0) + '개', ['lane_error_' + lane]: null, ...(result.count > 0 ? { lastCollected: Date.now() } : {}), apiCoverage: 'API 부분 수집 · 서버 응답 기준 검증' });
         } catch (error) {
             failed = true;
             if (!active()) return;

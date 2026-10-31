@@ -169,7 +169,7 @@ def test_report_document_is_bound_to_detail_and_existing_pdf_ticket(tmp_path):
     assert not send(client, "api_pdf_begin", item_id="unrelated")["ok"]
 
 
-def test_regular_equivalence_only_for_confirmed_open_session(tmp_path):
+def test_live_snapshot_never_substitutes_for_explicit_regular_basis(tmp_path):
     client = native.NativeSession(tmp_path)
     setup(client)
     job = send(client, "api_begin", stream="market_gain_regular")
@@ -196,9 +196,8 @@ def test_regular_equivalence_only_for_confirmed_open_session(tmp_path):
         job_id=job["job_id"],
         response=response(job["request"]["url"], data),
     )
-    assert good["ok"]
-    item = json.loads((tmp_path / "data/latest/market_gain_regular.json").read_text())["items"][0]
-    assert "regular" in item["basis"] and "equivalent" in item["basis"]
+    assert not good["ok"]
+    assert not (tmp_path / "data/latest/market_gain_regular.json").exists()
 
 
 def test_popular_requires_exact_server_tab_basis_filter(tmp_path):
@@ -215,3 +214,42 @@ def test_popular_requires_exact_server_tab_basis_filter(tmp_path):
     }
     with pytest.raises(ValueError):
         api_contract.parse_snapshot(v, response(request["url"], data), group_id=42)
+
+
+@pytest.mark.parametrize(
+    "stream,tab",
+    [
+        ("community_gain_regular", "gainers"),
+        ("community_loss_regular", "losers"),
+        ("market_gain_regular", "gainers"),
+        ("market_loss_regular", "losers"),
+        ("market_turnover_regular", "turnover"),
+    ],
+)
+def test_explicit_regular_request_and_server_basis(tmp_path, stream, tab):
+    client = native.NativeSession(tmp_path)
+    setup(client)
+    job = send(client, "api_begin", stream=stream)
+    suffix = f"tab={tab}&groupId=42&basis=regular"
+    if tab != "turnover":
+        suffix += "&excludeRisky=true"
+    assert job["request"]["url"].endswith(suffix)
+    data = {
+        "tab": tab,
+        "basis": "regular",
+        "session": "open",
+        "excludeRisky": tab != "turnover",
+        "asOf": "2026-10-30T20:00:00Z",
+        "items": [{"symbol": "AAA", "rank": 1, "price": 12, "changePercent": 3}],
+    }
+    saved = send(
+        client,
+        "api_snapshot",
+        stream=stream,
+        job_id=job["job_id"],
+        response=response(job["request"]["url"], data),
+    )
+    assert saved["ok"] and saved["count"] == 1
+    latest = json.loads((tmp_path / f"data/latest/{stream}.json").read_text())
+    assert latest["items"][0]["basis"] == "regular"
+    assert latest["view"]["requested_regular"] is True

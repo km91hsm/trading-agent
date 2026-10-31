@@ -95,3 +95,14 @@ test('failed default-group setup backs off rather than re-requesting every tick'
  const r=runner(undefined,{deps:{setupRequired:true,request:async()=>({job_id:'b'.repeat(32),request:descriptor}),chrome:{tabs:{query:async()=>[{id:1,url:'https://www.saveticker.com/news#trader-saveticker-api='+TOKEN}],sendMessage:async()=>({error:'api_context_unverified'})}}}});
  await r.run();assert.ok(r.state.apiSetupRetryAt>=Date.now()+59000);
 });
+test('explicit regular popular query is allowed with exact observed order only',async()=>{
+ for(const tab of ['gainers','losers','turnover']){
+  const url='https://www.saveticker.com/api/stocks/api/v1/tickers/popular?tab='+tab+'&groupId=42&basis=regular'+(tab==='turnover'?'':'&excludeRisky=true');
+  const r=jsonResponse({tab,basis:'regular',excludeRisky:tab!=='turnover',session:'open',items:[]});Object.defineProperty(r,'url',{value:url});
+  const c=await content(r);const out=await c.send({job:{job_id:'b'.repeat(32),expires_at:new Date(Date.now()+60000).toISOString(),request:{...descriptor,kind:'popular',url}}});
+  assert.equal(out.status,200);assert.equal(out.data.basis,'regular');
+ }
+});
+test('successful API capture clears stale tab preparation connection text',async()=>{
+ const r=runner({status:200,url:descriptor.url,content_type:'application/json',data:{news_list:[]}});await r.run();assert.equal(r.state.connection,'연결됨 · API 수집 중');
+});

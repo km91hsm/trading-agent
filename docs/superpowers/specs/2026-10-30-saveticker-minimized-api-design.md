@@ -93,3 +93,7 @@
 
 리포트 상세 추가 관찰: GET /api/report/detail?id=<목록 report id>의200 JSON은 report 객체이며 report.id와 report.pdf_url을 포함한다. pdf_url은 /api/uploads/documents/<숫자> 경로였다. 상세 표시에는 GET /api/report/download?url=<인코딩된 경로>&mode=inline, 사용자 다운로드 버튼에는 같은 GET 경로에서 mode가 없는 요청이 사용됐다. 둘 다 정상 UI에서 관찰했다.
 증시 추가 관찰: 초기 turnover 요청은 groupId 없이도200이었고, 그룹 초기화 후 groupId가 붙었다. 증시 상승/하락은 GET /api/stocks/api/v1/tickers/popular?tab=gainers 또는 losers&groupId=<현재 기본 그룹>&excludeRisky=true를 보냈다. 증시 체크박스 Help도 정규장 중 실시간과 정규장 기준이 같다는 안내였다. 시장 종료 후 정규장 전용 매개변수는 여전히 미확인이다.
+
+### 2026-10-31 장외 정규장 계약 실측
+일반 Chrome의 별도 확인 탭에서 UI 정규장 체크 상태와 Network GET/200/JSON Preview를 확인했다. 수집 소유 창은 계속 최소화했으며 브라우저 드라이버 연결은 사용하지 않았다. 시장 거래대금은 `tab=turnover&groupId=<default>&basis=regular`, 시장/커뮤니티 상승·하락은 `tab=gainers|losers&groupId=<default>&basis=regular&excludeRisky=true`였다. 정규장 토글 전후 값이 다르고 응답은 `basis=regular`, 예상 excludeRisky, `asOf=2026-10-30T20:00:00Z`를 명시했다. `session=open`은 해당 스냅샷의 값으로 보이므로 현재 장중 상태로 추정하지 않는다. 개인 그룹 ID와 인증 헤더는 문서/테스트에 기록하지 않는다.
+1.2.1은 요청 정규장 여부에 따라 관측한 basis query를 발급하고, 응답 regular는 regular로 저장한다. session은 과거 스냅샷에서도 open일 수 있으므로, 정규장 요청은 반드시 basis=regular 응답만 저장한다. live/open 및 live/closed 모두 정규장 대체값으로 거절한다. 일반 실시간 stream에는 regular 응답을 허용하지 않는다. 수집 후 연결 상태가 탭 준비 중으로 남던 문구도 갱신한다.
