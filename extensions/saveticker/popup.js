@@ -6,7 +6,7 @@ async function render() {
     const s = await chrome.storage.local.get(null);
     const knownVersion = typeof s.workerVersion === 'string' && /^\d+\.\d+\.\d+$/.test(s.workerVersion);
     const workerVersion = knownVersion ? s.workerVersion : s.enabled ? '연결 중' : '시작 전';
-    $('version').textContent = '확장 1.2.1 · 수집기 ' + workerVersion + (knownVersion && workerVersion !== '1.2.1' ? ' · 확장 새로고침 필요' : '');
+    $('version').textContent = '확장 1.2.2 · 수집기 ' + workerVersion + (knownVersion && workerVersion !== '1.2.2' ? ' · 확장 새로고침 필요' : '');
     $('pdf-state').textContent = Object.hasOwn(pdfStates, s.pdfState) ? pdfStates[s.pdfState] + ' (' + s.pdfState + ')' : '';
     $('api-mode').checked = s.backend === 'api';
     $('api-mode').disabled = !!s.enabled;

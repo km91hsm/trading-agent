@@ -18,7 +18,10 @@ from pypdf import PdfWriter
 from trader.saveticker.native import NativeSession
 
 
-def test_hidden_api_pdf_uses_real_native_ticket_and_attachment(tmp_path, monkeypatch):
+@pytest.mark.parametrize("native_reply_delay_s", [0, 25])
+def test_hidden_api_pdf_uses_real_native_ticket_and_attachment(
+    tmp_path, monkeypatch, native_reply_delay_s
+):
     source = Path(__file__).resolve().parents[2] / "extensions/saveticker"
     extension = tmp_path / "extension"
     shutil.copytree(source, extension)
@@ -114,6 +117,8 @@ chrome.runtime.connectNative=()=>{const p={onMessage:event(),onDisconnect:event(
                     message = request.request.post_data_json
                     native_messages.append(message)
                     reply = client.handle(message)
+                    if message["type"] == "pdf" and native_reply_delay_s:
+                        time.sleep(native_reply_delay_s)
                     if message["type"] == "hello" and reply["ok"]:
                         reply["views"] = [
                             v for v in reply["views"] if v["stream"] == "news_reports"

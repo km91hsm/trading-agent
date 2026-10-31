@@ -84,3 +84,9 @@ Ruling: per-task user approval is not repeated; the user explicitly authorized i
 
 - Final1.2.1 checks: Node122 passed, Python189 passed128.66s, Ruff/diff passed, independent review P2 fixed and cleared. FrozenNative20contracts/strictregular/no-live-substitution/body/PDF passed, final macOS bundle smoke/selfcheck passed. Replaced dedicated extension/Native files while stopped, preserving1.2.0 rollback. Manual reload pending.
 - Bounded1.2.0 actual run: nativeUI minimized11:30:35KST; observer11:32:27~11:42:27 all21samples collecting with15unique news capture times. All15 nonconditional streams refreshed; secondPDF30pages/6118121bytes/12783textchars and popup saved. Subsequent security reverification around11:44 stopped all lanes, then explicit Stop. This remains a failed unattended-operation acceptance; do not infer root cause from the additional diagnostic tab.
+
+### Task 6: Delayed Native PDF acknowledgment
+1.2.1 actual minimized acceptance saved all20 streams after11:49:03KST, including5 explicit regularpopular streams. ThirdPDF30pages/5689961bytes/12964textchars savedNative but UIreported unconfirmed. Issued11:49:04.626, downloadmtime11:49:07.900, NativePDFcopy11:49:32.240, text/store11:49:33.579: about26s afterdownload, exceeding20s Native requestdeadline. Warm isolated extraction took1.51s; do not infer the cause of slow coldprocessing.
+- [x] Nodevirtual delayedNative reply reproduces api_failed vs saved.
+- [x] Extend only Native pdf acknowledgment deadline to90s; otherNative requests20s, websitefetch15s and ticket120s unchanged. Stop/disconnect stillrejectpending requests and oldepochs cannotupdateUI.
+- [ ] Real minimized Chromium/actualNative save with0/25s delayedreply, finalreview/package1.2.2 and one manualreload.

@@ -1,6 +1,6 @@
 import { apiCycle, abortApi } from './api-runner.js';
 import { LANES, Scheduler, laneFor, marker, ownedLane, safePage, PdfPair } from './core.js';
-const WORKER_VERSION = '1.2.1';
+const WORKER_VERSION = '1.2.2';
 const scheduler = new Scheduler(), pdf = new PdfPair(), reportAttempts = new Map();
 let limits = { max_scrolls: 2, max_details: 2, max_reports: 2 };
 let port = null, requests = new Map(), seq = 0, enabled = false, token = '', ticking = null, retryAt = 0, failures = 0, planAt = 0, epoch = 0, nextTimer = null, presentRequested = false;
@@ -174,7 +174,7 @@ function request(type, body = {}) {
     if (!port)
         return Promise.reject(Error('disconnected'));
     const id = ++seq;
-    return new Promise((resolve, reject) => { const timer = setTimeout(() => { requests.delete(id); reject(Error('host_timeout')); }, 20000); requests.set(id, { resolve, reject, timer }); port.postMessage({ type, id, ...body }); });
+    return new Promise((resolve, reject) => { const timer = setTimeout(() => { requests.delete(id); reject(Error('host_timeout')); }, type === 'pdf' ? 90000 : 20000); requests.set(id, { resolve, reject, timer }); port.postMessage({ type, id, ...body }); });
 }
 async function loadPlan(plan) {
     apiSetupRequired = plan.api_setup_required === true;

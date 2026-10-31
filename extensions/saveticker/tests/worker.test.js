@@ -18,7 +18,7 @@ test('MV3 restart recovers owned tabs; duplicate alarm ticks serialize; stop pre
     await Promise.all([worker.tick(), worker.tick(), worker.tick()]);
     assert.equal(ports.length, 1);
     assert.equal(created, 3);
-    assert.equal(state.workerVersion, '1.2.1');
+    assert.equal(state.workerVersion, '1.2.2');
     assert.equal(calls.filter(x => x.type === 'hello').length, 1);
     assert.equal(calls.filter(x => x.type === 'begin').length, 1);
     assert.equal(calls.filter(x => x.type === 'snapshot').length, 1);
